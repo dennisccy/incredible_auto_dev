@@ -59,7 +59,7 @@ phase_spec_path() {
 verdict_passes() {
   local report_file="${1:-}"
   [[ -f "$report_file" ]] || return 1
-  grep -qE "^\*\*Verdict:\*\* (PASS|PASS_WITH_NOTES|PASS_WITH_GAPS)" "$report_file" 2>/dev/null
+  grep -qE "^\*\*Verdict:\*\* (PASS|PASS WITH NOTES|PASS WITH GAPS|PASS_WITH_NOTES|PASS_WITH_GAPS)" "$report_file" 2>/dev/null
 }
 
 # Update runs/<phase>/status.json with new status and step
