@@ -75,7 +75,13 @@ Use `--reset` flag to clear checkpoints and re-run all steps.
 
 ## Verdict Formats (machine-read)
 
-Verdicts are detected by `grep` in shell scripts. Use EXACTLY these formats:
+**All reports use the same universal format:**
+```
+**Verdict:** VALUE
+```
+
+The `**Verdict:**` prefix is required — `verdict_passes()` in `common.sh` delegates to
+`scripts/automation/lib/verdicts.py`, which is the single source of truth for valid values.
 
 **Review report** (`reports/reviews/<phase>-review.md`) — first line:
 ```
@@ -87,14 +93,15 @@ Verdicts are detected by `grep` in shell scripts. Use EXACTLY these formats:
 **QA report** (`reports/qa/<phase>-qa.md`) — first line:
 ```
 **Verdict:** PASS
+**Verdict:** PASS_WITH_NOTES
 **Verdict:** FAIL
 ```
 
 **Audit report** (`docs/handoffs/<phase>-audit.md`) — in Executive Verdict section:
 ```
-**PASS**
-**PASS WITH GAPS**
-**FAIL**
+**Verdict:** PASS
+**Verdict:** PASS_WITH_GAPS
+**Verdict:** FAIL
 ```
 
 **UI Evolution Audit** (inside QA report):

@@ -162,19 +162,23 @@ Answer each question:
 3. Is the UI still relying on old generic pages for new functionality?
 4. Is the implementation technically complete but product-wise underexposed?
 
-Assign verdict:
-- `UI-PASS` — UI meaningfully reflects the new capability
-- `UI-PASS-WITH-GAPS` — UI works but has notable gaps
-- `UI-FAIL` — backend capability not adequately reflected in UI
+Assign verdict (use `**Verdict:**` prefix — required for machine parsing):
+- `**Verdict:** UI-PASS` — UI meaningfully reflects the new capability
+- `**Verdict:** UI-PASS-WITH-GAPS` — UI works but has notable gaps
+- `**Verdict:** UI-FAIL` — backend capability not adequately reflected in UI
 
 **If UI-FAIL: overall QA verdict MUST be FAIL.**
 
 **Step 5: Write QA report**
 
-Write to `reports/qa/<phase>-qa.md`. Verdict line MUST appear at the top:
+Write to `reports/qa/<phase>-qa.md`. Verdict line MUST appear at the top. The `**Verdict:**` prefix and exact value are required — scripts parse this by machine:
 
 ```
 **Verdict:** PASS
+```
+or:
+```
+**Verdict:** PASS_WITH_NOTES
 ```
 or:
 ```
