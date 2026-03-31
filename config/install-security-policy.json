@@ -1,0 +1,49 @@
+{
+  "_comment": "Pre-install security policy for the automation pipeline.",
+  "_doc": "Add your project's packages to the allowlists. Keep denylists for known-bad versions only.",
+
+  "python": {
+    "allowlist": [],
+    "denylist": [],
+    "rules": {
+      "require_pinned_version": true,
+      "block_direct_url": true,
+      "allow_requirements_file": true,
+      "check_pypi_age": false,
+      "min_release_age_days": 3
+    }
+  },
+
+  "npm": {
+    "allowlist": [],
+    "denylist": [],
+    "rules": {
+      "require_pinned_version": true,
+      "block_direct_url": true,
+      "allow_package_json_install": true
+    }
+  },
+
+  "git": {
+    "trusted_orgs": [],
+    "denylist": [],
+    "rules": {
+      "require_pinned_ref": true,
+      "block_unknown_orgs": false
+    }
+  },
+
+  "skills": {
+    "trusted_repos": [],
+    "rules": {
+      "require_approval_first_install": true
+    }
+  },
+
+  "global": {
+    "block_curl_pipe_bash": true,
+    "log_all_decisions": true,
+    "log_file": "reports/security/install-decisions.jsonl",
+    "bypass_env_var": "CHAIN_INSTALL_GATE_BYPASS"
+  }
+}

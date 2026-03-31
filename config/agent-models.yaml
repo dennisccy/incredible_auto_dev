@@ -1,0 +1,23 @@
+# Agent Model Configuration — Single Source of Truth
+#
+# Edit this file to change model assignments, then resync agent files:
+#   ./scripts/automation/sync-agent-models.sh
+#
+# Tier rationale:
+#   strong   — complex reasoning: architectural planning, code generation, auditing
+#   standard — solid general capability: code review, test plan generation
+#   light    — routine workflow: test running, git/GitHub operations
+
+tiers:
+  strong:   claude-opus-4-6
+  standard: claude-sonnet-4-6
+  light:    claude-haiku-4-5
+
+agents:
+  orchestrator:    strong    # phase planning
+  developer:       strong    # TDD code generation (backend + frontend)
+  reviewer:        standard  # code review
+  qa:              light     # test running and artifact validation
+  auditor:         strong    # post-QA goal-achievement assessment
+  release-manager: light     # git/GitHub operations
+  product-manager: strong    # architecture planning (optional agent)

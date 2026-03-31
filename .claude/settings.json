@@ -1,0 +1,232 @@
+{
+  "_comment": "ai-auto-dev-chain permission settings. Customize for your project.",
+  "_doc": "Add project-specific Bash allowances below the generic base. Never put project-specific entries in the deny list — deny list is for universal security.",
+
+  "permissions": {
+    "allow": [
+      "Bash(git *)",
+      "Bash(gh *)",
+
+      "Bash(npm *)",
+      "Bash(npx *)",
+      "Bash(node *)",
+
+      "Bash(python *)",
+      "Bash(python3 *)",
+      "Bash(pip *)",
+      "Bash(pip3 *)",
+      "Bash(uv *)",
+      "Bash(~/.local/bin/uv *)",
+      "Bash(.venv/bin/*)",
+
+      "Bash(bash *)",
+      "Bash(sh *)",
+      "Bash(source *)",
+      "Bash(./scripts/*)",
+      "Bash(scripts/*)",
+      "Bash(bash .claude/*)",
+
+      "Bash(ls *)",
+      "Bash(ls)",
+      "Bash(pwd)",
+      "Bash(cat *)",
+      "Bash(head *)",
+      "Bash(tail *)",
+      "Bash(grep *)",
+      "Bash(find *)",
+      "Bash(which *)",
+      "Bash(type *)",
+      "Bash(echo *)",
+      "Bash(printf *)",
+      "Bash(wc *)",
+      "Bash(jq *)",
+      "Bash(sed *)",
+      "Bash(awk *)",
+      "Bash(sort *)",
+      "Bash(uniq *)",
+      "Bash(tee *)",
+      "Bash(xargs *)",
+      "Bash(diff *)",
+      "Bash(test *)",
+
+      "Bash(mkdir *)",
+      "Bash(touch *)",
+      "Bash(cp *)",
+      "Bash(mv *)",
+      "Bash(ln *)",
+
+      "Bash(rm -f *)",
+      "Bash(rm -rf dist*)",
+      "Bash(rm -rf build*)",
+      "Bash(rm -rf .next*)",
+      "Bash(rm -rf node_modules*)",
+      "Bash(rm -rf __pycache__*)",
+      "Bash(rm -rf .pytest_cache*)",
+      "Bash(rm -rf *.egg-info*)",
+      "Bash(rm -rf coverage*)",
+      "Bash(rm -rf /tmp/*)",
+
+      "Bash(chmod +x *)",
+      "Bash(chmod -x *)",
+      "Bash(chmod u+x *)",
+      "Bash(chmod a+x *)",
+      "Bash(chmod g+x *)",
+      "Bash(chmod 644 *)",
+      "Bash(chmod 755 *)",
+      "Bash(chmod 600 *)",
+      "Bash(chmod 700 *)",
+      "Bash(chmod 664 *)",
+      "Bash(chmod 775 *)",
+
+      "Bash(export *)",
+      "Bash(env *)",
+      "Bash(env)",
+
+      "Bash(ps *)",
+      "Bash(kill *)",
+      "Bash(pkill *)",
+      "Bash(lsof *)",
+      "Bash(pgrep *)",
+
+      "Bash(curl http://localhost*)",
+      "Bash(curl http://127.0.0.1*)",
+      "Bash(curl https://localhost*)",
+
+      "Bash(docker build *)",
+      "Bash(docker compose *)",
+      "Bash(docker-compose *)",
+      "Bash(docker ps*)",
+      "Bash(docker logs *)",
+      "Bash(docker inspect *)",
+      "Bash(docker pull *)",
+      "Bash(docker push *)",
+      "Bash(docker images*)",
+      "Bash(docker stop *)",
+      "Bash(docker start *)",
+      "Bash(docker restart *)",
+      "Bash(docker rm *)",
+      "Bash(docker rmi *)",
+      "Bash(docker tag *)",
+      "Bash(docker run *)",
+      "Bash(docker exec *)",
+      "Bash(docker cp *)",
+
+      "Bash(apt-cache *)",
+      "Bash(dpkg -l*)",
+      "Bash(dpkg --list*)",
+
+      "Read(*)",
+      "Write(*)",
+      "Edit(*)"
+    ],
+    "deny": [
+      "Bash(rm -rf /)",
+      "Bash(rm -rf /*)",
+      "Bash(rm -rf ~)",
+      "Bash(rm -rf ~/)",
+      "Bash(rm -rf ~/*)",
+      "Bash(rm -rf /home*)",
+      "Bash(rm -rf /root*)",
+      "Bash(rm -rf /etc*)",
+      "Bash(rm -rf /usr*)",
+      "Bash(rm -rf /var*)",
+      "Bash(rm -rf /boot*)",
+      "Bash(rm -rf /lib*)",
+      "Bash(rm -rf /opt*)",
+      "Bash(rm -rf /srv*)",
+      "Bash(rm -rf /sys*)",
+      "Bash(rm -rf /proc*)",
+
+      "Bash(dd *)",
+      "Bash(mkfs*)",
+      "Bash(fdisk*)",
+      "Bash(parted*)",
+      "Bash(mount *)",
+      "Bash(umount *)",
+
+      "Bash(sudo rm*)",
+      "Bash(sudo dd*)",
+      "Bash(sudo mkfs*)",
+      "Bash(sudo mount*)",
+      "Bash(sudo chown*)",
+      "Bash(sudo chmod*)",
+
+      "Bash(chown *)",
+
+      "Bash(chmod -R *)",
+      "Bash(chmod * /*)",
+
+      "Bash(cat ~/.ssh/id_rsa*)",
+      "Bash(cat ~/.ssh/id_ed25519*)",
+      "Bash(cat ~/.ssh/*.pem*)",
+      "Bash(cat ~/.aws/credentials*)",
+      "Bash(cat ~/.config/gh/hosts.yml*)",
+      "Bash(cat /etc/shadow*)",
+
+      "Bash(docker system prune*)",
+      "Bash(docker volume prune*)",
+      "Bash(docker network prune*)",
+      "Bash(docker run --privileged*)",
+      "Bash(docker run --network=host*)",
+      "Bash(docker run --pid*)",
+      "Bash(docker run --cap-add*)",
+      "Bash(docker run --security-opt*)",
+      "Bash(docker run --volume /*)",
+      "Bash(docker run -v /*)",
+      "Bash(docker exec --privileged*)",
+
+      "Bash(sudo apt*)",
+      "Bash(sudo apt-get*)",
+      "Bash(apt install*)",
+      "Bash(apt-get install*)",
+      "Bash(apt upgrade*)",
+      "Bash(apt-get upgrade*)",
+      "Bash(apt dist-upgrade*)",
+      "Bash(apt-get dist-upgrade*)"
+    ]
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash .claude/hooks/install-security-gate.sh \"$CLAUDE_TOOL_INPUT_COMMAND\""
+          }
+        ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash .claude/hooks/guard-dangerous-commands.sh \"$CLAUDE_TOOL_INPUT_COMMAND\" 2>/dev/null || true"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Write|Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash .claude/hooks/post-edit-lint.sh \"$CLAUDE_TOOL_INPUT_FILE_PATH\" 2>/dev/null || true"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "matcher": ".*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash .claude/hooks/on-stop-check-artifacts.sh 2>/dev/null || true"
+          }
+        ]
+      }
+    ]
+  }
+}

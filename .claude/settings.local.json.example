@@ -1,0 +1,17 @@
+{
+  "_comment": "Local overrides for .claude/settings.json. Copy to settings.local.json (not committed).",
+  "_doc": "Add project-specific local permissions here. This file is gitignored.",
+
+  "permissions": {
+    "allow": [
+      "Bash(curl *)",
+
+      "Bash(for *)",
+      "Bash(do *)",
+      "Bash(done)",
+
+      "Skill(superpowers-chrome:browsing)",
+      "mcp__plugin_superpowers-chrome_chrome__use_browser"
+    ]
+  }
+}
