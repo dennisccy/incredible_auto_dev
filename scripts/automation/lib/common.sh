@@ -55,18 +55,30 @@ phase_spec_path() {
   echo ""
 }
 
-# Returns 0 (true) if report file exists and contains a PASS or PASS_WITH_NOTES verdict
+# Returns 0 (true) if report file exists and contains a passing verdict line.
+# Passing verdicts and their exact format are defined in verdicts.py.
 verdict_passes() {
   local report_file="${1:-}"
   [[ -f "$report_file" ]] || return 1
-  grep -qE "^\*\*Verdict:\*\* (PASS|PASS WITH NOTES|PASS WITH GAPS|PASS_WITH_NOTES|PASS_WITH_GAPS)" "$report_file" 2>/dev/null
+  python3 "$(dirname "${BASH_SOURCE[0]}")/verdicts.py" check-verdict "$report_file" 2>/dev/null
 }
 
-# Update runs/<phase>/status.json with new status and step
+# Update runs/<phase>/status.json with new status and step.
+# Both new_status and new_step are validated against verdicts.py enums before writing.
 update_status() {
   local phase="$1"
   local new_status="$2"
   local new_step="$3"
+  local _verdicts_py
+  _verdicts_py="$(dirname "${BASH_SOURCE[0]}")/verdicts.py"
+  if ! python3 "$_verdicts_py" validate-status "$new_status" 2>&1; then
+    echo "update_status: aborting due to invalid status value" >&2
+    return 1
+  fi
+  if ! python3 "$_verdicts_py" validate-step "$new_step" 2>&1; then
+    echo "update_status: aborting due to invalid step value" >&2
+    return 1
+  fi
   local run_dir="$REPO_ROOT/runs/$phase"
   mkdir -p "$run_dir"
   python3 -c "

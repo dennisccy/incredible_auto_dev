@@ -2,9 +2,9 @@
 
 ## Executive Verdict
 
-**PASS**
+**Verdict:** PASS
 
-<!-- Choose exactly one: PASS | PASS WITH GAPS | FAIL -->
+<!-- Choose exactly one: PASS | PASS_WITH_GAPS | FAIL — the **Verdict:** prefix is required -->
 
 ---
 

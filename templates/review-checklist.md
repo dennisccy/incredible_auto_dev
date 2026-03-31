@@ -2,8 +2,8 @@
 
 ## Verdict
 
-<!-- PASS | PASS_WITH_NOTES | FAIL -->
-**PASS**
+<!-- PASS | PASS_WITH_NOTES | FAIL — the **Verdict:** prefix is required -->
+**Verdict:** PASS
 
 ---
 

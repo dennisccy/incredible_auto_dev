@@ -78,11 +78,13 @@ Do not ask questions — assess from evidence in the code and artifacts.
 Write your audit report to: $AUDIT_REPORT
 
 The report MUST begin with an Executive Verdict section containing exactly one of:
-**PASS**
+**Verdict:** PASS
   or
-**PASS WITH GAPS**
+**Verdict:** PASS_WITH_GAPS
   or
-**FAIL**
+**Verdict:** FAIL
+
+IMPORTANT: The **Verdict:** prefix is required — scripts parse this line by machine. Do NOT use **PASS** or **PASS WITH GAPS** without the prefix.
 
 Write the audit report and STOP."
 
