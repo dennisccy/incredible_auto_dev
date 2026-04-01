@@ -31,6 +31,28 @@ Specialist subagent definitions live in `.claude/agents/`:
 | `auditor` | `.claude/agents/auditor.md` | Post-QA skeptical audit, may apply critical fixes |
 | `release-manager` | `.claude/agents/release-manager.md` | Git/GitHub: branches, commits, PRs, merges |
 | `product-manager` | `.claude/agents/product-manager.md` | Optional: architecture planning before phase spec is written |
+| `ui-impact-analyst` | `.claude/agents/ui-impact-analyst.md` | Post-dev: maps code changes to UI surfaces, identifies user-visible impact |
+| `ui-test-designer` | `.claude/agents/ui-test-designer.md` | Creates practical UI test plan and 5-minute operator verification guide |
+| `browser-qa-agent` | `.claude/agents/browser-qa-agent.md` | Executes browser automation tests via Chrome MCP, records pass/fail |
+| `phase-closure-auditor` | `.claude/agents/phase-closure-auditor.md` | Final gate: validates all UI artifacts exist and are non-vague |
+| `ux-regression-reviewer` | `.claude/agents/ux-regression-reviewer.md` | Checks UI evolved with new capabilities, flags hidden/undiscoverable features |
+
+---
+
+## SKILLS (Agent Reference Instructions)
+
+Reusable instruction files that agents read during their workflow. Located in `.claude/skills/`:
+
+| File | Used by | Purpose |
+|------|---------|---------|
+| `diff-to-ui-impact.md` | ui-impact-analyst | Classify file changes by UI impact type |
+| `ui-workflow-inference.md` | ui-impact-analyst | Infer user journeys from changed routes/components |
+| `manual-ui-test-plan-generator.md` | ui-test-designer | Create human-executable test plans |
+| `browser-workflow-executor.md` | browser-qa-agent | Execute browser flows via Chrome MCP |
+| `visible-change-summarizer.md` | ui-impact-analyst | Write plain-language user-facing change summaries |
+| `phase-closure-gate.md` | phase-closure-auditor | Evaluate phase completion criteria |
+| `ui-regression-scout.md` | ux-regression-reviewer | Identify old journeys affected by new changes |
+| `what-to-click-writer.md` | ui-test-designer | Write fast operator verification guides |
 
 ---
 
@@ -52,6 +74,11 @@ Specialist subagent definitions live in `.claude/agents/`:
 ./scripts/automation/ui-audit-phase.sh phase-1      # standalone UI audit
 ./scripts/automation/sync-agent-models.sh           # sync model assignments
 ./scripts/automation/check-install.sh "pip install X"  # check install safety
+./scripts/automation/ui-impact-phase.sh phase-1      # analyze UI impact after dev
+./scripts/automation/ui-test-design-phase.sh phase-1  # create UI test plan
+./scripts/automation/browser-qa-phase.sh phase-1      # run browser QA
+./scripts/automation/ux-regression-phase.sh phase-1   # check UX regression
+./scripts/automation/phase-closure-check.sh phase-1   # final closure gate
 ```
 
 ---
@@ -88,5 +115,5 @@ Full rules in `.claude/core.md`. Key points:
 
 ## ANTI-PATTERNS
 
-See `.claude/anti-patterns.md` for 12 documented failure modes from production use.
+See `.claude/anti-patterns.md` for 14 documented failure modes from production use.
 Most common: vague acceptance criteria → infinite review loops.

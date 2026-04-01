@@ -144,3 +144,153 @@ init_run_dir() {
     echo "Initialized $run_dir/status.json"
   fi
 }
+
+# ── UI Artifact Utilities ────────────────────────────────────────────────────
+
+# Returns 0 if all 6 UI visibility artifacts exist for a phase
+verify_ui_artifacts() {
+  local phase="$1"
+  local required=(
+    "$REPO_ROOT/reports/phase-${phase}-implementation-summary.md"
+    "$REPO_ROOT/reports/phase-${phase}-user-visible-changes.md"
+    "$REPO_ROOT/reports/phase-${phase}-ui-surface-map.md"
+    "$REPO_ROOT/reports/phase-${phase}-ui-test-plan.md"
+    "$REPO_ROOT/reports/phase-${phase}-ui-test-results.md"
+    "$REPO_ROOT/reports/phase-${phase}-what-to-click.md"
+  )
+  local missing=()
+  for f in "${required[@]}"; do
+    [[ -f "$f" ]] || missing+=("$f")
+  done
+  if [[ ${#missing[@]} -gt 0 ]]; then
+    echo "[verify_ui_artifacts] Missing UI artifacts for $phase:" >&2
+    for m in "${missing[@]}"; do echo "  $m" >&2; done
+    return 1
+  fi
+  return 0
+}
+
+# Returns 0 if the phase diff contains frontend files (.tsx/.jsx/.vue/.svelte/.css in frontend dirs)
+detect_frontend_changes() {
+  local phase="$1"
+  local frontend_patterns=(
+    "\.tsx$" "\.jsx$" "\.vue$" "\.svelte$"
+    "/components/" "/pages/" "/views/" "/screens/"
+    "\.module\.css$" "\.module\.scss$"
+  )
+  # Check changed_files in status.json if available
+  local status_file="$REPO_ROOT/runs/$phase/status.json"
+  if [[ -f "$status_file" ]]; then
+    local changed
+    changed=$(python3 -c "
+import json, sys
+try:
+    with open('$status_file') as f:
+        files = json.load(f).get('changed_files', [])
+    print('\n'.join(files))
+except Exception:
+    pass
+" 2>/dev/null || true)
+    if [[ -n "$changed" ]]; then
+      for pattern in "${frontend_patterns[@]}"; do
+        if echo "$changed" | grep -qE "$pattern"; then
+          return 0
+        fi
+      done
+      return 1
+    fi
+  fi
+  # Fallback: check git diff for frontend files
+  if git -C "$REPO_ROOT" diff --name-only HEAD 2>/dev/null | grep -qE "(\.tsx$|\.jsx$|\.vue$|/components/|/pages/|/views/)"; then
+    return 0
+  fi
+  return 1
+}
+
+# Returns 0 (consistent) or 1 (inconsistent) — checks user-visible-changes vs frontend file changes
+check_backend_only_claim() {
+  local phase="$1"
+  local uvc_file="$REPO_ROOT/reports/phase-${phase}-user-visible-changes.md"
+  [[ -f "$uvc_file" ]] || return 0  # File missing — handled elsewhere
+
+  # If the user-visible-changes file says N/A or no visible changes
+  if grep -qi "backend-only\|no user-visible\|no visible changes\|Frontend Present: no" "$uvc_file" 2>/dev/null; then
+    # Check if frontend files actually changed
+    if detect_frontend_changes "$phase"; then
+      echo "[check_backend_only_claim] WARNING: user-visible-changes claims no UI changes but frontend files were modified." >&2
+      return 1
+    fi
+  fi
+  return 0
+}
+
+# Returns 0 if closure verdict file contains CLOSURE-PASS
+closure_verdict_passes() {
+  local report_file="${1:-}"
+  [[ -f "$report_file" ]] || return 1
+  grep -qE "^\*\*Verdict:\*\* CLOSURE-PASS" "$report_file" 2>/dev/null
+}
+
+# Returns 0 if UX regression report is PASS or WARN (not FAIL)
+ux_regression_verdict_passes() {
+  local report_file="${1:-}"
+  [[ -f "$report_file" ]] || return 0  # Missing = acceptable (backend-only phases may not have this)
+  # PASS or WARN are acceptable; only FAIL blocks
+  if grep -qE "^\*\*Verdict:\*\* UX-REGRESSION-FAIL" "$report_file" 2>/dev/null; then
+    return 1
+  fi
+  return 0
+}
+
+# Write N/A stub files for UI artifacts in backend-only phases
+# Usage: write_na_ui_artifacts <phase> [artifact-names...]
+# If no artifact names given, writes stubs for all 6 UI artifacts
+write_na_ui_artifacts() {
+  local phase="$1"
+  shift
+  local artifacts=("$@")
+
+  # Default: all 6 artifacts
+  if [[ ${#artifacts[@]} -eq 0 ]]; then
+    artifacts=(
+      "implementation-summary"
+      "user-visible-changes"
+      "ui-surface-map"
+      "ui-test-plan"
+      "ui-test-results"
+      "what-to-click"
+    )
+  fi
+
+  mkdir -p "$REPO_ROOT/reports"
+
+  for artifact in "${artifacts[@]}"; do
+    local out_file="$REPO_ROOT/reports/phase-${phase}-${artifact}.md"
+    if [[ ! -f "$out_file" ]]; then
+      case "$artifact" in
+        implementation-summary)
+          printf "# Phase %s — Implementation Summary\n\n**Status:** Backend-only phase (Frontend Present: no)\n\nNo UI-visible implementation. All changes are internal backend.\n" "$phase" > "$out_file"
+          ;;
+        user-visible-changes)
+          printf "# Phase %s — User-Visible Changes\n\n**Status:** N/A — Backend-only phase (Frontend Present: no)\n\nNo user-visible changes. All changes are internal backend implementation.\n" "$phase" > "$out_file"
+          ;;
+        ui-surface-map)
+          printf "# Phase %s — UI Surface Map\n\n**Status:** N/A — Backend-only phase (Frontend Present: no)\n\nNo UI surfaces affected.\n" "$phase" > "$out_file"
+          ;;
+        ui-test-plan)
+          printf "# Phase %s — UI Test Plan\n\n**Status:** N/A — Backend-only phase. No UI tests required.\n" "$phase" > "$out_file"
+          ;;
+        ui-test-results)
+          printf "# Phase %s — UI Test Results\n\n**Browser QA Verdict:** SKIPPED\n\n**Reason:** Backend-only phase (Frontend Present: no). No browser tests executed.\n" "$phase" > "$out_file"
+          ;;
+        what-to-click)
+          printf "# Phase %s — What to Click\n\n**Status:** N/A — Backend-only phase. No UI verification steps.\n" "$phase" > "$out_file"
+          ;;
+        *)
+          printf "# Phase %s — %s\n\n**Status:** N/A — Backend-only phase.\n" "$phase" "$artifact" > "$out_file"
+          ;;
+      esac
+      echo "[write_na_ui_artifacts] Wrote N/A stub: $out_file"
+    fi
+  done
+}

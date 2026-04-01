@@ -81,6 +81,10 @@ Apply the TOKEN AND QUESTIONING POLICY from .claude/core.md strictly.
 When complete:
 - Write dev handoff to: docs/handoffs/${PHASE}-dev.md
 - If frontend work was done, also write: docs/handoffs/${PHASE}-frontend.md
+- Also write: reports/phase-${PHASE}-implementation-summary.md
+  Use the template at templates/implementation-summary.md.
+  Include: features implemented, changed behavior, backend-only items, incomplete items, config/env changes, known limitations.
+  This report is for operators, not developers — write in plain language, not code.
 - Update runs/${PHASE}/status.json with current_step: dev_complete"
 
 echo "[dev-phase] Done."

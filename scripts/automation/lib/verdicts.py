@@ -40,6 +40,26 @@ class UIVerdict(str, Enum):
     UI_SKIPPED = "UI-SKIPPED"
 
 
+class ClosureVerdict(str, Enum):
+    """Phase closure audit verdicts (reports/phase-{N}-closure-verdict.md)."""
+    CLOSURE_PASS = "CLOSURE-PASS"
+    CLOSURE_FAIL = "CLOSURE-FAIL"
+
+
+class UXRegressionVerdict(str, Enum):
+    """UX regression review verdicts (reports/phase-{N}-ux-regression.md)."""
+    UX_REGRESSION_PASS = "UX-REGRESSION-PASS"
+    UX_REGRESSION_WARN = "UX-REGRESSION-WARN"
+    UX_REGRESSION_FAIL = "UX-REGRESSION-FAIL"
+
+
+class BrowserQAVerdict(str, Enum):
+    """Browser QA verdicts (reports/phase-{N}-ui-test-results.md)."""
+    PASS = "PASS"
+    FAIL = "FAIL"
+    SKIPPED = "SKIPPED"
+
+
 class PhaseStatus(str, Enum):
     """Top-level status field in status.json."""
     IN_PROGRESS = "in_progress"
@@ -68,6 +88,12 @@ class PhaseStep(str, Enum):
     AUDIT_PASSED = "audit_passed"
     AUDIT_FAILED = "audit_failed"
     AUDIT_QA_FAILED = "audit_qa_failed"
+    UI_IMPACT_COMPLETE = "ui_impact_complete"
+    UI_TEST_DESIGNED = "ui_test_designed"
+    BROWSER_QA_COMPLETE = "browser_qa_complete"
+    UX_REGRESSION_COMPLETE = "ux_regression_complete"
+    CLOSURE_PASSED = "closure_passed"
+    CLOSURE_FAILED = "closure_failed"
     FAILED = "failed"
 
 

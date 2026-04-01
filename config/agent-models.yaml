@@ -14,6 +14,7 @@ tiers:
   light:    claude-haiku-4-5
 
 agents:
+  # Core pipeline agents
   orchestrator:    strong    # phase planning
   developer:       strong    # TDD code generation (backend + frontend)
   reviewer:        standard  # code review
@@ -21,3 +22,10 @@ agents:
   auditor:         strong    # post-QA goal-achievement assessment
   release-manager: light     # git/GitHub operations
   product-manager: strong    # architecture planning (optional agent)
+
+  # UI visibility agents
+  ui-impact-analyst:      standard  # diff analysis and UI surface mapping
+  ui-test-designer:       standard  # UI test plan and operator guide creation
+  browser-qa-agent:       standard  # browser automation execution (needs reasoning for Chrome MCP)
+  ux-regression-reviewer: standard  # cross-phase UI consistency and discoverability
+  phase-closure-auditor:  standard  # artifact completeness gate

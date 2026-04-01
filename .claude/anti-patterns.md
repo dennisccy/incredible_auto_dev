@@ -141,3 +141,31 @@ Each entry includes: the pattern, why it fails, and how to prevent it.
 **Why it fails:** The handoff is a summary written by the agent that implemented the code. It naturally omits mistakes. The QA report validates what the developer chose to test. Neither is a substitute for reading the actual source files.
 
 **Prevention:** Auditor instructions explicitly state: "Read actual source files, not summaries. If you cannot verify a claim from code, trace through the implementation. Never trust a handoff summary alone."
+
+---
+
+## 13. Backend capabilities without UI verification leads to invisible features
+
+**Pattern:** A phase adds 3 new API endpoints. Unit tests pass. QA validates the APIs. Audit gives PASS. But no one verified that the user can actually reach these features from the UI. Three phases later, someone clicks through the app and discovers half the features have no navigation path.
+
+**Why it fails:** "Tests pass" and "the feature works for a user" are completely different claims. A feature that exists in the backend but has no UI entry point is invisible product capability — it was built but cannot be used.
+
+**Prevention:** The UI visibility system produces 6 artifacts per phase:
+- `implementation-summary` — what was built
+- `user-visible-changes` — what users can now do
+- `ui-surface-map` — which routes/components changed and what to test
+- `ui-test-plan` — exact click paths and expected outcomes
+- `ui-test-results` — browser automation evidence
+- `what-to-click` — 5-minute operator verification guide
+
+The phase closure auditor blocks completion when these artifacts are missing or vague. Browser QA must test actual user workflows, not just that pages render.
+
+---
+
+## 14. Vague test steps make test plans useless
+
+**Pattern:** A test plan says "test the form submission" or "verify results are correct." The browser QA agent cannot execute this. A human tester cannot follow this. The plan exists but adds no value.
+
+**Why it fails:** Vague test steps produce vague results. "Tested and it works" is not evidence. A test plan that cannot produce reproducible pass/fail evidence is not a test plan.
+
+**Prevention:** Every test step must specify: exact URL, exact element to interact with (by name or visible label), exact value to input, and exact expected outcome. The `post-write-artifact-quality.sh` hook warns when phase report files contain vague placeholder lines. The `what-to-click-writer` skill enforces concrete step writing.

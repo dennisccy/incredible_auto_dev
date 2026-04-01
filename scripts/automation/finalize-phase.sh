@@ -49,6 +49,13 @@ if [[ -f "$AUDIT_REPORT" ]] && ! verdict_passes "$AUDIT_REPORT"; then
   exit 1
 fi
 
+CLOSURE_VERDICT="$REPO_ROOT/reports/phase-${PHASE}-closure-verdict.md"
+if [[ -f "$CLOSURE_VERDICT" ]] && ! closure_verdict_passes "$CLOSURE_VERDICT"; then
+  echo "Error: Phase closure check did not pass." >&2
+  echo "Check $CLOSURE_VERDICT for details." >&2
+  exit 1
+fi
+
 echo ""
 echo "Phase $PHASE is ready to finalize."
 echo "  QA report:  $QA_REPORT"
@@ -90,7 +97,14 @@ data.update({
         "review_report": "reports/reviews/${PHASE}-review.md",
         "qa_report": "reports/qa/${PHASE}-qa.md",
         "audit_report": "docs/handoffs/${PHASE}-audit.md",
-        "status": "runs/${PHASE}/status.json"
+        "status": "runs/${PHASE}/status.json",
+        "implementation_summary": "reports/phase-${PHASE}-implementation-summary.md",
+        "user_visible_changes": "reports/phase-${PHASE}-user-visible-changes.md",
+        "ui_surface_map": "reports/phase-${PHASE}-ui-surface-map.md",
+        "ui_test_plan": "reports/phase-${PHASE}-ui-test-plan.md",
+        "ui_test_results": "reports/phase-${PHASE}-ui-test-results.md",
+        "what_to_click": "reports/phase-${PHASE}-what-to-click.md",
+        "closure_verdict": "reports/phase-${PHASE}-closure-verdict.md"
     }
 })
 with open(summary_file, "w") as f:

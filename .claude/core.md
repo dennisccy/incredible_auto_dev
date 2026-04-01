@@ -102,12 +102,18 @@ A phase is done when ALL of the following are true:
 5. The review report has a PASS or PASS_WITH_NOTES verdict
 6. The QA report has a PASS verdict
 7. The audit report (if auditor is configured) has PASS or PASS_WITH_GAPS verdict
+8. All 6 UI visibility artifacts are produced (implementation-summary, user-visible-changes, ui-surface-map, ui-test-plan, ui-test-results, what-to-click)
+9. The phase closure auditor gives CLOSURE-PASS
 
 **A phase is NOT done if:**
 - Tests pass but the feature is invisible to the user (backend-only when UI was expected)
 - The code technically compiles but the spec's acceptance criteria aren't met
 - QA ran only unit tests when the spec required user flow validation
 - The reviewer gave PASS_WITH_NOTES but the notes include blocking issues
+- UI test results show failures that are not documented as known issues
+- Phase promised a user-facing feature but only backend work exists and `Frontend Present: yes`
+- Browser QA was skipped without a documented reason
+- Manual test instructions are vague or missing exact user steps and expected outcomes
 
 ---
 
@@ -122,3 +128,20 @@ At the end of every phase, the developer MUST write a handoff to `docs/handoffs/
 5. **Suggested Next Phase** — one paragraph
 
 Then STOP and wait for review/QA to run.
+
+---
+
+## UI Visibility Rules
+
+These rules apply to every phase where user-visible behavior is affected:
+
+1. **A phase is not complete because code compiles or API tests pass.** User-facing phases require user-facing evidence.
+2. **If user-visible behavior changed, explain what changed in the UI.** Produce `user-visible-changes.md` and `ui-surface-map.md`.
+3. **If user-visible behavior changed, provide both:** automated browser validation (`ui-test-results.md`) and manual test steps (`what-to-click.md`).
+4. **Reports must be written for operators, not developers.** No API jargon in user-facing artifacts.
+5. **Exact click paths and expected outcomes are mandatory.** "Test the form" is not a test step.
+6. **Browser QA must test workflows, not only render checks.** Navigating to a page is not a test — completing a user journey is.
+7. **Reviewer must reject backend-only completion when the phase goal implies full product capability.**
+8. **UI must evolve with backend capabilities.** Hidden or undiscoverable features are insufficient.
+9. **Manual testing instructions must be concise, ordered, and immediately actionable.** An operator must be able to follow them without developer knowledge.
+10. **Any skipped UI test must include a concrete, documented reason.** "Could not run" is not a reason.
