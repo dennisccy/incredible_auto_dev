@@ -254,6 +254,8 @@ The plan must include these sections:
 1. What to Build (bullet list)
 2. Agents Required: backend-data (yes/no), frontend-ux (yes/no)
 3. Frontend Present: yes/no  <-- QA agent uses this to decide browser checks
+   CRITICAL FORMAT: Write this as a plain inline line "Frontend Present: yes" or "Frontend Present: no"
+   Do NOT use a markdown heading (## Frontend Present) with the value on the next line.
 4. Files to Create/Modify (expected list)
 5. UI Evolution section (required if Frontend Present: yes):
    - New user-facing capability
