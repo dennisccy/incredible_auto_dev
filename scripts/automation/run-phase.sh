@@ -32,6 +32,29 @@ done
 require_phase_arg "$PHASE"
 require_claude
 
+# ── Auto-assign free ports ────────────────────────────────────────────────────
+# Only assigns if not already set by the caller, so explicit overrides are respected.
+_find_free_port() {
+  local port="$1"
+  local attempts=0
+  while [[ $attempts -lt 100 ]]; do
+    if ! ss -tln 2>/dev/null | grep -q ":${port} "; then
+      echo "$port"
+      return 0
+    fi
+    port=$((port + 1))
+    attempts=$((attempts + 1))
+  done
+  echo "$1"  # fallback to original if nothing found
+}
+
+if [[ -z "${CHAIN_BACKEND_PORT:-}" ]]; then
+  export CHAIN_BACKEND_PORT=$(_find_free_port 8000)
+fi
+if [[ -z "${CHAIN_FRONTEND_PORT:-}" ]]; then
+  export CHAIN_FRONTEND_PORT=$(_find_free_port 3000)
+fi
+
 SPEC=$(phase_spec_path "$PHASE")
 if [[ -z "$SPEC" ]]; then
   echo "Error: No spec found for '$PHASE' in docs/phases/" >&2
@@ -67,6 +90,8 @@ log "========================================"
 log "  Phase: $PHASE"
 log "  Spec:  $SPEC"
 log "  Auto-release: $AUTO_RELEASE"
+log "  Backend port:  $CHAIN_BACKEND_PORT"
+log "  Frontend port: $CHAIN_FRONTEND_PORT"
 log "========================================"
 echo ""
 
@@ -112,9 +137,9 @@ case "$CURRENT_STEP" in
     SKIP_UI_IMPACT=true; SKIP_UI_TEST_DESIGN=true; SKIP_BROWSER_QA=true
     SKIP_QA=true; SKIP_UX_REGRESSION=true; SKIP_AUDIT=true; SKIP_CLOSURE=true ;;
   closure_failed)
-    # Closure failed — skip everything up to closure, re-run closure
+    # Closure failed — re-run UI pipeline (steps 4-6) and closure; skip the rest
+    # UI artifacts are the most common cause of closure failures
     SKIP_PLAN=true; SKIP_TEST_PLAN=true; SKIP_DEV_REVIEW=true
-    SKIP_UI_IMPACT=true; SKIP_UI_TEST_DESIGN=true; SKIP_BROWSER_QA=true
     SKIP_QA=true; SKIP_UX_REGRESSION=true; SKIP_AUDIT=true ;;
   audit_passed)
     SKIP_PLAN=true; SKIP_TEST_PLAN=true; SKIP_DEV_REVIEW=true

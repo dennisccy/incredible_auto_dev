@@ -91,29 +91,64 @@ _cleanup_browser_qa_services() {
 }
 trap _cleanup_browser_qa_services EXIT
 
+# Resolve start commands
+BACKEND_START_CMD="${CHAIN_START_BACKEND_CMD:-}"
 FRONTEND_START_CMD="${CHAIN_START_FRONTEND_CMD:-}"
+
+if [[ -z "$BACKEND_START_CMD" ]] && [[ -f "$REPO_ROOT/scripts/start-backend.sh" ]]; then
+  BACKEND_START_CMD="bash $REPO_ROOT/scripts/start-backend.sh"
+fi
 if [[ -z "$FRONTEND_START_CMD" ]] && [[ -f "$REPO_ROOT/scripts/start-frontend.sh" ]]; then
   FRONTEND_START_CMD="bash $REPO_ROOT/scripts/start-frontend.sh"
 fi
 
-FRONTEND_URL="${CHAIN_FRONTEND_URL:-http://localhost:3000}"
+# Derive URLs from port env vars
+_BACKEND_PORT="${CHAIN_BACKEND_PORT:-8000}"
+_FRONTEND_PORT="${CHAIN_FRONTEND_PORT:-3000}"
+BACKEND_HEALTH_URL="${CHAIN_BACKEND_HEALTH_URL:-http://localhost:${_BACKEND_PORT}/health}"
+FRONTEND_URL="${CHAIN_FRONTEND_URL:-http://localhost:${_FRONTEND_PORT}}"
 
-FRONTEND_STATUS=$(curl -s -o /dev/null -w "%{http_code}" "$FRONTEND_URL" 2>/dev/null || true)
-FRONTEND_STARTED_BY_QA=false
-if [[ ! "$FRONTEND_STATUS" =~ ^[23] ]]; then
-  if [[ -n "$FRONTEND_START_CMD" ]]; then
-    echo "[browser-qa] Frontend not running -- starting for browser QA (log: /tmp/browser-qa-frontend.log)..."
-    $FRONTEND_START_CMD >/tmp/browser-qa-frontend.log 2>&1 &
+# ── Start backend if not running ──────────────────────────────────────────
+BACKEND_STATUS=$(curl -s -o /dev/null -w "%{http_code}" "$BACKEND_HEALTH_URL" 2>/dev/null || true)
+BACKEND_STARTED_BY_QA=false
+if [[ ! "$BACKEND_STATUS" =~ ^[23] ]]; then
+  if [[ -n "$BACKEND_START_CMD" ]]; then
+    echo "[browser-qa] Backend not running -- starting (log: /tmp/browser-qa-backend.log)..."
+    $BACKEND_START_CMD >/tmp/browser-qa-backend.log 2>&1 &
     QA_STARTED_PIDS+=($!)
-    FRONTEND_STARTED_BY_QA=true
-    _wait_for_url "$FRONTEND_URL" "frontend" 120 || true
+    BACKEND_STARTED_BY_QA=true
+    _wait_for_url "$BACKEND_HEALTH_URL" "backend" 90 || true
   else
-    echo "[browser-qa] Frontend not running and no start command configured." >&2
-    echo "[browser-qa] Set CHAIN_START_FRONTEND_CMD or provide scripts/start-frontend.sh" >&2
-    echo "[browser-qa] Browser QA will write SKIPPED results."
+    echo "[browser-qa] Backend not running and no start command configured." >&2
+    echo "[browser-qa] Set CHAIN_START_BACKEND_CMD or provide scripts/start-backend.sh" >&2
   fi
 else
-  echo "[browser-qa] Frontend already running at $FRONTEND_URL."
+  echo "[browser-qa] Backend already running at $BACKEND_HEALTH_URL."
+fi
+
+# ── Start frontend (kill stale instance first to ensure correct API URL) ──
+# A stale frontend may have a different backend port baked in from a previous run.
+FRONTEND_STARTED_BY_QA=false
+FRONTEND_STATUS=$(curl -s -o /dev/null -w "%{http_code}" "$FRONTEND_URL" 2>/dev/null || true)
+if [[ "$FRONTEND_STATUS" =~ ^[23] ]]; then
+  STALE_PIDS=$(lsof -ti "tcp:${_FRONTEND_PORT}" 2>/dev/null || true)
+  if [[ -n "$STALE_PIDS" ]]; then
+    echo "[browser-qa] Killing stale frontend on port ${_FRONTEND_PORT} to ensure correct API URL..."
+    kill -TERM $STALE_PIDS 2>/dev/null || true
+    sleep 2
+  fi
+fi
+
+if [[ -n "$FRONTEND_START_CMD" ]]; then
+  echo "[browser-qa] Starting frontend (port ${_FRONTEND_PORT}, API→localhost:${_BACKEND_PORT}, log: /tmp/browser-qa-frontend.log)..."
+  $FRONTEND_START_CMD >/tmp/browser-qa-frontend.log 2>&1 &
+  QA_STARTED_PIDS+=($!)
+  FRONTEND_STARTED_BY_QA=true
+  _wait_for_url "$FRONTEND_URL" "frontend" 120 || true
+else
+  echo "[browser-qa] No frontend start command configured." >&2
+  echo "[browser-qa] Set CHAIN_START_FRONTEND_CMD or provide scripts/start-frontend.sh" >&2
+  echo "[browser-qa] Browser QA will write SKIPPED results."
 fi
 
 FRONTEND_RUNNING_STATUS=$(curl -s -o /dev/null -w "%{http_code}" "$FRONTEND_URL" 2>/dev/null || true)
@@ -125,8 +160,8 @@ else
 fi
 
 SERVICES_NOTE=""
-if [[ "$FRONTEND_STARTED_BY_QA" == "true" ]]; then
-  SERVICES_NOTE="Note: browser-qa-phase.sh auto-started the frontend (log: /tmp/browser-qa-frontend.log). It will be stopped after QA completes."
+if [[ "$FRONTEND_STARTED_BY_QA" == "true" || "$BACKEND_STARTED_BY_QA" == "true" ]]; then
+  SERVICES_NOTE="Note: browser-qa-phase.sh auto-started services (backend: $BACKEND_STARTED_BY_QA, frontend: $FRONTEND_STARTED_BY_QA). They will be stopped after QA completes."
 fi
 
 # ── Run browser QA agent ───────────────────────────────────────────────────

@@ -54,7 +54,8 @@ fi
 echo "[ui-audit] Frontend phase detected — running full UI evolution audit..."
 
 # Determine frontend URL
-FRONTEND_URL="${CHAIN_FRONTEND_URL:-http://localhost:3000}"
+_FRONTEND_PORT="${CHAIN_FRONTEND_PORT:-3000}"
+FRONTEND_URL="${CHAIN_FRONTEND_URL:-http://localhost:${_FRONTEND_PORT}}"
 
 cd "$REPO_ROOT"
 claude_with_quota_retry -p "You are the qa agent for phased development.

@@ -60,7 +60,8 @@ if [[ -f "$EXISTING_TEST_PLAN" ]]; then
   EXISTING_TEST_PLAN_NOTE="Existing functional test plan: $EXISTING_TEST_PLAN  <-- read for context, do not duplicate API tests"
 fi
 
-FRONTEND_URL="${CHAIN_FRONTEND_URL:-http://localhost:3000}"
+_FRONTEND_PORT="${CHAIN_FRONTEND_PORT:-3000}"
+FRONTEND_URL="${CHAIN_FRONTEND_URL:-http://localhost:${_FRONTEND_PORT}}"
 
 cd "$REPO_ROOT"
 claude_with_quota_retry -p "You are the ui-test-designer for phased development.

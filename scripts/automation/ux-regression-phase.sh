@@ -50,7 +50,8 @@ EOF
   exit 0
 fi
 
-FRONTEND_URL="${CHAIN_FRONTEND_URL:-http://localhost:3000}"
+_FRONTEND_PORT="${CHAIN_FRONTEND_PORT:-3000}"
+FRONTEND_URL="${CHAIN_FRONTEND_URL:-http://localhost:${_FRONTEND_PORT}}"
 
 cd "$REPO_ROOT"
 claude_with_quota_retry -p "You are the ux-regression-reviewer for phased development.
