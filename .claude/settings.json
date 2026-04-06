@@ -117,7 +117,9 @@
 
       "Read(*)",
       "Write(*)",
-      "Edit(*)"
+      "Edit(*)",
+	  "Skill(superpowers-chrome:browsing)",
+      "mcp__plugin_superpowers-chrome_chrome__use_browser"
     ],
     "deny": [
       "Bash(rm -rf /)",
