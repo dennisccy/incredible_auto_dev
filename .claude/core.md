@@ -31,6 +31,23 @@ Every piece of code produced MUST meet all of the following before the phase is 
 
 ---
 
+## Visual Quality Checklist
+
+Every UI change MUST meet all of the following (applies when `Frontend Present: yes`):
+
+- [ ] Uses component library components from DESIGN SYSTEM config — no raw HTML `<div>` soup where a Card, Button, Table, or Dialog exists
+- [ ] Follows color palette tokens — no arbitrary hex values outside the defined palette
+- [ ] Follows spacing scale — no arbitrary pixel values (use the configured spacing system)
+- [ ] Follows typography scale — no arbitrary font sizes
+- [ ] Visual hierarchy is clear — headings, content, and actions are visually distinct
+- [ ] Loading, empty, and error states have appropriate visual treatment (skeleton loaders, empty state illustrations, error messages styled consistently)
+- [ ] Interactive elements have hover/focus/active states
+- [ ] Effects (glassmorphism, glows, gradients) are used as defined in DESIGN SYSTEM — not invented ad-hoc
+- [ ] Pages are responsive at configured breakpoints
+- [ ] New pages visually match the established style of existing pages
+
+---
+
 ## Testing Requirements
 
 Every new capability MUST be covered by at least one of the following:

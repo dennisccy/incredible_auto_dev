@@ -60,6 +60,46 @@ Services:
 
 ---
 
+## DESIGN SYSTEM
+
+Define your project's visual identity. Agents use this to ensure consistent, polished UI output.
+
+```
+Component library: <e.g., shadcn/ui, Radix + Tailwind, Material UI, Chakra UI>
+Icon library:      <e.g., Lucide, Heroicons, Phosphor>
+
+Visual style:      <e.g., cyber-dark, minimal-light, corporate-clean>
+Color mode:        <dark / light / system>
+
+Color palette:
+  Background:      <e.g., #0a0a0f — deep dark base>
+  Surface:         <e.g., #12121a — card/panel background>
+  Border:          <e.g., #1e1e2e — subtle borders>
+  Primary:         <e.g., #00f0ff — neon cyan accent>
+  Secondary:       <e.g., #7c3aed — electric purple>
+  Success:         <e.g., #10b981>
+  Warning:         <e.g., #f59e0b>
+  Danger:          <e.g., #ef4444>
+  Text primary:    <e.g., #e2e8f0 — high contrast on dark>
+  Text muted:      <e.g., #64748b>
+
+Typography:
+  Font family:     <e.g., Inter for body, JetBrains Mono for code/data>
+  Scale:           <e.g., Tailwind default: text-sm/base/lg/xl/2xl>
+
+Spacing:           <e.g., Tailwind default 4px grid: p-1/p-2/p-3/p-4/p-6/p-8>
+
+Effects (use sparingly):
+  - <e.g., glassmorphism on cards: backdrop-blur-md bg-white/5 border border-white/10>
+  - <e.g., glow on primary actions: shadow-[0_0_15px_rgba(0,240,255,0.3)]>
+  - <e.g., subtle gradient borders on hero sections>
+  - <e.g., smooth transitions: transition-all duration-200>
+
+Responsive breakpoints: <e.g., sm:640px md:768px lg:1024px xl:1280px>
+```
+
+---
+
 ## TEST COMMANDS
 
 Agents will run these to validate their work. Be exact.

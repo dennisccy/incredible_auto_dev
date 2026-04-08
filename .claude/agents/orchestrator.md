@@ -47,6 +47,12 @@ yes/no
 - UI surface changes: <pages/panels/cards added or improved>
 - Navigation changes: <sidebar links added, or "none">
 
+## Visual Requirements (required if Frontend Present: yes)
+- Component patterns: <which component library components to use — e.g., Card for items, DataTable for lists, Dialog for forms>
+- Layout: <page layout approach — e.g., sidebar + main content, full-width dashboard grid>
+- Key visual effects: <specific effects from DESIGN SYSTEM to apply — e.g., glassmorphism cards, glow on CTAs>
+- States to handle: <loading, empty, error treatments for this phase's UI>
+
 ## Key Test Scenarios
 - <scenario that must pass for the phase to be complete>
 ```

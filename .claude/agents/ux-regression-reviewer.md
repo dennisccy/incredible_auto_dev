@@ -32,6 +32,11 @@ For each new capability listed in `user-visible-changes.md`:
 Flag: "hidden capability" if it exists but has no navigation path.
 Flag: "undiscoverable capability" if it requires developer knowledge to find.
 Flag: "label confusion" if the UI label doesn't match what the feature does.
+- Does the new UI follow the DESIGN SYSTEM tokens (colors, spacing, typography)?
+- Is the visual style consistent with pages from prior phases?
+- Are effects (glassmorphism, glows, gradients) applied consistently, not just on some pages?
+
+Flag: "visual inconsistency" if new pages deviate from the DESIGN SYSTEM or established style.
 
 ### Step 2: Check for regression in existing journeys
 
@@ -82,6 +87,10 @@ Write to `reports/phase-{N}-ux-regression.md`:
 
 ### Potential Regressions
 - <prior feature, shared component, risk description>
+
+### Visual Consistency
+- <Assessment of whether new pages match the established visual style>
+- <Any pages using arbitrary values instead of DESIGN SYSTEM tokens>
 
 ## Recommendation
 

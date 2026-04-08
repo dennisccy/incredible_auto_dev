@@ -95,6 +95,14 @@ If frontend work was done, also write `docs/handoffs/<phase>-frontend.md` with t
 - Frontend: Do NOT implement business logic in the frontend — call backend APIs only
 - Frontend: Do NOT add backend state validation in the frontend
 - Keep components simple — one clear responsibility per component
+- Frontend: Read the DESIGN SYSTEM section in `.claude/project-template.md` before writing any UI code
+- Frontend: Use the configured component library for ALL UI elements — do not write raw HTML where a component exists
+- Frontend: Use ONLY color, spacing, and typography tokens from the DESIGN SYSTEM config — no arbitrary values
+- Frontend: Apply the configured visual effects (glassmorphism, glows, gradients) as specified — do not invent new effects
+- Frontend: Every interactive element must have hover, focus, and active states
+- Frontend: Handle loading states (skeleton/spinner), empty states (illustration + message), and error states (styled alert) — not just the happy path render
+- Frontend: Ensure responsive behavior at the configured breakpoints
+- Frontend: New pages must visually match the style established by prior phases
 
 ## Token and Questioning Policy
 

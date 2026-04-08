@@ -60,6 +60,13 @@ For each changed file, verify:
 - [ ] New entity types have list + detail pages reachable from navigation
 - [ ] Sidebar updated if a new top-level workflow was introduced
 - [ ] Frontend does not contain business logic (calls backend APIs only)
+- [ ] Uses component library from DESIGN SYSTEM — no raw HTML where components exist
+- [ ] Colors, spacing, and typography use token values from DESIGN SYSTEM — no arbitrary values
+- [ ] Visual effects match DESIGN SYSTEM config (glassmorphism, glows, etc.)
+- [ ] Loading, empty, and error states are visually handled
+- [ ] Interactive elements have hover/focus/active states
+- [ ] New pages are visually consistent with existing pages
+- [ ] Responsive at configured breakpoints
 
 ### Project standards
 - [ ] Follows architecture principles defined in `.claude/project-template.md`
