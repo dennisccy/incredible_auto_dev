@@ -2,6 +2,24 @@
   "_comment": "ai-auto-dev-chain permission settings. Customize for your project.",
   "_doc": "Add project-specific Bash allowances below the generic base. Never put project-specific entries in the deny list — deny list is for universal security.",
 
+  "enabledPlugins": {
+    "superpowers@claude-plugins-official": true,
+    "superpowers-chrome@superpowers-marketplace": true,
+    "claude-hud@claude-hud": true
+  },
+
+  "extraKnownMarketplaces": {
+    "claude-plugins-official": {
+      "source": { "source": "github", "repo": "anthropics/claude-plugins-official" }
+    },
+    "superpowers-marketplace": {
+      "source": { "source": "github", "repo": "obra/superpowers-marketplace" }
+    },
+    "claude-hud": {
+      "source": { "source": "github", "repo": "jarrodwatts/claude-hud" }
+    }
+  },
+
   "permissions": {
     "allow": [
       "Bash(git *)",
