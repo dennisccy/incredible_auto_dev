@@ -18,6 +18,8 @@ Invoked by `generate-test-plan.sh`. Your job is to derive explicit test cases fr
 - `docs/phases/<phase>.md` — phase spec (primary source)
 - `runs/<phase>/plan.md` — execution plan (check `Frontend Present: yes/no`)
 - `CLAUDE.md` — project rules
+- `docs/goal.md` — project goal (test against goal-defined success criteria)
+- `docs/architecture/*.md` — existing project architecture (for context)
 
 ### Process
 

@@ -15,6 +15,7 @@ This constitution is split into focused files. Agents must read the relevant fil
 | `.claude/workflow.md` | Pipeline stages, retry policy, artifact locations, verdict formats, UI evolution policy | **All agents** |
 | `.claude/project-template.md` | Project name, stack, test commands, architecture principles | **All agents** |
 | `.claude/anti-patterns.md` | Lessons learned, failure modes to avoid | **Orchestrator, reviewer, auditor** |
+| `.claude/architecture/` | System architecture, agent catalog, pipeline flow, artifact map, adoption guide | **All agents** (reference) |
 
 ---
 
@@ -53,6 +54,7 @@ Reusable instruction files that agents read during their workflow. Located in `.
 | `phase-closure-gate.md` | phase-closure-auditor | Evaluate phase completion criteria |
 | `ui-regression-scout.md` | ux-regression-reviewer | Identify old journeys affected by new changes |
 | `what-to-click-writer.md` | ui-test-designer | Write fast operator verification guides |
+| `architecture-doc-updater.md` | update-docs.sh | Update framework or project architecture docs on drift |
 
 ---
 
@@ -79,13 +81,17 @@ Reusable instruction files that agents read during their workflow. Located in `.
 ./scripts/automation/browser-qa-phase.sh phase-1      # run browser QA
 ./scripts/automation/ux-regression-phase.sh phase-1   # check UX regression
 ./scripts/automation/phase-closure-check.sh phase-1   # final closure gate
+./scripts/automation/update-docs.sh --framework        # update framework architecture docs
+./scripts/automation/update-docs.sh phase-1            # update project architecture docs
 ```
 
 ---
 
 ## PROJECT CONFIGURATION
 
-Before running any phase, fill in `.claude/project-template.md` with:
+Before running any phase:
+1. Fill in `docs/goal.md` with the project's vision, success criteria, and key capabilities (use `templates/project-goal.md`).
+2. Fill in `.claude/project-template.md` with:
 - Project name and description
 - Stack (backend language/framework, frontend, DB, package manager)
 - Test commands and service start commands

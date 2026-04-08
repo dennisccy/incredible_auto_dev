@@ -14,7 +14,7 @@ Plan → Test Plan → Dev+Review loop → QA loop → Audit loop → Finalize
 
 | Stage | Script | Agent | Output |
 |-------|--------|-------|--------|
-| 1. Plan | `run-phase.sh` (internal) | orchestrator | `runs/<phase>/plan.md` |
+| 1. Plan | `run-phase.sh` (internal) | orchestrator | `runs/<phase>/plan.md` (reads `docs/goal.md` + `docs/architecture/` + `.claude/architecture/` + prior handoffs first) |
 | 2. Test Plan | `generate-test-plan.sh` | qa (mode: generate) | `reports/qa/<phase>-test-plan.md` |
 | 3. Dev + Review | `dev-phase.sh` + `review-phase.sh` | developer, reviewer | `docs/handoffs/<phase>-dev.md`, `reports/phase-{N}-implementation-summary.md` |
 | 4. UI Impact Analysis | `ui-impact-phase.sh` | ui-impact-analyst | `reports/phase-{N}-user-visible-changes.md`, `reports/phase-{N}-ui-surface-map.md` |
@@ -24,7 +24,7 @@ Plan → Test Plan → Dev+Review loop → QA loop → Audit loop → Finalize
 | 8. UX Regression Review | `ux-regression-phase.sh` | ux-regression-reviewer | `reports/phase-{N}-ux-regression.md` |
 | 9. Audit | `phase-audit.sh` | auditor | `docs/handoffs/<phase>-audit.md` |
 | 10. Phase Closure | `phase-closure-check.sh` | phase-closure-auditor | `reports/phase-{N}-closure-verdict.md` |
-| 11. Finalize | `finalize-phase.sh` | release-manager | `runs/<phase>/summary.json`, PR |
+| 11. Finalize | `finalize-phase.sh` | release-manager | `runs/<phase>/summary.json`, PR (then updates `docs/architecture/` via `update-docs.sh`, non-blocking) |
 
 *Stages 5, 6, 8 are skipped for backend-only phases (`Frontend Present: no`) — N/A stubs are written automatically.*
 
@@ -65,6 +65,9 @@ Agents ONLY communicate through filesystem artifacts. No free-form messages betw
 | What to click | `reports/phase-{N}-what-to-click.md` | ui-test-designer | operator (human), phase-closure-auditor |
 | UX regression report | `reports/phase-{N}-ux-regression.md` | ux-regression-reviewer | phase-closure-auditor |
 | Closure verdict | `reports/phase-{N}-closure-verdict.md` | phase-closure-auditor | finalize-phase.sh |
+| Project goal | `docs/goal.md` | Human | orchestrator, developer, reviewer, qa |
+| Project architecture | `docs/architecture/*.md` | update-docs.sh | orchestrator, developer |
+| Framework architecture | `.claude/architecture/*.md` | update-docs.sh | All agents (reference) |
 
 ---
 

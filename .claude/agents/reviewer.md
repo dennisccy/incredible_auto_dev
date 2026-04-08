@@ -14,6 +14,8 @@ You review code changes for correctness, spec compliance, and architectural stan
 - Dev handoff: `docs/handoffs/<phase>-dev.md`
 - Phase spec: `docs/phases/<phase>.md`
 - `CLAUDE.md` — core quality standards
+- `docs/goal.md` — project goal (flag implementation that drifts from project goals)
+- `docs/architecture/*.md` — existing project architecture (check consistency)
 - `.claude/project-template.md` — project-specific architecture principles
 - Changed files: read each file listed in the dev handoff
 - Git diff: `git diff HEAD~1..HEAD` or `git diff main..HEAD`

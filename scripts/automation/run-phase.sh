@@ -248,6 +248,16 @@ Read .claude/agents/orchestrator.md for your full instructions.
 Apply the TOKEN AND QUESTIONING POLICY from CLAUDE.md strictly.
 Ask necessary questions, but batch them upfront and avoid follow-up cascades.
 
+Before writing the plan, study the project context:
+1. If docs/goal.md exists, read it — understand the project vision, success criteria, and key capabilities
+2. If docs/architecture/*.md exist, read them — understand what has already been built
+3. Read .claude/architecture/*.md — understand the framework you are operating in
+4. Read any prior phase handoffs in docs/handoffs/ and reports/phase-*-implementation-summary.md
+5. Ensure your plan:
+   - Advances the project toward its goals (docs/goal.md)
+   - Builds on existing architecture without duplicating prior work
+   - Flags if the phase spec contradicts or drifts from the project goal
+
 Write a concise execution plan to: $PLAN_FILE
 
 The plan must include these sections:
@@ -513,6 +523,8 @@ echo "  QA report:                reports/qa/${PHASE}-qa.md"
 echo "  Audit report:             docs/handoffs/${PHASE}-audit.md"
 echo "  Closure verdict:          reports/phase-${PHASE}-closure-verdict.md"
 echo "  Status:                   runs/${PHASE}/status.json"
+echo "  Project goal:             docs/goal.md (if present)"
+echo "  Architecture docs:        docs/architecture/ (if present)"
 echo ""
 echo "Quick verification:"
 echo "  cat reports/phase-${PHASE}-what-to-click.md"

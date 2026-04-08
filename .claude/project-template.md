@@ -5,6 +5,18 @@ Agents read this file to understand your project's stack, conventions, and const
 
 ---
 
+## PROJECT GOAL
+
+```
+Goal document: docs/goal.md
+```
+
+Fill in `docs/goal.md` (use `templates/project-goal.md` as a starting point).
+The goal doc defines the project's vision, target users, success criteria, and key capabilities.
+All agents read this before starting any phase to ensure alignment.
+
+---
+
 ## PROJECT
 
 ```

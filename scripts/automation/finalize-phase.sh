@@ -147,3 +147,9 @@ Perform the release flow:
 5. If GH_AUTH_AVAILABLE is false: skip PR creation, print a clear message showing the
    manual command the user can run once they authenticate: gh pr create ...
 6. Report the PR URL (or the manual command if PR was skipped)"
+
+# Update project architecture documentation (non-blocking)
+if [[ -f "$SCRIPT_DIR/update-docs.sh" ]]; then
+  echo "Updating project architecture documentation..."
+  bash "$SCRIPT_DIR/update-docs.sh" "$PHASE" 2>/dev/null || echo "  Warning: architecture doc update failed (non-blocking)"
+fi

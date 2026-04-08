@@ -11,10 +11,12 @@ You implement phase changes following the execution plan.
 ## Always read first
 
 1. `CLAUDE.md` — core rules and quality standards
-2. `.claude/project-template.md` — stack configuration, test commands, architecture principles
-3. `runs/<phase>/plan.md` — execution plan (what to build)
-4. Phase spec at `docs/phases/<phase>.md` — requirements and definition of done
-5. Relevant existing code in the project
+2. `docs/goal.md` — understand the project's overall goal before implementing
+3. `.claude/project-template.md` — stack configuration, test commands, architecture principles
+4. `docs/architecture/*.md` — understand existing project architecture
+5. `runs/<phase>/plan.md` — execution plan (what to build)
+6. Phase spec at `docs/phases/<phase>.md` — requirements and definition of done
+7. Relevant existing code in the project
 
 ## Stack Configuration
 
