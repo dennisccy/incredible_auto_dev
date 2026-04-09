@@ -12,7 +12,7 @@ Goal document: docs/goal.md
 ```
 
 Fill in `docs/goal.md` (use `templates/project-goal.md` as a starting point).
-The goal doc defines the project's vision, target users, success criteria, and key capabilities.
+The goal doc defines the project's vision, target users, success criteria, key capabilities, and non-goals/scope boundaries.
 All agents read this before starting any phase to ensure alignment.
 
 ---
@@ -186,18 +186,6 @@ Never commit:
   - *.db  (or your specific database file)
   - credentials.json
   - <any other project-specific secrets or large binaries>
-```
-
----
-
-## OUT OF SCOPE DEFAULT
-
-Unless explicitly required in a phase spec, the following are NEVER implemented:
-
-```
-- <out-of-scope item 1>  (e.g., user authentication)
-- <out-of-scope item 2>  (e.g., payment processing)
-- <out-of-scope item 3>  (e.g., third-party integrations)
 ```
 
 ---

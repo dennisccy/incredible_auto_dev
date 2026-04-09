@@ -90,7 +90,7 @@ Reusable instruction files that agents read during their workflow. Located in `.
 ## PROJECT CONFIGURATION
 
 Before running any phase:
-1. Fill in `docs/goal.md` with the project's vision, success criteria, and key capabilities (use `templates/project-goal.md`).
+1. Fill in `docs/goal.md` with the project's vision, success criteria, key capabilities, and non-goals/scope boundaries (use `templates/project-goal.md`).
 2. Fill in `.claude/project-template.md` with:
 - Project name and description
 - Stack (backend language/framework, frontend, DB, package manager)

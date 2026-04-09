@@ -20,6 +20,12 @@ Developers and teams who want to automate their development lifecycle with AI ag
 6. Artifact-based inter-agent communication (no free-form conversation)
 7. Configurable model tiers (strong/standard/light) per agent
 
+## Non-Goals
+
+- Being a general-purpose coding assistant — this is a structured, phase-gated pipeline, not a freeform agent
+- Replacing human judgment on architecture, product direction, or critical design decisions
+- Supporting non-Claude AI providers (Gemini, GPT, etc.) — Claude-only by design
+
 ## Note for Projects Using This Framework
 
 If you are using this framework in your project (as a subrepo or copy), replace this file with your own `docs/goal.md`. Use `templates/project-goal.md` as a starting point.
