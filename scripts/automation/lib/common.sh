@@ -89,7 +89,7 @@ if os.path.exists(f):
     try:
         with open(f) as fp: d = json.load(fp)
     except Exception: pass
-now = datetime.datetime.utcnow().isoformat() + 'Z'
+now = datetime.datetime.now(datetime.UTC).isoformat().replace('+00:00', 'Z')
 d.update({'phase': '${phase}', 'status': '${new_status}', 'current_step': '${new_step}', 'updated_at': now})
 for k, v in [('started_at', now), ('blockers', []), ('changed_files', []), ('tests_run', False), ('browser_checks_run', False), ('next_action', 'none')]:
     d.setdefault(k, v)

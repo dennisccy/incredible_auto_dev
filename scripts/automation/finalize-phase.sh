@@ -77,7 +77,7 @@ python3 - <<PYEOF
 import json, datetime, os
 summary_file = "${SUMMARY_FILE}"
 os.makedirs(os.path.dirname(summary_file), exist_ok=True)
-now = datetime.datetime.utcnow().isoformat() + "Z"
+now = datetime.datetime.now(datetime.UTC).isoformat().replace("+00:00", "Z")
 data = {}
 if os.path.exists(summary_file):
     try:
