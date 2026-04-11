@@ -28,7 +28,7 @@ TEST_PLAN="$REPO_ROOT/reports/qa/${PHASE}-test-plan.md"
 
 # Detect if this phase has frontend (for Chrome MCP decision)
 FRONTEND_PRESENT="no"
-if [[ -f "$PLAN_FILE" ]] && grep -qi "frontend present: yes" "$PLAN_FILE"; then
+if detect_frontend_in_plan "$PLAN_FILE"; then
   FRONTEND_PRESENT="yes"
 fi
 

@@ -228,7 +228,7 @@ fi
 
 # Detect if this phase has frontend (needed to decide which steps to skip)
 FRONTEND_PRESENT="no"
-if [[ -f "$PLAN_FILE" ]] && grep -qi "frontend present: yes" "$PLAN_FILE"; then
+if detect_frontend_in_plan "$PLAN_FILE"; then
   FRONTEND_PRESENT="yes"
 fi
 
@@ -284,7 +284,7 @@ Keep it concise -- 1-2 pages max. Write the plan and STOP."
   fi
 
   # Re-detect frontend after plan is written
-  if grep -qi "frontend present: yes" "$PLAN_FILE"; then
+  if detect_frontend_in_plan "$PLAN_FILE"; then
     FRONTEND_PRESENT="yes"
   fi
 
@@ -294,7 +294,7 @@ Keep it concise -- 1-2 pages max. Write the plan and STOP."
 else
   log "Step 1/11 -- Plan: skipped (checkpoint: $CURRENT_STEP)"
   # Re-detect from existing plan
-  if [[ -f "$PLAN_FILE" ]] && grep -qi "frontend present: yes" "$PLAN_FILE"; then
+  if detect_frontend_in_plan "$PLAN_FILE"; then
     FRONTEND_PRESENT="yes"
   fi
 fi

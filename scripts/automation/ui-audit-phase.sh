@@ -36,7 +36,7 @@ if [[ ! -f "$PLAN_FILE" ]]; then
 fi
 
 # Detect if this is a frontend phase
-if ! grep -qi "frontend present: yes" "$PLAN_FILE" 2>/dev/null; then
+if ! detect_frontend_in_plan "$PLAN_FILE"; then
   echo "[ui-audit] Frontend Present: no — this is a backend-only phase."
   echo "[ui-audit] Writing SKIPPED audit to $UI_AUDIT_REPORT"
   mkdir -p "$(dirname "$UI_AUDIT_REPORT")"

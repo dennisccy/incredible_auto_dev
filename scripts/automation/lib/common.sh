@@ -170,6 +170,16 @@ verify_ui_artifacts() {
   return 0
 }
 
+# Returns 0 if the plan declares frontend is present
+# Handles both "Frontend Present: yes" (inline) and "## Frontend Present\nyes" (heading)
+detect_frontend_in_plan() {
+  local plan_file="$1"
+  [[ -f "$plan_file" ]] || return 1
+  grep -qi "frontend present: yes" "$plan_file" && return 0
+  grep -Pzoq '(?i)frontend present\s*\n\s*yes' "$plan_file" 2>/dev/null && return 0
+  return 1
+}
+
 # Returns 0 if the phase diff contains frontend files (.tsx/.jsx/.vue/.svelte/.css in frontend dirs)
 detect_frontend_changes() {
   local phase="$1"
