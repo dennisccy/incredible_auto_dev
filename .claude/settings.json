@@ -40,6 +40,7 @@
       "Bash(bash *)",
       "Bash(sh *)",
       "Bash(source *)",
+      "Bash(cd *)",
       "Bash(./scripts/*)",
       "Bash(scripts/*)",
       "Bash(bash .claude/*)",
