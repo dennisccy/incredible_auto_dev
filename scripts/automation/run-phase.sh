@@ -500,6 +500,21 @@ else
 fi
 echo ""
 
+# ── Cleanup: remove temp files generated during the run ─────────────────────
+log "Cleanup: removing temp files..."
+# Remove nested .git dirs created by scaffolders (e.g. create-next-app)
+find "$REPO_ROOT/apps" -mindepth 2 -maxdepth 2 -name ".git" -type d -exec rm -rf {} + 2>/dev/null || true
+# Remove QA temp scripts
+rm -f "$REPO_ROOT/runs/${PHASE}"/qa_*.py 2>/dev/null || true
+# Remove root-level QA evidence files
+rm -f "$REPO_ROOT"/UT-*-result 2>/dev/null || true
+# Remove temp scaffold dirs
+rm -rf "$REPO_ROOT/apps/frontend-tmp" 2>/dev/null || true
+# Remove /tmp logs from QA and browser-qa
+rm -f /tmp/qa-backend.log /tmp/qa-frontend.log /tmp/browser-qa-backend.log /tmp/browser-qa-frontend.log 2>/dev/null || true
+log "  Cleanup complete."
+echo ""
+
 # ── Step 11/11: Finalize or print instructions ──────────────────────────────
 log "Step 11/11 -- Phase $PHASE complete!"
 echo ""
