@@ -12,7 +12,7 @@
 
 | Component | Path | Purpose |
 |-----------|------|---------|
-| <e.g., API routes> | <e.g., apps/backend/app/routers/> | <description> |
+| <e.g., API routes> | <e.g., apps/backend/routers/> | <description> |
 
 ### Frontend
 

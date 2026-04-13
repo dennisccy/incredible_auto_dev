@@ -7,10 +7,11 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 # Kill processes occupying the ports
 for PORT in $BACKEND_PORT $FRONTEND_PORT; do
-  PIDS=$(lsof -ti tcp:$PORT 2>/dev/null || true)
+  PIDS=$(lsof -ti :$PORT 2>/dev/null | sort -u || true)
   if [ -n "$PIDS" ]; then
     echo "Killing processes on port $PORT: $PIDS"
-    kill -9 $PIDS
+    kill -9 $PIDS 2>/dev/null || true
+    sleep 0.5
   fi
 done
 

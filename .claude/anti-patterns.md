@@ -77,7 +77,7 @@ Each entry includes: the pattern, why it fails, and how to prevent it.
 - Specific fix description
 
 **Example (bad):** "Error handling is insufficient."
-**Example (good):** "`apps/backend/app/routers/items.py:47` — `create_item` does not catch `IntegrityError` from SQLAlchemy. Add a try/except that returns 409 Conflict when a duplicate key is detected."
+**Example (good):** "`apps/backend/routers/items.py:47` — `create_item` does not catch `IntegrityError` from SQLAlchemy. Add a try/except that returns 409 Conflict when a duplicate key is detected."
 
 ---
 
