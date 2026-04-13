@@ -13,7 +13,7 @@ if [[ -d alembic ]]; then
   "$REPO_ROOT/apps/backend/.venv/bin/alembic" upgrade head 2>/dev/null || true
 fi
 
-exec "$REPO_ROOT/apps/backend/.venv/bin/uvicorn" app.main:app \
+exec "$REPO_ROOT/apps/backend/.venv/bin/uvicorn" main:app \
   --host 0.0.0.0 \
   --port "$PORT" \
   --app-dir "$REPO_ROOT/apps/backend"
