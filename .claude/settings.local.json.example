@@ -9,6 +9,7 @@
       "Bash(for *)",
       "Bash(do *)",
       "Bash(done)",
+      "Bash(cd *)",
 
       "Skill(superpowers-chrome:browsing)",
       "mcp__plugin_superpowers-chrome_chrome__use_browser"

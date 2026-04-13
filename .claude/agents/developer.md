@@ -87,6 +87,7 @@ If frontend work was done, also write `docs/handoffs/<phase>-frontend.md` with t
 
 ## Rules
 
+- When scaffolding a new frontend (e.g. `create-next-app`), always pass `--skip-git` to prevent creating a nested `.git` directory inside the monorepo
 - State transitions must be enforced in backend logic, not frontend
 - Do NOT touch code outside your task scope
 - Do NOT refactor unrelated code
