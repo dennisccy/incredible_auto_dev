@@ -153,7 +153,7 @@ case "$CURRENT_STEP" in
     SKIP_PLAN=true; SKIP_TEST_PLAN=true; SKIP_DEV_REVIEW=true
     SKIP_UI_IMPACT=true; SKIP_UI_TEST_DESIGN=true; SKIP_BROWSER_QA=true
     SKIP_QA=true; SKIP_UX_REGRESSION=true ;;
-  qa_passed)
+  qa_passed|qa_complete)
     SKIP_PLAN=true; SKIP_TEST_PLAN=true; SKIP_DEV_REVIEW=true
     SKIP_UI_IMPACT=true; SKIP_UI_TEST_DESIGN=true; SKIP_BROWSER_QA=true
     SKIP_QA=true ;;
