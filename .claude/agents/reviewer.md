@@ -43,6 +43,10 @@ For each changed file, verify:
 - [ ] Error paths return appropriate status codes with meaningful messages
 - [ ] No silent failures (exceptions caught and swallowed without logging)
 - [ ] No hardcoded strings that belong in enums or config
+- [ ] No hardcoded `localhost` or `127.0.0.1` in API client URLs, CORS config, or service bindings — must be configurable via env var or derived dynamically (see anti-pattern #16)
+- [ ] Dev scripts that start/stop services handle child processes (not just parent PIDs) and wait for ports to be fully released
+- [ ] For external integrations: at least one non-mocked test exists that verifies the live integration works (see anti-pattern #15)
+- [ ] Dependencies requiring post-install setup (Playwright, native modules) have documented setup steps and a verification check
 
 ### Test quality
 - [ ] Tests cover the new behavior (not just the happy path)

@@ -19,6 +19,14 @@
 : "${CHAIN_CLAUDE_MAX_QUOTA_RETRIES:=3}"
 : "${CHAIN_DISABLE_AUTO_WAIT:=false}"
 
+# Exit code returned when quota retries are exhausted.
+# 75 = EX_TEMPFAIL (POSIX sysexits.h) — "temporary failure, try again later".
+# Callers (run-phase.sh) use this to distinguish quota exhaustion from code failures.
+QUOTA_EXHAUSTED_EXIT_CODE=75
+
+# Sentinel file path — shared across all pipeline stages on this machine.
+_QUOTA_SENTINEL="/tmp/claude-quota-exhausted"
+
 # ── Internal helpers ─────────────────────────────────────────────────────────
 
 # Returns 0 if the given log file contains quota-exhaustion indicators.
@@ -41,7 +49,7 @@ _quota_extract_reset_string() {
 _quota_compute_sleep_secs() {
   local log_file="$1"
   python3 - "$log_file" "$CHAIN_CLAUDE_RESET_TZ" "$CHAIN_CLAUDE_RESET_BUFFER_SECONDS" 2>/dev/null <<'PYEOF'
-import sys, re, datetime, time
+import sys, re, datetime
 
 log_file   = sys.argv[1]
 default_tz = sys.argv[2] if len(sys.argv) > 2 else "Europe/London"
@@ -104,12 +112,49 @@ reset_time = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
 if reset_time <= now:
     reset_time += datetime.timedelta(days=1)
 
-sleep_secs = int(reset_time.timestamp() - time.time()) + buffer
+sleep_secs = int(reset_time.timestamp() - now.timestamp()) + buffer
 if sleep_secs < 0:
     sleep_secs = buffer
 
 print(sleep_secs)
 PYEOF
+}
+
+# ── Sentinel file functions ──────────────────────────────────────────────────
+# The sentinel coordinates quota state across independently-invoked pipeline
+# stages.  It stores the absolute epoch when quota resets.
+
+# Write sentinel with the given reset epoch (atomic write).
+_quota_write_sentinel() {
+  local reset_epoch="$1"
+  local tmp
+  tmp=$(mktemp "${_QUOTA_SENTINEL}.XXXXXX")
+  echo "$reset_epoch" > "$tmp"
+  mv -f "$tmp" "$_QUOTA_SENTINEL"
+}
+
+# If sentinel exists and reset is in the future, prints remaining seconds
+# to stdout and returns 0.  Otherwise removes stale sentinel and returns 1.
+_quota_check_sentinel() {
+  [[ -f "$_QUOTA_SENTINEL" ]] || return 1
+  local reset_epoch
+  reset_epoch=$(cat "$_QUOTA_SENTINEL" 2>/dev/null) || return 1
+  [[ "$reset_epoch" =~ ^[0-9]+$ ]] || { rm -f "$_QUOTA_SENTINEL"; return 1; }
+  local now_epoch
+  now_epoch=$(date +%s)
+  local remaining=$(( reset_epoch - now_epoch ))
+  if [[ $remaining -gt 0 ]]; then
+    echo "$remaining"
+    return 0
+  else
+    rm -f "$_QUOTA_SENTINEL"
+    return 1
+  fi
+}
+
+# Remove the sentinel file.
+_quota_clear_sentinel() {
+  rm -f "$_QUOTA_SENTINEL"
 }
 
 # ── Public function ──────────────────────────────────────────────────────────
@@ -118,22 +163,39 @@ PYEOF
 # On quota exhaustion: logs the event, waits for reset, retries up to MAX_RETRIES times.
 # On any other failure: propagates the exit code immediately.
 # On success: cleans up and returns 0.
+#
+# Exit codes:
+#   0  — success
+#   75 — quota exhaustion (all retries spent or auto-wait disabled)
+#   *  — non-quota failure from claude (exit code passed through)
 claude_with_quota_retry() {
   local retry_count=0
   local max_retries="${CHAIN_CLAUDE_MAX_QUOTA_RETRIES}"
   local tmp_log
 
   while true; do
+    # ── Pre-flight: check sentinel before wasting a claude invocation ────
+    local sentinel_remaining
+    if sentinel_remaining=$(_quota_check_sentinel); then
+      echo "[quota-retry] $(date -Iseconds) Sentinel active — quota resets in ${sentinel_remaining}s. Sleeping..." >&2
+      sleep "$sentinel_remaining"
+      _quota_clear_sentinel
+      echo "[quota-retry] $(date -Iseconds) Sentinel sleep complete. Retrying." >&2
+    fi
+
     tmp_log=$(mktemp /tmp/claude-quota-XXXXXX.log)
 
     # Run claude, stream output to terminal AND capture to temp file.
     # PIPESTATUS[0] gives claude's exit code even through the pipe.
-    claude "$@" 2>&1 | tee "$tmp_log"
+    local sleep_start
+    sleep_start=$(date +%s)
+    claude --effort max "$@" 2>&1 | tee "$tmp_log"
     local exit_code="${PIPESTATUS[0]}"
 
     # ── Success path ────────────────────────────────────────────────────────
     if [[ $exit_code -eq 0 ]] && ! _quota_is_exhausted "$tmp_log"; then
       rm -f "$tmp_log"
+      _quota_clear_sentinel
       return 0
     fi
 
@@ -144,24 +206,24 @@ claude_with_quota_retry() {
     fi
 
     # ── Quota exhaustion detected ───────────────────────────────────────────
-    echo ""
-    echo "[quota-retry] *** Claude quota exhaustion detected ***" >&2
+    echo "" >&2
+    echo "[quota-retry] $(date -Iseconds) *** Claude quota exhaustion detected ***" >&2
 
     local reset_str
     reset_str=$(_quota_extract_reset_string "$tmp_log")
-    [[ -n "$reset_str" ]] && echo "[quota-retry] Reset indicator in output: '$reset_str'" >&2
+    [[ -n "$reset_str" ]] && echo "[quota-retry] $(date -Iseconds) Reset indicator: '$reset_str'" >&2
 
-    echo "[quota-retry] Full output saved to: $tmp_log" >&2
+    echo "[quota-retry] $(date -Iseconds) Output saved to: $tmp_log" >&2
 
     if [[ "$CHAIN_DISABLE_AUTO_WAIT" == "true" ]]; then
-      echo "[quota-retry] CHAIN_DISABLE_AUTO_WAIT=true — not retrying." >&2
-      return 1
+      echo "[quota-retry] $(date -Iseconds) CHAIN_DISABLE_AUTO_WAIT=true — not retrying." >&2
+      return $QUOTA_EXHAUSTED_EXIT_CODE
     fi
 
     retry_count=$((retry_count + 1))
     if [[ $retry_count -gt $max_retries ]]; then
-      echo "[quota-retry] Max quota retries ($max_retries) reached. Giving up." >&2
-      return 1
+      echo "[quota-retry] $(date -Iseconds) Max quota retries ($max_retries) reached. Giving up (exit $QUOTA_EXHAUSTED_EXIT_CODE)." >&2
+      return $QUOTA_EXHAUSTED_EXIT_CODE
     fi
 
     # Compute sleep duration
@@ -169,20 +231,26 @@ claude_with_quota_retry() {
     sleep_secs=$(_quota_compute_sleep_secs "$tmp_log")
 
     if [[ -z "$sleep_secs" || "$sleep_secs" -le 0 ]] 2>/dev/null; then
-      echo "[quota-retry] Could not parse reset time from output." >&2
-      echo "[quota-retry] Using fallback sleep: ${CHAIN_CLAUDE_FALLBACK_SLEEP_SECONDS}s" >&2
+      echo "[quota-retry] $(date -Iseconds) Could not parse reset time from output." >&2
+      echo "[quota-retry] $(date -Iseconds) Using fallback sleep: ${CHAIN_CLAUDE_FALLBACK_SLEEP_SECONDS}s" >&2
       sleep_secs="$CHAIN_CLAUDE_FALLBACK_SLEEP_SECONDS"
     else
       local wake_time
       wake_time=$(date -d "@$(( $(date +%s) + sleep_secs ))" "+%Y-%m-%d %H:%M:%S %Z" 2>/dev/null \
                   || date -r  "$(( $(date +%s) + sleep_secs ))" "+%Y-%m-%d %H:%M:%S %Z" 2>/dev/null \
                   || echo "unknown")
-      echo "[quota-retry] Parsed reset time. Wake at: $wake_time (sleep ${sleep_secs}s + ${CHAIN_CLAUDE_RESET_BUFFER_SECONDS}s buffer)" >&2
+      echo "[quota-retry] $(date -Iseconds) Parsed reset time. Wake at: $wake_time (sleep ${sleep_secs}s incl. ${CHAIN_CLAUDE_RESET_BUFFER_SECONDS}s buffer)" >&2
     fi
 
-    echo "[quota-retry] Sleeping ${sleep_secs}s ... (retry $retry_count/$max_retries will follow)" >&2
+    # Write sentinel so other pipeline stages can coordinate
+    local reset_epoch=$(( $(date +%s) + sleep_secs ))
+    _quota_write_sentinel "$reset_epoch"
+
+    echo "[quota-retry] $(date -Iseconds) Sleeping ${sleep_secs}s ... (retry $retry_count/$max_retries will follow)" >&2
     sleep "$sleep_secs"
-    echo "[quota-retry] Woke up. Retrying claude invocation (attempt $retry_count/$max_retries)..." >&2
-    echo ""
+
+    local actual_sleep=$(( $(date +%s) - sleep_start ))
+    echo "[quota-retry] $(date -Iseconds) Woke up after ${actual_sleep}s. Retrying claude (attempt $retry_count/$max_retries)..." >&2
+    echo "" >&2
   done
 }

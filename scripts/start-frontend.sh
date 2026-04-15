@@ -12,6 +12,6 @@ BACKEND_PORT="${CHAIN_BACKEND_PORT:-8000}"
 cd "$REPO_ROOT/apps/frontend"
 
 # Tell Next.js frontend where the backend is
-export NEXT_PUBLIC_API_URL="http://localhost:${BACKEND_PORT}"
+export NEXT_PUBLIC_API_PORT="${BACKEND_PORT}"
 
 exec npx next dev -p "$FRONTEND_PORT"

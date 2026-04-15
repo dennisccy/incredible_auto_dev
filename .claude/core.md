@@ -5,6 +5,38 @@ These rules never change between projects. Project-specific rules live in `.clau
 
 ---
 
+## Agent Behavioral Principles
+
+Derived from [Andrej Karpathy's observations](https://github.com/forrestchang/andrej-karpathy-skills) on LLM coding pitfalls. These bias toward caution over speed.
+
+### Think Before Coding
+- State assumptions explicitly. If uncertain, ask.
+- If multiple interpretations exist, present them — don't pick silently.
+- If a simpler approach exists, say so. Push back when warranted.
+- If something is unclear, stop. Name what's confusing. Ask.
+
+### Simplicity First
+- No features beyond what the spec asks.
+- No abstractions for single-use code.
+- No "flexibility" or "configurability" that wasn't requested.
+- No error handling for impossible scenarios.
+- If you wrote 200 lines and it could be 50, rewrite it.
+
+### Surgical Changes
+- Don't "improve" adjacent code, comments, or formatting.
+- Don't refactor things that aren't broken.
+- Match existing style, even if you'd do it differently.
+- If you notice unrelated dead code, mention it in the handoff — don't delete it.
+- Remove imports/variables/functions that YOUR changes made unused; don't remove pre-existing dead code unless the spec asks.
+- Every changed line must trace directly to the phase spec.
+
+### Goal-Driven Execution
+- Transform tasks into verifiable goals before implementing.
+- For multi-step work, state a brief plan with verification checks per step.
+- Strong success criteria let you work independently. Weak criteria ("make it work") require clarification — ask before proceeding.
+
+---
+
 ## Phase Scoping
 
 - Build ONLY within the current phase's spec
@@ -63,6 +95,19 @@ Every new capability MUST be covered by at least one of the following:
 - Do NOT assume functionality without running tests
 - Do NOT write tests that pass by accident (wrong setup, mocked-out dependencies that hide the real behavior)
 - Test failures BLOCK phase completion — they cannot be noted as "known issues" and shipped
+
+---
+
+## External Integration Testing
+
+When a phase introduces or modifies code that calls external systems (scrapers, third-party APIs, webhooks):
+
+- [ ] At least one test hits the real external system (marked `@pytest.mark.integration` or equivalent)
+- [ ] The mocked test suite alone is NOT sufficient evidence that the integration works
+- [ ] Known failures (bot detection, geo-blocking, auth requirements) are documented in the dev handoff as "Known Issues" — not silently passed over
+- [ ] The dev handoff explicitly states whether live testing was successful or not
+
+See anti-patterns #15 and #16 for detailed failure modes and prevention strategies.
 
 ---
 

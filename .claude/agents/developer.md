@@ -85,8 +85,17 @@ Result: <X passed, Y failed>
 
 If frontend work was done, also write `docs/handoffs/<phase>-frontend.md` with the same format focused on UI changes.
 
+## Pre-handoff verification
+
+Before writing the dev handoff, verify:
+
+- [ ] **Service startup works**: Run the project's dev start script (`scripts/dev.sh` or equivalent), confirm both backend and frontend start without errors. If the script kills previous processes, verify it handles child processes (not just parent PIDs). Stop, then start again — verify no port conflicts.
+- [ ] **External integrations work live**: If the phase adds adapters, scrapers, or external API calls — run at least one live test (not mocked) to confirm the real external system responds and data is parsed correctly. Document the result in the handoff's "Known Issues" section if it fails. Do not silently rely on mocked tests alone.
+- [ ] **Native dependency binaries are available**: If a new dependency requires a post-install step (e.g., `playwright install`, native compilation), verify the binary is usable after install. Document the required setup step in the handoff.
+
 ## Rules
 
+- **Server cleanup:** If you start any server processes (uvicorn, next dev, etc.) for testing or verification, you MUST kill them before finishing. Use `pkill -f "uvicorn"` and `pkill -f "next dev"` or similar. Long-running server processes left alive will block the automation pipeline.
 - When scaffolding a new frontend (e.g. `create-next-app`), always pass `--skip-git` to prevent creating a nested `.git` directory inside the monorepo
 - State transitions must be enforced in backend logic, not frontend
 - Do NOT touch code outside your task scope

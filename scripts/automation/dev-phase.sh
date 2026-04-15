@@ -62,6 +62,26 @@ fi
 
 echo "[dev-phase] Mode: $MODE_LABEL"
 
+# ── Cleanup: kill any server processes started by the dev agent ──────────
+# The dev agent may start uvicorn/next dev for verification.  These are
+# long-running servers that block the agent from exiting if not cleaned up.
+cleanup_dev_servers() {
+  echo "[dev-phase] Cleaning up any leftover server processes..."
+  # Kill uvicorn processes started from this project directory
+  pkill -f "uvicorn main:app" 2>/dev/null || true
+  # Kill Next.js dev servers — match both npx/npm invocations and the
+  # underlying next-server worker that survives parent-kill
+  pkill -f "next dev" 2>/dev/null || true
+  pkill -f "next-server" 2>/dev/null || true
+  # Also kill via lsof on common dev ports to catch any survivors
+  for port in 3000 3001 8000; do
+    fuser -k "${port}/tcp" 2>/dev/null || true
+  done
+  # Grace period for process cleanup
+  sleep 2
+}
+trap cleanup_dev_servers EXIT
+
 # ── Developer agent ──────────────────────────────────────────────────────
 cd "$REPO_ROOT"
 claude_with_quota_retry -p "You are the developer agent for phased development.
