@@ -152,4 +152,12 @@ Perform the release flow:
 if [[ -f "$SCRIPT_DIR/update-docs.sh" ]]; then
   echo "Updating project architecture documentation..."
   bash "$SCRIPT_DIR/update-docs.sh" "$PHASE" 2>/dev/null || echo "  Warning: architecture doc update failed (non-blocking)"
+
+  # Commit any doc changes produced by update-docs.sh
+  if [[ -n "$(git -C "$REPO_ROOT" diff --name-only -- docs/architecture/)" ]]; then
+    echo "Committing architecture documentation updates..."
+    git -C "$REPO_ROOT" add docs/architecture/
+    git -C "$REPO_ROOT" commit -m "docs: update architecture overview after $PHASE"
+    git -C "$REPO_ROOT" push origin HEAD 2>/dev/null || echo "  Warning: failed to push doc update (non-blocking)"
+  fi
 fi
