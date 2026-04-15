@@ -92,9 +92,11 @@ if [[ -z "$FRONTEND_START_CMD" ]] && [[ -f "$REPO_ROOT/scripts/start-frontend.sh
   FRONTEND_START_CMD="bash $REPO_ROOT/scripts/start-frontend.sh"
 fi
 
-# Determine backend health check URL (default: http://localhost:8000/health)
-BACKEND_HEALTH_URL="${CHAIN_BACKEND_HEALTH_URL:-http://localhost:8000/health}"
-FRONTEND_URL="${CHAIN_FRONTEND_URL:-http://localhost:3000}"
+# Derive URLs from port env vars (set by run-phase.sh for port isolation)
+_BACKEND_PORT="${CHAIN_BACKEND_PORT:-8000}"
+_FRONTEND_PORT="${CHAIN_FRONTEND_PORT:-3000}"
+BACKEND_HEALTH_URL="${CHAIN_BACKEND_HEALTH_URL:-http://localhost:${_BACKEND_PORT}/health}"
+FRONTEND_URL="${CHAIN_FRONTEND_URL:-http://localhost:${_FRONTEND_PORT}}"
 
 # Start backend if not already running.
 BACKEND_STATUS=$(curl -s -o /dev/null -w "%{http_code}" "$BACKEND_HEALTH_URL" 2>/dev/null || true)
@@ -115,8 +117,20 @@ else
 fi
 
 # Start frontend if not running AND this phase has frontend.
+# First kill any orphaned Next.js dev servers — Next.js refuses to start a
+# second dev server in the same directory even on a different port.
 FRONTEND_STARTED_BY_QA=false
 if [[ "$FRONTEND_PRESENT" == "yes" ]]; then
+  STALE_NEXT_PIDS=$(pgrep -f "next-server" 2>/dev/null || true)
+  if [[ -n "$STALE_NEXT_PIDS" ]]; then
+    echo "[qa-phase] Killing orphaned Next.js servers (PIDs: $STALE_NEXT_PIDS)..."
+    pkill -f "next dev" 2>/dev/null || true
+    pkill -f "next-server" 2>/dev/null || true
+    for port in 3000 3001; do
+      fuser -k "${port}/tcp" 2>/dev/null || true
+    done
+    sleep 2
+  fi
   FRONTEND_STATUS=$(curl -s -o /dev/null -w "%{http_code}" "$FRONTEND_URL" 2>/dev/null || true)
   if [[ ! "$FRONTEND_STATUS" =~ ^[23] ]]; then
     if [[ -n "$FRONTEND_START_CMD" ]]; then

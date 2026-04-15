@@ -95,6 +95,7 @@ Before writing the dev handoff, verify:
 
 ## Rules
 
+- **Server cleanup:** If you start any server processes (uvicorn, next dev, etc.) for testing or verification, you MUST kill them before finishing. Use `pkill -f "uvicorn"` and `pkill -f "next dev"` or similar. Long-running server processes left alive will block the automation pipeline.
 - When scaffolding a new frontend (e.g. `create-next-app`), always pass `--skip-git` to prevent creating a nested `.git` directory inside the monorepo
 - State transitions must be enforced in backend logic, not frontend
 - Do NOT touch code outside your task scope
