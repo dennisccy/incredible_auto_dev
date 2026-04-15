@@ -128,7 +128,7 @@ claude_with_quota_retry() {
 
     # Run claude, stream output to terminal AND capture to temp file.
     # PIPESTATUS[0] gives claude's exit code even through the pipe.
-    claude "$@" 2>&1 | tee "$tmp_log"
+    claude --effort max "$@" 2>&1 | tee "$tmp_log"
     local exit_code="${PIPESTATUS[0]}"
 
     # ── Success path ────────────────────────────────────────────────────────
