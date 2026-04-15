@@ -84,6 +84,16 @@ Browser tests: Y
 Artifact checks: Z
 ```
 
+**4. External integration tests (if phase touches external systems)**
+
+If the phase adds adapters, scrapers, webhooks, or external API calls:
+- Include at least one test case that hits the REAL external system (not mocked)
+- Include a test case for the failure path (external system unreachable, returns error, blocks the request)
+- Include a test case: "start the dev server and verify the feature works end-to-end through the UI"
+
+If the phase adds or modifies dev/start scripts:
+- Include a test case: "run the start script, verify both services start, stop them, run the start script again — verify no port conflicts"
+
 **Quality rules:**
 - Tests must be specific and reproducible
 - Test from the user's perspective, not the implementation

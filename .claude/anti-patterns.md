@@ -169,3 +169,34 @@ The phase closure auditor blocks completion when these artifacts are missing or 
 **Why it fails:** Vague test steps produce vague results. "Tested and it works" is not evidence. A test plan that cannot produce reproducible pass/fail evidence is not a test plan.
 
 **Prevention:** Every test step must specify: exact URL, exact element to interact with (by name or visible label), exact value to input, and exact expected outcome. The `post-write-artifact-quality.sh` hook warns when phase report files contain vague placeholder lines. The `what-to-click-writer` skill enforces concrete step writing.
+
+---
+
+## 15. Mocked-only tests for external integrations pass while live adapter is broken
+
+**Pattern:** Adapter tests mock all HTTP/browser calls. Tests pass. But the real site changed its HTML structure, blocks headless browsers, or requires auth. No one discovers this until manual testing.
+
+**Why it fails:** Mocked tests validate the parsing logic against a frozen snapshot of the external system. They never detect selector drift, bot detection, geo-blocking, or TLS fingerprint rejection. 100% mocked test coverage gives false confidence that the integration works.
+
+**Prevention:** For phases that add external integrations (scrapers, APIs, webhooks), the developer must include at least one test marked `@pytest.mark.integration` (or equivalent) that hits the real external system. QA functional test plan must include a live integration test case. These tests may be slow/flaky and skipped in CI, but must exist and be run at least once during the phase. The dev handoff must explicitly state whether live testing was successful or document the blocker if it wasn't.
+
+**Example (bad):** All Tesco adapter tests use `_build_tile_html()` fixtures. Tests pass. Tesco changes its CSS classes → live adapter returns 0 results. Bot detection blocks headless Playwright → adapter gets HTTP 403. Neither is caught until a human clicks through the UI.
+
+**Example (good):** One test marked `@pytest.mark.integration` calls `TescoAdapter().search("milk")` against the real Tesco site and asserts `len(results) > 0`. This test is slow but catches selector drift, bot detection, and infrastructure issues immediately.
+
+---
+
+## 16. Hardcoded localhost in service configuration breaks non-local access
+
+**Pattern:** API URLs, CORS origins, and service bindings all use `localhost` or `127.0.0.1`. Works on the dev machine's browser. Breaks when accessed from another machine via private IP, from a VM host, through Docker, or behind a reverse proxy.
+
+**Why it fails:** The frontend sends API requests to the hardcoded `localhost:8000`. A user on another machine resolves `localhost` to their own loopback — the backend isn't there. Even if the backend is reachable by IP, restrictive CORS blocks the request. Even if CORS allows it, the backend only listens on `127.0.0.1` and rejects non-loopback connections.
+
+**Prevention:** Reviewer checklist flags any hardcoded `localhost`/`127.0.0.1` in:
+- API client URLs → must be configurable via env var or derived dynamically (e.g., `window.location.hostname`)
+- CORS origins → must use `*` or configurable origins in dev mode
+- Service bindings → dev scripts must bind to `0.0.0.0`, not `127.0.0.1`
+- Dev scripts (`dev.sh`, `start-frontend.sh`) → must pass host/port via env var, not hardcoded URL strings
+
+**Example (bad):** `const API_BASE = "http://localhost:8000"` — works only from the same machine.
+**Example (good):** `const API_BASE = \`http://${window.location.hostname}:${API_PORT}\`` — works from any hostname the user accesses the frontend with.

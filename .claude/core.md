@@ -98,6 +98,19 @@ Every new capability MUST be covered by at least one of the following:
 
 ---
 
+## External Integration Testing
+
+When a phase introduces or modifies code that calls external systems (scrapers, third-party APIs, webhooks):
+
+- [ ] At least one test hits the real external system (marked `@pytest.mark.integration` or equivalent)
+- [ ] The mocked test suite alone is NOT sufficient evidence that the integration works
+- [ ] Known failures (bot detection, geo-blocking, auth requirements) are documented in the dev handoff as "Known Issues" — not silently passed over
+- [ ] The dev handoff explicitly states whether live testing was successful or not
+
+See anti-patterns #15 and #16 for detailed failure modes and prevention strategies.
+
+---
+
 ## Security Baseline
 
 - NEVER commit secrets, `.env` files, credentials, API keys, or database files
