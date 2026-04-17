@@ -32,28 +32,9 @@ done
 require_phase_arg "$PHASE"
 require_claude
 
-# ── Auto-assign free ports ────────────────────────────────────────────────────
-# Only assigns if not already set by the caller, so explicit overrides are respected.
-_find_free_port() {
-  local port="$1"
-  local attempts=0
-  while [[ $attempts -lt 100 ]]; do
-    if ! ss -tln 2>/dev/null | grep -q ":${port} "; then
-      echo "$port"
-      return 0
-    fi
-    port=$((port + 1))
-    attempts=$((attempts + 1))
-  done
-  echo "$1"  # fallback to original if nothing found
-}
-
-if [[ -z "${CHAIN_BACKEND_PORT:-}" ]]; then
-  export CHAIN_BACKEND_PORT=$(_find_free_port 8000)
-fi
-if [[ -z "${CHAIN_FRONTEND_PORT:-}" ]]; then
-  export CHAIN_FRONTEND_PORT=$(_find_free_port 3000)
-fi
+# ── Auto-assign deterministic per-project ports ──────────────────────────────
+# Helpers live in lib/common.sh (already sourced). Explicit CHAIN_*_PORT wins.
+ensure_phase_ports
 
 SPEC=$(phase_spec_path "$PHASE")
 if [[ -z "$SPEC" ]]; then

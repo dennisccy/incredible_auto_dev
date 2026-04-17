@@ -1,9 +1,18 @@
 #!/usr/bin/env bash
 set -e
 
-BACKEND_PORT="${CHAIN_BACKEND_PORT:-8000}"
-FRONTEND_PORT="${CHAIN_FRONTEND_PORT:-3000}"
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+# Deterministic per-project port offset (mirror of
+# incredible_auto_dev/scripts/automation/lib/common.sh::_project_port_offset).
+# Strip trailing /incredible_auto_dev so running from the subtree or the
+# project root produces the same offset for a given project.
+_port_root="$ROOT_DIR"
+[[ "$_port_root" == */incredible_auto_dev ]] && _port_root="${_port_root%/incredible_auto_dev}"
+_offset=$(printf '%s' "$_port_root" | sha1sum | cut -c1-4)
+_offset=$((16#$_offset % 1000))
+BACKEND_PORT="${CHAIN_BACKEND_PORT:-$((8000 + _offset))}"
+FRONTEND_PORT="${CHAIN_FRONTEND_PORT:-$((3000 + _offset))}"
 
 # Kill processes occupying the ports and wait until they are free
 for PORT in $BACKEND_PORT $FRONTEND_PORT; do

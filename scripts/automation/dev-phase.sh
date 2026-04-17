@@ -67,17 +67,14 @@ echo "[dev-phase] Mode: $MODE_LABEL"
 # long-running servers that block the agent from exiting if not cleaned up.
 cleanup_dev_servers() {
   echo "[dev-phase] Cleaning up any leftover server processes..."
-  # Kill uvicorn processes started from this project directory
-  pkill -f "uvicorn main:app" 2>/dev/null || true
-  # Kill Next.js dev servers — match both npx/npm invocations and the
-  # underlying next-server worker that survives parent-kill
-  pkill -f "next dev" 2>/dev/null || true
-  pkill -f "next-server" 2>/dev/null || true
-  # Also kill via lsof on common dev ports to catch any survivors
-  for port in 3000 3001 8000; do
-    fuser -k "${port}/tcp" 2>/dev/null || true
-  done
-  # Grace period for process cleanup
+  local _be_port="${CHAIN_BACKEND_PORT:-8000}"
+  local _fe_port="${CHAIN_FRONTEND_PORT:-3000}"
+  # Kill uvicorn/next processes bound to this project's assigned ports only
+  # (avoids killing neighbor projects running on different ports).
+  pkill -f "uvicorn main:app.*--port ${_be_port}" 2>/dev/null || true
+  pkill -f "next dev -p ${_fe_port}" 2>/dev/null || true
+  pkill -f "next-server.*:${_fe_port}" 2>/dev/null || true
+  fuser -k "${_be_port}/tcp" "${_fe_port}/tcp" 2>/dev/null || true
   sleep 2
 }
 trap cleanup_dev_servers EXIT

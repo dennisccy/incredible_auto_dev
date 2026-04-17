@@ -134,11 +134,55 @@ except Exception:
 # shellcheck source=quota-retry.sh
 source "$(dirname "${BASH_SOURCE[0]}")/quota-retry.sh"
 
+# Deterministic port offset (0..999) derived from the project directory so that
+# multiple projects sharing this subtree each land in their own port range.
+# Normalizes to the project root (strips trailing /incredible_auto_dev) so the
+# auto chain and manual dev.sh produce the same offset for a given project.
+_project_port_offset() {
+  local project_root="$REPO_ROOT"
+  [[ "$project_root" == */incredible_auto_dev ]] && project_root="${project_root%/incredible_auto_dev}"
+  local hex
+  hex=$(printf '%s' "$project_root" | sha1sum | cut -c1-4)
+  echo $((16#$hex % 1000))
+}
+
+# Scan upward from $1 to find the first port not currently LISTENing.
+# Handles the case where the hashed preferred port is already in use (e.g. a
+# previous run of the same project left a server behind).
+_find_free_port() {
+  local port="$1"
+  local attempts=0
+  while [[ $attempts -lt 100 ]]; do
+    if ! ss -tln 2>/dev/null | grep -q ":${port} "; then
+      echo "$port"
+      return 0
+    fi
+    port=$((port + 1))
+    attempts=$((attempts + 1))
+  done
+  echo "$1"
+}
+
+# Assign CHAIN_BACKEND_PORT and CHAIN_FRONTEND_PORT deterministically per-project.
+# Respects any caller-provided values; otherwise picks free ports based on
+# 8000 + hash($REPO_ROOT) for backend and 3000 + same-hash for frontend.
+# Idempotent — safe to call from both run-phase.sh and dev.sh.
+ensure_phase_ports() {
+  local offset
+  offset=$(_project_port_offset)
+  if [[ -z "${CHAIN_BACKEND_PORT:-}" ]]; then
+    export CHAIN_BACKEND_PORT=$(_find_free_port $((8000 + offset)))
+  fi
+  if [[ -z "${CHAIN_FRONTEND_PORT:-}" ]]; then
+    export CHAIN_FRONTEND_PORT=$(_find_free_port $((3000 + offset)))
+  fi
+}
+
 # Kill any servers started by agents on the assigned phase ports.
 # Call between pipeline steps to prevent zombie servers from blocking the next step.
 kill_phase_servers() {
-  local backend_port="${CHAIN_BACKEND_PORT:-8001}"
-  local frontend_port="${CHAIN_FRONTEND_PORT:-3001}"
+  local backend_port="${CHAIN_BACKEND_PORT:-8000}"
+  local frontend_port="${CHAIN_FRONTEND_PORT:-3000}"
   for port in $backend_port $frontend_port; do
     fuser -k -9 "$port/tcp" 2>/dev/null || true
   done
