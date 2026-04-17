@@ -134,6 +134,16 @@ except Exception:
 # shellcheck source=quota-retry.sh
 source "$(dirname "${BASH_SOURCE[0]}")/quota-retry.sh"
 
+# Kill any servers started by agents on the assigned phase ports.
+# Call between pipeline steps to prevent zombie servers from blocking the next step.
+kill_phase_servers() {
+  local backend_port="${CHAIN_BACKEND_PORT:-8001}"
+  local frontend_port="${CHAIN_FRONTEND_PORT:-3001}"
+  for port in $backend_port $frontend_port; do
+    fuser -k -9 "$port/tcp" 2>/dev/null || true
+  done
+}
+
 # Ensure runs/<phase>/ directory exists with initial status.json
 init_run_dir() {
   local phase="$1"

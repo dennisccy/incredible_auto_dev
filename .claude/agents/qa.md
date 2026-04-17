@@ -205,6 +205,10 @@ Include:
 - UI evolution audit (or SKIPPED with reason)
 - Blockers (if any)
 
+**Step 5b: Kill any servers you started**
+
+If you started backend or frontend servers during testing (uvicorn, next dev, etc.), you MUST kill them before finishing. Use `pkill -f "uvicorn.*--port"` and `pkill -f "next dev"` or similar. Long-running server processes left alive will block the automation pipeline — the parent script cannot proceed to the next step while child processes are still running.
+
 **Step 6: Update status.json**
 
 If PASS: `status = "complete"`, `current_step = "qa_complete"`

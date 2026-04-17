@@ -397,6 +397,9 @@ else
 fi
 echo ""
 
+# Kill any servers left behind by previous steps (browser QA, dev, etc.)
+kill_phase_servers
+
 # ── Step 7/11: QA loop ────────────────────────────────────────────────────────
 if [[ "$SKIP_QA" == "false" ]]; then
   log "Step 7/11 -- QA loop (max $MAX_RETRIES attempts)..."
@@ -427,6 +430,9 @@ else
 fi
 echo ""
 
+# Kill any servers left behind by QA
+kill_phase_servers
+
 # ── Step 8/11: UX Regression Review ──────────────────────────────────────────
 if [[ "$SKIP_UX_REGRESSION" == "false" ]]; then
   if [[ "$FRONTEND_PRESENT" == "yes" ]]; then
@@ -446,6 +452,9 @@ else
   log "Step 8/11 -- UX Regression Review: skipped (checkpoint: $CURRENT_STEP)"
 fi
 echo ""
+
+# Kill any servers left behind by UX regression
+kill_phase_servers
 
 # ── Step 9/11: Post-phase audit loop ─────────────────────────────────────────
 if [[ "$SKIP_AUDIT" == "false" ]]; then
