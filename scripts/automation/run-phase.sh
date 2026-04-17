@@ -86,6 +86,33 @@ fail() {
   exit 1
 }
 
+# ── Quota-aware step runner ──────────────────────────────────────────────────
+# Runs a phase script and handles quota exhaustion (exit 75) by sleeping until
+# the quota resets, then signaling the caller to retry.
+#   Returns: 0 on success, 75 if quota was hit (caller should retry), other on failure
+_run_step() {
+  local script="$1"; shift
+  local rc=0
+  bash "$script" "$@" || rc=$?
+  if [[ $rc -eq ${QUOTA_EXHAUSTED_EXIT_CODE:-75} ]]; then
+    log "  Quota exhaustion detected (exit 75). Waiting for reset..."
+    update_status "$PHASE" "blocked" "quota_blocked"
+    local remaining
+    if remaining=$(_quota_check_sentinel 2>/dev/null); then
+      log "  Sentinel: sleeping ${remaining}s until quota resets..."
+      sleep "$remaining"
+    else
+      local fallback="${CHAIN_CLAUDE_FALLBACK_SLEEP_SECONDS:-3600}"
+      log "  No sentinel — fallback sleep ${fallback}s..."
+      sleep "$fallback"
+    fi
+    _quota_clear_sentinel 2>/dev/null || true
+    log "  Quota sleep complete. Resuming."
+    return 75
+  fi
+  return $rc
+}
+
 log "========================================"
 log "  Phase: $PHASE"
 log "  Spec:  $SPEC"
@@ -324,12 +351,24 @@ if [[ "$SKIP_DEV_REVIEW" == "false" ]]; then
       log "  [attempt $ATTEMPT/$MAX_RETRIES] Skipping dev (already completed), running reviewer..."
     else
       log "  [attempt $ATTEMPT/$MAX_RETRIES] Running dev agent..."
-      bash "$SCRIPT_DIR/dev-phase.sh" "$PHASE" || log "  Warning: dev-phase.sh exited with error (attempt $ATTEMPT) -- continuing to review"
+      dev_rc=0
+      _run_step "$SCRIPT_DIR/dev-phase.sh" "$PHASE" || dev_rc=$?
+      if [[ $dev_rc -eq 75 ]]; then
+        ATTEMPT=$((ATTEMPT - 1))  # don't count quota failures as attempts
+        continue
+      fi
+      [[ $dev_rc -ne 0 ]] && log "  Warning: dev-phase.sh exited with error (attempt $ATTEMPT) -- continuing to review"
       update_status "$PHASE" "in_progress" "dev_complete_attempt_${ATTEMPT}"
     fi
 
     log "  [attempt $ATTEMPT/$MAX_RETRIES] Running reviewer..."
-    bash "$SCRIPT_DIR/review-phase.sh" "$PHASE" || log "  Warning: review-phase.sh exited with error (attempt $ATTEMPT) -- checking verdict"
+    rev_rc=0
+    _run_step "$SCRIPT_DIR/review-phase.sh" "$PHASE" || rev_rc=$?
+    if [[ $rev_rc -eq 75 ]]; then
+      ATTEMPT=$((ATTEMPT - 1))
+      continue
+    fi
+    [[ $rev_rc -ne 0 ]] && log "  Warning: review-phase.sh exited with error (attempt $ATTEMPT) -- checking verdict"
 
     if verdict_passes "$REVIEW_REPORT"; then
       log "  Review: PASS"
@@ -352,8 +391,14 @@ echo ""
 # ── Step 4/11: UI Impact Analysis ────────────────────────────────────────────
 if [[ "$SKIP_UI_IMPACT" == "false" ]]; then
   log "Step 4/11 -- UI Impact Analysis..."
-  bash "$SCRIPT_DIR/ui-impact-phase.sh" "$PHASE" \
-    || log "  Warning: ui-impact-phase.sh exited with error -- continuing"
+  ui_q=0
+  while true; do
+    ui_rc=0
+    _run_step "$SCRIPT_DIR/ui-impact-phase.sh" "$PHASE" || ui_rc=$?
+    if [[ $ui_rc -eq 75 && $ui_q -lt 2 ]]; then ui_q=$((ui_q+1)); continue; fi
+    [[ $ui_rc -ne 0 && $ui_rc -ne 75 ]] && log "  Warning: ui-impact-phase.sh exited with error -- continuing"
+    break
+  done
   update_status "$PHASE" "in_progress" "ui_impact_complete"
   log "  User-visible changes: $USER_VISIBLE"
   log "  UI surface map:       $UI_SURFACE_MAP"
@@ -366,8 +411,14 @@ echo ""
 if [[ "$SKIP_UI_TEST_DESIGN" == "false" ]]; then
   if [[ "$FRONTEND_PRESENT" == "yes" ]]; then
     log "Step 5/11 -- UI Test Design..."
-    bash "$SCRIPT_DIR/ui-test-design-phase.sh" "$PHASE" \
-      || log "  Warning: ui-test-design-phase.sh exited with error -- continuing"
+    utd_q=0
+    while true; do
+      utd_rc=0
+      _run_step "$SCRIPT_DIR/ui-test-design-phase.sh" "$PHASE" || utd_rc=$?
+      if [[ $utd_rc -eq 75 && $utd_q -lt 2 ]]; then utd_q=$((utd_q+1)); continue; fi
+      [[ $utd_rc -ne 0 && $utd_rc -ne 75 ]] && log "  Warning: ui-test-design-phase.sh exited with error -- continuing"
+      break
+    done
     log "  UI test plan:  $UI_TEST_PLAN"
     log "  What to click: $WHAT_TO_CLICK"
   else
@@ -384,8 +435,14 @@ echo ""
 if [[ "$SKIP_BROWSER_QA" == "false" ]]; then
   if [[ "$FRONTEND_PRESENT" == "yes" ]]; then
     log "Step 6/11 -- Browser QA..."
-    bash "$SCRIPT_DIR/browser-qa-phase.sh" "$PHASE" \
-      || log "  Warning: browser-qa-phase.sh exited with error -- continuing"
+    bqa_q=0
+    while true; do
+      bqa_rc=0
+      _run_step "$SCRIPT_DIR/browser-qa-phase.sh" "$PHASE" || bqa_rc=$?
+      if [[ $bqa_rc -eq 75 && $bqa_q -lt 2 ]]; then bqa_q=$((bqa_q+1)); continue; fi
+      [[ $bqa_rc -ne 0 && $bqa_rc -ne 75 ]] && log "  Warning: browser-qa-phase.sh exited with error -- continuing"
+      break
+    done
     log "  Browser QA results: $UI_TEST_RESULTS"
   else
     log "Step 6/11 -- Browser QA: skipped (backend-only phase) -- writing N/A stubs."
@@ -408,7 +465,13 @@ if [[ "$SKIP_QA" == "false" ]]; then
   while true; do
     QA_ATTEMPT=$((QA_ATTEMPT + 1))
     log "  [QA attempt $QA_ATTEMPT/$MAX_RETRIES] Running QA validator..."
-    bash "$SCRIPT_DIR/qa-phase.sh" "$PHASE" || log "  Warning: qa-phase.sh exited with error (attempt $QA_ATTEMPT) -- checking verdict"
+    qa_rc=0
+    _run_step "$SCRIPT_DIR/qa-phase.sh" "$PHASE" || qa_rc=$?
+    if [[ $qa_rc -eq 75 ]]; then
+      QA_ATTEMPT=$((QA_ATTEMPT - 1))  # don't count quota failures
+      continue
+    fi
+    [[ $qa_rc -ne 0 ]] && log "  Warning: qa-phase.sh exited with error (attempt $QA_ATTEMPT) -- checking verdict"
 
     if verdict_passes "$QA_REPORT"; then
       log "  QA: PASS"
@@ -420,8 +483,14 @@ if [[ "$SKIP_QA" == "false" ]]; then
     fi
 
     log "  QA: FAIL (attempt $QA_ATTEMPT) -- fixing then re-reviewing..."
-    bash "$SCRIPT_DIR/dev-phase.sh" "$PHASE" || log "  Warning: dev-phase.sh exited with error -- continuing"
-    bash "$SCRIPT_DIR/review-phase.sh" "$PHASE" || log "  Warning: review-phase.sh exited with error -- continuing"
+    qd_rc=0
+    _run_step "$SCRIPT_DIR/dev-phase.sh" "$PHASE" || qd_rc=$?
+    [[ $qd_rc -eq 75 ]] && { QA_ATTEMPT=$((QA_ATTEMPT - 1)); continue; }
+    [[ $qd_rc -ne 0 ]] && log "  Warning: dev-phase.sh exited with error -- continuing"
+    qr_rc=0
+    _run_step "$SCRIPT_DIR/review-phase.sh" "$PHASE" || qr_rc=$?
+    [[ $qr_rc -eq 75 ]] && { QA_ATTEMPT=$((QA_ATTEMPT - 1)); continue; }
+    [[ $qr_rc -ne 0 ]] && log "  Warning: review-phase.sh exited with error -- continuing"
   done
 
   update_status "$PHASE" "complete" "qa_passed"
@@ -437,8 +506,14 @@ kill_phase_servers
 if [[ "$SKIP_UX_REGRESSION" == "false" ]]; then
   if [[ "$FRONTEND_PRESENT" == "yes" ]]; then
     log "Step 8/11 -- UX Regression Review..."
-    bash "$SCRIPT_DIR/ux-regression-phase.sh" "$PHASE" \
-      || log "  Warning: ux-regression-phase.sh exited with error -- continuing"
+    uxr_q=0
+    while true; do
+      uxr_rc=0
+      _run_step "$SCRIPT_DIR/ux-regression-phase.sh" "$PHASE" || uxr_rc=$?
+      if [[ $uxr_rc -eq 75 && $uxr_q -lt 2 ]]; then uxr_q=$((uxr_q+1)); continue; fi
+      [[ $uxr_rc -ne 0 && $uxr_rc -ne 75 ]] && log "  Warning: ux-regression-phase.sh exited with error -- continuing"
+      break
+    done
     if ! ux_regression_verdict_passes "$UX_REGRESSION"; then
       log "  UX Regression: FAIL -- flagging for attention (non-blocking, closure auditor will assess)"
     else
@@ -464,7 +539,13 @@ if [[ "$SKIP_AUDIT" == "false" ]]; then
   while true; do
     AUDIT_ATTEMPT=$((AUDIT_ATTEMPT + 1))
     log "  [audit attempt $AUDIT_ATTEMPT/$MAX_AUDIT_RETRIES] Running phase auditor..."
-    bash "$SCRIPT_DIR/phase-audit.sh" "$PHASE" || log "  Warning: phase-audit.sh exited with error (attempt $AUDIT_ATTEMPT) -- checking verdict"
+    aud_rc=0
+    _run_step "$SCRIPT_DIR/phase-audit.sh" "$PHASE" || aud_rc=$?
+    if [[ $aud_rc -eq 75 ]]; then
+      AUDIT_ATTEMPT=$((AUDIT_ATTEMPT - 1))  # don't count quota failures
+      continue
+    fi
+    [[ $aud_rc -ne 0 ]] && log "  Warning: phase-audit.sh exited with error (attempt $AUDIT_ATTEMPT) -- checking verdict"
 
     if verdict_passes "$AUDIT_REPORT"; then
       log "  Audit: PASS"
@@ -476,11 +557,19 @@ if [[ "$SKIP_AUDIT" == "false" ]]; then
     fi
 
     log "  Audit: FAIL (attempt $AUDIT_ATTEMPT) -- applying hardening fixes..."
-    bash "$SCRIPT_DIR/dev-phase.sh" "$PHASE" || log "  Warning: dev-phase.sh exited with error -- continuing"
-    bash "$SCRIPT_DIR/review-phase.sh" "$PHASE" || log "  Warning: review-phase.sh exited with error -- continuing"
+    ad_rc=0
+    _run_step "$SCRIPT_DIR/dev-phase.sh" "$PHASE" || ad_rc=$?
+    [[ $ad_rc -eq 75 ]] && { AUDIT_ATTEMPT=$((AUDIT_ATTEMPT - 1)); continue; }
+    [[ $ad_rc -ne 0 ]] && log "  Warning: dev-phase.sh exited with error -- continuing"
+    ar_rc=0
+    _run_step "$SCRIPT_DIR/review-phase.sh" "$PHASE" || ar_rc=$?
+    [[ $ar_rc -eq 75 ]] && { AUDIT_ATTEMPT=$((AUDIT_ATTEMPT - 1)); continue; }
+    [[ $ar_rc -ne 0 ]] && log "  Warning: review-phase.sh exited with error -- continuing"
 
     log "  Re-running QA after hardening..."
-    bash "$SCRIPT_DIR/qa-phase.sh" "$PHASE" || log "  Warning: qa-phase.sh exited with error -- checking verdict"
+    aq_rc=0
+    _run_step "$SCRIPT_DIR/qa-phase.sh" "$PHASE" || aq_rc=$?
+    [[ $aq_rc -eq 75 ]] && { AUDIT_ATTEMPT=$((AUDIT_ATTEMPT - 1)); continue; }
     if ! verdict_passes "$QA_REPORT"; then
       fail "QA failed during audit hardening. See: $QA_REPORT" "audit_qa_failed"
     fi
@@ -496,7 +585,14 @@ echo ""
 # ── Step 10/11: Phase Closure Check ──────────────────────────────────────────
 if [[ "$SKIP_CLOSURE" == "false" ]]; then
   log "Step 10/11 -- Phase Closure Check..."
-  bash "$SCRIPT_DIR/phase-closure-check.sh" "$PHASE" || log "  Warning: phase-closure-check.sh exited with error -- checking verdict"
+  clo_q=0
+  while true; do
+    clo_rc=0
+    _run_step "$SCRIPT_DIR/phase-closure-check.sh" "$PHASE" || clo_rc=$?
+    if [[ $clo_rc -eq 75 && $clo_q -lt 2 ]]; then clo_q=$((clo_q+1)); continue; fi
+    [[ $clo_rc -ne 0 && $clo_rc -ne 75 ]] && log "  Warning: phase-closure-check.sh exited with error -- checking verdict"
+    break
+  done
 
   if ! closure_verdict_passes "$CLOSURE_VERDICT"; then
     fail "Phase closure check failed. See: $CLOSURE_VERDICT" "closure_failed"

@@ -128,7 +128,21 @@ fi
 
 # ── Start frontend (kill stale instance first to ensure correct API URL) ──
 # A stale frontend may have a different backend port baked in from a previous run.
+# Also kill any orphaned Next.js dev servers from previous agent runs — Next.js
+# refuses to start a second dev server in the same directory even on a different port.
 FRONTEND_STARTED_BY_QA=false
+echo "[browser-qa] Checking for stale Next.js dev servers..."
+STALE_NEXT_PIDS=$(pgrep -f "next-server" 2>/dev/null || true)
+if [[ -n "$STALE_NEXT_PIDS" ]]; then
+  echo "[browser-qa] Killing orphaned Next.js servers (PIDs: $STALE_NEXT_PIDS)..."
+  pkill -f "next dev" 2>/dev/null || true
+  pkill -f "next-server" 2>/dev/null || true
+  # Also kill via common dev ports
+  for port in 3000 3001; do
+    fuser -k "${port}/tcp" 2>/dev/null || true
+  done
+  sleep 2
+fi
 FRONTEND_STATUS=$(curl -s -o /dev/null -w "%{http_code}" "$FRONTEND_URL" 2>/dev/null || true)
 if [[ "$FRONTEND_STATUS" =~ ^[23] ]]; then
   STALE_PIDS=$(lsof -ti "tcp:${_FRONTEND_PORT}" 2>/dev/null || true)

@@ -3,8 +3,9 @@
 #
 # Usage: ./tests/automation/test-quota-retry.sh
 #
-# Tests quota exhaustion detection, reset-time parsing, and sleep-duration
-# calculation using synthetic log files — does NOT call the Claude CLI.
+# Tests quota exhaustion detection, reset-time parsing, sleep-duration
+# calculation, sentinel file lifecycle, and exit code 75 — does NOT call
+# the Claude CLI.
 
 set -euo pipefail
 
@@ -17,7 +18,7 @@ source "$REPO_ROOT/scripts/automation/lib/quota-retry.sh"
 PASS=0
 FAIL=0
 TMP_DIR=$(mktemp -d)
-trap 'rm -rf "$TMP_DIR"' EXIT
+trap 'rm -rf "$TMP_DIR"; rm -f "$_QUOTA_SENTINEL" 2>/dev/null' EXIT
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -99,8 +100,53 @@ fi
 
 # No parseable time → empty result
 log=$(make_log "no_time" "out of extra usage for the day")
-result=$(_quota_compute_sleep_secs "$log")
+result=$(_quota_compute_sleep_secs "$log" || true)
 [[ -z "$result" ]] && assert "returns empty when no time can be parsed" "pass" || assert "returns empty when no time can be parsed" "fail"
+
+# ── Tests: Sentinel file lifecycle ───────────────────────────────────────────
+
+echo ""
+echo "=== Sentinel file lifecycle tests ==="
+echo ""
+
+# Clean state
+_quota_clear_sentinel
+_quota_check_sentinel 2>/dev/null && assert "no sentinel → check returns 1" "fail" || assert "no sentinel → check returns 1" "pass"
+
+# Write sentinel 60s in the future
+future_epoch=$(( $(date +%s) + 60 ))
+_quota_write_sentinel "$future_epoch"
+[[ -f "$_QUOTA_SENTINEL" ]] && assert "write creates sentinel file" "pass" || assert "write creates sentinel file" "fail"
+
+remaining=$(_quota_check_sentinel) && status=0 || status=$?
+if [[ $status -eq 0 && "$remaining" -gt 0 && "$remaining" -le 61 ]]; then
+  assert "check returns remaining seconds (got ${remaining}s)" "pass"
+else
+  assert "check returns remaining seconds (got '${remaining:-}', status=$status)" "fail"
+fi
+
+# Write sentinel in the past → should auto-clear
+past_epoch=$(( $(date +%s) - 10 ))
+_quota_write_sentinel "$past_epoch"
+_quota_check_sentinel 2>/dev/null && assert "past sentinel → check returns 1 (auto-cleared)" "fail" || assert "past sentinel → check returns 1 (auto-cleared)" "pass"
+[[ ! -f "$_QUOTA_SENTINEL" ]] && assert "past sentinel file removed" "pass" || assert "past sentinel file removed" "fail"
+
+# Clear sentinel
+_quota_write_sentinel "$(( $(date +%s) + 60 ))"
+_quota_clear_sentinel
+[[ ! -f "$_QUOTA_SENTINEL" ]] && assert "clear removes sentinel" "pass" || assert "clear removes sentinel" "fail"
+
+# Sentinel with garbage content
+echo "not-a-number" > "$_QUOTA_SENTINEL"
+_quota_check_sentinel 2>/dev/null && assert "garbage sentinel → check returns 1" "fail" || assert "garbage sentinel → check returns 1" "pass"
+
+# ── Tests: QUOTA_EXHAUSTED_EXIT_CODE ─────────────────────────────────────────
+
+echo ""
+echo "=== QUOTA_EXHAUSTED_EXIT_CODE tests ==="
+echo ""
+
+[[ "$QUOTA_EXHAUSTED_EXIT_CODE" -eq 75 ]] && assert "exit code constant is 75" "pass" || assert "exit code constant is 75" "fail"
 
 # ── Tests: CHAIN_DISABLE_AUTO_WAIT ───────────────────────────────────────────
 
@@ -124,9 +170,10 @@ CHAIN_CLAUDE_RESET_TZ="UTC"
 CHAIN_CLAUDE_RESET_BUFFER_SECONDS="0"
 CHAIN_CLAUDE_FALLBACK_SLEEP_SECONDS="1"
 
-# Should fail immediately (not retry)
+# Should fail immediately with exit code 75 (not retry)
 start=$SECONDS
-claude_with_quota_retry --print "test" 2>/dev/null || true
+rc=0
+claude_with_quota_retry --print "test" 2>/dev/null || rc=$?
 elapsed=$((SECONDS - start))
 
 # With disable=true and exit 1, should return quickly (< 5 seconds)
@@ -134,6 +181,13 @@ if [[ $elapsed -lt 5 ]]; then
   assert "CHAIN_DISABLE_AUTO_WAIT=true exits without sleeping" "pass"
 else
   assert "CHAIN_DISABLE_AUTO_WAIT=true exits without sleeping (took ${elapsed}s)" "fail"
+fi
+
+# Should return exit code 75 (not 1)
+if [[ $rc -eq 75 ]]; then
+  assert "CHAIN_DISABLE_AUTO_WAIT returns exit code 75" "pass"
+else
+  assert "CHAIN_DISABLE_AUTO_WAIT returns exit code 75 (got $rc)" "fail"
 fi
 
 # ── Results ───────────────────────────────────────────────────────────────────
