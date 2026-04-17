@@ -148,6 +148,11 @@ Perform the release flow:
    manual command the user can run once they authenticate: gh pr create ...
 6. Report the PR URL (or the manual command if PR was skipped)"
 
+# Clean up transient agent-generated files before finalizing
+log "Cleanup: removing temp files..."
+cleanup_phase_artifacts "$PHASE"
+log "  Cleanup complete."
+
 # Update project architecture documentation (non-blocking)
 if [[ -f "$SCRIPT_DIR/update-docs.sh" ]]; then
   echo "Updating project architecture documentation..."

@@ -160,7 +160,7 @@ If `Frontend Present: no`: write "SKIPPED — backend-only phase."
 If `Frontend Present: yes`:
 1. Verify frontend is running: `curl -s -o /dev/null -w "%{http_code}" http://localhost:3000`
 2. If running: use Chrome MCP to check key flows from the spec
-3. Take screenshots, save to `reports/qa/<phase>-evidence/`
+3. Take screenshots. **Save them under `reports/qa/<phase>-evidence/` using `TC-<id>-<slug>.png` or `UT-<nn>-<slug>.png` naming — never save at the repo root.** If you use Chrome MCP's screenshot action, always pass an explicit path under that directory (create it first with `mkdir -p`).
 4. If NOT running after service auto-start attempt: write "SKIPPED — frontend not ready"
 
 **Do NOT mark FAIL just because browser checks were skipped (frontend not running).**
