@@ -124,11 +124,9 @@ if [[ "$FRONTEND_PRESENT" == "yes" ]]; then
   STALE_NEXT_PIDS=$(pgrep -f "next-server" 2>/dev/null || true)
   if [[ -n "$STALE_NEXT_PIDS" ]]; then
     echo "[qa-phase] Killing orphaned Next.js servers (PIDs: $STALE_NEXT_PIDS)..."
-    pkill -f "next dev" 2>/dev/null || true
-    pkill -f "next-server" 2>/dev/null || true
-    for port in 3000 3001; do
-      fuser -k "${port}/tcp" 2>/dev/null || true
-    done
+    pkill -f "next dev -p ${_FRONTEND_PORT}" 2>/dev/null || true
+    pkill -f "next-server.*:${_FRONTEND_PORT}" 2>/dev/null || true
+    fuser -k "${_FRONTEND_PORT}/tcp" 2>/dev/null || true
     sleep 2
   fi
   FRONTEND_STATUS=$(curl -s -o /dev/null -w "%{http_code}" "$FRONTEND_URL" 2>/dev/null || true)

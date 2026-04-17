@@ -5,7 +5,15 @@
 set -e
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-PORT="${CHAIN_BACKEND_PORT:-8000}"
+
+# Deterministic per-project port fallback (matches ensure_phase_ports in
+# incredible_auto_dev/scripts/automation/lib/common.sh) so standalone runs
+# don't collide with other projects on this machine.
+_port_root="$REPO_ROOT"
+[[ "$_port_root" == */incredible_auto_dev ]] && _port_root="${_port_root%/incredible_auto_dev}"
+_offset=$(printf '%s' "$_port_root" | sha1sum | cut -c1-4)
+_offset=$((16#$_offset % 1000))
+PORT="${CHAIN_BACKEND_PORT:-$((8000 + _offset))}"
 
 # Run pending migrations before starting
 cd "$REPO_ROOT/apps/backend"

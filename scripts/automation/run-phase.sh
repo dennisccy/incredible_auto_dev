@@ -32,28 +32,9 @@ done
 require_phase_arg "$PHASE"
 require_claude
 
-# ── Auto-assign free ports ────────────────────────────────────────────────────
-# Only assigns if not already set by the caller, so explicit overrides are respected.
-_find_free_port() {
-  local port="$1"
-  local attempts=0
-  while [[ $attempts -lt 100 ]]; do
-    if ! ss -tln 2>/dev/null | grep -q ":${port} "; then
-      echo "$port"
-      return 0
-    fi
-    port=$((port + 1))
-    attempts=$((attempts + 1))
-  done
-  echo "$1"  # fallback to original if nothing found
-}
-
-if [[ -z "${CHAIN_BACKEND_PORT:-}" ]]; then
-  export CHAIN_BACKEND_PORT=$(_find_free_port 8000)
-fi
-if [[ -z "${CHAIN_FRONTEND_PORT:-}" ]]; then
-  export CHAIN_FRONTEND_PORT=$(_find_free_port 3000)
-fi
+# ── Auto-assign deterministic per-project ports ──────────────────────────────
+# Helpers live in lib/common.sh (already sourced). Explicit CHAIN_*_PORT wins.
+ensure_phase_ports
 
 SPEC=$(phase_spec_path "$PHASE")
 if [[ -z "$SPEC" ]]; then
@@ -454,6 +435,9 @@ else
 fi
 echo ""
 
+# Kill any servers left behind by previous steps (browser QA, dev, etc.)
+kill_phase_servers
+
 # ── Step 7/11: QA loop ────────────────────────────────────────────────────────
 if [[ "$SKIP_QA" == "false" ]]; then
   log "Step 7/11 -- QA loop (max $MAX_RETRIES attempts)..."
@@ -496,6 +480,9 @@ else
 fi
 echo ""
 
+# Kill any servers left behind by QA
+kill_phase_servers
+
 # ── Step 8/11: UX Regression Review ──────────────────────────────────────────
 if [[ "$SKIP_UX_REGRESSION" == "false" ]]; then
   if [[ "$FRONTEND_PRESENT" == "yes" ]]; then
@@ -521,6 +508,9 @@ else
   log "Step 8/11 -- UX Regression Review: skipped (checkpoint: $CURRENT_STEP)"
 fi
 echo ""
+
+# Kill any servers left behind by UX regression
+kill_phase_servers
 
 # ── Step 9/11: Post-phase audit loop ─────────────────────────────────────────
 if [[ "$SKIP_AUDIT" == "false" ]]; then
@@ -598,16 +588,7 @@ echo ""
 
 # ── Cleanup: remove temp files generated during the run ─────────────────────
 log "Cleanup: removing temp files..."
-# Remove nested .git dirs created by scaffolders (e.g. create-next-app)
-find "$REPO_ROOT/apps" -mindepth 2 -maxdepth 2 -name ".git" -type d -exec rm -rf {} + 2>/dev/null || true
-# Remove QA temp scripts
-rm -f "$REPO_ROOT/runs/${PHASE}"/qa_*.py 2>/dev/null || true
-# Remove root-level QA evidence files
-rm -f "$REPO_ROOT"/UT-*-result 2>/dev/null || true
-# Remove temp scaffold dirs
-rm -rf "$REPO_ROOT/apps/frontend-tmp" 2>/dev/null || true
-# Remove /tmp logs from QA and browser-qa
-rm -f /tmp/qa-backend.log /tmp/qa-frontend.log /tmp/browser-qa-backend.log /tmp/browser-qa-frontend.log 2>/dev/null || true
+cleanup_phase_artifacts "$PHASE"
 log "  Cleanup complete."
 echo ""
 
