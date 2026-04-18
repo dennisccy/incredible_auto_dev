@@ -3,7 +3,7 @@
   "_doc": "Add your project's packages to the allowlists. Keep denylists for known-bad versions only.",
 
   "python": {
-    "allowlist": [],
+    "allowlist": ["anthropic"],
     "denylist": [],
     "rules": {
       "require_pinned_version": true,

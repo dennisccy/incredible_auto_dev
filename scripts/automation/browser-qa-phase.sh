@@ -131,8 +131,8 @@ fi
 # Also kill any orphaned Next.js dev servers from previous agent runs — Next.js
 # refuses to start a second dev server in the same directory even on a different port.
 FRONTEND_STARTED_BY_QA=false
-echo "[browser-qa] Killing project-scoped stale Next.js dev servers (all cross-port)..."
-kill_project_next_servers "$_FRONTEND_PORT"
+echo "[browser-qa] Clearing any stale Next.js dev server for this project..."
+kill_stale_next_dev_server
 FRONTEND_STATUS=$(curl -s -o /dev/null -w "%{http_code}" "$FRONTEND_URL" 2>/dev/null || true)
 if [[ "$FRONTEND_STATUS" =~ ^[23] ]]; then
   STALE_PIDS=$(lsof -ti "tcp:${_FRONTEND_PORT}" 2>/dev/null || true)

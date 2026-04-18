@@ -102,6 +102,7 @@
       "Bash(env)",
 
       "Bash(ps *)",
+      "Bash(pstree *)",
       "Bash(kill *)",
       "Bash(pkill *)",
       "Bash(lsof *)",
@@ -113,6 +114,8 @@
       "Bash(curl -s http://127.0.0.1*)",
       "Bash(curl https://localhost*)",
       "Bash(ss -tlnp *)",
+      "Bash(curl -s -o /dev/null -w *)",
+      "Bash(curl -sL http://localhost*)",
       "Bash(pstree *)",
 
       "Bash(docker build *)",
