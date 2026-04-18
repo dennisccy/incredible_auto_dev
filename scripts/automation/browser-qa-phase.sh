@@ -131,15 +131,8 @@ fi
 # Also kill any orphaned Next.js dev servers from previous agent runs — Next.js
 # refuses to start a second dev server in the same directory even on a different port.
 FRONTEND_STARTED_BY_QA=false
-echo "[browser-qa] Checking for stale Next.js dev servers..."
-STALE_NEXT_PIDS=$(pgrep -f "next-server" 2>/dev/null || true)
-if [[ -n "$STALE_NEXT_PIDS" ]]; then
-  echo "[browser-qa] Killing orphaned Next.js servers (PIDs: $STALE_NEXT_PIDS)..."
-  pkill -f "next dev -p ${_FRONTEND_PORT}" 2>/dev/null || true
-  pkill -f "next-server.*:${_FRONTEND_PORT}" 2>/dev/null || true
-  fuser -k "${_FRONTEND_PORT}/tcp" 2>/dev/null || true
-  sleep 2
-fi
+echo "[browser-qa] Clearing any stale Next.js dev server for this project..."
+kill_stale_next_dev_server
 FRONTEND_STATUS=$(curl -s -o /dev/null -w "%{http_code}" "$FRONTEND_URL" 2>/dev/null || true)
 if [[ "$FRONTEND_STATUS" =~ ^[23] ]]; then
   STALE_PIDS=$(lsof -ti "tcp:${_FRONTEND_PORT}" 2>/dev/null || true)

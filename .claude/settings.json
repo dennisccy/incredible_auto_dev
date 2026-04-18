@@ -102,6 +102,7 @@
       "Bash(env)",
 
       "Bash(ps *)",
+      "Bash(pstree *)",
       "Bash(kill *)",
       "Bash(pkill *)",
       "Bash(lsof *)",

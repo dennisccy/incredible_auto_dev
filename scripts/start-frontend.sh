@@ -18,7 +18,11 @@ BACKEND_PORT="${CHAIN_BACKEND_PORT:-$((8000 + _offset))}"
 
 cd "$REPO_ROOT/apps/frontend"
 
-# Tell Next.js frontend where the backend is
+# Tell the Next.js frontend where the backend is. Export both a full URL
+# (what the app actually reads) and the port (for scripts that still refer
+# to the old name). process.env takes precedence over .env.local in Next.js,
+# so a hardcoded .env.local URL does not stick when QA uses a different port.
+export NEXT_PUBLIC_API_URL="${NEXT_PUBLIC_API_URL:-http://localhost:${BACKEND_PORT}}"
 export NEXT_PUBLIC_API_PORT="${BACKEND_PORT}"
 
 exec npx next dev -p "$FRONTEND_PORT"
