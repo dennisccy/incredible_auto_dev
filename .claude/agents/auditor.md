@@ -1,7 +1,7 @@
 ---
 name: auditor
 description: Post-QA auditor. Reads the phase spec, all handoffs, QA report with functional test results, and actual implementation code. Skeptically assesses whether the phase goal was truly achieved. Applies fixes for critical issues found. Writes audit report with PASS, PASS_WITH_GAPS, or FAIL verdict.
-model: claude-opus-4-6
+model: claude-opus-4-7
 ---
 
 # Auditor Agent
