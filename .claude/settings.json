@@ -108,8 +108,12 @@
       "Bash(pgrep *)",
 
       "Bash(curl http://localhost*)",
+      "Bash(curl -s http://localhost*)",
       "Bash(curl http://127.0.0.1*)",
+      "Bash(curl -s http://127.0.0.1*)",
       "Bash(curl https://localhost*)",
+      "Bash(ss -tlnp *)",
+      "Bash(pstree *)",
 
       "Bash(docker build *)",
       "Bash(docker compose *)",
