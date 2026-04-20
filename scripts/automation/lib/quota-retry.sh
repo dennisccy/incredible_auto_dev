@@ -178,7 +178,10 @@ claude_with_quota_retry() {
     local sentinel_remaining
     if sentinel_remaining=$(_quota_check_sentinel); then
       echo "[quota-retry] $(date -Iseconds) Sentinel active — quota resets in ${sentinel_remaining}s. Sleeping..." >&2
-      sleep "$sentinel_remaining"
+      # sleep || true: if operator kills the sleep (e.g. quota manually resumed),
+      # we should retry claude immediately rather than propagate SIGTERM (143) up
+      # to the caller — which would be misread as a non-quota failure.
+      sleep "$sentinel_remaining" || true
       _quota_clear_sentinel
       echo "[quota-retry] $(date -Iseconds) Sentinel sleep complete. Retrying." >&2
     fi
@@ -247,7 +250,9 @@ claude_with_quota_retry() {
     _quota_write_sentinel "$reset_epoch"
 
     echo "[quota-retry] $(date -Iseconds) Sleeping ${sleep_secs}s ... (retry $retry_count/$max_retries will follow)" >&2
-    sleep "$sleep_secs"
+    # See comment on sentinel-sleep above: interrupting this sleep should retry,
+    # not propagate 143 up and be misread as a non-quota failure.
+    sleep "$sleep_secs" || true
 
     local actual_sleep=$(( $(date +%s) - sleep_start ))
     echo "[quota-retry] $(date -Iseconds) Woke up after ${actual_sleep}s. Retrying claude (attempt $retry_count/$max_retries)..." >&2

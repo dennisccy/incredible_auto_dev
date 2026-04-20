@@ -81,11 +81,13 @@ _run_step() {
     local remaining
     if remaining=$(_quota_check_sentinel 2>/dev/null); then
       log "  Sentinel: sleeping ${remaining}s until quota resets..."
-      sleep "$remaining"
+      # || true: allow operator to kill the sleep to manually resume work when
+      # quota is available early; we'd rather retry than exit the pipeline.
+      sleep "$remaining" || true
     else
       local fallback="${CHAIN_CLAUDE_FALLBACK_SLEEP_SECONDS:-3600}"
       log "  No sentinel — fallback sleep ${fallback}s..."
-      sleep "$fallback"
+      sleep "$fallback" || true
     fi
     _quota_clear_sentinel 2>/dev/null || true
     log "  Quota sleep complete. Resuming."
