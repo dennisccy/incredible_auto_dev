@@ -157,6 +157,29 @@ _quota_clear_sentinel() {
   rm -f "$_QUOTA_SENTINEL"
 }
 
+# ── Suspend-resilient sleep ──────────────────────────────────────────────────
+# `sleep N` on Linux uses CLOCK_MONOTONIC, which pauses during system
+# suspend/hibernate. A 3-hour sleep across an overnight suspend can block for
+# days instead of minutes. `_sleep_until_epoch <wall_clock_epoch>` polls the
+# wall clock in small chunks, so on resume it detects the epoch has passed and
+# exits immediately.
+#
+# Usage: _sleep_until_epoch <epoch_seconds>
+# Returns: 0 when wall clock reaches epoch (or already past).
+_sleep_until_epoch() {
+  local target="$1"
+  [[ "$target" =~ ^[0-9]+$ ]] || return 0
+  local now chunk
+  while true; do
+    now=$(date +%s)
+    if [[ $now -ge $target ]]; then return 0; fi
+    chunk=$(( target - now ))
+    # Cap at 60s so suspend/resume is detected within a minute of wake-up.
+    [[ $chunk -gt 60 ]] && chunk=60
+    sleep "$chunk"
+  done
+}
+
 # ── Public function ──────────────────────────────────────────────────────────
 
 # Drop-in replacement for `claude`. Accepts the same arguments.
@@ -175,10 +198,11 @@ claude_with_quota_retry() {
 
   while true; do
     # ── Pre-flight: check sentinel before wasting a claude invocation ────
-    local sentinel_remaining
+    local sentinel_remaining sentinel_epoch
     if sentinel_remaining=$(_quota_check_sentinel); then
+      sentinel_epoch=$(( $(date +%s) + sentinel_remaining ))
       echo "[quota-retry] $(date -Iseconds) Sentinel active — quota resets in ${sentinel_remaining}s. Sleeping..." >&2
-      sleep "$sentinel_remaining"
+      _sleep_until_epoch "$sentinel_epoch"
       _quota_clear_sentinel
       echo "[quota-retry] $(date -Iseconds) Sentinel sleep complete. Retrying." >&2
     fi
@@ -247,7 +271,7 @@ claude_with_quota_retry() {
     _quota_write_sentinel "$reset_epoch"
 
     echo "[quota-retry] $(date -Iseconds) Sleeping ${sleep_secs}s ... (retry $retry_count/$max_retries will follow)" >&2
-    sleep "$sleep_secs"
+    _sleep_until_epoch "$reset_epoch"
 
     local actual_sleep=$(( $(date +%s) - sleep_start ))
     echo "[quota-retry] $(date -Iseconds) Woke up after ${actual_sleep}s. Retrying claude (attempt $retry_count/$max_retries)..." >&2
