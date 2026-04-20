@@ -176,7 +176,10 @@ _sleep_until_epoch() {
     chunk=$(( target - now ))
     # Cap at 60s so suspend/resume is detected within a minute of wake-up.
     [[ $chunk -gt 60 ]] && chunk=60
-    sleep "$chunk"
+    # sleep || return 0: if operator SIGTERMs the sleep (e.g. to force retry
+    # now that quota is back), exit immediately rather than propagate 143 up
+    # — which would be misread as a non-quota failure under `set -e`.
+    sleep "$chunk" || return 0
   done
 }
 
