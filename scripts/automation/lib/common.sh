@@ -195,6 +195,80 @@ kill_phase_servers() {
   done
 }
 
+# Return a project-scoped /tmp log path to avoid cross-project log clobbering
+# when multiple projects share this subtree (each project has a unique port
+# offset, so using the port as a discriminator gives a stable per-project path).
+# Usage: _qa_log_path <role>  (role e.g. "qa-backend" or "browser-qa-frontend")
+_qa_log_path() {
+  local role="$1"
+  local port="${CHAIN_BACKEND_PORT:-${CHAIN_FRONTEND_PORT:-0}}"
+  echo "/tmp/${role}-${port}.log"
+}
+
+# ── Idempotent service bootstrap (shared by qa-phase.sh and browser-qa-phase.sh) ──
+#
+# Starts the backend (and optionally frontend) if they are not already running.
+# Designed to be called both at script start AND from the quota-retry pre-retry
+# hook so that servers killed or crashed during a long quota sleep are revived
+# before the next claude attempt.
+#
+# Required env vars (set by the caller):
+#   QA_BACKEND_HEALTH_URL   — HTTP URL that returns 2xx/3xx when backend is up
+#   QA_BACKEND_START_CMD    — shell command to start backend (runs in background)
+#   QA_BACKEND_LOG          — path to redirect backend stdout/stderr
+#   QA_FRONTEND_URL         — HTTP URL for the frontend root
+#   QA_FRONTEND_START_CMD   — shell command to start frontend (runs in background)
+#   QA_FRONTEND_LOG         — path to redirect frontend stdout/stderr
+#   QA_FRONTEND_REQUIRED    — "yes" to ensure frontend too, "no" to skip
+#
+# The function is a no-op for services that are already healthy. It does not
+# error if start commands are missing — callers handle that case upstream.
+ensure_services_running() {
+  local started_any="no"
+
+  # Backend
+  if [[ -n "${QA_BACKEND_HEALTH_URL:-}" && -n "${QA_BACKEND_START_CMD:-}" ]]; then
+    local backend_code
+    backend_code=$(curl -s -o /dev/null -w "%{http_code}" "$QA_BACKEND_HEALTH_URL" 2>/dev/null || true)
+    if [[ ! "$backend_code" =~ ^[23] ]]; then
+      echo "[ensure_services_running] Backend not responding at $QA_BACKEND_HEALTH_URL (status: $backend_code) — starting..." >&2
+      $QA_BACKEND_START_CMD >"${QA_BACKEND_LOG:-/dev/null}" 2>&1 &
+      QA_STARTED_PIDS+=($!)
+      started_any="yes"
+      # Wait up to 90s for backend to come up
+      local waited=0
+      while [[ $waited -lt 90 ]]; do
+        backend_code=$(curl -s -o /dev/null -w "%{http_code}" "$QA_BACKEND_HEALTH_URL" 2>/dev/null || true)
+        [[ "$backend_code" =~ ^[23] ]] && { echo "[ensure_services_running] Backend is ready (${waited}s)." >&2; break; }
+        sleep 3
+        waited=$((waited + 3))
+      done
+    fi
+  fi
+
+  # Frontend (only when required)
+  if [[ "${QA_FRONTEND_REQUIRED:-no}" == "yes" && -n "${QA_FRONTEND_URL:-}" && -n "${QA_FRONTEND_START_CMD:-}" ]]; then
+    local frontend_code
+    frontend_code=$(curl -s -o /dev/null -w "%{http_code}" "$QA_FRONTEND_URL" 2>/dev/null || true)
+    if [[ ! "$frontend_code" =~ ^[23] ]]; then
+      echo "[ensure_services_running] Frontend not responding at $QA_FRONTEND_URL (status: $frontend_code) — starting..." >&2
+      kill_stale_next_dev_server
+      $QA_FRONTEND_START_CMD >"${QA_FRONTEND_LOG:-/dev/null}" 2>&1 &
+      QA_STARTED_PIDS+=($!)
+      started_any="yes"
+      local waited=0
+      while [[ $waited -lt 120 ]]; do
+        frontend_code=$(curl -s -o /dev/null -w "%{http_code}" "$QA_FRONTEND_URL" 2>/dev/null || true)
+        [[ "$frontend_code" =~ ^[23] ]] && { echo "[ensure_services_running] Frontend is ready (${waited}s)." >&2; break; }
+        sleep 3
+        waited=$((waited + 3))
+      done
+    fi
+  fi
+
+  [[ "$started_any" == "yes" ]] && return 0 || return 0
+}
+
 # Clear any stale Next.js dev server that would block a fresh start.
 # Next.js 16+ writes .next/dev/lock with its own PID and refuses to start a
 # second dev server from the same directory — even on a different port. Just
@@ -260,8 +334,14 @@ cleanup_phase_artifacts() {
   rm -f "$REPO_ROOT"/tc[0-9]*-* 2>/dev/null || true
   # Leftover scaffold staging dir
   rm -rf "$REPO_ROOT/apps/frontend-tmp" 2>/dev/null || true
-  # /tmp logs from QA and browser-qa
+  # /tmp logs from QA and browser-qa (both legacy shared paths and current
+  # port-scoped paths written by _qa_log_path)
   rm -f /tmp/qa-backend.log /tmp/qa-frontend.log /tmp/browser-qa-backend.log /tmp/browser-qa-frontend.log 2>/dev/null || true
+  local _backend_port="${CHAIN_BACKEND_PORT:-0}"
+  local _frontend_port="${CHAIN_FRONTEND_PORT:-0}"
+  rm -f "/tmp/qa-backend-${_backend_port}.log" "/tmp/qa-frontend-${_backend_port}.log" \
+        "/tmp/browser-qa-backend-${_backend_port}.log" "/tmp/browser-qa-frontend-${_backend_port}.log" \
+        2>/dev/null || true
   # Fix extensionless screenshots in evidence dirs (Chrome MCP naming drift).
   # Rename to .png if the file is a valid PNG; remove otherwise.
   local evidence_dir

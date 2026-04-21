@@ -98,58 +98,31 @@ _FRONTEND_PORT="${CHAIN_FRONTEND_PORT:-3000}"
 BACKEND_HEALTH_URL="${CHAIN_BACKEND_HEALTH_URL:-http://localhost:${_BACKEND_PORT}/health}"
 FRONTEND_URL="${CHAIN_FRONTEND_URL:-http://localhost:${_FRONTEND_PORT}}"
 
-# Start backend if not already running.
-BACKEND_STATUS=$(curl -s -o /dev/null -w "%{http_code}" "$BACKEND_HEALTH_URL" 2>/dev/null || true)
-BACKEND_STARTED_BY_QA=false
-if [[ ! "$BACKEND_STATUS" =~ ^[23] ]]; then
-  if [[ -n "$BACKEND_START_CMD" ]]; then
-    echo "[qa-phase] Backend not running -- starting for QA (log: /tmp/qa-backend.log)..."
-    $BACKEND_START_CMD >/tmp/qa-backend.log 2>&1 &
-    QA_STARTED_PIDS+=($!)
-    BACKEND_STARTED_BY_QA=true
-    _wait_for_url "$BACKEND_HEALTH_URL" "backend" 90 || true
-  else
-    echo "[qa-phase] Backend not running and no start command configured." >&2
-    echo "[qa-phase] Set CHAIN_START_BACKEND_CMD or provide scripts/start-backend.sh" >&2
-  fi
-else
-  echo "[qa-phase] Backend already running at $BACKEND_HEALTH_URL."
-fi
+# Export vars consumed by ensure_services_running (shared helper in common.sh).
+# Using project-scoped log paths so parallel project runs don't clobber each other.
+QA_BACKEND_LOG=$(_qa_log_path "qa-backend")
+QA_FRONTEND_LOG=$(_qa_log_path "qa-frontend")
+export QA_BACKEND_HEALTH_URL="$BACKEND_HEALTH_URL"
+export QA_BACKEND_START_CMD="$BACKEND_START_CMD"
+export QA_BACKEND_LOG
+export QA_FRONTEND_URL="$FRONTEND_URL"
+export QA_FRONTEND_START_CMD="$FRONTEND_START_CMD"
+export QA_FRONTEND_LOG
+export QA_FRONTEND_REQUIRED="$FRONTEND_PRESENT"
 
-# Start frontend if not running AND this phase has frontend.
-# First clear any orphaned Next.js dev server for this project — Next.js 16+
-# refuses to start a second dev server from the same directory even on a
-# different port, using .next/dev/lock as the signal.
-FRONTEND_STARTED_BY_QA=false
-if [[ "$FRONTEND_PRESENT" == "yes" ]]; then
-  kill_stale_next_dev_server
-  FRONTEND_STATUS=$(curl -s -o /dev/null -w "%{http_code}" "$FRONTEND_URL" 2>/dev/null || true)
-  if [[ ! "$FRONTEND_STATUS" =~ ^[23] ]]; then
-    if [[ -n "$FRONTEND_START_CMD" ]]; then
-      echo "[qa-phase] Frontend not running -- starting for QA (log: /tmp/qa-frontend.log)..."
-      $FRONTEND_START_CMD >/tmp/qa-frontend.log 2>&1 &
-      QA_STARTED_PIDS+=($!)
-      FRONTEND_STARTED_BY_QA=true
-      _wait_for_url "$FRONTEND_URL" "frontend" 120 || true
-    else
-      echo "[qa-phase] Frontend not running and no start command configured." >&2
-      echo "[qa-phase] Set CHAIN_START_FRONTEND_CMD or provide scripts/start-frontend.sh" >&2
-    fi
-  else
-    echo "[qa-phase] Frontend already running at $FRONTEND_URL."
-  fi
-fi
+# Initial start — records PIDs in QA_STARTED_PIDS via the shared helper.
+ensure_services_running
 
 # Build services context note for the agent prompt.
-SERVICES_NOTE=""
-if [[ "$BACKEND_STARTED_BY_QA" == "true" || "$FRONTEND_STARTED_BY_QA" == "true" ]]; then
-  SERVICES_NOTE="
-Note: The QA runner auto-started the following services for this validation:
-$(if [[ "$BACKEND_STARTED_BY_QA" == "true" ]]; then echo "  - Backend  ($BACKEND_HEALTH_URL) — started by qa-phase.sh, log: /tmp/qa-backend.log"; fi)
-$(if [[ "$FRONTEND_STARTED_BY_QA" == "true" ]]; then echo "  - Frontend ($FRONTEND_URL) — started by qa-phase.sh, log: /tmp/qa-frontend.log"; fi)
-These services will be stopped automatically after QA completes.
+SERVICES_NOTE="
+Note: The QA runner manages backend (${BACKEND_HEALTH_URL}, log: ${QA_BACKEND_LOG})$(if [[ "$FRONTEND_PRESENT" == "yes" ]]; then echo " and frontend (${FRONTEND_URL}, log: ${QA_FRONTEND_LOG})"; fi) for this validation.
+Services are restarted automatically if they die during quota-retry sleeps.
 You do NOT need to start or stop them yourself."
-fi
+
+# Pre-retry hook — revive any services that died during a long quota sleep
+# before claude attempts the next call. Hook runs in this shell (via eval),
+# so it can reference ensure_services_running and the QA_* env vars set above.
+export CHAIN_CLAUDE_PRE_RETRY_HOOK="ensure_services_running"
 
 # ── Run QA agent ──────────────────────────────────────────────────────────
 cd "$REPO_ROOT"
