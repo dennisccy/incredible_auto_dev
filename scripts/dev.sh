@@ -48,7 +48,7 @@ BACKEND_PID=$!
 echo "Starting frontend on :$FRONTEND_PORT ..."
 (
   cd "$ROOT_DIR/apps/frontend"
-  NEXT_PUBLIC_API_PORT="${BACKEND_PORT}" npx next dev -p "$FRONTEND_PORT"
+  NEXT_PUBLIC_API_URL="http://localhost:${BACKEND_PORT}" NEXT_PUBLIC_API_PORT="${BACKEND_PORT}" npx next dev -p "$FRONTEND_PORT"
 ) &
 FRONTEND_PID=$!
 
