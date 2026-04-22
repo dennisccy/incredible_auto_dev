@@ -40,6 +40,7 @@ echo "Starting backend on :$BACKEND_PORT ..."
 (
   cd "$ROOT_DIR/apps/backend"
   source .venv/bin/activate
+  export CORS_ORIGINS="${CORS_ORIGINS:-http://localhost:${FRONTEND_PORT},http://localhost:3000,http://localhost:3001}"
   uvicorn main:app --reload --host 0.0.0.0 --port $BACKEND_PORT
 ) &
 BACKEND_PID=$!
