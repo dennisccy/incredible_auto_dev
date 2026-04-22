@@ -155,6 +155,9 @@ export CHAIN_CLAUDE_PRE_RETRY_HOOK="ensure_services_running"
 
 # ── Run browser QA agent ───────────────────────────────────────────────────
 cd "$REPO_ROOT"
+# Guard against `set -e` so we can inspect the exit code and fall back to
+# writing a SKIPPED stub when the agent leaves no results file.
+_bqa_rc=0
 claude_with_quota_retry -p "You are the browser-qa-agent for phased development.
 
 Phase: $PHASE
@@ -192,6 +195,21 @@ The report MUST contain a line at the top:
   or
 **Browser QA Verdict:** SKIPPED
 
-Then STOP."
+Then STOP." || _bqa_rc=$?
+
+# If the agent exited non-zero AND did not leave a results file (common when
+# the Anthropic stream times out), write a SKIPPED stub so phase closure can
+# still read an artifact rather than blocking on a missing file. Quota
+# exhaustion (exit 75) is handled differently by the outer run-phase.sh —
+# propagate it unchanged so the outer retry loop triggers.
+if [[ $_bqa_rc -ne 0 && $_bqa_rc -ne ${QUOTA_EXHAUSTED_EXIT_CODE:-75} ]]; then
+  if [[ ! -f "$UI_TEST_RESULTS" ]]; then
+    echo "[browser-qa] Claude CLI exited with code $_bqa_rc without producing results file." >&2
+    echo "[browser-qa] Writing SKIPPED stub so closure is not blocked." >&2
+    write_failed_artifact_stub "$PHASE" "ui-test-results" \
+      "browser-qa-phase.sh Claude CLI invocation exited with code $_bqa_rc without flushing the results file. This commonly indicates a transient Anthropic streaming error (e.g., 'Stream idle timeout - partial response received') after a long live run. Re-run \`./scripts/automation/browser-qa-phase.sh $PHASE\` to retry."
+  fi
+  exit "$_bqa_rc"
+fi
 
 echo "[browser-qa] Done. Report: $UI_TEST_RESULTS"

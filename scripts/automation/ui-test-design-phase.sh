@@ -64,6 +64,7 @@ _FRONTEND_PORT="${CHAIN_FRONTEND_PORT:-3000}"
 FRONTEND_URL="${CHAIN_FRONTEND_URL:-http://localhost:${_FRONTEND_PORT}}"
 
 cd "$REPO_ROOT"
+_utd_rc=0
 claude_with_quota_retry -p "You are the ui-test-designer for phased development.
 
 Phase: $PHASE
@@ -93,7 +94,14 @@ Write these two reports:
 
 Every step must be independently executable. No vague steps like 'test the form' or 'verify it works'.
 
-Then STOP."
+Then STOP." || _utd_rc=$?
+
+if [[ $_utd_rc -ne 0 && $_utd_rc -ne ${QUOTA_EXHAUSTED_EXIT_CODE:-75} ]]; then
+  _reason="ui-test-design-phase.sh Claude CLI exited with code $_utd_rc without writing the expected report(s). Re-run \`./scripts/automation/ui-test-design-phase.sh $PHASE\` once the transient condition has cleared."
+  write_failed_artifact_stub "$PHASE" "ui-test-plan"  "$_reason"
+  write_failed_artifact_stub "$PHASE" "what-to-click" "$_reason"
+  exit "$_utd_rc"
+fi
 
 echo "[ui-test-design] Done. Reports:"
 echo "  UI test plan:  $UI_TEST_PLAN"
