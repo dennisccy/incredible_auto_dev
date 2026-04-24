@@ -3,6 +3,8 @@
 #
 # Provides claude_with_quota_retry(), a drop-in replacement for `claude`
 # that detects quota exhaustion, waits until the reset time, and retries.
+# Also retries on transient streaming failures ("API Error: Stream idle
+# timeout", "Server disconnected") with a short backoff.
 #
 # Sourced by common.sh — do not execute directly.
 #
@@ -11,6 +13,8 @@
 #   CHAIN_CLAUDE_RESET_BUFFER_SECONDS Extra seconds added after parsed reset time (default: 120)
 #   CHAIN_CLAUDE_FALLBACK_SLEEP_SECONDS Sleep duration when reset time cannot be parsed (default: 3600)
 #   CHAIN_CLAUDE_MAX_QUOTA_RETRIES    Max quota-wait-retry cycles before hard fail (default: 3)
+#   CHAIN_CLAUDE_MAX_STREAM_RETRIES   Max transient-stream-error retries (default: 2)
+#   CHAIN_CLAUDE_STREAM_RETRY_SLEEP   Base sleep between stream retries, in seconds (default: 45)
 #   CHAIN_DISABLE_AUTO_WAIT           Set to "true" to disable auto-wait and fail immediately
 #   CHAIN_CLAUDE_PRE_RETRY_HOOK       Shell snippet eval'd after any quota sleep, before
 #                                     retrying claude. Use to re-verify background services
@@ -33,6 +37,8 @@
 : "${CHAIN_CLAUDE_RESET_BUFFER_SECONDS:=120}"
 : "${CHAIN_CLAUDE_FALLBACK_SLEEP_SECONDS:=3600}"
 : "${CHAIN_CLAUDE_MAX_QUOTA_RETRIES:=3}"
+: "${CHAIN_CLAUDE_MAX_STREAM_RETRIES:=2}"
+: "${CHAIN_CLAUDE_STREAM_RETRY_SLEEP:=45}"
 : "${CHAIN_DISABLE_AUTO_WAIT:=false}"
 : "${CHAIN_CLAUDE_PRE_RETRY_HOOK:=}"
 : "${CHAIN_CLAUDE_MAX_RUNTIME_SECONDS:=7200}"
@@ -53,6 +59,21 @@ _quota_is_exhausted() {
   [[ -f "$log_file" ]] || return 1
   grep -qiE \
     "(out of extra usage|you.?ve hit your usage limit|usage limit reached|claude\.ai/upgrade|resets [0-9]|resets at [0-9])" \
+    "$log_file" 2>/dev/null
+}
+
+# Returns 0 if the given log file contains a transient streaming error that
+# should be retried with a short backoff (NOT a quota issue). Examples:
+#   "API Error: Stream idle timeout - partial response received"
+#   "API Error: Request was aborted"
+#   "API Error: Connection error"
+#   "API Error: 529 overloaded_error"
+#   "Server disconnected"
+_stream_transient_is_present() {
+  local log_file="$1"
+  [[ -f "$log_file" ]] || return 1
+  grep -qiE \
+    "(stream idle timeout|partial response received|server disconnected|request was aborted|api error: (connection|socket|network)|overloaded_error|api error: 5[0-9][0-9])" \
     "$log_file" 2>/dev/null
 }
 
@@ -215,6 +236,8 @@ _sleep_until_epoch() {
 claude_with_quota_retry() {
   local retry_count=0
   local max_retries="${CHAIN_CLAUDE_MAX_QUOTA_RETRIES}"
+  local stream_retry_count=0
+  local max_stream_retries="${CHAIN_CLAUDE_MAX_STREAM_RETRIES}"
   local tmp_log
 
   while true; do
@@ -260,7 +283,26 @@ claude_with_quota_retry() {
       return 0
     fi
 
-    # ── Non-quota failure ───────────────────────────────────────────────────
+    # ── Transient streaming failure (retry with short backoff) ──────────────
+    # Detect API-side stream drops that are NOT quota exhaustion. These often
+    # occur on long-running agents (browser QA) when the Anthropic streaming
+    # connection goes idle; a single retry usually succeeds.
+    if _stream_transient_is_present "$tmp_log" && ! _quota_is_exhausted "$tmp_log"; then
+      stream_retry_count=$((stream_retry_count + 1))
+      if [[ $stream_retry_count -gt $max_stream_retries ]]; then
+        echo "[quota-retry] $(date -Iseconds) Stream-transient error persisted after $max_stream_retries retries. Giving up (exit $exit_code)." >&2
+        rm -f "$tmp_log"
+        return "$exit_code"
+      fi
+      # Exponential-ish backoff: base * retry_count
+      local stream_sleep=$(( CHAIN_CLAUDE_STREAM_RETRY_SLEEP * stream_retry_count ))
+      echo "[quota-retry] $(date -Iseconds) Transient stream failure detected (retry $stream_retry_count/$max_stream_retries). Sleeping ${stream_sleep}s before retry..." >&2
+      sleep "$stream_sleep" || true
+      rm -f "$tmp_log"
+      continue
+    fi
+
+    # ── Non-quota, non-transient failure ───────────────────────────────────
     if ! _quota_is_exhausted "$tmp_log"; then
       rm -f "$tmp_log"
       return "$exit_code"

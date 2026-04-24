@@ -40,6 +40,7 @@ echo "Starting backend on :$BACKEND_PORT ..."
 (
   cd "$ROOT_DIR/apps/backend"
   source .venv/bin/activate
+  export CORS_ORIGINS="${CORS_ORIGINS:-http://localhost:${FRONTEND_PORT},http://localhost:3000,http://localhost:3001}"
   uvicorn main:app --reload --host 0.0.0.0 --port $BACKEND_PORT
 ) &
 BACKEND_PID=$!
@@ -48,7 +49,7 @@ BACKEND_PID=$!
 echo "Starting frontend on :$FRONTEND_PORT ..."
 (
   cd "$ROOT_DIR/apps/frontend"
-  NEXT_PUBLIC_API_PORT="${BACKEND_PORT}" npx next dev -p "$FRONTEND_PORT"
+  NEXT_PUBLIC_API_URL="http://localhost:${BACKEND_PORT}" NEXT_PUBLIC_API_PORT="${BACKEND_PORT}" npx next dev -p "$FRONTEND_PORT"
 ) &
 FRONTEND_PID=$!
 
