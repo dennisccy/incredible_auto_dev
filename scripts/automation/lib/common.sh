@@ -532,3 +532,58 @@ write_na_ui_artifacts() {
     fi
   done
 }
+
+# Write a SKIPPED stub for an artifact that an agent failed to produce — e.g.
+# when the `claude` CLI exits non-zero (stream timeout, crash) and leaves no
+# results file. This keeps the phase chain moving and lets closure see the
+# artifact rather than blocking on a missing file.
+#
+# Usage: write_failed_artifact_stub <phase> <artifact-name> <reason>
+# Where <artifact-name> matches one of the keys in write_na_ui_artifacts
+# (e.g., ui-test-results, user-visible-changes, ui-surface-map).
+#
+# If the artifact file already exists (even partially written by the agent),
+# this function does nothing so real output is preserved.
+write_failed_artifact_stub() {
+  local phase="$1"
+  local artifact="$2"
+  local reason="${3:-agent failed to write artifact}"
+
+  local out_file="$REPO_ROOT/reports/phase-${phase}-${artifact}.md"
+  if [[ -f "$out_file" ]]; then
+    return 0
+  fi
+
+  mkdir -p "$(dirname "$out_file")"
+
+  local header="# Phase ${phase} — ${artifact}"
+  local verdict_block=""
+  case "$artifact" in
+    ui-test-results)
+      verdict_block=$'\n**Browser QA Verdict:** SKIPPED\n'
+      ;;
+    qa-report|review-report|audit-report)
+      verdict_block=$'\n**Verdict:** SKIPPED\n'
+      ;;
+  esac
+
+  {
+    echo "$header"
+    echo ""
+    echo "**Status:** SKIPPED — agent did not produce this artifact."
+    echo "$verdict_block"
+    echo "## Reason"
+    echo ""
+    echo "$reason"
+    echo ""
+    echo "## Recovery"
+    echo ""
+    echo "This stub was written automatically by the phase script because the"
+    echo "underlying Claude CLI invocation exited without producing the"
+    echo "expected artifact. To regenerate with full content, re-run the"
+    echo "relevant phase step (e.g., \`./scripts/automation/browser-qa-phase.sh"
+    echo "${phase}\`) once the transient condition has cleared."
+  } > "$out_file"
+
+  echo "[write_failed_artifact_stub] Wrote SKIPPED stub: $out_file"
+}

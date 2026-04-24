@@ -57,6 +57,7 @@ if [[ -f "$IMPL_SUMMARY" ]]; then
 fi
 
 cd "$REPO_ROOT"
+_ui_rc=0
 claude_with_quota_retry -p "You are the ui-impact-analyst for phased development.
 
 Phase: $PHASE
@@ -89,7 +90,17 @@ Use the templates at templates/user-visible-changes.md and templates/ui-surface-
 
 Every entry in the surface map MUST have a specific 'What to Test' action (not vague phrases like 'verify it works').
 
-Then STOP."
+Then STOP." || _ui_rc=$?
+
+# Fall back to SKIPPED stubs if the agent exited without writing its artifacts
+# (commonly due to a transient Anthropic streaming error). Quota exit (75) is
+# propagated unchanged so the outer run-phase.sh retry loop triggers.
+if [[ $_ui_rc -ne 0 && $_ui_rc -ne ${QUOTA_EXHAUSTED_EXIT_CODE:-75} ]]; then
+  _reason="ui-impact-phase.sh Claude CLI exited with code $_ui_rc without writing the expected report(s). Re-run \`./scripts/automation/ui-impact-phase.sh $PHASE\` once the transient condition has cleared."
+  write_failed_artifact_stub "$PHASE" "user-visible-changes" "$_reason"
+  write_failed_artifact_stub "$PHASE" "ui-surface-map"       "$_reason"
+  exit "$_ui_rc"
+fi
 
 echo "[ui-impact] Done. Reports:"
 echo "  User-visible changes: $USER_VISIBLE"
