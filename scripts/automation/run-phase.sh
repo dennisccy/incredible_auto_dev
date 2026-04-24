@@ -78,16 +78,16 @@ _run_step() {
   if [[ $rc -eq ${QUOTA_EXHAUSTED_EXIT_CODE:-75} ]]; then
     log "  Quota exhaustion detected (exit 75). Waiting for reset..."
     update_status "$PHASE" "blocked" "quota_blocked"
-    local remaining
+    local remaining wake_epoch
     if remaining=$(_quota_check_sentinel 2>/dev/null); then
+      wake_epoch=$(( $(date +%s) + remaining ))
       log "  Sentinel: sleeping ${remaining}s until quota resets..."
-      # || true: allow operator to kill the sleep to manually resume work when
-      # quota is available early; we'd rather retry than exit the pipeline.
-      sleep "$remaining" || true
+      _sleep_until_epoch "$wake_epoch"
     else
       local fallback="${CHAIN_CLAUDE_FALLBACK_SLEEP_SECONDS:-3600}"
+      wake_epoch=$(( $(date +%s) + fallback ))
       log "  No sentinel — fallback sleep ${fallback}s..."
-      sleep "$fallback" || true
+      _sleep_until_epoch "$wake_epoch"
     fi
     _quota_clear_sentinel 2>/dev/null || true
     log "  Quota sleep complete. Resuming."

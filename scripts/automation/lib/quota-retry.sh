@@ -12,12 +12,30 @@
 #   CHAIN_CLAUDE_FALLBACK_SLEEP_SECONDS Sleep duration when reset time cannot be parsed (default: 3600)
 #   CHAIN_CLAUDE_MAX_QUOTA_RETRIES    Max quota-wait-retry cycles before hard fail (default: 3)
 #   CHAIN_DISABLE_AUTO_WAIT           Set to "true" to disable auto-wait and fail immediately
+#   CHAIN_CLAUDE_PRE_RETRY_HOOK       Shell snippet eval'd after any quota sleep, before
+#                                     retrying claude. Use to re-verify background services
+#                                     (servers, tunnels, etc.) that may have died during the
+#                                     long sleep. Runs in the caller's shell — can reference
+#                                     functions and variables defined by the caller. Non-zero
+#                                     exit warns but does not abort the retry.
+#   CHAIN_CLAUDE_MAX_RUNTIME_SECONDS  Hard wall-clock limit for a single claude invocation
+#                                     (default: 7200 = 2h). Observed behaviour: claude can
+#                                     occasionally hang in ep_poll after the task is fully
+#                                     written to disk (MCP cleanup, API socket stuck, etc.),
+#                                     blocking the pipeline indefinitely. The timeout wraps
+#                                     claude with GNU timeout: SIGTERM at the limit, SIGKILL
+#                                     after a 60s grace period. A killed claude that already
+#                                     wrote its artifacts is treated like any non-zero exit —
+#                                     callers (run-phase.sh) log a warning and continue.
+#                                     Set to 0 to disable the timeout.
 
 : "${CHAIN_CLAUDE_RESET_TZ:=Europe/London}"
 : "${CHAIN_CLAUDE_RESET_BUFFER_SECONDS:=120}"
 : "${CHAIN_CLAUDE_FALLBACK_SLEEP_SECONDS:=3600}"
 : "${CHAIN_CLAUDE_MAX_QUOTA_RETRIES:=3}"
 : "${CHAIN_DISABLE_AUTO_WAIT:=false}"
+: "${CHAIN_CLAUDE_PRE_RETRY_HOOK:=}"
+: "${CHAIN_CLAUDE_MAX_RUNTIME_SECONDS:=7200}"
 
 # Exit code returned when quota retries are exhausted.
 # 75 = EX_TEMPFAIL (POSIX sysexits.h) — "temporary failure, try again later".
@@ -157,6 +175,32 @@ _quota_clear_sentinel() {
   rm -f "$_QUOTA_SENTINEL"
 }
 
+# ── Suspend-resilient sleep ──────────────────────────────────────────────────
+# `sleep N` on Linux uses CLOCK_MONOTONIC, which pauses during system
+# suspend/hibernate. A 3-hour sleep across an overnight suspend can block for
+# days instead of minutes. `_sleep_until_epoch <wall_clock_epoch>` polls the
+# wall clock in small chunks, so on resume it detects the epoch has passed and
+# exits immediately.
+#
+# Usage: _sleep_until_epoch <epoch_seconds>
+# Returns: 0 when wall clock reaches epoch (or already past).
+_sleep_until_epoch() {
+  local target="$1"
+  [[ "$target" =~ ^[0-9]+$ ]] || return 0
+  local now chunk
+  while true; do
+    now=$(date +%s)
+    if [[ $now -ge $target ]]; then return 0; fi
+    chunk=$(( target - now ))
+    # Cap at 60s so suspend/resume is detected within a minute of wake-up.
+    [[ $chunk -gt 60 ]] && chunk=60
+    # sleep || return 0: if operator SIGTERMs the sleep (e.g. to force retry
+    # now that quota is back), exit immediately rather than propagate 143 up
+    # — which would be misread as a non-quota failure under `set -e`.
+    sleep "$chunk" || return 0
+  done
+}
+
 # ── Public function ──────────────────────────────────────────────────────────
 
 # Drop-in replacement for `claude`. Accepts the same arguments.
@@ -175,25 +219,39 @@ claude_with_quota_retry() {
 
   while true; do
     # ── Pre-flight: check sentinel before wasting a claude invocation ────
-    local sentinel_remaining
+    local sentinel_remaining sentinel_epoch
     if sentinel_remaining=$(_quota_check_sentinel); then
+      sentinel_epoch=$(( $(date +%s) + sentinel_remaining ))
       echo "[quota-retry] $(date -Iseconds) Sentinel active — quota resets in ${sentinel_remaining}s. Sleeping..." >&2
-      # sleep || true: if operator kills the sleep (e.g. quota manually resumed),
-      # we should retry claude immediately rather than propagate SIGTERM (143) up
-      # to the caller — which would be misread as a non-quota failure.
-      sleep "$sentinel_remaining" || true
+      _sleep_until_epoch "$sentinel_epoch"
       _quota_clear_sentinel
       echo "[quota-retry] $(date -Iseconds) Sentinel sleep complete. Retrying." >&2
+      _quota_run_pre_retry_hook
     fi
 
     tmp_log=$(mktemp /tmp/claude-quota-XXXXXX.log)
 
     # Run claude, stream output to terminal AND capture to temp file.
     # PIPESTATUS[0] gives claude's exit code even through the pipe.
+    # Wrap with `timeout` so a hung claude (observed: stuck in ep_poll after
+    # task completion due to MCP/API socket cleanup) cannot block the pipeline
+    # forever. The timeout is only applied when CHAIN_CLAUDE_MAX_RUNTIME_SECONDS > 0
+    # and the `timeout` binary is available.
     local sleep_start
     sleep_start=$(date +%s)
-    claude --effort max "$@" 2>&1 | tee "$tmp_log"
-    local exit_code="${PIPESTATUS[0]}"
+    local exit_code
+    if [[ "${CHAIN_CLAUDE_MAX_RUNTIME_SECONDS:-0}" -gt 0 ]] && command -v timeout >/dev/null 2>&1; then
+      timeout --kill-after=60 "$CHAIN_CLAUDE_MAX_RUNTIME_SECONDS" claude --effort max "$@" 2>&1 | tee "$tmp_log"
+      exit_code="${PIPESTATUS[0]}"
+      # GNU timeout returns 124 on SIGTERM, 137 on SIGKILL — log and treat as failure.
+      if [[ $exit_code -eq 124 || $exit_code -eq 137 ]]; then
+        echo "[quota-retry] $(date -Iseconds) *** claude exceeded CHAIN_CLAUDE_MAX_RUNTIME_SECONDS (${CHAIN_CLAUDE_MAX_RUNTIME_SECONDS}s) and was terminated ***" >&2
+        echo "[quota-retry] $(date -Iseconds) If artifacts were written before the hang, downstream steps can still proceed." >&2
+      fi
+    else
+      claude --effort max "$@" 2>&1 | tee "$tmp_log"
+      exit_code="${PIPESTATUS[0]}"
+    fi
 
     # ── Success path ────────────────────────────────────────────────────────
     if [[ $exit_code -eq 0 ]] && ! _quota_is_exhausted "$tmp_log"; then
@@ -250,12 +308,23 @@ claude_with_quota_retry() {
     _quota_write_sentinel "$reset_epoch"
 
     echo "[quota-retry] $(date -Iseconds) Sleeping ${sleep_secs}s ... (retry $retry_count/$max_retries will follow)" >&2
-    # See comment on sentinel-sleep above: interrupting this sleep should retry,
-    # not propagate 143 up and be misread as a non-quota failure.
-    sleep "$sleep_secs" || true
+    _sleep_until_epoch "$reset_epoch"
 
     local actual_sleep=$(( $(date +%s) - sleep_start ))
     echo "[quota-retry] $(date -Iseconds) Woke up after ${actual_sleep}s. Retrying claude (attempt $retry_count/$max_retries)..." >&2
+    _quota_run_pre_retry_hook
     echo "" >&2
   done
+}
+
+# Invoke the optional pre-retry hook after a quota sleep. Runs in the caller's
+# shell (eval), so hook snippets can reference caller-defined functions and
+# variables. A non-zero exit is logged but does not abort the retry — the hook
+# is best-effort cleanup.
+_quota_run_pre_retry_hook() {
+  [[ -z "${CHAIN_CLAUDE_PRE_RETRY_HOOK:-}" ]] && return 0
+  echo "[quota-retry] $(date -Iseconds) Running pre-retry hook..." >&2
+  if ! eval "$CHAIN_CLAUDE_PRE_RETRY_HOOK"; then
+    echo "[quota-retry] $(date -Iseconds) Pre-retry hook returned non-zero; continuing." >&2
+  fi
 }

@@ -108,29 +108,10 @@ _FRONTEND_PORT="${CHAIN_FRONTEND_PORT:-3000}"
 BACKEND_HEALTH_URL="${CHAIN_BACKEND_HEALTH_URL:-http://localhost:${_BACKEND_PORT}/health}"
 FRONTEND_URL="${CHAIN_FRONTEND_URL:-http://localhost:${_FRONTEND_PORT}}"
 
-# ── Start backend if not running ──────────────────────────────────────────
-BACKEND_STATUS=$(curl -s -o /dev/null -w "%{http_code}" "$BACKEND_HEALTH_URL" 2>/dev/null || true)
-BACKEND_STARTED_BY_QA=false
-if [[ ! "$BACKEND_STATUS" =~ ^[23] ]]; then
-  if [[ -n "$BACKEND_START_CMD" ]]; then
-    echo "[browser-qa] Backend not running -- starting (log: /tmp/browser-qa-backend.log)..."
-    $BACKEND_START_CMD >/tmp/browser-qa-backend.log 2>&1 &
-    QA_STARTED_PIDS+=($!)
-    BACKEND_STARTED_BY_QA=true
-    _wait_for_url "$BACKEND_HEALTH_URL" "backend" 90 || true
-  else
-    echo "[browser-qa] Backend not running and no start command configured." >&2
-    echo "[browser-qa] Set CHAIN_START_BACKEND_CMD or provide scripts/start-backend.sh" >&2
-  fi
-else
-  echo "[browser-qa] Backend already running at $BACKEND_HEALTH_URL."
-fi
-
-# ── Start frontend (kill stale instance first to ensure correct API URL) ──
-# A stale frontend may have a different backend port baked in from a previous run.
-# Also kill any orphaned Next.js dev servers from previous agent runs — Next.js
-# refuses to start a second dev server in the same directory even on a different port.
-FRONTEND_STARTED_BY_QA=false
+# Kill any stale Next.js dev server for this project before starting — Next.js 16+
+# refuses to start a second dev server in the same directory even on a different
+# port, using .next/dev/lock as the signal. Also handle the case where a stale
+# frontend may be bound with a different backend URL baked in.
 echo "[browser-qa] Clearing any stale Next.js dev server for this project..."
 kill_stale_next_dev_server
 FRONTEND_STATUS=$(curl -s -o /dev/null -w "%{http_code}" "$FRONTEND_URL" 2>/dev/null || true)
@@ -143,17 +124,20 @@ if [[ "$FRONTEND_STATUS" =~ ^[23] ]]; then
   fi
 fi
 
-if [[ -n "$FRONTEND_START_CMD" ]]; then
-  echo "[browser-qa] Starting frontend (port ${_FRONTEND_PORT}, API→localhost:${_BACKEND_PORT}, log: /tmp/browser-qa-frontend.log)..."
-  $FRONTEND_START_CMD >/tmp/browser-qa-frontend.log 2>&1 &
-  QA_STARTED_PIDS+=($!)
-  FRONTEND_STARTED_BY_QA=true
-  _wait_for_url "$FRONTEND_URL" "frontend" 120 || true
-else
-  echo "[browser-qa] No frontend start command configured." >&2
-  echo "[browser-qa] Set CHAIN_START_FRONTEND_CMD or provide scripts/start-frontend.sh" >&2
-  echo "[browser-qa] Browser QA will write SKIPPED results."
-fi
+# Export vars consumed by ensure_services_running (shared helper in common.sh).
+# Project-scoped log paths prevent cross-project clobbering when multiple
+# projects share this subtree.
+QA_BACKEND_LOG=$(_qa_log_path "browser-qa-backend")
+QA_FRONTEND_LOG=$(_qa_log_path "browser-qa-frontend")
+export QA_BACKEND_HEALTH_URL="$BACKEND_HEALTH_URL"
+export QA_BACKEND_START_CMD="$BACKEND_START_CMD"
+export QA_BACKEND_LOG
+export QA_FRONTEND_URL="$FRONTEND_URL"
+export QA_FRONTEND_START_CMD="$FRONTEND_START_CMD"
+export QA_FRONTEND_LOG
+export QA_FRONTEND_REQUIRED="yes"
+
+ensure_services_running
 
 FRONTEND_RUNNING_STATUS=$(curl -s -o /dev/null -w "%{http_code}" "$FRONTEND_URL" 2>/dev/null || true)
 if [[ "$FRONTEND_RUNNING_STATUS" =~ ^[23] ]]; then
@@ -163,10 +147,11 @@ else
   echo "[browser-qa] Frontend not available — browser tests will be marked SKIPPED."
 fi
 
-SERVICES_NOTE=""
-if [[ "$FRONTEND_STARTED_BY_QA" == "true" || "$BACKEND_STARTED_BY_QA" == "true" ]]; then
-  SERVICES_NOTE="Note: browser-qa-phase.sh auto-started services (backend: $BACKEND_STARTED_BY_QA, frontend: $FRONTEND_STARTED_BY_QA). They will be stopped after QA completes."
-fi
+SERVICES_NOTE="Note: browser-qa-phase.sh manages backend (${BACKEND_HEALTH_URL}, log: ${QA_BACKEND_LOG}) and frontend (${FRONTEND_URL}, log: ${QA_FRONTEND_LOG}). Services are restarted automatically if they die during quota-retry sleeps."
+
+# Pre-retry hook — revive any services that died during a long quota sleep
+# before claude attempts the next call.
+export CHAIN_CLAUDE_PRE_RETRY_HOOK="ensure_services_running"
 
 # ── Run browser QA agent ───────────────────────────────────────────────────
 cd "$REPO_ROOT"
