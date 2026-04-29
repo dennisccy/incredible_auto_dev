@@ -123,18 +123,39 @@ except Exception:
 }
 
 # Returns 0 if runs/<phase>/summary.json has status: "finalized"
+# AND status.json does not say the phase is currently blocked.
+#
+# Both files must agree: previously summary.json could lie because
+# finalize-phase.sh writes it BEFORE the release-manager actually runs.
+# If the release-manager hits quota or any other failure after that,
+# status.json is updated to "blocked" but summary.json is left claiming
+# finalized — which made subsequent runs exit early with "already
+# finalized" even though closure had since failed.
 is_finalized() {
   local phase="$1"
   local summary_file="$REPO_ROOT/runs/$phase/summary.json"
+  local status_file="$REPO_ROOT/runs/$phase/status.json"
   if [[ ! -f "$summary_file" ]]; then return 1; fi
-  python3 -c "
-import json, sys
+  python3 - "$summary_file" "$status_file" <<'PYEOF' 2>/dev/null
+import json, sys, os
+summary_file, status_file = sys.argv[1], sys.argv[2]
 try:
-    with open('$summary_file') as f:
-        sys.exit(0 if json.load(f).get('status') == 'finalized' else 1)
+    with open(summary_file) as f:
+        if json.load(f).get("status") != "finalized":
+            sys.exit(1)
 except Exception:
     sys.exit(1)
-" 2>/dev/null
+# If status.json exists and says blocked, the phase is not really done
+# regardless of what summary.json claims — trust the more recent state.
+if os.path.exists(status_file):
+    try:
+        with open(status_file) as f:
+            if json.load(f).get("status") == "blocked":
+                sys.exit(1)
+    except Exception:
+        pass
+sys.exit(0)
+PYEOF
 }
 
 # Source quota-retry helpers (defines claude_with_quota_retry)

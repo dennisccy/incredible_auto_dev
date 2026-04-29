@@ -123,12 +123,14 @@ if [[ "$FORCE_RESET" == "true" ]]; then
   update_status "$PHASE" "in_progress" "starting"
   # Clear all phase artifact files so a step that fails (quota, timeout,
   # crash) cannot be falsely reported as PASS by a verdict-passes check
-  # against a stale file from a prior run.
+  # against a stale file from a prior run. Includes summary.json so the
+  # is_finalized check sees a clean slate.
   rm -f "$PLAN_FILE" "$TEST_PLAN" \
         "$REVIEW_REPORT" "$QA_REPORT" "$AUDIT_REPORT" \
         "$IMPL_SUMMARY" "$USER_VISIBLE" "$UI_SURFACE_MAP" \
         "$UI_TEST_PLAN" "$UI_TEST_RESULTS" "$WHAT_TO_CLICK" \
-        "$UX_REGRESSION" "$CLOSURE_VERDICT"
+        "$UX_REGRESSION" "$CLOSURE_VERDICT" \
+        "$REPO_ROOT/runs/$PHASE/summary.json"
   log "  --reset: cleared phase artifact files"
 fi
 
