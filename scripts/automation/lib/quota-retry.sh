@@ -54,11 +54,28 @@ _QUOTA_SENTINEL="/tmp/claude-quota-exhausted"
 # ── Internal helpers ─────────────────────────────────────────────────────────
 
 # Returns 0 if the given log file contains quota-exhaustion indicators.
+# Note: the "your.*usage limit" pattern allows qualifiers between "your" and
+# "usage limit" so messages like "you've hit your org's monthly usage limit"
+# are detected. Without the .*, monthly/org variants slip through and the
+# pipeline treats them as ordinary failures (returning a confusing non-quota
+# exit code instead of the QUOTA_EXHAUSTED_EXIT_CODE).
 _quota_is_exhausted() {
   local log_file="$1"
   [[ -f "$log_file" ]] || return 1
   grep -qiE \
-    "(out of extra usage|you.?ve hit your usage limit|usage limit reached|claude\.ai/upgrade|resets [0-9]|resets at [0-9])" \
+    "(out of extra usage|you.?ve hit (your|the).*usage limit|(monthly|daily|weekly) usage limit|usage limit reached|claude\.ai/upgrade|resets [0-9]|resets at [0-9])" \
+    "$log_file" 2>/dev/null
+}
+
+# Returns 0 if the given log file indicates a long-duration limit (monthly /
+# org-wide) that will NOT reset within a few hours. We treat these as hard
+# fails so the pipeline does not burn 3 fallback-sleep cycles waiting for a
+# reset that is days or weeks away.
+_quota_is_long_duration_limit() {
+  local log_file="$1"
+  [[ -f "$log_file" ]] || return 1
+  grep -qiE \
+    "(monthly usage limit|your org.?s.*usage limit|organization.*usage limit|enterprise.*usage limit)" \
     "$log_file" 2>/dev/null
 }
 
@@ -317,6 +334,18 @@ claude_with_quota_retry() {
     [[ -n "$reset_str" ]] && echo "[quota-retry] $(date -Iseconds) Reset indicator: '$reset_str'" >&2
 
     echo "[quota-retry] $(date -Iseconds) Output saved to: $tmp_log" >&2
+
+    # Long-duration limits (monthly / org-wide) cannot be retried in a few
+    # hours — fail fast so the operator can rerun on the next billing window.
+    # Without this branch, the loop burns CHAIN_CLAUDE_FALLBACK_SLEEP_SECONDS
+    # × CHAIN_CLAUDE_MAX_QUOTA_RETRIES seconds (default 3h) sleeping for a
+    # reset that is days or weeks away.
+    if _quota_is_long_duration_limit "$tmp_log"; then
+      echo "[quota-retry] $(date -Iseconds) Long-duration limit detected (monthly/org). Skipping retry — limit will not reset in the retry window." >&2
+      echo "[quota-retry] $(date -Iseconds) Re-run this step after the billing window resets." >&2
+      rm -f "$tmp_log"
+      return $QUOTA_EXHAUSTED_EXIT_CODE
+    fi
 
     if [[ "$CHAIN_DISABLE_AUTO_WAIT" == "true" ]]; then
       echo "[quota-retry] $(date -Iseconds) CHAIN_DISABLE_AUTO_WAIT=true — not retrying." >&2
