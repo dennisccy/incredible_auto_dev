@@ -121,6 +121,15 @@ init_run_dir "$PHASE"
 if [[ "$FORCE_RESET" == "true" ]]; then
   log "  --reset: clearing checkpoint, starting fresh"
   update_status "$PHASE" "in_progress" "starting"
+  # Clear all phase artifact files so a step that fails (quota, timeout,
+  # crash) cannot be falsely reported as PASS by a verdict-passes check
+  # against a stale file from a prior run.
+  rm -f "$PLAN_FILE" "$TEST_PLAN" \
+        "$REVIEW_REPORT" "$QA_REPORT" "$AUDIT_REPORT" \
+        "$IMPL_SUMMARY" "$USER_VISIBLE" "$UI_SURFACE_MAP" \
+        "$UI_TEST_PLAN" "$UI_TEST_RESULTS" "$WHAT_TO_CLICK" \
+        "$UX_REGRESSION" "$CLOSURE_VERDICT"
+  log "  --reset: cleared phase artifact files"
 fi
 
 if is_finalized "$PHASE" && [[ "$FORCE_RESET" != "true" ]]; then
@@ -345,6 +354,9 @@ if [[ "$SKIP_DEV_REVIEW" == "false" ]]; then
     fi
 
     log "  [attempt $ATTEMPT/$MAX_RETRIES] Running reviewer..."
+    # Clear stale verdict so a script crash before write cannot be masked
+    # by the previous attempt's PASS verdict.
+    rm -f "$REVIEW_REPORT"
     rev_rc=0
     _run_step "$SCRIPT_DIR/review-phase.sh" "$PHASE" || rev_rc=$?
     if [[ $rev_rc -eq 75 ]]; then
@@ -418,6 +430,9 @@ echo ""
 if [[ "$SKIP_BROWSER_QA" == "false" ]]; then
   if [[ "$FRONTEND_PRESENT" == "yes" ]]; then
     log "Step 6/11 -- Browser QA..."
+    # Clear stale results so a script crash before write doesn't leave
+    # an old run's results pretending to be this run's.
+    rm -f "$UI_TEST_RESULTS"
     bqa_q=0
     while true; do
       bqa_rc=0
@@ -448,6 +463,9 @@ if [[ "$SKIP_QA" == "false" ]]; then
   while true; do
     QA_ATTEMPT=$((QA_ATTEMPT + 1))
     log "  [QA attempt $QA_ATTEMPT/$MAX_RETRIES] Running QA validator..."
+    # Clear stale verdict so a script crash before write cannot be masked
+    # by the previous attempt's PASS verdict.
+    rm -f "$QA_REPORT"
     qa_rc=0
     _run_step "$SCRIPT_DIR/qa-phase.sh" "$PHASE" || qa_rc=$?
     if [[ $qa_rc -eq 75 ]]; then
@@ -489,6 +507,9 @@ kill_phase_servers
 if [[ "$SKIP_UX_REGRESSION" == "false" ]]; then
   if [[ "$FRONTEND_PRESENT" == "yes" ]]; then
     log "Step 8/11 -- UX Regression Review..."
+    # Clear stale verdict so a script crash before write cannot be masked
+    # by a previous run's PASS verdict.
+    rm -f "$UX_REGRESSION"
     uxr_q=0
     while true; do
       uxr_rc=0
@@ -522,6 +543,9 @@ if [[ "$SKIP_AUDIT" == "false" ]]; then
   while true; do
     AUDIT_ATTEMPT=$((AUDIT_ATTEMPT + 1))
     log "  [audit attempt $AUDIT_ATTEMPT/$MAX_AUDIT_RETRIES] Running phase auditor..."
+    # Clear stale verdict so a script crash before write cannot be masked
+    # by a previous attempt's PASS verdict.
+    rm -f "$AUDIT_REPORT"
     aud_rc=0
     _run_step "$SCRIPT_DIR/phase-audit.sh" "$PHASE" || aud_rc=$?
     if [[ $aud_rc -eq 75 ]]; then
@@ -568,6 +592,9 @@ echo ""
 # ── Step 10/11: Phase Closure Check ──────────────────────────────────────────
 if [[ "$SKIP_CLOSURE" == "false" ]]; then
   log "Step 10/11 -- Phase Closure Check..."
+  # Clear stale verdict so a script crash before write cannot be masked
+  # by a previous run's PASS verdict.
+  rm -f "$CLOSURE_VERDICT"
   clo_q=0
   while true; do
     clo_rc=0

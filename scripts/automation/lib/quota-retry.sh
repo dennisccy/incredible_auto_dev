@@ -54,11 +54,17 @@ _QUOTA_SENTINEL="/tmp/claude-quota-exhausted"
 # ── Internal helpers ─────────────────────────────────────────────────────────
 
 # Returns 0 if the given log file contains quota-exhaustion indicators.
+#
+# The pattern intentionally allows up to 40 chars between "your" and
+# "usage limit" so org/team-plan variants (e.g. "your org's monthly usage
+# limit", "your monthly usage limit", "your team's usage limit") all match.
+# Without this, the chain silently treated quota errors as successes and
+# downstream steps would falsely pass against stale verdict files.
 _quota_is_exhausted() {
   local log_file="$1"
   [[ -f "$log_file" ]] || return 1
   grep -qiE \
-    "(out of extra usage|you.?ve hit your usage limit|usage limit reached|claude\.ai/upgrade|resets [0-9]|resets at [0-9])" \
+    "(out of extra usage|you.?ve hit your.{0,40}usage limit|you.?ve reached your.{0,40}usage limit|usage limit reached|monthly usage limit|claude\.ai/upgrade|resets [0-9]|resets at [0-9])" \
     "$log_file" 2>/dev/null
 }
 

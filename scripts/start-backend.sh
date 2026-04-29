@@ -14,6 +14,13 @@ _port_root="$REPO_ROOT"
 _offset=$(printf '%s' "$_port_root" | sha1sum | cut -c1-4)
 _offset=$((16#$_offset % 1000))
 PORT="${CHAIN_BACKEND_PORT:-$((8000 + _offset))}"
+FRONTEND_PORT="${CHAIN_FRONTEND_PORT:-$((3000 + _offset))}"
+
+# Tell FastAPI which origins are allowed. Mirrors scripts/dev.sh so QA-spawned
+# backends accept requests from the QA-spawned frontend (which uses the
+# offset port). Without this, browser tests hit CORS errors and the operator
+# has to re-bootstrap manually.
+export CORS_ORIGINS="${CORS_ORIGINS:-http://localhost:${FRONTEND_PORT},http://localhost:3000,http://localhost:3001}"
 
 # Run pending migrations before starting
 cd "$REPO_ROOT/apps/backend"
