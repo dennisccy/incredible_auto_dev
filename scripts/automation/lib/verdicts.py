@@ -94,6 +94,7 @@ class PhaseStep(str, Enum):
     UX_REGRESSION_COMPLETE = "ux_regression_complete"
     CLOSURE_PASSED = "closure_passed"
     CLOSURE_FAILED = "closure_failed"
+    QUOTA_BLOCKED = "quota_blocked"
     FAILED = "failed"
 
 

@@ -207,8 +207,9 @@ case "$CURRENT_STEP" in
     SKIP_PLAN=true; SKIP_TEST_PLAN=true ;;
   planned)
     SKIP_PLAN=true ;;
-  failed)
-    # Legacy generic failure — infer completed stages from existing artifacts
+  quota_blocked|failed)
+    # quota_blocked: process was killed mid-quota-wait — infer from artifacts.
+    # failed: legacy generic failure — infer completed stages from existing artifacts.
     if closure_verdict_passes "$CLOSURE_VERDICT"; then
       SKIP_PLAN=true; SKIP_TEST_PLAN=true; SKIP_DEV_REVIEW=true
       SKIP_UI_IMPACT=true; SKIP_UI_TEST_DESIGN=true; SKIP_BROWSER_QA=true
