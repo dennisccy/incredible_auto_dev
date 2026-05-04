@@ -1,0 +1,563 @@
+#!/usr/bin/env bash
+# run-goal.sh — Goal-driven continuous mode runner.
+#
+# Reads docs/goal.md (which must include Must-have user journeys + Anti-goals)
+# and iterates `decompose -> execute -> evaluate` adaptively until either the
+# goal-evaluator declares GOAL_ACHIEVED or a hard halt fires (max iterations,
+# stall, regression).
+#
+# Usage:
+#   ./scripts/automation/run-goal.sh [--session-id <id>] [--max-iter N]
+#                                    [--stall-window N] [--resume] [--reset]
+#                                    [--auto-release]
+#                                    [--acknowledge-regression]
+#
+# Flags:
+#   --session-id <id>            Session identifier (auto-generated if omitted)
+#   --max-iter N                 Hard cap on iterations (default: 30)
+#   --stall-window N             Halt if last N iterations show no journey progress (default: 3)
+#   --resume                     Resume an existing session
+#   --reset                      Discard the named session and start fresh
+#   --auto-release               On GOAL_ACHIEVED, run release-manager once for the whole session
+#   --acknowledge-regression     Continue past a prior REGRESSION_HALT
+#
+# Halt verdicts written to runs/goal-session-<sid>/session.json.status:
+#   GOAL_ACHIEVED   - goal-evaluator declared done
+#   BUDGET_EXHAUSTED - max iterations reached
+#   STALLED          - journey-history hash unchanged for stall_window iterations
+#   REGRESSION_HALT  - goal-evaluator emitted REGRESSION verdict
+#   ABORTED          - user interrupted (SIGINT/SIGTERM)
+#
+# Quota exhaustion is NOT a halt: claude_with_quota_retry transparently sleeps
+# until the quota resets and resumes.
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$SCRIPT_DIR/lib/common.sh"
+source "$SCRIPT_DIR/lib/telemetry.sh"
+
+# ── Defaults ──────────────────────────────────────────────────────────────
+SESSION_ID=""
+MAX_ITER=30
+STALL_WINDOW=3
+RESUME=false
+RESET=false
+AUTO_RELEASE=false
+ACK_REGRESSION=false
+
+# ── Parse flags ───────────────────────────────────────────────────────────
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --session-id)              SESSION_ID="$2"; shift 2 ;;
+    --max-iter)                MAX_ITER="$2"; shift 2 ;;
+    --stall-window)            STALL_WINDOW="$2"; shift 2 ;;
+    --resume)                  RESUME=true; shift ;;
+    --reset)                   RESET=true; shift ;;
+    --auto-release)            AUTO_RELEASE=true; shift ;;
+    --acknowledge-regression)  ACK_REGRESSION=true; shift ;;
+    *) echo "Unknown argument: $1" >&2; exit 2 ;;
+  esac
+done
+
+require_claude
+
+if [[ -z "$SESSION_ID" ]]; then
+  if [[ "$RESUME" == "true" ]]; then
+    echo "Error: --resume requires --session-id <id>" >&2
+    exit 1
+  fi
+  SESSION_ID="$(date -u +%Y-%m-%d)-$(printf '%s' "$REPO_ROOT" | sha1sum | cut -c1-6)"
+  echo "[run-goal] No --session-id provided. Using auto-generated: $SESSION_ID"
+fi
+
+GOAL_SESSION_DIR_LOCAL="$REPO_ROOT/runs/goal-session-${SESSION_ID}"
+SESSION_JSON="$GOAL_SESSION_DIR_LOCAL/session.json"
+JOURNEY_HISTORY="$GOAL_SESSION_DIR_LOCAL/state/journey-history.json"
+EVALUATOR_LOG="$GOAL_SESSION_DIR_LOCAL/state/evaluator-log.md"
+SUMMARY_FILE="$GOAL_SESSION_DIR_LOCAL/summary.md"
+GOAL_FILE="$REPO_ROOT/docs/goal.md"
+
+if [[ "$RESET" == "true" && -d "$GOAL_SESSION_DIR_LOCAL" ]]; then
+  echo "[run-goal] --reset: removing existing $GOAL_SESSION_DIR_LOCAL"
+  rm -rf "$GOAL_SESSION_DIR_LOCAL"
+fi
+
+# ── Validate goal.md ──────────────────────────────────────────────────────
+validate_goal_file() {
+  if [[ ! -f "$GOAL_FILE" ]]; then
+    echo "Error: $GOAL_FILE not found." >&2
+    echo "  Author it from templates/project-goal.md and include 'Must-have user journeys' + 'Anti-goals' sections." >&2
+    exit 1
+  fi
+
+  if ! grep -q "^## Must-have user journeys" "$GOAL_FILE"; then
+    echo "Error: $GOAL_FILE is missing the '## Must-have user journeys' section." >&2
+    echo "  See templates/project-goal.md for the format. See .claude/anti-patterns.md #18." >&2
+    exit 1
+  fi
+
+  if ! grep -q "^## Anti-goals" "$GOAL_FILE"; then
+    echo "Error: $GOAL_FILE is missing the '## Anti-goals' section." >&2
+    echo "  See templates/project-goal.md for the format. See .claude/anti-patterns.md #18." >&2
+    exit 1
+  fi
+
+  if ! grep -E '^- \*\*J-[0-9]+:' "$GOAL_FILE" >/dev/null; then
+    echo "Error: $GOAL_FILE 'Must-have user journeys' section has no journey entries." >&2
+    echo "  Each journey MUST have an ID like '- **J-01: <name>**'. See templates/project-goal.md." >&2
+    exit 1
+  fi
+
+  python3 - <<'PY' "$GOAL_FILE" || exit 1
+import re, sys
+text = open(sys.argv[1]).read()
+m = re.search(r'^## Anti-goals\s*$(.*?)(^## |\Z)', text, re.MULTILINE | re.DOTALL)
+if not m:
+    print("Error: Anti-goals section parse failed.", file=sys.stderr); sys.exit(1)
+body = m.group(1)
+items = [ln for ln in body.splitlines() if ln.strip().startswith('-') and ln.strip() != '-']
+non_placeholder = [ln for ln in items if 'TODO' not in ln and 'placeholder' not in ln.lower()]
+if not non_placeholder:
+    print("Error: Anti-goals section has no concrete entries (only placeholders or empty bullets).",
+          file=sys.stderr)
+    print("  See .claude/anti-patterns.md #18 for examples.", file=sys.stderr)
+    sys.exit(1)
+PY
+}
+
+# ── Session init / load ───────────────────────────────────────────────────
+mkdir -p "$GOAL_SESSION_DIR_LOCAL/state"
+
+if [[ -f "$SESSION_JSON" ]]; then
+  if [[ "$RESUME" != "true" ]]; then
+    echo "Error: session $SESSION_ID already exists at $GOAL_SESSION_DIR_LOCAL" >&2
+    echo "  Use --resume to continue, or --reset to start fresh." >&2
+    exit 1
+  fi
+  CURRENT_ITER=$(python3 -c "import json,sys; print(json.load(open('$SESSION_JSON')).get('current_iter', 0))")
+  PRIOR_STATUS=$(python3 -c "import json,sys; print(json.load(open('$SESSION_JSON')).get('status', 'unknown'))")
+  echo "[run-goal] Resuming session '$SESSION_ID' from iter $CURRENT_ITER (prior status: $PRIOR_STATUS)"
+
+  if [[ "$PRIOR_STATUS" == "REGRESSION_HALT" && "$ACK_REGRESSION" != "true" ]]; then
+    echo "Error: prior run halted with REGRESSION_HALT." >&2
+    echo "  Review the regression in runs/goal-session-${SESSION_ID}/iter-*/eval.md," >&2
+    echo "  fix the regressed journey, then re-run with --acknowledge-regression." >&2
+    exit 1
+  fi
+  RUN_MODE="resume"
+else
+  validate_goal_file
+  CURRENT_ITER=0
+  PRIOR_STATUS="new"
+  echo "[run-goal] Initializing new session: $SESSION_ID"
+  python3 - <<PY
+import json, datetime
+data = {
+  "session_id": "$SESSION_ID",
+  "started_at": datetime.datetime.now(datetime.UTC).isoformat().replace('+00:00', 'Z'),
+  "current_iter": 0,
+  "halt_config": {
+    "max_iterations": $MAX_ITER,
+    "stall_window": $STALL_WINDOW,
+    "regression_halt": True
+  },
+  "status": "in_progress",
+  "last_verdict": None,
+  "next_depth": "lean",
+  "auto_release": $( [[ "$AUTO_RELEASE" == "true" ]] && echo "True" || echo "False" )
+}
+import os
+with open("$SESSION_JSON", "w") as f:
+  json.dump(data, f, indent=2); f.write("\n")
+PY
+  echo '{"journeys":{},"anti_goal_violations":[],"updated_at":""}' > "$JOURNEY_HISTORY"
+  : > "$EVALUATOR_LOG"
+  RUN_MODE="new"
+fi
+
+# Allow --max-iter override on resume
+python3 - <<PY
+import json
+d = json.load(open("$SESSION_JSON"))
+d.setdefault("halt_config", {})
+d["halt_config"]["max_iterations"] = $MAX_ITER
+d["halt_config"]["stall_window"] = $STALL_WINDOW
+if $( [[ "$AUTO_RELEASE" == "true" ]] && echo "True" || echo "False" ):
+  d["auto_release"] = True
+if "$RUN_MODE" == "resume" and d.get("status") == "REGRESSION_HALT":
+  d["status"] = "in_progress"
+json.dump(d, open("$SESSION_JSON","w"), indent=2); open("$SESSION_JSON","a").write("\n")
+PY
+
+# ── Export shared env for invoked agents ──────────────────────────────────
+export GOAL_SESSION_ID="$SESSION_ID"
+export GOAL_SESSION_DIR="$GOAL_SESSION_DIR_LOCAL"
+
+ensure_phase_ports
+
+# ── Telemetry: session_start ──────────────────────────────────────────────
+record_telemetry_event "session_start" "$(jq -cn --arg m "$RUN_MODE" --argjson mi $MAX_ITER --argjson sw $STALL_WINDOW --argjson ar "$( [[ "$AUTO_RELEASE" == "true" ]] && echo true || echo false )" '{mode:$m, max_iterations:$mi, stall_window:$sw, auto_release:$ar}' 2>/dev/null || printf '{"mode":"%s","max_iterations":%d,"stall_window":%d}' "$RUN_MODE" "$MAX_ITER" "$STALL_WINDOW")"
+
+# ── Halt detection helpers ────────────────────────────────────────────────
+SESSION_START_EPOCH=$(date +%s)
+QUOTA_PAUSE_COUNT_FILE="$GOAL_SESSION_DIR_LOCAL/.quota-pause-count"
+[[ -f "$QUOTA_PAUSE_COUNT_FILE" ]] || echo "0" > "$QUOTA_PAUSE_COUNT_FILE"
+
+journey_history_hash() {
+  python3 -c "
+import hashlib, json, sys
+data = json.load(open('$JOURNEY_HISTORY'))
+canonical = {'journeys': data.get('journeys', {})}
+print(hashlib.sha1(json.dumps(canonical, sort_keys=True).encode()).hexdigest())
+"
+}
+
+is_stalled() {
+  local window="$1"
+  local n
+  n=$(python3 -c "
+import json
+hashes = open('$GOAL_SESSION_DIR_LOCAL/.history-hashes').read().splitlines() if __import__('os').path.exists('$GOAL_SESSION_DIR_LOCAL/.history-hashes') else []
+if len($window) > 0 and len(hashes) >= $window:
+  recent = hashes[-$window:]
+  print(1 if len(set(recent)) == 1 else 0)
+else:
+  print(0)
+")
+  [[ "$n" == "1" ]]
+}
+
+write_session_summary() {
+  local final_verdict="$1"
+  local total_iterations="$2"
+  local now_epoch=$(date +%s)
+  local wall_time=$(( now_epoch - SESSION_START_EPOCH ))
+  local quota_pauses
+  quota_pauses=$(cat "$QUOTA_PAUSE_COUNT_FILE")
+  python3 - <<PY
+import json
+d = json.load(open("$SESSION_JSON"))
+d["status"] = "$final_verdict"
+d["finished_at"] = __import__("datetime").datetime.now(__import__("datetime").UTC).isoformat().replace('+00:00','Z')
+d["total_iterations"] = $total_iterations
+d["wall_time_seconds"] = $wall_time
+d["quota_pause_count"] = $quota_pauses
+json.dump(d, open("$SESSION_JSON","w"), indent=2); open("$SESSION_JSON","a").write("\n")
+PY
+  cat > "$SUMMARY_FILE" <<EOF
+# Goal Session Summary — ${SESSION_ID}
+
+**Final verdict:** ${final_verdict}
+**Total iterations:** ${total_iterations}
+**Wall time (seconds):** ${wall_time}
+**Quota pauses:** ${quota_pauses}
+**Started:** $(python3 -c "import json; print(json.load(open('$SESSION_JSON'))['started_at'])")
+**Finished:** $(python3 -c "import json; print(json.load(open('$SESSION_JSON'))['finished_at'])")
+
+## Final journey state
+
+$(python3 -c "
+import json
+d = json.load(open('$JOURNEY_HISTORY'))['journeys']
+if not d:
+    print('(no journeys recorded)')
+else:
+    print('| Journey | Status | Last passing iter |')
+    print('|---|---|---|')
+    for jid, info in sorted(d.items()):
+        print(f\"| {jid} | {info.get('status','unknown')} | {info.get('last_passing_iter') or '-'} |\")
+")
+
+## Anti-goal violations
+
+$(python3 -c "
+import json
+v = json.load(open('$JOURNEY_HISTORY')).get('anti_goal_violations', [])
+if not v:
+    print('(none)')
+else:
+    for entry in v:
+        sev = entry.get('severity','?')
+        ag = entry.get('anti_goal','?')
+        it = entry.get('iter','?')
+        print(f\"- [{sev}] {ag} (iter {it})\")
+")
+
+## Telemetry
+
+See \`runs/goal-session-${SESSION_ID}/telemetry.jsonl\` for the structured event log.
+EOF
+  record_telemetry_event "session_end" "$(jq -cn --arg fv "$final_verdict" --argjson ti $total_iterations --argjson wt $wall_time --argjson qp $quota_pauses '{final_verdict:$fv, total_iterations:$ti, wall_time_seconds:$wt, quota_pause_count:$qp}' 2>/dev/null || printf '{"final_verdict":"%s","total_iterations":%d}' "$final_verdict" "$total_iterations")"
+  echo "[run-goal] Session summary: $SUMMARY_FILE"
+}
+
+# Trap: on SIGINT/SIGTERM, write ABORTED summary
+on_abort() {
+  echo "[run-goal] Aborted by user signal. Writing summary." >&2
+  write_session_summary "ABORTED" "$CURRENT_ITER"
+  exit 130
+}
+trap on_abort INT TERM
+
+# ── Main loop ─────────────────────────────────────────────────────────────
+while true; do
+  # 1. Halt checks (always first)
+  if [[ $CURRENT_ITER -ge $MAX_ITER ]]; then
+    echo "[run-goal] BUDGET_EXHAUSTED — reached max-iter cap of $MAX_ITER."
+    record_telemetry_event "halt" '{"reason":"BUDGET_EXHAUSTED","detected_at_step":"pre_decomposer"}'
+    write_session_summary "BUDGET_EXHAUSTED" "$CURRENT_ITER"
+    exit 0
+  fi
+
+  if [[ $CURRENT_ITER -gt 0 ]] && is_stalled "$STALL_WINDOW"; then
+    echo "[run-goal] STALLED — last $STALL_WINDOW iterations made no journey progress."
+    record_telemetry_event "halt" '{"reason":"STALLED","detected_at_step":"pre_decomposer"}'
+    write_session_summary "STALLED" "$CURRENT_ITER"
+    exit 0
+  fi
+
+  ITER_NAME="goal-${SESSION_ID}-iter-${CURRENT_ITER}"
+  ITER_DIR="$GOAL_SESSION_DIR_LOCAL/iter-${CURRENT_ITER}"
+  mkdir -p "$ITER_DIR"
+  export GOAL_ITER_INDEX="$CURRENT_ITER"
+  export GOAL_ITER_NAME="$ITER_NAME"
+
+  PRIOR_VERDICT=$(python3 -c "import json; print(json.load(open('$SESSION_JSON')).get('last_verdict') or 'null')")
+  PRIOR_DEPTH=$(python3 -c "import json; print(json.load(open('$SESSION_JSON')).get('next_depth') or 'lean')")
+
+  record_telemetry_event "iter_start" "$(jq -cn --arg n "$ITER_NAME" --arg pv "$PRIOR_VERDICT" --arg pd "$PRIOR_DEPTH" '{iter_name:$n, prior_verdict:$pv, prior_depth:$pd}' 2>/dev/null || printf '{"iter_name":"%s"}' "$ITER_NAME")"
+
+  echo ""
+  echo "════════════════════════════════════════════════════════════════════"
+  echo "[run-goal] Iteration $CURRENT_ITER ($ITER_NAME)"
+  echo "════════════════════════════════════════════════════════════════════"
+
+  # 2. Goal decomposer
+  if [[ $CURRENT_ITER -eq 0 ]]; then
+    DECOMPOSER_MODE="baseline"
+  else
+    DECOMPOSER_MODE="next"
+  fi
+
+  echo "[run-goal] Step 1: goal-decomposer (mode: $DECOMPOSER_MODE)"
+  cd "$REPO_ROOT"
+  _decomp_start=$(record_agent_invocation_start "goal-decomposer")
+  _decomp_rc=0
+  claude_with_quota_retry -p "You are the goal-decomposer agent for goal-mode iteration planning.
+
+Mode: $DECOMPOSER_MODE
+Session ID: $SESSION_ID
+Iteration index: $CURRENT_ITER
+Iter name: $ITER_NAME
+Prior verdict: $PRIOR_VERDICT
+Prior depth: $PRIOR_DEPTH
+
+CLAUDE.md: $REPO_ROOT/CLAUDE.md
+Project template: .claude/project-template.md
+Project goal: $GOAL_FILE  <-- read 'Must-have user journeys' and 'Anti-goals'
+Agent instructions: .claude/agents/goal-decomposer.md  <-- read this first
+
+Journey history: $JOURNEY_HISTORY
+Evaluator log: $EVALUATOR_LOG (last 3 entries are most relevant)
+
+$( [[ $CURRENT_ITER -gt 0 && -f "$GOAL_SESSION_DIR_LOCAL/iter-$((CURRENT_ITER-1))/eval.md" ]] && echo "Last iteration eval: $GOAL_SESSION_DIR_LOCAL/iter-$((CURRENT_ITER-1))/eval.md")
+
+Apply the TOKEN AND QUESTIONING POLICY from .claude/core.md strictly.
+
+Write the iteration spec to: docs/phases/${ITER_NAME}.md
+
+The spec MUST include a 'Goal Mode Metadata' section with at minimum:
+  - Mode: $DECOMPOSER_MODE
+  - Depth: lean | full
+  - Target journeys: <comma-separated journey IDs>
+
+Do NOT write code or implement anything. STOP after writing the spec." || _decomp_rc=$?
+
+  record_agent_invocation_end "goal-decomposer" "$_decomp_start" "$_decomp_rc"
+
+  if [[ $_decomp_rc -ne 0 ]]; then
+    echo "[run-goal] goal-decomposer failed with exit $_decomp_rc — aborting." >&2
+    record_telemetry_event "halt" '{"reason":"DECOMPOSER_FAILED","detected_at_step":"decomposer"}'
+    write_session_summary "ABORTED" "$CURRENT_ITER"
+    exit "$_decomp_rc"
+  fi
+
+  ITER_SPEC_PATH="$REPO_ROOT/docs/phases/${ITER_NAME}.md"
+  if [[ ! -f "$ITER_SPEC_PATH" ]]; then
+    echo "[run-goal] goal-decomposer did not write spec at $ITER_SPEC_PATH — aborting." >&2
+    write_session_summary "ABORTED" "$CURRENT_ITER"
+    exit 1
+  fi
+
+  # Parse depth
+  DEPTH=$(grep -m1 -E '^[[:space:]]*-?[[:space:]]*\*\*Depth:\*\*' "$ITER_SPEC_PATH" \
+            | sed -E 's/.*\*\*Depth:\*\*[[:space:]]*//; s/[[:space:]]+$//' \
+            | tr '[:upper:]' '[:lower:]')
+  if [[ -z "$DEPTH" ]]; then
+    DEPTH=$(grep -m1 -E '^[[:space:]]*-?[[:space:]]*Depth:' "$ITER_SPEC_PATH" \
+              | sed -E 's/.*Depth:[[:space:]]*//; s/[[:space:]]+$//' \
+              | tr '[:upper:]' '[:lower:]')
+  fi
+  if [[ "$DEPTH" != "lean" && "$DEPTH" != "full" ]]; then
+    echo "[run-goal] Could not parse Depth (expected 'lean' or 'full') from $ITER_SPEC_PATH. Defaulting to lean." >&2
+    DEPTH="lean"
+  fi
+
+  TARGET_JOURNEYS=$(grep -m1 -E '^[[:space:]]*-?[[:space:]]*\*\*Target journeys:\*\*' "$ITER_SPEC_PATH" \
+                      | sed -E 's/.*\*\*Target journeys:\*\*[[:space:]]*//' || echo "")
+
+  echo "[run-goal] Iter spec depth: $DEPTH"
+  echo "[run-goal] Target journeys: ${TARGET_JOURNEYS:-(none parsed)}"
+  record_telemetry_event "iter_dispatch" "$(jq -cn --arg d "$DEPTH" --arg tj "$TARGET_JOURNEYS" '{depth:$d, target_journeys:$tj}' 2>/dev/null || printf '{"depth":"%s"}' "$DEPTH")"
+
+  # 3. Dispatch
+  if [[ "$DEPTH" == "full" ]]; then
+    echo "[run-goal] Dispatching FULL pipeline via run-phase.sh --no-finalize ..."
+    if grep -q '\-\-no-finalize' "$SCRIPT_DIR/run-phase.sh"; then
+      bash "$SCRIPT_DIR/run-phase.sh" "$ITER_NAME" --no-finalize || _exec_rc=$?
+    else
+      echo "[run-goal] run-phase.sh does not yet support --no-finalize. Falling back to lean for safety." >&2
+      bash "$SCRIPT_DIR/goal-iter-lean.sh" "$ITER_NAME" || _exec_rc=$?
+    fi
+  else
+    echo "[run-goal] Dispatching LEAN pipeline via goal-iter-lean.sh ..."
+    bash "$SCRIPT_DIR/goal-iter-lean.sh" "$ITER_NAME" || _exec_rc=$?
+  fi
+  _exec_rc=${_exec_rc:-0}
+
+  # 4. Goal evaluator
+  echo "[run-goal] Step 3: goal-evaluator"
+  EVAL_OUTPUT="$ITER_DIR/eval.md"
+  cd "$REPO_ROOT"
+  _eval_start=$(record_agent_invocation_start "goal-evaluator")
+  _eval_rc=0
+  claude_with_quota_retry -p "You are the goal-evaluator agent for goal-mode iteration evaluation.
+
+Session ID: $SESSION_ID
+Iteration index: $CURRENT_ITER
+Iter name: $ITER_NAME
+Depth dispatched: $DEPTH
+
+CLAUDE.md: $REPO_ROOT/CLAUDE.md
+Project goal: $GOAL_FILE  <-- read 'Must-have user journeys' and 'Anti-goals'
+Iter spec: $ITER_SPEC_PATH
+Agent instructions: .claude/agents/goal-evaluator.md  <-- read this first
+
+Iteration artifacts (read what exists):
+  Dev handoff: docs/handoffs/${ITER_NAME}-dev.md
+  Review report: reports/reviews/${ITER_NAME}-review.md
+  QA report: reports/qa/${ITER_NAME}-qa.md (full mode only)
+  Audit handoff: docs/handoffs/${ITER_NAME}-audit.md (full mode only)
+  Browser QA results: reports/phase-${ITER_NAME}-ui-test-results.md
+  Evidence: reports/qa/${ITER_NAME}-evidence/
+
+Prior session state:
+  Journey history: $JOURNEY_HISTORY  <-- update this with new state
+  Evaluator log: $EVALUATOR_LOG  <-- append a new entry; do not overwrite
+
+Apply the TOKEN AND QUESTIONING POLICY from .claude/core.md strictly.
+
+Write your verdict to: $EVAL_OUTPUT
+
+The verdict line MUST appear at the top of $EVAL_OUTPUT and start exactly with:
+**Verdict:** GOAL_ACHIEVED
+  or **Verdict:** CONTINUE
+  or **Verdict:** ESCALATE
+  or **Verdict:** REGRESSION
+  or **Verdict:** STALLED
+
+Also include a 'Depth Recommendation For Next Iteration:' line: lean or full.
+
+Then update $JOURNEY_HISTORY (full atomic write) and append an entry to $EVALUATOR_LOG.
+STOP." || _eval_rc=$?
+
+  record_agent_invocation_end "goal-evaluator" "$_eval_start" "$_eval_rc"
+
+  if [[ ! -f "$EVAL_OUTPUT" ]]; then
+    echo "[run-goal] goal-evaluator did not write $EVAL_OUTPUT — treating as ABORTED." >&2
+    write_session_summary "ABORTED" "$CURRENT_ITER"
+    exit 1
+  fi
+
+  # Parse verdict
+  VERDICT=$(grep -m1 -E '^\*\*Verdict:\*\*' "$EVAL_OUTPUT" | sed -E 's/^\*\*Verdict:\*\*[[:space:]]*//' | awk '{print $1}')
+  NEXT_DEPTH=$(grep -m1 -E 'Depth Recommendation For Next Iteration:' "$EVAL_OUTPUT" | sed -E 's/.*Iteration:\*?\*?[[:space:]]*//' | awk '{print $1}' | tr '[:upper:]' '[:lower:]')
+  [[ "$NEXT_DEPTH" != "lean" && "$NEXT_DEPTH" != "full" ]] && NEXT_DEPTH="lean"
+
+  # Capture journey-history hash for stall detection
+  HASH=$(journey_history_hash)
+  echo "$HASH" >> "$GOAL_SESSION_DIR_LOCAL/.history-hashes"
+
+  # Update session.json
+  python3 - <<PY
+import json
+d = json.load(open("$SESSION_JSON"))
+d["current_iter"] = $CURRENT_ITER + 1
+d["last_verdict"] = "$VERDICT"
+d["next_depth"] = "$NEXT_DEPTH"
+d["status"] = "in_progress"
+d["updated_at"] = __import__("datetime").datetime.now(__import__("datetime").UTC).isoformat().replace('+00:00','Z')
+json.dump(d, open("$SESSION_JSON","w"), indent=2); open("$SESSION_JSON","a").write("\n")
+PY
+
+  # Compute deltas (best-effort)
+  DELTAS=$(python3 -c "
+import json
+try:
+    d = json.load(open('$JOURNEY_HISTORY'))
+    js = d.get('journeys', {})
+    counts = {'newly_passing':0, 'newly_failing':0, 'regressed':0, 'anti_goal_violations': len(d.get('anti_goal_violations',[]))}
+    for jid, info in js.items():
+        if info.get('status') in ('regressed',):
+            counts['regressed'] += 1
+        elif info.get('last_verified_iter') == '$ITER_NAME' and info.get('status') == 'passing':
+            counts['newly_passing'] += 1
+        elif info.get('last_verified_iter') == '$ITER_NAME' and info.get('status') == 'failing':
+            counts['newly_failing'] += 1
+    print(json.dumps(counts))
+except Exception as e:
+    print(json.dumps({'error': str(e)}))
+")
+
+  record_telemetry_event "iter_end" "$(jq -cn --arg n "$ITER_NAME" --arg v "$VERDICT" --arg nd "$NEXT_DEPTH" --argjson dl "$DELTAS" '{iter_name:$n, verdict:$v, next_depth:$nd, journey_deltas:$dl}' 2>/dev/null || printf '{"iter_name":"%s","verdict":"%s"}' "$ITER_NAME" "$VERDICT")"
+
+  echo "[run-goal] Verdict: $VERDICT (next depth: $NEXT_DEPTH)"
+
+  # 5. Halt-on-verdict
+  case "$VERDICT" in
+    GOAL_ACHIEVED)
+      write_session_summary "GOAL_ACHIEVED" "$((CURRENT_ITER+1))"
+      if [[ "$AUTO_RELEASE" == "true" ]]; then
+        echo "[run-goal] --auto-release: invoking release-manager for the whole session."
+        # Best-effort; log only
+        bash "$SCRIPT_DIR/finalize-phase.sh" "$ITER_NAME" || echo "[run-goal] release-manager step failed; review manually." >&2
+      fi
+      exit 0
+      ;;
+    REGRESSION)
+      python3 - <<PY
+import json
+d = json.load(open("$SESSION_JSON"))
+d["status"] = "REGRESSION_HALT"
+json.dump(d, open("$SESSION_JSON","w"), indent=2); open("$SESSION_JSON","a").write("\n")
+PY
+      record_telemetry_event "halt" '{"reason":"REGRESSION_HALT","detected_at_step":"post_evaluator"}'
+      write_session_summary "REGRESSION_HALT" "$((CURRENT_ITER+1))"
+      echo "[run-goal] REGRESSION_HALT — review $EVAL_OUTPUT, fix the regression, then resume with --acknowledge-regression." >&2
+      exit 1
+      ;;
+    STALLED)
+      record_telemetry_event "halt" '{"reason":"STALLED","detected_at_step":"post_evaluator"}'
+      write_session_summary "STALLED" "$((CURRENT_ITER+1))"
+      echo "[run-goal] STALLED per evaluator. Edit goal.md and resume with --resume." >&2
+      exit 0
+      ;;
+    CONTINUE|ESCALATE)
+      CURRENT_ITER=$((CURRENT_ITER+1))
+      ;;
+    *)
+      echo "[run-goal] Unknown verdict '$VERDICT' — treating as CONTINUE." >&2
+      CURRENT_ITER=$((CURRENT_ITER+1))
+      ;;
+  esac
+done

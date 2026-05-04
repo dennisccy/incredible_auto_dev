@@ -5,6 +5,21 @@ All agents MUST read this file and the files it references before taking any act
 
 ---
 
+## MODES
+
+The framework supports two execution modes. Both share all agents and skills; they differ only in how iterations are scheduled and gated.
+
+| Mode | Entry point | When to use |
+|------|------------|-------------|
+| **Phase mode** | `./scripts/automation/run-phase.sh <phase-name>` | Human-authored phase specs in `docs/phases/`. One phase at a time, 11-step pipeline, human-gated between phases. The default. |
+| **Goal mode** | `./scripts/automation/run-goal.sh --session-id <id>` | One `docs/goal.md` (with Must-have user journeys + Anti-goals). Continuous loop `decompose → execute → evaluate` until an AI evaluator declares the goal achieved or a hard halt fires. Quota exhaustion auto-resumes. |
+
+For goal-mode usage, see [`docs/goal-mode-quickstart.md`](docs/goal-mode-quickstart.md). For internals, see [`.claude/architecture/goal-mode.md`](.claude/architecture/goal-mode.md). For the README, see the project-root [`README.md`](README.md).
+
+The two modes write to disjoint artifact namespaces — phase mode uses `runs/<phase>/`, goal mode uses `runs/goal-session-<sid>/` — so both can be used in the same project without collision.
+
+---
+
 ## MODULAR INSTRUCTION SYSTEM
 
 This constitution is split into focused files. Agents must read the relevant files for their role:
@@ -37,6 +52,8 @@ Specialist subagent definitions live in `.claude/agents/`:
 | `browser-qa-agent` | `.claude/agents/browser-qa-agent.md` | Executes browser automation tests via Chrome MCP, records pass/fail |
 | `phase-closure-auditor` | `.claude/agents/phase-closure-auditor.md` | Final gate: validates all UI artifacts exist and are non-vague |
 | `ux-regression-reviewer` | `.claude/agents/ux-regression-reviewer.md` | Checks UI evolved with new capabilities, flags hidden/undiscoverable features |
+| `goal-decomposer` | `.claude/agents/goal-decomposer.md` | Goal mode: reads goal + state, writes next iteration spec, picks lean/full depth |
+| `goal-evaluator` | `.claude/agents/goal-evaluator.md` | Goal mode: skeptical done/regression/stall judgment, updates journey-history |
 
 ---
 
@@ -61,8 +78,12 @@ Reusable instruction files that agents read during their workflow. Located in `.
 ## QUICK START
 
 ```bash
-# Run a full phase end-to-end
+# Run a full phase end-to-end (phase mode)
 ./scripts/automation/run-phase.sh phase-1
+
+# Run goal mode (continuous, autonomous, until goal achieved or hard halt)
+./scripts/automation/run-goal.sh --session-id my-app
+./scripts/automation/run-goal.sh --resume --session-id my-app   # resume an interrupted session
 
 # Or run individual steps
 ./scripts/automation/dev-phase.sh phase-1           # implement
@@ -121,5 +142,5 @@ Full rules in `.claude/core.md`. Key points:
 
 ## ANTI-PATTERNS
 
-See `.claude/anti-patterns.md` for 14 documented failure modes from production use.
+See `.claude/anti-patterns.md` for 18 documented failure modes from production use.
 Most common: vague acceptance criteria → infinite review loops.

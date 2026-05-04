@@ -121,6 +121,53 @@ After each phase completes, the pipeline can update project architecture docs:
 
 Project architecture docs are stored in `docs/architecture/` and describe what has been built.
 
+## Adopting Goal Mode
+
+Goal mode is an autonomous, continuous mode that wraps the phase pipeline. It is opt-in and additive — adopting it does NOT change phase mode.
+
+### When to choose goal mode
+
+Choose goal mode when:
+- You have a clear product goal but no decomposed phase roadmap
+- Your product is testable via concrete user journeys in a browser (Chrome MCP available)
+- You're comfortable with autonomous execution gated by an AI evaluator + hard halts
+
+Stay with phase mode when:
+- You want a human checkpoint between every phase
+- Your work is purely backend or infrastructure with no observable user journeys
+- You don't have Chrome MCP available
+
+You can use both in the same project (different sessions).
+
+### Additional setup for goal mode
+
+After completing Step 2 (define the project goal), extend `docs/goal.md` with two sections required by goal mode:
+
+```markdown
+## Must-have user journeys
+
+- **J-01: <name>**
+  - Steps:
+    1. <click/type/assert step>
+  - Acceptance: <observable end state>
+
+## Anti-goals
+
+- <concrete, checkable rule>
+```
+
+Phase mode reads `docs/goal.md` and ignores these new sections. Goal mode requires them — `run-goal.sh` aborts with a clear error if either is missing or empty.
+
+### First run
+
+```bash
+./scripts/automation/run-goal.sh --session-id my-app
+```
+
+Iteration 0 is a baseline assessment: the goal-decomposer writes a verify-only spec and the browser-qa-agent runs every Must-have journey against the current codebase. This works on fresh projects (everything fails) and existing projects (some journeys may already pass — those are skipped in subsequent iterations).
+
+See [`docs/goal-mode-quickstart.md`](../../docs/goal-mode-quickstart.md) for the full guide and worked examples.
+
 ## Directory Structure After Adoption
 
 ```
@@ -136,13 +183,16 @@ your-project/
     workflow.md                      # Pipeline definition
     project-template.md              # Project config (you fill this in)
     anti-patterns.md                 # Failure modes
-    agents/                          # 12 agent definitions
+    agents/                          # 14 agent definitions (12 phase + 2 goal)
     skills/                          # 9 skills
     hooks/                           # 5 hooks
-    architecture/                    # Framework architecture docs
-  scripts/automation/                # 16 automation scripts
+    architecture/                    # Framework architecture docs (incl. goal-mode.md)
+  scripts/automation/                # 18 automation scripts (incl. run-goal.sh, goal-iter-lean.sh)
+    lib/                             # quota-retry.sh, common.sh, telemetry.sh
   config/                            # agent-models.yaml, security policy
   templates/                         # 15 artifact templates
-  runs/<phase>/                      # Runtime artifacts per phase
-  reports/                           # Reports per phase
+  runs/<phase>/                      # Phase-mode runtime artifacts
+  runs/goal-session-<sid>/           # Goal-mode session state (telemetry, journey-history, summary)
+  reports/                           # Reports per phase or goal iteration
+  feedback/                          # Placeholder for future self-evolution loop
 ```

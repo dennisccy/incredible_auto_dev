@@ -29,3 +29,7 @@ agents:
   browser-qa-agent:       standard  # browser automation execution (needs reasoning for Chrome MCP)
   ux-regression-reviewer: standard  # cross-phase UI consistency and discoverability
   phase-closure-auditor:  standard  # artifact completeness gate
+
+  # Goal-mode agents (continuous goal-driven mode)
+  goal-decomposer:        strong    # iteration spec generation (analog to orchestrator + product-manager)
+  goal-evaluator:         strong    # skeptical done/regression judgment (analog to auditor)

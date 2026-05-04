@@ -16,6 +16,16 @@ The chain has checkpoint/resume, quota-exhaustion auto-retry, and a verdict-gate
 
 For comprehensive framework documentation, see [`.claude/architecture/`](.claude/architecture/README.md).
 
+## Modes
+
+The framework supports two modes:
+
+**Phase mode** (the original) — you author phase specs in `docs/phases/` and run them one at a time through the 11-step pipeline. Each phase is a discrete, gated unit of work with a human-defined scope. Use this when you have a clear roadmap and want a human gate between every phase. Entry point: `./scripts/automation/run-phase.sh <phase-name>`.
+
+**Goal mode** (added later, parallel to phase mode) — you author `docs/goal.md` once with **Must-have user journeys** and **Anti-goals**, then run `./scripts/automation/run-goal.sh`. The system loops `decompose → execute → evaluate` adaptively (lean cycle for small changes, full 11-step pipeline for risky ones) until an AI evaluator declares the goal achieved or a hard halt fires (max iterations, stall, regression). Quota exhaustion does NOT halt the loop — it pauses and auto-resumes when quota resets. Use this when you want autonomous, unattended development against a fixed product target. See [`docs/goal-mode-quickstart.md`](docs/goal-mode-quickstart.md) and [`.claude/architecture/goal-mode.md`](.claude/architecture/goal-mode.md).
+
+The two modes share all agents and skills. They write to disjoint artifact namespaces (`runs/<phase>/` vs `runs/goal-session-<sid>/`) so you can use both in the same project without collision.
+
 ## Quick Start
 
 **1. Add this repo to your project** (as a submodule, subtree, or direct copy).
@@ -33,6 +43,28 @@ For comprehensive framework documentation, see [`.claude/architecture/`](.claude
 ```
 
 See [`.claude/architecture/adoption-guide.md`](.claude/architecture/adoption-guide.md) for the full adoption procedure.
+
+### Goal Mode Quick Start
+
+Goal mode skips per-phase authoring. You write a single `docs/goal.md` with extra sections for must-have user journeys and anti-goals, then run a continuous loop until an AI evaluator declares the goal achieved.
+
+**1. Author `docs/goal.md` from `templates/project-goal.md`**, including the **Must-have user journeys** and **Anti-goals** sections (required for goal mode; phase mode ignores them).
+
+**2. Configure `.claude/project-template.md`** the same way you would for phase mode.
+
+**3. Run.**
+
+```bash
+./scripts/automation/run-goal.sh --session-id my-app
+```
+
+Optional flags: `--max-iter N` (cap, default 30), `--stall-window N` (default 3), `--auto-release` (PR on success), `--resume`, `--reset`, `--acknowledge-regression`.
+
+**4. Inspect** `runs/goal-session-my-app/summary.md` when the loop halts. Halt verdicts: `GOAL_ACHIEVED` (success), `BUDGET_EXHAUSTED`, `STALLED`, `REGRESSION_HALT`, `ABORTED`.
+
+Quota exhaustion is NOT a halt — the loop pauses and auto-resumes when the quota resets.
+
+See [`docs/goal-mode-quickstart.md`](docs/goal-mode-quickstart.md) for the full guide.
 
 ## Pipeline (11 Steps)
 
@@ -75,6 +107,41 @@ Phase spec (docs/phases/<phase>.md)
 
 Steps 5, 6, and 8 are skipped for backend-only phases (`Frontend Present: no`).
 
+## Goal Mode Pipeline
+
+Goal mode wraps the phase pipeline in an outer loop driven by an AI evaluator.
+
+```
+docs/goal.md  (Must-have user journeys + Anti-goals)
+    |
+    v
+ +-- run-goal.sh outer loop ---------------------------------------+
+ |                                                                 |
+ |   Halt checks (max-iter | stall | regression | quota = pause)   |
+ |       |                                                         |
+ |       v                                                         |
+ |   goal-decomposer  --> docs/phases/goal-<sid>-iter-<N>.md       |
+ |       |                                                         |
+ |       v                                                         |
+ |   depth: lean ?  ----- yes ---->  goal-iter-lean.sh             |
+ |                                   (dev -> review -> browser-qa) |
+ |       |                                                         |
+ |       no (full)                                                 |
+ |       v                                                         |
+ |   run-phase.sh <iter-name> --no-finalize                        |
+ |   (existing 11-step pipeline; release deferred to session end)  |
+ |       |                                                         |
+ |       v                                                         |
+ |   goal-evaluator  --> verdict + journey-history.json + log      |
+ |       |                                                         |
+ |   loop unless GOAL_ACHIEVED, BUDGET_EXHAUSTED, STALLED, or      |
+ |   REGRESSION_HALT                                               |
+ |                                                                 |
+ +-----------------------------------------------------------------+
+```
+
+Iteration name `goal-<sid>-iter-<N>` is used as the "phase name" so existing scripts and agents need no changes. Artifacts isolate naturally under disjoint namespaces.
+
 ## Agent Roles
 
 | Agent | Model Tier | Pipeline Step | What it does |
@@ -91,6 +158,8 @@ Steps 5, 6, and 8 are skipped for backend-only phases (`Frontend Present: no`).
 | `browser-qa-agent` | standard | 6 | Executes browser tests via Chrome MCP |
 | `ux-regression-reviewer` | standard | 8 | Checks UI evolved with capabilities, flags regressions |
 | `phase-closure-auditor` | standard | 10 | Final gate: validates all artifacts exist and are non-vague |
+| `goal-decomposer` | strong | (goal mode) | Reads goal + state, writes next iteration spec, picks lean/full depth |
+| `goal-evaluator` | strong | (goal mode) | Skeptical done/regression/stall judgment, updates journey-history |
 
 Model tiers are defined in `config/agent-models.yaml`. Change assignments there and run `./scripts/automation/sync-agent-models.sh`.
 
@@ -122,6 +191,16 @@ Model tiers are defined in `config/agent-models.yaml`. Change assignments there 
 ./scripts/automation/check-install.sh "pip install X"  # check install safety
 ./scripts/automation/update-docs.sh --framework        # update framework docs
 ./scripts/automation/update-docs.sh phase-1            # update project docs
+
+# Goal mode
+./scripts/automation/run-goal.sh --session-id my-app                    # full goal-mode loop
+./scripts/automation/run-goal.sh --session-id my-app --resume           # resume an in-flight session
+./scripts/automation/run-goal.sh --session-id my-app --reset            # discard session and restart
+./scripts/automation/run-goal.sh --session-id my-app --max-iter 50      # raise iteration cap
+./scripts/automation/run-goal.sh --session-id my-app --stall-window 5   # widen stall window
+./scripts/automation/run-goal.sh --session-id my-app --auto-release     # release-manager runs once on GOAL_ACHIEVED
+./scripts/automation/run-goal.sh --session-id my-app --acknowledge-regression  # continue past REGRESSION_HALT
+./scripts/automation/goal-iter-lean.sh <iter-name>                      # single lean iteration (advanced)
 ```
 
 ## Security
@@ -149,7 +228,7 @@ Model tiers are defined in `config/agent-models.yaml`. Change assignments there 
 | `templates/ui-test-results.md` | Browser QA results format |
 | `templates/what-to-click.md` | Operator verification guide format |
 | `templates/closure-verdict.md` | Phase closure verdict format |
-| `templates/project-goal.md` | Project goal document template |
+| `templates/project-goal.md` | Project goal document template (now includes Must-have user journeys + Anti-goals — required for goal mode, ignored by phase mode) |
 | `templates/architecture-overview.md` | Project architecture doc template |
 
 ## Configuration
@@ -160,7 +239,10 @@ Model tiers are defined in `config/agent-models.yaml`. Change assignments there 
 | `config/agent-models.yaml` | Agent-to-model-tier assignments |
 | `config/install-security-policy.json` | Package allowlists and deny patterns |
 | `.claude/settings.json` | Claude Code tool permissions |
-| `docs/goal.md` | Project vision and success criteria |
+| `docs/goal.md` | Project vision and success criteria (goal mode also reads Must-have user journeys + Anti-goals) |
+| `runs/goal-session-<sid>/session.json` | Goal-mode session state (halt config, current iteration, last verdict) |
+| `runs/goal-session-<sid>/state/journey-history.json` | Per-journey pass/fail/regressed status across iterations |
+| `runs/goal-session-<sid>/telemetry.jsonl` | Structured event log for the session — see [`docs/goal-mode-telemetry.md`](docs/goal-mode-telemetry.md) |
 
 ## Subrepo Usage
 
@@ -177,7 +259,8 @@ This framework is designed to be added to project repos as a submodule or subtre
 2. **Claude Code only**: Hooks and agent definitions are Claude Code-specific.
 3. **Model tier costs**: Assumes access to Claude API with multiple model tiers.
 4. **No CI integration**: Pipeline is CLI-only. GitHub Actions integration is not included.
-5. **Chrome MCP optional**: Browser checks require Chrome MCP. Without it, browser tests are skipped.
+5. **Chrome MCP optional for phase mode**: Browser checks require Chrome MCP. Without it, browser tests are skipped.
+6. **Chrome MCP required for goal mode**: The goal-evaluator anchors its `GOAL_ACHIEVED` decision on browser-qa journey results. Without Chrome MCP, browser tests are SKIPPED and the evaluator will likely emit `ESCALATE` indefinitely.
 
 ## Tests
 

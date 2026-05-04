@@ -1,6 +1,6 @@
-# Workflow — Phase Execution Pipeline
+# Workflow — Phase Execution Pipeline (and Goal Mode)
 
-This file defines how phases are executed, how agents interact, and what constitutes success.
+This file defines how phases are executed, how agents interact, and what constitutes success. The phase pipeline is the foundation; goal mode wraps it with an outer adaptive loop (covered at the end of this document).
 
 ---
 
@@ -244,3 +244,75 @@ The `Frontend Present:` line is machine-read by `qa-phase.sh` to decide whether 
 | light | claude-haiku-4-5 | Routine workflow: QA execution, git/GitHub operations |
 
 Model assignments are in `config/agent-models.yaml`. Update models there and run `sync-agent-models.sh` to propagate.
+
+---
+
+## Goal Mode Pipeline
+
+Goal mode is an outer loop that wraps the phase pipeline. It is the second supported execution mode of this framework — see [`.claude/architecture/goal-mode.md`](architecture/goal-mode.md) for internals and [`docs/goal-mode-quickstart.md`](../docs/goal-mode-quickstart.md) for user-facing usage.
+
+### When goal mode runs
+
+`scripts/automation/run-goal.sh` drives the loop. It validates `docs/goal.md` (must contain non-empty Must-have user journeys + Anti-goals sections — see anti-pattern #18) and then iterates:
+
+```
+loop:
+  1. halt checks (max-iter | stall via journey-history hash | regression flag)
+  2. goal-decomposer  → docs/phases/goal-<sid>-iter-<N>.md  (Mode: baseline|next, Depth: lean|full)
+  3. dispatch:
+       depth=lean  → goal-iter-lean.sh <iter-name>
+                     (developer → reviewer (max 2) → browser-qa-agent)
+       depth=full  → run-phase.sh <iter-name> --no-finalize
+                     (existing 11-step pipeline)
+  4. goal-evaluator  → runs/goal-session-<sid>/iter-<N>/eval.md
+                     + updated journey-history.json + appended evaluator-log.md
+  5. parse verdict; halt or continue
+```
+
+Iteration name `goal-<sid>-iter-<N>` is used as the "phase name" for downstream agents and scripts, so the phase pipeline runs unchanged.
+
+### Goal-mode artifacts
+
+| Artifact | Path | Producer |
+|---|---|---|
+| Iteration spec | `docs/phases/goal-<sid>-iter-<N>.md` | goal-decomposer |
+| Session state | `runs/goal-session-<sid>/session.json` | run-goal.sh |
+| Journey history | `runs/goal-session-<sid>/state/journey-history.json` | goal-evaluator |
+| Evaluator log | `runs/goal-session-<sid>/state/evaluator-log.md` | goal-evaluator (append-only) |
+| Iter eval | `runs/goal-session-<sid>/iter-<N>/eval.md` | goal-evaluator |
+| Telemetry | `runs/goal-session-<sid>/telemetry.jsonl` | run-goal.sh + goal-iter-lean.sh + lib/telemetry.sh |
+| Session summary | `runs/goal-session-<sid>/summary.md` | run-goal.sh (on halt) |
+
+Per-iteration code/test artifacts use the standard phase-mode paths (`runs/<iter-name>/`, `reports/...<iter-name>...`) — the iteration name is just a "phase name" from those scripts' perspective.
+
+### Goal-mode verdicts
+
+| Verdict | Effect |
+|---|---|
+| `GOAL_ACHIEVED` | Loop halts with success. Optionally invokes release-manager once for the whole session (`--auto-release`). |
+| `CONTINUE` | Loop continues with evaluator's recommended depth. |
+| `ESCALATE` | Loop continues; next iteration MUST run as full. |
+| `REGRESSION` | Loop halts with `REGRESSION_HALT`. User reviews, fixes if needed, resumes with `--acknowledge-regression`. |
+| `STALLED` | Loop halts (evaluator-driven; the script also detects stall by journey-history hash repetition). User edits `goal.md`, then `--resume`. |
+
+### Goal-mode halt conditions (loop level)
+
+| Halt | Detected by | User recovery |
+|---|---|---|
+| `BUDGET_EXHAUSTED` | `current_iter >= max_iterations` (default 30) | `run-goal.sh --resume --max-iter N` (raised cap) |
+| `STALLED` (hash) | Last `stall_window` (default 3) journey-history hashes are identical | Edit `goal.md`, then `--resume` |
+| `REGRESSION_HALT` | Evaluator emitted `REGRESSION` | `run-goal.sh --resume --acknowledge-regression` |
+| `ABORTED` | SIGINT/SIGTERM | `run-goal.sh --resume --session-id <id>` |
+| Quota exhausted | (handled by `claude_with_quota_retry`) | NOT a halt — loop pauses and auto-resumes when quota resets |
+
+### Goal-mode retry policy
+
+- **Lean iteration developer→reviewer**: max 2 attempts (tighter than phase mode's 3 — lean cycles favor escalation over local thrashing).
+- **Full iteration**: full phase-mode retry policy (3 dev+review, 3 QA, 2 audit) applies via `run-phase.sh`.
+- **Quota retry**: every Claude call goes through `lib/quota-retry.sh::claude_with_quota_retry` which passes `--effort max` and handles quota exhaustion transparently.
+
+### Goal-mode telemetry
+
+Every step in the loop emits a structured event to `runs/goal-session-<sid>/telemetry.jsonl`. Event types include `session_start`, `iter_start`, `decomposer_start`, `decomposer_end`, `iter_dispatch`, `agent_invocation_start`, `agent_invocation_end`, `evaluator_end`, `iter_end`, `halt`, `session_end`. See [`docs/goal-mode-telemetry.md`](../docs/goal-mode-telemetry.md) for the full schema.
+
+Telemetry is local-only — nothing is exported. The `feedback/` directory is reserved for a future self-evolution loop (see `feedback/README.md`).

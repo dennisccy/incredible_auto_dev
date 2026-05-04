@@ -2,11 +2,17 @@
 
 ## Design Philosophy
 
-The AI Multi-Agent Dev Chain is a reusable framework for running phased software development with Claude AI agents. It enforces quality through a verdict-gated pipeline: each stage must pass before the next runs.
+The AI Multi-Agent Dev Chain is a reusable framework for software development with Claude AI agents. It enforces quality through a verdict-gated pipeline: each stage must pass before the next runs.
 
-Core principles:
+The framework supports two modes:
+- **Phase mode** — human-authored phase specs, executed one at a time. Maximum control.
+- **Goal mode** — a goal-driven outer loop iterates `decompose → execute → evaluate` adaptively until an AI evaluator declares the goal achieved. Maximum autonomy. See [`goal-mode.md`](goal-mode.md).
 
-1. **Phased delivery** -- build one phase at a time, stop when done, do not continue automatically.
+Both modes share all agents and skills. Phase mode is the default and stays the right choice when you have a clear roadmap; goal mode handles the case where the user has a vision but not a step-by-step plan.
+
+Core principles (apply to both modes):
+
+1. **Bounded delivery** -- build only what the current iteration calls for, stop when done, do not continue automatically (in phase mode: per phase; in goal mode: per iteration).
 2. **Artifact-based communication** -- agents communicate only through filesystem artifacts, never free-form conversation.
 3. **Verdict-gated progression** -- every pipeline stage produces a machine-readable verdict (PASS/FAIL). FAIL blocks the next stage.
 4. **TDD by default** -- the developer agent writes failing tests before implementation.
@@ -18,9 +24,11 @@ Core principles:
 
 The framework consists of 6 component types:
 
-### 1. Agents (12 total, in `.claude/agents/`)
+### 1. Agents (14 total, in `.claude/agents/`)
 
 Markdown files that define each agent's role, inputs, outputs, and rules. Agents are invoked by automation scripts. Each agent has a model tier assignment (strong/standard/light) defined in `config/agent-models.yaml`.
+
+Twelve agents serve the phase pipeline (orchestrator, developer, reviewer, qa, auditor, release-manager, product-manager, ui-impact-analyst, ui-test-designer, browser-qa-agent, ux-regression-reviewer, phase-closure-auditor). Two agents are specific to goal mode (goal-decomposer, goal-evaluator). Goal mode reuses all twelve phase agents unchanged.
 
 ### 2. Skills (9 total, in `.claude/skills/`)
 
@@ -30,9 +38,13 @@ Reusable instruction files that agents read during their workflow. Skills are no
 
 Shell scripts triggered by Claude Code at specific points (pre-tool-call, post-edit, post-write, on-stop). Hooks enforce security and quality rules automatically.
 
-### 4. Automation Scripts (16 total, in `scripts/automation/`)
+### 4. Automation Scripts (18 total, in `scripts/automation/`)
 
-Shell scripts that orchestrate the pipeline. The main entry point is `run-phase.sh`, which drives all 11 steps. Individual steps can also be run standalone (e.g., `dev-phase.sh`, `review-phase.sh`).
+Shell scripts that orchestrate the pipelines. Two top-level entry points:
+- `run-phase.sh <phase-name>` drives the 11-step phase pipeline.
+- `run-goal.sh --session-id <id>` drives the goal-mode outer loop, which dispatches `goal-iter-lean.sh` for lean iterations and reuses `run-phase.sh --no-finalize` for full iterations.
+
+Individual phase steps can also be run standalone (e.g., `dev-phase.sh`, `review-phase.sh`). Goal mode also adds `lib/telemetry.sh` for structured event capture.
 
 ### 5. Templates (13 total, in `templates/`)
 
