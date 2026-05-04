@@ -62,3 +62,64 @@ When `Frontend Present: no`, the pipeline writes N/A stub files for the 6 UI vis
 - Contain the phase number and a "Backend-only phase" status line
 - Are accepted by the phase-closure-auditor as valid for backend-only phases
 - Are written only if the file does not already exist (no overwriting)
+
+## Goal-Mode Artifacts
+
+Goal mode adds a parallel artifact tree under `runs/goal-session-<sid>/`. Per-iteration code/test artifacts still use the existing `runs/<iter-name>/` and `reports/...<iter-name>...` paths, where the iteration name `goal-<sid>-iter-<N>` is treated as a "phase name" — so all phase-mode artifacts above are produced for goal-mode iterations too.
+
+| Artifact | Path | Producer | Consumers |
+|----------|------|----------|-----------|
+| Goal spec (extended) | `docs/goal.md` (with Must-have user journeys + Anti-goals sections) | Human | goal-decomposer, goal-evaluator, all phase agents |
+| Iteration spec | `docs/phases/goal-<sid>-iter-<N>.md` | goal-decomposer | run-phase.sh (full) or goal-iter-lean.sh (lean), then all downstream agents |
+| Session state | `runs/goal-session-<sid>/session.json` | run-goal.sh | run-goal.sh (resume, halt arithmetic) |
+| Journey history | `runs/goal-session-<sid>/state/journey-history.json` | goal-evaluator | goal-decomposer (next-step planning), goal-evaluator (regression detection), run-goal.sh (stall detection via hash) |
+| Evaluator log | `runs/goal-session-<sid>/state/evaluator-log.md` | goal-evaluator (append-only) | goal-decomposer (read last 3 entries) |
+| Iter eval | `runs/goal-session-<sid>/iter-<N>/eval.md` | goal-evaluator | run-goal.sh (verdict parsing) |
+| Telemetry | `runs/goal-session-<sid>/telemetry.jsonl` | run-goal.sh + goal-iter-lean.sh + lib/telemetry.sh | analysis tools (jq), future self-evolution loop (deferred) |
+| History hashes | `runs/goal-session-<sid>/.history-hashes` | run-goal.sh | run-goal.sh (stall detection) |
+| Session summary | `runs/goal-session-<sid>/summary.md` | run-goal.sh (on halt) | Human |
+
+### journey-history.json schema
+
+```json
+{
+  "journeys": {
+    "J-01": {
+      "id": "J-01",
+      "name": "Sign up and log in",
+      "status": "passing | failing | partial | already_passing | regressed | unknown",
+      "last_verified_iter": "goal-<sid>-iter-<N>",
+      "last_passing_iter": "goal-<sid>-iter-<N> | null",
+      "first_seen_iter": "goal-<sid>-iter-<N>",
+      "last_evidence_path": "reports/qa/<iter-name>-evidence/UT-J-01-*.png"
+    }
+  },
+  "anti_goal_violations": [
+    {
+      "iter": "goal-<sid>-iter-<N>",
+      "anti_goal": "verbatim text from goal.md",
+      "severity": "critical | minor",
+      "evidence": "file:line or commit description",
+      "resolved": false
+    }
+  ],
+  "updated_at": "<ISO timestamp>"
+}
+```
+
+### Telemetry schema
+
+See [`docs/goal-mode-telemetry.md`](../../docs/goal-mode-telemetry.md). Each line of `telemetry.jsonl` is one JSON object with common fields (`ts`, `session_id`, `iter`, `event`) plus event-specific fields. Stable across schema versions: consumers should ignore unknown event types and unknown fields.
+
+### Goal-mode verdicts
+
+The goal-evaluator emits one of:
+| Verdict | Meaning |
+|---|---|
+| `GOAL_ACHIEVED` | All Must-have journeys pass, no critical anti-goal violations. Loop halts with success. |
+| `CONTINUE` | Progress made or actionable next work identified. Loop continues. |
+| `ESCALATE` | Lean iteration uncovered ambiguity; next iteration MUST run as full. |
+| `REGRESSION` | A previously-passing journey now fails OR a critical anti-goal was violated. Halts for human review. |
+| `STALLED` | Evaluator-side judgment that no productive next work is identifiable. Halts. |
+
+The outer loop also emits halt verdicts of its own (`BUDGET_EXHAUSTED`, `STALLED` via hash detection, `REGRESSION_HALT`, `ABORTED`) into `session.json.status`.

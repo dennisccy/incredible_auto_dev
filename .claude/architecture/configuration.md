@@ -25,15 +25,16 @@ Agents reference this file for stack-specific commands (test runner, package man
 
 ## config/agent-models.yaml
 
-Maps each of the 12 agents to a model tier.
+Maps each of the 14 agents to a model tier (12 phase-mode + 2 goal-mode).
 
 ```yaml
 tiers:
-  strong:   claude-opus-4-6
+  strong:   claude-opus-4-7
   standard: claude-sonnet-4-6
   light:    claude-haiku-4-5
 
 agents:
+  # Phase-mode agents
   orchestrator:    strong
   developer:       strong
   reviewer:        standard
@@ -46,9 +47,15 @@ agents:
   browser-qa-agent:       standard
   ux-regression-reviewer: standard
   phase-closure-auditor:  standard
+
+  # Goal-mode agents
+  goal-decomposer: strong   # iteration spec generation
+  goal-evaluator:  strong   # done/regression/stall judgment
 ```
 
 After editing, run `./scripts/automation/sync-agent-models.sh` to propagate changes to agent `.md` files.
+
+All agent invocations (phase mode and goal mode) go through `lib/quota-retry.sh::claude_with_quota_retry`, which passes `--effort max` and handles quota exhaustion by sleeping until reset and resuming. This is automatic — no per-agent flag is needed.
 
 ## config/install-security-policy.json
 
@@ -87,3 +94,7 @@ The `allow` list should be customized per project (e.g., add `Bash(alembic *)` f
 | `CHAIN_CLAUDE_MAX_QUOTA_RETRIES` | `3` | Max quota-wait-retry cycles |
 | `CHAIN_DISABLE_AUTO_WAIT` | `false` | Fail immediately on quota exhaustion |
 | `CHAIN_INSTALL_GATE_BYPASS` | (unset) | Bypass install security gate |
+| `GOAL_SESSION_DIR` | (set by run-goal.sh) | Goal-mode session directory; consumed by `lib/telemetry.sh` for JSONL writes. No-op when unset (phase mode is unaffected). |
+| `GOAL_SESSION_ID` | (set by run-goal.sh) | Session id; included in every telemetry event |
+| `GOAL_ITER_INDEX` | (set by run-goal.sh) | Current iteration index; included in every telemetry event |
+| `GOAL_ITER_NAME` | (set by run-goal.sh) | Synthetic phase name `goal-<sid>-iter-<N>` |

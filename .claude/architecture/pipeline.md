@@ -1,6 +1,8 @@
 # Pipeline
 
-The pipeline has 11 steps, driven by `scripts/automation/run-phase.sh`. Steps 5, 6, and 8 are skipped for backend-only phases (`Frontend Present: no`).
+This document describes the **phase-mode pipeline**: 11 steps driven by `scripts/automation/run-phase.sh`. Steps 5, 6, and 8 are skipped for backend-only phases (`Frontend Present: no`).
+
+For the **goal-mode pipeline** (an outer loop that wraps this one for adaptive autonomous execution), see [`goal-mode.md`](goal-mode.md). Goal-mode "full" iterations reuse this 11-step pipeline unchanged, just with `--no-finalize` so release happens once at session end.
 
 ## Steps
 

@@ -1,6 +1,6 @@
 # Agents
 
-The framework defines 12 agents in `.claude/agents/`. Each agent has a model tier assignment in `config/agent-models.yaml`.
+The framework defines 14 agents in `.claude/agents/`. Each agent has a model tier assignment in `config/agent-models.yaml`. Twelve agents serve the phase pipeline; two are specific to goal mode.
 
 ## Model Tiers
 
@@ -116,3 +116,26 @@ The framework defines 12 agents in `.claude/agents/`. Each agent has a model tie
 - **Skills used:** `phase-closure-gate`
 - **Output:** `reports/phase-{N}-closure-verdict.md`
 - **Role:** Final gate before finalize. Validates all UI artifacts exist, are non-vague, and are consistent. Blocks false completion.
+
+## Goal Mode Agents (2)
+
+These agents are invoked only by the goal-mode pipeline (`run-goal.sh` and `goal-iter-lean.sh`). Phase mode does not use them. See [`goal-mode.md`](goal-mode.md) for how they fit into the loop.
+
+### goal-decomposer
+- **File:** `.claude/agents/goal-decomposer.md`
+- **Model:** strong (claude-opus-4-7)
+- **Pipeline step:** Goal-mode iteration step 1 (planning)
+- **Inputs:** CLAUDE.md, project-template.md, `docs/goal.md` (especially Must-have user journeys + Anti-goals), `runs/goal-session-<sid>/state/journey-history.json`, last 3 entries of `runs/goal-session-<sid>/state/evaluator-log.md`, prior iteration's `eval.md`, codebase state via Glob/Grep/Read
+- **Output:** `docs/phases/goal-<sid>-iter-<N>.md` — a phase-spec-shaped iter spec with Goal Mode Metadata (Mode: baseline|next, Depth: lean|full, Target journeys, Required-still-passing journeys, Anti-goal reminders)
+- **Role:** Plans the next goal-mode iteration. Two modes:
+  - `Mode: baseline` (iter 0): writes a verify-only spec; no code changes; lists ALL Must-have journeys as targets so browser-qa establishes which already pass.
+  - `Mode: next` (iter 1+): picks the next 1-3 failing/partial journeys, decides depth based on risk and prior evaluator feedback, writes a tight scoped spec.
+
+### goal-evaluator
+- **File:** `.claude/agents/goal-evaluator.md`
+- **Model:** strong (claude-opus-4-7)
+- **Pipeline step:** Goal-mode iteration step 3 (judgment)
+- **Inputs:** `docs/goal.md`, the iter spec, all iteration artifacts (dev handoff, review report, QA report, audit handoff for full mode), browser-qa results, evidence screenshots, prior `journey-history.json`, prior evaluator-log entries
+- **Output:** `runs/goal-session-<sid>/iter-<N>/eval.md` (verdict + recommendation), updated `journey-history.json` (full atomic write), appended `evaluator-log.md` entry
+- **Verdicts:** `GOAL_ACHIEVED` (halt success), `CONTINUE` (loop), `ESCALATE` (next iter must be full), `REGRESSION` (halt for human review), `STALLED` (halt — evaluator-driven, separate from script-side hash detection)
+- **Role:** Skeptical, evidence-grounded judge of iteration outcomes. Verifies journey claims by reading actual browser-qa results and screenshots, not summaries. Anchors `GOAL_ACHIEVED` decisions on objective journey evidence + anti-goal compliance.

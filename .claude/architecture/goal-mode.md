@@ -1,0 +1,123 @@
+# Goal Mode — Architecture
+
+Goal mode is a parallel pipeline alongside phase mode. Where phase mode executes one human-authored phase spec at a time, goal mode iterates `decompose → execute → evaluate` against a persistent project goal until the goal-evaluator declares the goal achieved or a hard halt fires.
+
+This document describes how goal mode works internally. For user-facing usage, see [`docs/goal-mode-quickstart.md`](../../docs/goal-mode-quickstart.md). For the high-level mode comparison, see [`system-overview.md`](system-overview.md).
+
+## Why a separate mode
+
+Phase mode requires a human to author N phase specs up front. That works for projects with a clear, decomposed roadmap. It does not work for "I want a working todo app with auth" — the human shouldn't have to translate that goal into seven phases of click-by-click work.
+
+Goal mode closes that gap. The user authors `docs/goal.md` with:
+- The same fields phase mode reads (Vision, Target Users, Success Criteria, etc.)
+- Two additional sections required by goal mode: **Must-have user journeys** and **Anti-goals**
+
+Then `./scripts/automation/run-goal.sh` takes over: it generates iteration specs, executes them, evaluates progress, and loops until done.
+
+## Components
+
+```
+run-goal.sh         outer loop, halt logic, quota auto-resume, telemetry capture
+goal-iter-lean.sh   single lean iteration: developer → reviewer → browser-qa
+run-phase.sh        existing 11-step pipeline (used unchanged for full iterations,
+                    invoked with --no-finalize so release runs only at session end)
+
+.claude/agents/goal-decomposer.md   reads goal + state, writes next iter spec
+.claude/agents/goal-evaluator.md    reads iter outputs + history, emits verdict
+
+scripts/automation/lib/telemetry.sh  records structured JSONL events
+config/agent-models.yaml             two new entries (goal-decomposer, goal-evaluator → strong tier)
+```
+
+All other agents (developer, reviewer, qa, auditor, browser-qa-agent, ui-impact-analyst, ui-test-designer, ux-regression-reviewer, phase-closure-auditor, release-manager, orchestrator, product-manager) and all skills are reused unchanged.
+
+## Data flow per iteration
+
+```
+                          docs/goal.md
+                                │
+                                ▼
+                       goal-decomposer
+                                │
+                                ▼
+                docs/phases/goal-<sid>-iter-<N>.md
+                                │
+            ┌───────────────────┴────────────────────┐
+            ▼                                        ▼
+   depth: lean                               depth: full
+   goal-iter-lean.sh                         run-phase.sh --no-finalize
+   developer→reviewer→browser-qa             (full 11-step pipeline)
+            │                                        │
+            └───────────────────┬────────────────────┘
+                                ▼
+                          goal-evaluator
+                                │
+                                ▼
+                  runs/goal-session-<sid>/iter-<N>/eval.md
+                  + updated state/journey-history.json
+                  + appended state/evaluator-log.md
+```
+
+The synthetic phase name `goal-<sid>-iter-<N>` (where `<sid>` is the session id and `<N>` is the iteration index) is used wherever existing scripts and agents expect a "phase" name. This means agents, skills, and `run-phase.sh` consume goal-mode artifacts without modification — the file naming convention does the routing.
+
+## Halt conditions
+
+The outer loop checks halts in this order, each iteration, before invoking the decomposer:
+
+1. **`BUDGET_EXHAUSTED`** — `current_iter >= max_iterations` (default 30, override with `--max-iter`)
+2. **`STALLED`** — last `stall_window` (default 3) journey-history hashes are identical, meaning no journey newly passed/failed/regressed
+3. **`REGRESSION_HALT`** — prior iteration's evaluator emitted `REGRESSION` and the user has not passed `--acknowledge-regression`
+
+After the evaluator runs, the verdict directly drives the loop:
+
+| Evaluator verdict | Loop behavior |
+|---|---|
+| `GOAL_ACHIEVED` | Halt with success; optionally invoke release-manager (with `--auto-release`) |
+| `CONTINUE` | Loop with evaluator's recommended depth |
+| `ESCALATE` | Loop; next iteration MUST run as full |
+| `REGRESSION` | Halt with `REGRESSION_HALT` |
+| `STALLED` | Halt with `STALLED` (evaluator-driven, separate from hash-based detection above) |
+
+**Quota exhaustion is NOT a halt.** The wrapped `claude_with_quota_retry` library transparently sleeps until the quota resets, then resumes the same agent invocation. Telemetry records the quota pause for observability.
+
+## State
+
+```
+runs/goal-session-<sid>/
+├── session.json                # halt config, current iter, status, last verdict, next depth
+├── telemetry.jsonl             # structured event log (see docs/goal-mode-telemetry.md)
+├── state/
+│   ├── journey-history.json    # per-journey status, anti-goal violations, timestamps
+│   └── evaluator-log.md        # append-only chronicle of evaluator decisions
+├── iter-0/eval.md              # baseline evaluation
+├── iter-1/eval.md              # first dev iteration evaluation
+├── iter-N/eval.md              # ...
+├── .history-hashes             # one journey-history hash per line (stall detection)
+└── summary.md                  # written when the loop halts
+```
+
+Per-iteration code/test artifacts use the `goal-<sid>-iter-<N>` prefix and live under the existing `runs/<iter-name>/` and `reports/` paths so existing agents need no path changes.
+
+## Resume semantics
+
+`run-goal.sh --resume --session-id <id>` reads `session.json` and continues from `current_iter`. If a prior run died mid-iteration, that iteration is rerun from scratch — every iteration is idempotent (a new spec is written, dev/review/QA/browser-qa overwrite their own artifacts).
+
+If the prior status is `REGRESSION_HALT`, resume requires `--acknowledge-regression` so the user must explicitly take responsibility for proceeding past a known regression.
+
+## Backward compatibility
+
+Phase mode is unchanged. The only modification to phase-mode code is the additive `--no-finalize` flag on `run-phase.sh` — when not passed (the default), every existing phase-mode invocation behaves identically.
+
+`docs/phases/` may now contain synthetic specs named `goal-<sid>-iter-<N>.md` alongside real phase specs. Phase mode scripts only consume names they're explicitly given on the command line, so collisions are not possible unless a user manually invokes `run-phase.sh goal-<sid>-iter-<N>`.
+
+## Self-evolution (future)
+
+Telemetry capture is a foundation for a future "self-evolution" loop where this framework reads accumulated telemetry from downstream projects and proposes its own improvements as PRs. That loop is explicitly NOT part of goal mode today — see `feedback/README.md` for the placeholder.
+
+## See also
+
+- [`docs/goal-mode-quickstart.md`](../../docs/goal-mode-quickstart.md) — user guide
+- [`docs/goal-mode-telemetry.md`](../../docs/goal-mode-telemetry.md) — telemetry schema
+- [`agents.md`](agents.md) — full agent inventory
+- [`pipeline.md`](pipeline.md) — phase-mode pipeline (the "full" inner pipeline of goal mode)
+- [`.claude/anti-patterns.md`](../anti-patterns.md) — anti-pattern #18 covers goal-mode authoring

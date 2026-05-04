@@ -6,13 +6,14 @@ This directory contains the framework's architecture documentation. These docs d
 
 | Document | What it covers |
 |----------|---------------|
-| [system-overview.md](system-overview.md) | Design philosophy, component taxonomy, how components relate |
-| [pipeline.md](pipeline.md) | 11-step pipeline with data flow, retry loops, checkpoint/resume |
-| [agents.md](agents.md) | All 12 agents: role, model tier, inputs, outputs |
-| [artifacts.md](artifacts.md) | Complete artifact map with paths, producers, and consumers |
+| [system-overview.md](system-overview.md) | Design philosophy, component taxonomy, how components relate, mode comparison |
+| [pipeline.md](pipeline.md) | 11-step phase pipeline with data flow, retry loops, checkpoint/resume |
+| [goal-mode.md](goal-mode.md) | Goal-mode architecture: outer loop, halt logic, decomposer + evaluator, state |
+| [agents.md](agents.md) | All 14 agents: role, model tier, inputs, outputs |
+| [artifacts.md](artifacts.md) | Complete artifact map with paths, producers, and consumers (phase + goal modes) |
 | [skills-and-hooks.md](skills-and-hooks.md) | 9 skills and 5 hooks: purpose, consuming agent, trigger |
 | [configuration.md](configuration.md) | All config surfaces: project-template, agent-models, security policy |
-| [adoption-guide.md](adoption-guide.md) | Step-by-step guide to adopting this framework in a project |
+| [adoption-guide.md](adoption-guide.md) | Step-by-step guide to adopting this framework in a project (phase and goal modes) |
 
 ## Relationship to other docs
 
@@ -20,7 +21,7 @@ This directory contains the framework's architecture documentation. These docs d
 - **.claude/core.md** -- universal quality rules, testing requirements, security baseline.
 - **.claude/workflow.md** -- pipeline stages, retry policy, verdict formats.
 - **.claude/project-template.md** -- project-specific config (filled in per project).
-- **.claude/anti-patterns.md** -- 14 documented failure modes.
+- **.claude/anti-patterns.md** -- 18 documented failure modes.
 - **docs/goal.md** -- project vision and success criteria (filled in per project).
 - **docs/architecture/** -- project-specific architecture docs (auto-updated per phase).
 

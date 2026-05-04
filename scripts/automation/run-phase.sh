@@ -1,12 +1,16 @@
 #!/usr/bin/env bash
 # run-phase.sh — Full phase runner: plan -> test-plan -> dev -> review -> UI impact ->
 #                UI test design -> browser QA -> QA -> UX regression -> audit -> closure -> finalize
-# Usage: ./scripts/automation/run-phase.sh phase-3 [--auto-release] [--reset]
+# Usage: ./scripts/automation/run-phase.sh phase-3 [--auto-release] [--reset] [--no-finalize]
 #
 # Flags:
 #   --auto-release   Automatically finalize (branch + commit + PR) when all checks pass.
 #                    Requires gh CLI authenticated: gh auth login
 #   --reset          Ignore existing checkpoints and re-run all steps from scratch.
+#   --no-finalize    Skip the finalize hint at the end of a successful run AND skip
+#                    --auto-release if it was passed alongside. Used by run-goal.sh
+#                    to dispatch a full-mode iteration without committing/creating a PR
+#                    for each iteration; release-manager runs once at goal-session end.
 #
 # Resume behavior:
 #   If a run was interrupted, rerunning this script resumes from the last
@@ -20,14 +24,22 @@ source "$SCRIPT_DIR/lib/common.sh"
 PHASE="${1:-}"
 AUTO_RELEASE=false
 FORCE_RESET=false
+NO_FINALIZE=false
 
 # Parse flags (allow flag in any position)
 for arg in "$@"; do
   case "$arg" in
     --auto-release) AUTO_RELEASE=true ;;
     --reset)        FORCE_RESET=true ;;
+    --no-finalize)  NO_FINALIZE=true ;;
   esac
 done
+
+# --no-finalize suppresses --auto-release for this run (the goal-mode outer loop
+# handles release once at session end, not per iteration).
+if [[ "$NO_FINALIZE" == "true" ]]; then
+  AUTO_RELEASE=false
+fi
 
 require_phase_arg "$PHASE"
 require_claude
@@ -628,6 +640,8 @@ if [[ "$AUTO_RELEASE" == "true" ]]; then
   log "Auto-release: running finalize-phase.sh --yes ..."
   echo ""
   bash "$SCRIPT_DIR/finalize-phase.sh" "$PHASE" --yes
+elif [[ "$NO_FINALIZE" == "true" ]]; then
+  log "--no-finalize set: skipping finalize hint (release-manager will run once at goal-session end)."
 else
   echo "To commit and create a PR, run:"
   echo "  ./scripts/automation/finalize-phase.sh $PHASE"

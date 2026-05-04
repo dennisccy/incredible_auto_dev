@@ -32,3 +32,52 @@
 - Visual style: <e.g., cyber-futuristic, minimal-clean, playful>
 - Mood: <e.g., professional, high-tech, approachable>
 - Reference: <URL or description of a visual reference — screenshot, site, or design system>
+
+## Must-have user journeys
+<!--
+Required for goal mode (`./scripts/automation/run-goal.sh`). Optional / ignored by phase mode.
+
+These are concrete, browser-testable scenarios. The goal-evaluator agent uses these as
+the objective ground truth for "is the product done?" — every journey listed here must
+pass via Chrome MCP before the AI evaluator can declare GOAL_ACHIEVED.
+
+Write each journey with:
+  - A unique ID (J-01, J-02, ...) used by the iter spec and evaluator log
+  - A short name
+  - A numbered list of click/type/assert steps the browser-qa-agent can execute
+  - An "Acceptance" line describing the observable end state
+-->
+
+- **J-01: Sign up and log in**
+  - Steps:
+    1. Visit `/signup`
+    2. Enter `user@example.com` / `password123`
+    3. Submit form, expect redirect to `/dashboard`
+    4. Click "Log out"
+    5. Visit `/login`, enter same credentials, submit, expect `/dashboard` again
+  - Acceptance: dashboard greeting shows the user's email address
+
+- **J-02: <next journey>**
+  - Steps:
+    1. <step>
+  - Acceptance: <observable end state>
+
+## Anti-goals
+<!--
+Required for goal mode. Optional / ignored by phase mode.
+
+These are veto criteria for the goal-evaluator. Even if every Must-have journey passes
+in the browser, the evaluator MUST NOT declare GOAL_ACHIEVED if any anti-goal is
+violated. Examples of useful anti-goals: security constraints, dependency limits,
+licensing rules, performance floors, accessibility minima.
+
+Write anti-goals as concrete, checkable rules — not aspirations. The evaluator
+classifies violations as "critical" (halts loop with REGRESSION) or "minor"
+(continues with a fix recommendation), so write them tightly enough that the
+distinction is clear from context.
+-->
+
+- No hard-coded credentials, API keys, or tokens in source files.
+- Auth tokens MUST NOT be stored in `localStorage` (use httpOnly cookies).
+- No dependency on a paid SaaS service unless explicitly listed in Constraints.
+- All form inputs must be keyboard-accessible (no `tabindex="-1"` on focusable controls).
