@@ -104,6 +104,9 @@ Reusable instruction files that agents read during their workflow. Located in `.
 ./scripts/automation/phase-closure-check.sh phase-1   # final closure gate
 ./scripts/automation/update-docs.sh --framework        # update framework architecture docs
 ./scripts/automation/update-docs.sh phase-1            # update project architecture docs
+./scripts/automation/run-evals.sh                      # offline harness eval suite (~30s, no API)
+python3 scripts/automation/lib/replay_trace.py list runs/<phase>/trace   # inspect captured agent invocations
+python3 scripts/automation/lib/analyze_telemetry.py runs/goal-session-<sid>/telemetry.jsonl  # token/cost summary (needs CHAIN_TELEMETRY_TOKENS=true)
 ```
 
 ---

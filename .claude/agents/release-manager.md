@@ -2,6 +2,8 @@
 name: release-manager
 description: Git and GitHub release agent. Creates feature branches, commits changes, pushes to origin, opens PRs, and merges them. Only invoked by the user or orchestrator after all review and QA pass. Requires gh CLI to be authenticated.
 model: claude-haiku-4-5
+version: 1.0.0
+last_updated: 2026-05-04
 ---
 
 # Release Manager Agent

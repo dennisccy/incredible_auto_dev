@@ -94,6 +94,11 @@ The `allow` list should be customized per project (e.g., add `Bash(alembic *)` f
 | `CHAIN_CLAUDE_MAX_QUOTA_RETRIES` | `3` | Max quota-wait-retry cycles |
 | `CHAIN_DISABLE_AUTO_WAIT` | `false` | Fail immediately on quota exhaustion |
 | `CHAIN_INSTALL_GATE_BYPASS` | (unset) | Bypass install security gate |
+| `CHAIN_CLAUDE_DISABLE_CACHE_HYGIENE` | `false` | When `true`, drop the `--exclude-dynamic-system-prompt-sections` flag from claude invocations. Default keeps it on (improves prompt-cache reuse across sessions). |
+| `CHAIN_TELEMETRY_TOKENS` | `false` | When `true`, route claude calls through `lib/claude_stream_renderer.py` to capture token usage and `total_cost_usd` into `claude_usage` telemetry events. See `docs/goal-mode-telemetry.md`. |
+| `CHAIN_TRACE_DIR` | (auto-set by entry scripts) | Directory where each successful claude invocation appends a record to `trace.jsonl` and copies its stdout to `<NNNN>-<agent>.log`. Phase mode auto-sets to `runs/<phase>/trace/`; goal mode auto-sets to `runs/goal-session-<sid>/trace/`. Inspect with `python3 scripts/automation/lib/replay_trace.py list <dir>`. |
+| `CHAIN_DISABLE_TRACE` | `false` | When `true`, the entry scripts skip auto-setting `CHAIN_TRACE_DIR` so no trace records are written. |
+| `CHAIN_DISABLE_PERMISSION_ISOLATION` | `false` | When `true`, skip the per-agent permission overlay applied by `lib/quota-retry.sh`. The overlay reads `lib/agent_permissions.py` and passes `--disallowedTools` to claude based on `CHAIN_CURRENT_AGENT` — by default, only `release-manager` can `git push`, `gh pr merge`, `gh release`, `git tag`, etc. |
 | `GOAL_SESSION_DIR` | (set by run-goal.sh) | Goal-mode session directory; consumed by `lib/telemetry.sh` for JSONL writes. No-op when unset (phase mode is unaffected). |
 | `GOAL_SESSION_ID` | (set by run-goal.sh) | Session id; included in every telemetry event |
 | `GOAL_ITER_INDEX` | (set by run-goal.sh) | Current iteration index; included in every telemetry event |

@@ -2,6 +2,8 @@
 name: ux-regression-reviewer
 description: UX regression reviewer. Checks whether the UI evolved appropriately with the phase's new capabilities. Flags features that exist in backend but are invisible or undiscoverable in the UI. Flags existing user journeys that may have regressed. Runs after browser QA and before the main auditor.
 model: claude-sonnet-4-6
+version: 1.0.0
+last_updated: 2026-05-04
 ---
 
 # UX Regression Reviewer

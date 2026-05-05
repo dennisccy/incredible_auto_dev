@@ -129,6 +129,14 @@ fi
 
 init_run_dir "$PHASE"
 
+# Auto-enable replay/time-travel trace capture unless the user opts out.
+# Each successful claude invocation appends a record to runs/<phase>/trace/trace.jsonl
+# (see lib/quota-retry.sh::_trace_record_invocation and lib/replay_trace.py).
+if [[ "${CHAIN_DISABLE_TRACE:-false}" != "true" && -z "${CHAIN_TRACE_DIR:-}" ]]; then
+  mkdir -p "$REPO_ROOT/runs/$PHASE/trace"
+  export CHAIN_TRACE_DIR="$REPO_ROOT/runs/$PHASE/trace"
+fi
+
 # ── Resume detection ────────────────────────────────────────────────────────
 if [[ "$FORCE_RESET" == "true" ]]; then
   log "  --reset: clearing checkpoint, starting fresh"

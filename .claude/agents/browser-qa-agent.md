@@ -2,6 +2,8 @@
 name: browser-qa-agent
 description: Browser QA agent. Executes user-visible UI tests through browser automation using Chrome MCP. Tests real workflows, not just page loads. Records pass/fail with evidence. Runs after ui-test-designer completes.
 model: claude-sonnet-4-6
+version: 1.0.0
+last_updated: 2026-05-04
 ---
 
 # Browser QA Agent

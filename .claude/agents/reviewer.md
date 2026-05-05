@@ -3,6 +3,8 @@ name: reviewer
 description: Code reviewer. Reads dev handoffs and diffs to assess implementation quality against the phase spec and project standards. Writes a structured review report. NEVER implements fixes directly — only writes the report with actionable fix tasks. Use after implementation completes and before QA.
 model: claude-sonnet-4-6
 tools: [Read, Glob, Grep, Bash, Write, Edit]
+version: 1.0.0
+last_updated: 2026-05-04
 ---
 
 # Reviewer Agent

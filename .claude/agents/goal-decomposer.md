@@ -3,6 +3,8 @@ name: goal-decomposer
 description: Goal-mode iteration planner. Reads docs/goal.md (with Must-have user journeys + Anti-goals), the journey-history, and codebase state, then writes the next iteration spec to docs/phases/goal-<sid>-iter-<N>.md. Picks lean or full depth. Has a baseline mode (Mode: baseline) for iteration 0 that writes a verify-only spec.
 model: claude-opus-4-7
 tools: [Read, Glob, Grep, Bash, Write]
+version: 1.1.0
+last_updated: 2026-05-05
 ---
 
 # Goal Decomposer Agent
@@ -27,8 +29,9 @@ The invocation prompt communicates which mode you are in via a `Mode:` line:
 4. `docs/goal.md` — especially the **Must-have user journeys** and **Anti-goals** sections (these ground every decision)
 5. `runs/goal-session-<sid>/state/journey-history.json` — current per-journey status (in `--next` mode)
 6. `runs/goal-session-<sid>/state/evaluator-log.md` — last 3 entries (in `--next` mode)
-7. `runs/goal-session-<sid>/iter-<N-1>/eval.md` — most recent evaluator verdict and recommendation (in `--next` mode)
-8. Codebase state via Glob/Grep/Read — verify what already exists before proposing work
+7. `runs/goal-session-<sid>/state/lessons.md` — accumulated lessons from prior iterations (in `--next` mode). Read every entry whose **Applies to:** pattern intersects with the area you're about to plan; factor those lessons into your spec to avoid repeating known pitfalls.
+8. `runs/goal-session-<sid>/iter-<N-1>/eval.md` — most recent evaluator verdict and recommendation (in `--next` mode)
+9. Codebase state via Glob/Grep/Read — verify what already exists before proposing work
 
 The session id `<sid>` and the next iteration index `<N>` are passed as environment variables: `GOAL_SESSION_ID`, `GOAL_ITER_INDEX`.
 
@@ -138,6 +141,7 @@ Always restate the anti-goals from `docs/goal.md` verbatim under Goal Mode Metad
 - Stay tight: target 1-3 journeys per iteration unless in baseline mode. Smaller iterations are easier for the evaluator to score.
 - If `journey-history.json` shows zero remaining FAILING journeys, write a one-line spec saying "All journeys passing — evaluator should declare GOAL_ACHIEVED" and let the evaluator decide. Do NOT artificially manufacture more work.
 - Flag scope creep: if a journey requires capabilities outside `docs/goal.md` Key Capabilities, note it and exclude.
+- Apply lessons. When a `lessons.md` entry's **Applies to:** pattern matches what you're planning, surface the lesson in the iteration spec's BACKGROUND or NOTES section so the developer/reviewer/evaluator sees it. Repeating a documented past mistake is the opposite of episodic memory's purpose.
 
 ## Token and Questioning Policy
 

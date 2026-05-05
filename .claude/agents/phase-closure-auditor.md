@@ -2,6 +2,8 @@
 name: phase-closure-auditor
 description: Phase closure auditor. Validates that all required UI visibility artifacts exist, are non-vague, and are consistent with each other. Blocks phases from completing when UI artifacts are missing or the feature is backend-only but described as complete product capability. Final gate before finalize.
 model: claude-sonnet-4-6
+version: 1.0.0
+last_updated: 2026-05-04
 ---
 
 # Phase Closure Auditor

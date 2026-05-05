@@ -32,6 +32,42 @@
 #                                     wrote its artifacts is treated like any non-zero exit —
 #                                     callers (run-phase.sh) log a warning and continue.
 #                                     Set to 0 to disable the timeout.
+#   CHAIN_CLAUDE_DISABLE_CACHE_HYGIENE Set to "true" to drop the
+#                                     `--exclude-dynamic-system-prompt-sections` flag.
+#                                     Default: flag is added. The flag tells claude to move
+#                                     per-machine state (cwd, env info, git status) out of
+#                                     the system prompt and into the first user message,
+#                                     which improves prompt-cache reuse across invocations
+#                                     (and across machines that share this subtree). Only
+#                                     applies with claude's default system prompt — which is
+#                                     what we use everywhere.
+#   CHAIN_TELEMETRY_TOKENS            Set to "true" to capture Claude API usage (input/output
+#                                     tokens, cache read/write tokens, total_cost_usd) per
+#                                     invocation. When enabled, claude is invoked with
+#                                     `--output-format stream-json` and routed through
+#                                     `lib/claude_stream_renderer.py`, which pretty-prints
+#                                     events to the terminal and writes a usage sidecar JSON
+#                                     consumed by `record_claude_usage_telemetry`. Default
+#                                     off — no behavioural change to existing pipelines.
+#   CHAIN_TRACE_DIR                   Directory to capture per-invocation trace records. When
+#                                     set to a writable path, each successful claude call
+#                                     appends a line to `$CHAIN_TRACE_DIR/trace.jsonl` (args,
+#                                     agent, ts, exit_code, usage) and copies its stdout to
+#                                     `$CHAIN_TRACE_DIR/<NNNN>-<agent>.log`. Enables
+#                                     after-the-fact debug ("what did the orchestrator
+#                                     actually see?") and supports the replay tool at
+#                                     `lib/replay_trace.py`. Phase and goal entry scripts
+#                                     auto-set this to `runs/<phase>/trace/` (phase mode) or
+#                                     `$GOAL_SESSION_DIR/trace/` (goal mode); set
+#                                     CHAIN_DISABLE_TRACE=true to opt out.
+#   CHAIN_DISABLE_TRACE               When "true", the entry scripts skip auto-setting
+#                                     CHAIN_TRACE_DIR. Default: false.
+#   CHAIN_DISABLE_PERMISSION_ISOLATION When "true", skip the per-agent permission overlay
+#                                     that limits which Bash patterns each agent can run.
+#                                     The default overlay restricts `git push`,
+#                                     `gh pr merge`, etc. to release-manager only. Disable
+#                                     only if you have a reason — see lib/agent_permissions.py
+#                                     for the full default deny list.
 
 : "${CHAIN_CLAUDE_RESET_TZ:=Europe/London}"
 : "${CHAIN_CLAUDE_RESET_BUFFER_SECONDS:=120}"
@@ -42,6 +78,11 @@
 : "${CHAIN_DISABLE_AUTO_WAIT:=false}"
 : "${CHAIN_CLAUDE_PRE_RETRY_HOOK:=}"
 : "${CHAIN_CLAUDE_MAX_RUNTIME_SECONDS:=7200}"
+: "${CHAIN_CLAUDE_DISABLE_CACHE_HYGIENE:=false}"
+: "${CHAIN_TELEMETRY_TOKENS:=false}"
+: "${CHAIN_TRACE_DIR:=}"
+: "${CHAIN_DISABLE_TRACE:=false}"
+: "${CHAIN_DISABLE_PERMISSION_ISOLATION:=false}"
 
 # Exit code returned when quota retries are exhausted.
 # 75 = EX_TEMPFAIL (POSIX sysexits.h) — "temporary failure, try again later".
@@ -50,6 +91,72 @@ QUOTA_EXHAUSTED_EXIT_CODE=75
 
 # Sentinel file path — shared across all pipeline stages on this machine.
 _QUOTA_SENTINEL="/tmp/claude-quota-exhausted"
+
+# Append a trace record to $CHAIN_TRACE_DIR/trace.jsonl and copy stdout into
+# $CHAIN_TRACE_DIR/<NNNN>-<agent>.log. No-op if CHAIN_TRACE_DIR is unset, the
+# directory does not exist, or is not writable. Always best-effort: failures
+# in trace capture must NOT propagate up and break the pipeline.
+#
+# Args:
+#   $1 — path to tmp_log (claude's captured stdout)
+#   $2 — path to sidecar JSON (may be empty/missing)
+#   $3 — duration_seconds (epoch delta)
+#   $4 — exit_code
+#   shift 4 — remaining args are the claude args (the caller's "$@")
+_trace_record_invocation() {
+  local tmp_log_path="$1"
+  local sidecar_path="$2"
+  local duration_seconds="$3"
+  local invocation_exit="$4"
+  shift 4
+
+  local trace_dir="${CHAIN_TRACE_DIR:-}"
+  [[ -z "$trace_dir" ]] && return 0
+  [[ -d "$trace_dir" && -w "$trace_dir" ]] || return 0
+
+  # Atomic-ish step counter
+  local step_file="$trace_dir/.next-step"
+  local step
+  step=$( ( flock -x 9; s=$(cat "$step_file" 2>/dev/null || echo 1); echo "$((s+1))" > "$step_file"; echo "$s" ) 9>"$trace_dir/.lock" 2>/dev/null) || step=1
+  [[ -z "$step" ]] && step=1
+  local step_padded
+  step_padded=$(printf "%04d" "$step")
+
+  local agent="${CHAIN_CURRENT_AGENT:-unattributed}"
+  local stdout_filename="${step_padded}-${agent}.log"
+  cp -- "$tmp_log_path" "$trace_dir/$stdout_filename" 2>/dev/null || true
+
+  local ts
+  ts=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+
+  if command -v jq >/dev/null 2>&1; then
+    local args_json
+    args_json=$(printf '%s\n' "$@" | jq -R . 2>/dev/null | jq -s -c . 2>/dev/null) || args_json='[]'
+    local usage_json="{}"
+    if [[ -n "$sidecar_path" && -f "$sidecar_path" && -s "$sidecar_path" ]]; then
+      usage_json=$(cat "$sidecar_path" 2>/dev/null) || usage_json="{}"
+    fi
+    local record
+    record=$(jq -cn \
+      --argjson step "$step" \
+      --arg agent "$agent" \
+      --arg ts "$ts" \
+      --argjson exit_code "$invocation_exit" \
+      --argjson duration_seconds "$duration_seconds" \
+      --arg stdout_path "$stdout_filename" \
+      --argjson args "$args_json" \
+      --argjson usage "$usage_json" \
+      '{step:$step, agent:$agent, ts:$ts, exit_code:$exit_code, duration_seconds:$duration_seconds, stdout_path:$stdout_path, args:$args} + $usage' 2>/dev/null) || record=""
+    if [[ -n "$record" ]]; then
+      printf '%s\n' "$record" >> "$trace_dir/trace.jsonl"
+    fi
+  else
+    # Minimal fallback (jq absent): step + agent + ts + stdout path only
+    printf '{"step":%d,"agent":"%s","ts":"%s","exit_code":%d,"duration_seconds":%d,"stdout_path":"%s"}\n' \
+      "$step" "$agent" "$ts" "$invocation_exit" "$duration_seconds" "$stdout_filename" \
+      >> "$trace_dir/trace.jsonl"
+  fi
+}
 
 # ── Internal helpers ─────────────────────────────────────────────────────────
 
@@ -282,23 +389,107 @@ claude_with_quota_retry() {
     local sleep_start
     sleep_start=$(date +%s)
     local exit_code
+
+    # Build claude args. Always pass --effort max. Add --exclude-dynamic-system-prompt-sections
+    # by default (improves prompt-cache reuse across machines / sessions; disable via
+    # CHAIN_CLAUDE_DISABLE_CACHE_HYGIENE=true). When CHAIN_TELEMETRY_TOKENS=true, also
+    # request stream-json output and route through claude_stream_renderer.py so the
+    # final usage block lands in $CHAIN_CLAUDE_USAGE_SIDECAR for telemetry capture.
+    local -a _claude_extra_args=(--effort max)
+    if [[ "$CHAIN_CLAUDE_DISABLE_CACHE_HYGIENE" != "true" ]]; then
+      _claude_extra_args+=(--exclude-dynamic-system-prompt-sections)
+    fi
+
+    local _renderer_path=""
+    local _sidecar=""
+    if [[ "$CHAIN_TELEMETRY_TOKENS" == "true" ]]; then
+      _renderer_path="$(dirname "${BASH_SOURCE[0]}")/claude_stream_renderer.py"
+      if [[ -f "$_renderer_path" ]]; then
+        _sidecar=$(mktemp /tmp/claude-usage-XXXXXX.json)
+        export CHAIN_CLAUDE_USAGE_SIDECAR="$_sidecar"
+        _claude_extra_args+=(--output-format stream-json --verbose --include-partial-messages)
+      else
+        echo "[quota-retry] $(date -Iseconds) CHAIN_TELEMETRY_TOKENS=true but renderer not found at $_renderer_path — falling back to default output" >&2
+        _renderer_path=""
+      fi
+    fi
+
+    # Per-agent permission overlay + optional budget cap.
+    # When CHAIN_CURRENT_AGENT is set (by record_agent_invocation_start), look up
+    # disallowed tool patterns and an optional max_budget_usd via
+    # lib/agent_permissions.py. Default overlay restricts `git push`, `gh pr merge`,
+    # etc. to release-manager only. Disable via CHAIN_DISABLE_PERMISSION_ISOLATION=true.
+    if [[ "$CHAIN_DISABLE_PERMISSION_ISOLATION" != "true" && -n "${CHAIN_CURRENT_AGENT:-}" ]]; then
+      local _perms_script
+      _perms_script="$(dirname "${BASH_SOURCE[0]}")/agent_permissions.py"
+      if [[ -f "$_perms_script" ]]; then
+        local _denials
+        _denials=$(python3 "$_perms_script" disallowed "$CHAIN_CURRENT_AGENT" 2>/dev/null) || _denials=""
+        if [[ -n "$_denials" ]]; then
+          _claude_extra_args+=(--disallowedTools "$_denials")
+        fi
+        local _budget
+        _budget=$(python3 "$_perms_script" budget "$CHAIN_CURRENT_AGENT" 2>/dev/null) || _budget=""
+        if [[ -n "$_budget" ]]; then
+          _claude_extra_args+=(--max-budget-usd "$_budget")
+        fi
+      fi
+    fi
+
+    # NOTE on `--foreground`: GNU timeout's default places the child in a new
+    # process group via setpgid(2). With that default, terminal Ctrl-C delivers
+    # SIGINT to the parent shell's pgrp only — claude never receives it, keeps
+    # running, and the parent shell is blocked on the pipeline. The user sees
+    # "Ctrl-C did nothing." `--foreground` keeps claude in the parent's pgrp
+    # so terminal signals propagate normally. The documented downside is that
+    # grandchildren of timeout aren't timed out — which is fine here because
+    # we only care about claude's own runtime. See:
+    # https://www.gnu.org/software/coreutils/manual/html_node/timeout-invocation.html
     if [[ "${CHAIN_CLAUDE_MAX_RUNTIME_SECONDS:-0}" -gt 0 ]] && command -v timeout >/dev/null 2>&1; then
-      timeout --kill-after=60 "$CHAIN_CLAUDE_MAX_RUNTIME_SECONDS" claude --effort max "$@" 2>&1 | tee "$tmp_log"
-      exit_code="${PIPESTATUS[0]}"
+      if [[ -n "$_renderer_path" ]]; then
+        timeout --foreground --kill-after=60 "$CHAIN_CLAUDE_MAX_RUNTIME_SECONDS" claude "${_claude_extra_args[@]}" "$@" 2>&1 \
+          | python3 "$_renderer_path" 2>&1 \
+          | tee "$tmp_log"
+        exit_code="${PIPESTATUS[0]}"
+      else
+        timeout --foreground --kill-after=60 "$CHAIN_CLAUDE_MAX_RUNTIME_SECONDS" claude "${_claude_extra_args[@]}" "$@" 2>&1 | tee "$tmp_log"
+        exit_code="${PIPESTATUS[0]}"
+      fi
       # GNU timeout returns 124 on SIGTERM, 137 on SIGKILL — log and treat as failure.
       if [[ $exit_code -eq 124 || $exit_code -eq 137 ]]; then
         echo "[quota-retry] $(date -Iseconds) *** claude exceeded CHAIN_CLAUDE_MAX_RUNTIME_SECONDS (${CHAIN_CLAUDE_MAX_RUNTIME_SECONDS}s) and was terminated ***" >&2
         echo "[quota-retry] $(date -Iseconds) If artifacts were written before the hang, downstream steps can still proceed." >&2
       fi
     else
-      claude --effort max "$@" 2>&1 | tee "$tmp_log"
-      exit_code="${PIPESTATUS[0]}"
+      if [[ -n "$_renderer_path" ]]; then
+        claude "${_claude_extra_args[@]}" "$@" 2>&1 \
+          | python3 "$_renderer_path" 2>&1 \
+          | tee "$tmp_log"
+        exit_code="${PIPESTATUS[0]}"
+      else
+        claude "${_claude_extra_args[@]}" "$@" 2>&1 | tee "$tmp_log"
+        exit_code="${PIPESTATUS[0]}"
+      fi
     fi
 
     # ── Success path ────────────────────────────────────────────────────────
     if [[ $exit_code -eq 0 ]] && ! _quota_is_exhausted "$tmp_log"; then
+      local invocation_duration=$(( $(date +%s) - sleep_start ))
+      # Trace capture (best-effort, never blocks the pipeline)
+      if [[ -n "${CHAIN_TRACE_DIR:-}" ]]; then
+        _trace_record_invocation "$tmp_log" "${_sidecar:-}" "$invocation_duration" "$exit_code" "$@" || true
+      fi
       rm -f "$tmp_log"
       _quota_clear_sentinel
+      # If telemetry capture is enabled and the renderer wrote a usage sidecar,
+      # forward it to the telemetry layer (no-op if telemetry.sh isn't sourced).
+      if [[ -n "$_sidecar" && -f "$_sidecar" ]]; then
+        if declare -F record_claude_usage_from_sidecar >/dev/null 2>&1; then
+          record_claude_usage_from_sidecar "$_sidecar" || true
+        fi
+        rm -f "$_sidecar"
+      fi
+      unset CHAIN_CLAUDE_USAGE_SIDECAR
       return 0
     fi
 

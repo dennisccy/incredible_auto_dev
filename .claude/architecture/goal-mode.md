@@ -56,6 +56,7 @@ All other agents (developer, reviewer, qa, auditor, browser-qa-agent, ui-impact-
                   runs/goal-session-<sid>/iter-<N>/eval.md
                   + updated state/journey-history.json
                   + appended state/evaluator-log.md
+                  + (optional) appended state/lessons.md when there is a non-obvious takeaway
 ```
 
 The synthetic phase name `goal-<sid>-iter-<N>` (where `<sid>` is the session id and `<N>` is the iteration index) is used wherever existing scripts and agents expect a "phase" name. This means agents, skills, and `run-phase.sh` consume goal-mode artifacts without modification — the file naming convention does the routing.
@@ -88,7 +89,8 @@ runs/goal-session-<sid>/
 ├── telemetry.jsonl             # structured event log (see docs/goal-mode-telemetry.md)
 ├── state/
 │   ├── journey-history.json    # per-journey status, anti-goal violations, timestamps
-│   └── evaluator-log.md        # append-only chronicle of evaluator decisions
+│   ├── evaluator-log.md        # append-only chronicle of evaluator decisions
+│   └── lessons.md              # append-only ledger of non-obvious takeaways; goal-decomposer reads before planning
 ├── iter-0/eval.md              # baseline evaluation
 ├── iter-1/eval.md              # first dev iteration evaluation
 ├── iter-N/eval.md              # ...
@@ -103,6 +105,41 @@ Per-iteration code/test artifacts use the `goal-<sid>-iter-<N>` prefix and live 
 `run-goal.sh --resume --session-id <id>` reads `session.json` and continues from `current_iter`. If a prior run died mid-iteration, that iteration is rerun from scratch — every iteration is idempotent (a new spec is written, dev/review/QA/browser-qa overwrite their own artifacts).
 
 If the prior status is `REGRESSION_HALT`, resume requires `--acknowledge-regression` so the user must explicitly take responsibility for proceeding past a known regression.
+
+## Per-iteration push (opt-in)
+
+`run-goal.sh --push-per-iter` populates a single per-session feature branch (default `goal/<sid>`, override with `--push-branch <name>`) with one commit per successful iteration. The push is direct shell `git` — no model invocation, no agent, no token cost.
+
+**Branch lifecycle:**
+
+- New session with `--push-per-iter`: creates `goal/<sid>` from current HEAD, switches to it. Errors if the branch already exists.
+- Resume: reads `push_per_iter` and `push_branch` from `session.json` (CLI flags are ignored on resume — session intent is preserved). Switches to the recorded branch; errors if it has been deleted.
+- `session.json` gains two fields: `push_per_iter` (bool) and `push_branch` (string).
+
+**Per-iter behaviour (after the evaluator returns a verdict):**
+
+| Verdict | Push action |
+|---|---|
+| `CONTINUE`, `ESCALATE`, `GOAL_ACHIEVED` | `git add -A`, commit with auto-generated message (verdict + journey deltas), `git push -u origin HEAD`. Skipped silently if working tree has no changes. |
+| `REGRESSION`, `STALLED` | Skipped — the branch is left at the previous iter's HEAD so the user can inspect partial state without remote noise. |
+| Any failure (commit conflict, push rejected, network) | Logged as `[run-goal] push-per-iter: WARNING ...`, recorded as `iter_push` telemetry event with `success: false`. Does not halt the loop. |
+
+**PR creation:** unchanged. The branch accumulates commits; the existing `--auto-release` flow (or a manual `gh pr create`) opens the PR at the end. The `summary.md` written at session halt includes a ready-to-paste `gh pr create` command when `push_per_iter` is on.
+
+The commit message format:
+
+```
+goal(<sid>): iter <N> — <VERDICT> (passing+X failing+Y regressed+Z)
+
+Target journeys: J-XX, J-YY
+Verdict: <VERDICT>
+Newly passing: X
+Newly failing: Y
+Regressed: Z
+Anti-goal violations: W
+Iter spec: docs/phases/goal-<sid>-iter-<N>.md
+Iter eval: runs/goal-session-<sid>/iter-<N>/eval.md
+```
 
 ## Backward compatibility
 
