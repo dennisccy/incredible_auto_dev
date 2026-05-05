@@ -436,14 +436,23 @@ claude_with_quota_retry() {
       fi
     fi
 
+    # NOTE on `--foreground`: GNU timeout's default places the child in a new
+    # process group via setpgid(2). With that default, terminal Ctrl-C delivers
+    # SIGINT to the parent shell's pgrp only — claude never receives it, keeps
+    # running, and the parent shell is blocked on the pipeline. The user sees
+    # "Ctrl-C did nothing." `--foreground` keeps claude in the parent's pgrp
+    # so terminal signals propagate normally. The documented downside is that
+    # grandchildren of timeout aren't timed out — which is fine here because
+    # we only care about claude's own runtime. See:
+    # https://www.gnu.org/software/coreutils/manual/html_node/timeout-invocation.html
     if [[ "${CHAIN_CLAUDE_MAX_RUNTIME_SECONDS:-0}" -gt 0 ]] && command -v timeout >/dev/null 2>&1; then
       if [[ -n "$_renderer_path" ]]; then
-        timeout --kill-after=60 "$CHAIN_CLAUDE_MAX_RUNTIME_SECONDS" claude "${_claude_extra_args[@]}" "$@" 2>&1 \
+        timeout --foreground --kill-after=60 "$CHAIN_CLAUDE_MAX_RUNTIME_SECONDS" claude "${_claude_extra_args[@]}" "$@" 2>&1 \
           | python3 "$_renderer_path" 2>&1 \
           | tee "$tmp_log"
         exit_code="${PIPESTATUS[0]}"
       else
-        timeout --kill-after=60 "$CHAIN_CLAUDE_MAX_RUNTIME_SECONDS" claude "${_claude_extra_args[@]}" "$@" 2>&1 | tee "$tmp_log"
+        timeout --foreground --kill-after=60 "$CHAIN_CLAUDE_MAX_RUNTIME_SECONDS" claude "${_claude_extra_args[@]}" "$@" 2>&1 | tee "$tmp_log"
         exit_code="${PIPESTATUS[0]}"
       fi
       # GNU timeout returns 124 on SIGTERM, 137 on SIGKILL — log and treat as failure.
