@@ -300,10 +300,14 @@ print(hashlib.sha1(json.dumps(canonical, sort_keys=True).encode()).hexdigest())
 is_stalled() {
   local window="$1"
   local n
+  # `$window` is a bash integer interpolated literally into the Python source.
+  # The first guard is "window is positive"; `len(int)` is a type error, so
+  # compare the int directly. The second guard is "we have enough hashes to
+  # fill the window".
   n=$(python3 -c "
 import json
 hashes = open('$GOAL_SESSION_DIR_LOCAL/.history-hashes').read().splitlines() if __import__('os').path.exists('$GOAL_SESSION_DIR_LOCAL/.history-hashes') else []
-if len($window) > 0 and len(hashes) >= $window:
+if $window > 0 and len(hashes) >= $window:
   recent = hashes[-$window:]
   print(1 if len(set(recent)) == 1 else 0)
 else:
