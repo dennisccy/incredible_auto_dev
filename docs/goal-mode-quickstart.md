@@ -121,6 +121,26 @@ This deletes `runs/goal-session-my-app/` and starts fresh.
 
 The release-manager runs once at the end of the session (not per iteration), creating a feature branch and PR for the entire body of work. Requires authenticated `gh` CLI.
 
+### Push every iteration to a session branch
+
+```bash
+./scripts/automation/run-goal.sh --session-id my-app --push-per-iter
+```
+
+Creates `goal/my-app` from current HEAD and pushes one commit per successful iteration (CONTINUE / ESCALATE / GOAL_ACHIEVED). `REGRESSION` and `STALLED` halts skip the push so the remote isn't left in a state you haven't reviewed. No model invocation per push — direct shell `git`. Override the branch name with `--push-branch <name>`.
+
+The `summary.md` written when the loop halts includes a ready-to-paste `gh pr create` command. PR creation itself is still manual (or use `--auto-release` for the existing end-of-session PR flow).
+
+Each iteration's commit message includes the verdict and the journey delta counts, so `git log goal/my-app` is a reviewable timeline of the session:
+
+```
+goal(my-app): iter 4 — CONTINUE (passing+1 failing+0 regressed+0)
+goal(my-app): iter 3 — ESCALATE (passing+0 failing+1 regressed+0)
+goal(my-app): iter 2 — CONTINUE (passing+2 failing+0 regressed+0)
+goal(my-app): iter 1 — CONTINUE (passing+1 failing+0 regressed+0)
+goal(my-app): iter 0 — CONTINUE (passing+0 failing+3 regressed+0)
+```
+
 ## Worked example: tiny goal
 
 Here's a minimal `goal.md` that demonstrates goal mode end-to-end:

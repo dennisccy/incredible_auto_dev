@@ -106,6 +106,41 @@ Per-iteration code/test artifacts use the `goal-<sid>-iter-<N>` prefix and live 
 
 If the prior status is `REGRESSION_HALT`, resume requires `--acknowledge-regression` so the user must explicitly take responsibility for proceeding past a known regression.
 
+## Per-iteration push (opt-in)
+
+`run-goal.sh --push-per-iter` populates a single per-session feature branch (default `goal/<sid>`, override with `--push-branch <name>`) with one commit per successful iteration. The push is direct shell `git` — no model invocation, no agent, no token cost.
+
+**Branch lifecycle:**
+
+- New session with `--push-per-iter`: creates `goal/<sid>` from current HEAD, switches to it. Errors if the branch already exists.
+- Resume: reads `push_per_iter` and `push_branch` from `session.json` (CLI flags are ignored on resume — session intent is preserved). Switches to the recorded branch; errors if it has been deleted.
+- `session.json` gains two fields: `push_per_iter` (bool) and `push_branch` (string).
+
+**Per-iter behaviour (after the evaluator returns a verdict):**
+
+| Verdict | Push action |
+|---|---|
+| `CONTINUE`, `ESCALATE`, `GOAL_ACHIEVED` | `git add -A`, commit with auto-generated message (verdict + journey deltas), `git push -u origin HEAD`. Skipped silently if working tree has no changes. |
+| `REGRESSION`, `STALLED` | Skipped — the branch is left at the previous iter's HEAD so the user can inspect partial state without remote noise. |
+| Any failure (commit conflict, push rejected, network) | Logged as `[run-goal] push-per-iter: WARNING ...`, recorded as `iter_push` telemetry event with `success: false`. Does not halt the loop. |
+
+**PR creation:** unchanged. The branch accumulates commits; the existing `--auto-release` flow (or a manual `gh pr create`) opens the PR at the end. The `summary.md` written at session halt includes a ready-to-paste `gh pr create` command when `push_per_iter` is on.
+
+The commit message format:
+
+```
+goal(<sid>): iter <N> — <VERDICT> (passing+X failing+Y regressed+Z)
+
+Target journeys: J-XX, J-YY
+Verdict: <VERDICT>
+Newly passing: X
+Newly failing: Y
+Regressed: Z
+Anti-goal violations: W
+Iter spec: docs/phases/goal-<sid>-iter-<N>.md
+Iter eval: runs/goal-session-<sid>/iter-<N>/eval.md
+```
+
 ## Backward compatibility
 
 Phase mode is unchanged. The only modification to phase-mode code is the additive `--no-finalize` flag on `run-phase.sh` — when not passed (the default), every existing phase-mode invocation behaves identically.

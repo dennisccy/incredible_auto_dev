@@ -115,6 +115,20 @@ Written when a hard halt fires before normal `iter_end`.
 | `reason` | string | `BUDGET_EXHAUSTED` \| `STALLED` \| `REGRESSION_HALT` \| `ABORTED` |
 | `detected_at_step` | string | Where the halt was detected (e.g., `pre_decomposer`, `post_evaluator`) |
 
+### `iter_push` (opt-in)
+Written by `run-goal.sh` after each iteration when `--push-per-iter` is enabled. One event per iteration. Captures whether the per-iter commit + push succeeded and which branch received the commit.
+
+| Field | Type | Description |
+|---|---|---|
+| `branch` | string | The push branch name (e.g., `goal/my-app`) |
+| `commit_sha` | string | SHA of the commit created (empty on commit/add failure) |
+| `success` | boolean | True if commit + push both succeeded, OR the iteration was deliberately skipped (no changes / halt verdict) |
+| `error` | string | Failure reason: `"add failed"`, `"commit failed"`, `"push failed"`. Empty on success. |
+| `skipped` | string | When success is true but no commit was made: `"no_changes"` (clean working tree) or `"halt_verdict"` (REGRESSION / STALLED). Absent on actual commits. |
+| `verdict` | string | The iteration verdict that triggered the eligibility check |
+
+To enable: pass `--push-per-iter` (and optionally `--push-branch <name>`) to `run-goal.sh`. See [goal-mode-quickstart.md](goal-mode-quickstart.md) for the full flow.
+
 ### `claude_usage` (opt-in)
 Written by `claude_with_quota_retry` after a successful Claude invocation when `CHAIN_TELEMETRY_TOKENS=true`. Captures Claude API usage from the stream-json `result` event via `lib/claude_stream_renderer.py`. Disabled by default (no behavioural change to existing pipelines).
 
