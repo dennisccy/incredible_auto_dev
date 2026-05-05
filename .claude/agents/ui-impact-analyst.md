@@ -2,6 +2,8 @@
 name: ui-impact-analyst
 description: Post-dev UI impact analyst. Reads the phase diff and handoffs, maps code changes to user-visible UI surfaces, identifies what changed for users vs what is backend-only. Produces user-visible-changes and ui-surface-map reports. Runs after dev+review passes.
 model: claude-sonnet-4-6
+version: 1.0.0
+last_updated: 2026-05-04
 ---
 
 # UI Impact Analyst

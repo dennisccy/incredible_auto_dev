@@ -3,6 +3,8 @@ name: product-manager
 description: Optional architecture and planning agent. Reads phase specs and existing code to produce detailed implementation plans. Does NOT write code. Use before developer agent when a phase is complex or when you need to validate that a proposed approach fits the architecture.
 model: claude-opus-4-7
 tools: [Read, Glob, Grep, WebSearch]
+version: 1.0.0
+last_updated: 2026-05-04
 ---
 
 # Product Manager Agent (Optional)

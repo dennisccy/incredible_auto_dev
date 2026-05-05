@@ -56,6 +56,7 @@ All other agents (developer, reviewer, qa, auditor, browser-qa-agent, ui-impact-
                   runs/goal-session-<sid>/iter-<N>/eval.md
                   + updated state/journey-history.json
                   + appended state/evaluator-log.md
+                  + (optional) appended state/lessons.md when there is a non-obvious takeaway
 ```
 
 The synthetic phase name `goal-<sid>-iter-<N>` (where `<sid>` is the session id and `<N>` is the iteration index) is used wherever existing scripts and agents expect a "phase" name. This means agents, skills, and `run-phase.sh` consume goal-mode artifacts without modification — the file naming convention does the routing.
@@ -88,7 +89,8 @@ runs/goal-session-<sid>/
 ├── telemetry.jsonl             # structured event log (see docs/goal-mode-telemetry.md)
 ├── state/
 │   ├── journey-history.json    # per-journey status, anti-goal violations, timestamps
-│   └── evaluator-log.md        # append-only chronicle of evaluator decisions
+│   ├── evaluator-log.md        # append-only chronicle of evaluator decisions
+│   └── lessons.md              # append-only ledger of non-obvious takeaways; goal-decomposer reads before planning
 ├── iter-0/eval.md              # baseline evaluation
 ├── iter-1/eval.md              # first dev iteration evaluation
 ├── iter-N/eval.md              # ...

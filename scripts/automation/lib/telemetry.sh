@@ -78,6 +78,10 @@ record_telemetry_event() {
 
 # Convenience: record an agent invocation start. Returns the start time
 # (epoch seconds) on stdout — capture it and pass to record_agent_invocation_end.
+#
+# Side effect: sets CHAIN_CURRENT_AGENT so subsequent claude_usage telemetry
+# events (recorded inside claude_with_quota_retry) can be attributed to this
+# agent in analyzers.
 record_agent_invocation_start() {
   local agent="$1"
   local extra="${2:-}"
@@ -88,6 +92,7 @@ record_agent_invocation_start() {
   else
     payload=$(printf '{"agent":"%s"}' "$agent")
   fi
+  export CHAIN_CURRENT_AGENT="$agent"
   record_telemetry_event "agent_invocation_start" "$payload"
   date +%s
 }
@@ -111,6 +116,38 @@ record_agent_invocation_end() {
   payload=$(printf '{"agent":"%s","exit_status":%d,"duration_seconds":%d,"retries":%d}' \
     "$agent" "$status" "$duration" "$retries")
   record_telemetry_event "agent_invocation_end" "$payload"
+  unset CHAIN_CURRENT_AGENT
+}
+
+# Forward Claude API usage info captured by claude_stream_renderer.py to the
+# telemetry log. The sidecar is a JSON object containing usage counts,
+# total_cost_usd, duration, and the upstream session_id.
+#
+# Called from quota-retry.sh on the success path when CHAIN_TELEMETRY_TOKENS=true.
+# No-op when telemetry is not enabled or the sidecar is empty/missing.
+#
+# Args:
+#   $1 — path to the sidecar JSON file
+record_claude_usage_from_sidecar() {
+  local sidecar_path="${1:-}"
+  if ! telemetry_enabled; then return 0; fi
+  if [[ -z "$sidecar_path" || ! -s "$sidecar_path" ]]; then return 0; fi
+
+  local payload
+  payload=$(cat "$sidecar_path" 2>/dev/null) || return 0
+  if [[ -z "$payload" ]]; then return 0; fi
+
+  # Attach the current agent name so analyzers can attribute cost back to the
+  # agent that drove the call. Falls back to the raw sidecar payload if jq is
+  # unavailable or the payload is malformed.
+  if command -v jq >/dev/null 2>&1 && [[ -n "${CHAIN_CURRENT_AGENT:-}" ]]; then
+    local enriched
+    if enriched=$(printf '%s' "$payload" | jq -c --arg a "$CHAIN_CURRENT_AGENT" '. + {agent:$a}' 2>/dev/null); then
+      payload="$enriched"
+    fi
+  fi
+
+  record_telemetry_event "claude_usage" "$payload"
 }
 
 # Standalone test mode: invoking this script directly with arg "test" exercises

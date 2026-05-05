@@ -74,6 +74,7 @@ GOAL_SESSION_DIR_LOCAL="$REPO_ROOT/runs/goal-session-${SESSION_ID}"
 SESSION_JSON="$GOAL_SESSION_DIR_LOCAL/session.json"
 JOURNEY_HISTORY="$GOAL_SESSION_DIR_LOCAL/state/journey-history.json"
 EVALUATOR_LOG="$GOAL_SESSION_DIR_LOCAL/state/evaluator-log.md"
+LESSONS_FILE="$GOAL_SESSION_DIR_LOCAL/state/lessons.md"
 SUMMARY_FILE="$GOAL_SESSION_DIR_LOCAL/summary.md"
 GOAL_FILE="$REPO_ROOT/docs/goal.md"
 
@@ -172,6 +173,17 @@ with open("$SESSION_JSON", "w") as f:
 PY
   echo '{"journeys":{},"anti_goal_violations":[],"updated_at":""}' > "$JOURNEY_HISTORY"
   : > "$EVALUATOR_LOG"
+  cat > "$LESSONS_FILE" <<EOF
+# Goal Session ${SESSION_ID} — Lessons Learned
+
+Append-only ledger of takeaways from prior iterations. The goal-evaluator
+appends one entry per iteration; the goal-decomposer reads this file before
+planning each iteration to avoid repeating known pitfalls.
+
+Each entry should be 1-3 sentences capturing a non-obvious lesson — surprising
+failures, regression triggers, or decisions that worked well. Avoid
+restating the verdict (the evaluator-log.md already does that).
+EOF
   RUN_MODE="new"
 fi
 
@@ -192,6 +204,14 @@ PY
 # ── Export shared env for invoked agents ──────────────────────────────────
 export GOAL_SESSION_ID="$SESSION_ID"
 export GOAL_SESSION_DIR="$GOAL_SESSION_DIR_LOCAL"
+
+# Auto-enable replay/time-travel trace capture unless the user opts out.
+# Each successful claude invocation appends a record to <session>/trace/trace.jsonl
+# (see lib/quota-retry.sh::_trace_record_invocation and lib/replay_trace.py).
+if [[ "${CHAIN_DISABLE_TRACE:-false}" != "true" && -z "${CHAIN_TRACE_DIR:-}" ]]; then
+  mkdir -p "$GOAL_SESSION_DIR_LOCAL/trace"
+  export CHAIN_TRACE_DIR="$GOAL_SESSION_DIR_LOCAL/trace"
+fi
 
 ensure_phase_ports
 
@@ -322,10 +342,24 @@ while true; do
   export GOAL_ITER_INDEX="$CURRENT_ITER"
   export GOAL_ITER_NAME="$ITER_NAME"
 
+  # Capture a working-tree snapshot at the start of this iteration. This is a
+  # zero-impact recording: `git stash create` builds a stash commit object
+  # without touching the working tree or stash list. The SHA lets the operator
+  # `git diff <sha>..HEAD` to see exactly what this iteration changed, and
+  # `git reset --hard <sha>` (advanced) to roll back. Best-effort; failures
+  # write an empty file and do not block the iteration.
+  if git -C "$REPO_ROOT" rev-parse --git-dir >/dev/null 2>&1; then
+    if _snap=$(git -C "$REPO_ROOT" stash create 2>/dev/null); then
+      printf '%s' "$_snap" > "$ITER_DIR/snapshot-sha"
+    else
+      : > "$ITER_DIR/snapshot-sha"
+    fi
+  fi
+
   PRIOR_VERDICT=$(python3 -c "import json; print(json.load(open('$SESSION_JSON')).get('last_verdict') or 'null')")
   PRIOR_DEPTH=$(python3 -c "import json; print(json.load(open('$SESSION_JSON')).get('next_depth') or 'lean')")
 
-  record_telemetry_event "iter_start" "$(jq -cn --arg n "$ITER_NAME" --arg pv "$PRIOR_VERDICT" --arg pd "$PRIOR_DEPTH" '{iter_name:$n, prior_verdict:$pv, prior_depth:$pd}' 2>/dev/null || printf '{"iter_name":"%s"}' "$ITER_NAME")"
+  record_telemetry_event "iter_start" "$(jq -cn --arg n "$ITER_NAME" --arg pv "$PRIOR_VERDICT" --arg pd "$PRIOR_DEPTH" --arg ss "$(cat "$ITER_DIR/snapshot-sha" 2>/dev/null || echo "")" '{iter_name:$n, prior_verdict:$pv, prior_depth:$pd, snapshot_sha:$ss}' 2>/dev/null || printf '{"iter_name":"%s"}' "$ITER_NAME")"
 
   echo ""
   echo "════════════════════════════════════════════════════════════════════"
@@ -359,6 +393,7 @@ Agent instructions: .claude/agents/goal-decomposer.md  <-- read this first
 
 Journey history: $JOURNEY_HISTORY
 Evaluator log: $EVALUATOR_LOG (last 3 entries are most relevant)
+Lessons learned: $LESSONS_FILE  <-- read before planning; avoid repeating pitfalls captured here
 
 $( [[ $CURRENT_ITER -gt 0 && -f "$GOAL_SESSION_DIR_LOCAL/iter-$((CURRENT_ITER-1))/eval.md" ]] && echo "Last iteration eval: $GOAL_SESSION_DIR_LOCAL/iter-$((CURRENT_ITER-1))/eval.md")
 
@@ -454,6 +489,7 @@ Iteration artifacts (read what exists):
 Prior session state:
   Journey history: $JOURNEY_HISTORY  <-- update this with new state
   Evaluator log: $EVALUATOR_LOG  <-- append a new entry; do not overwrite
+  Lessons file: $LESSONS_FILE  <-- append a brief lesson entry capturing a non-obvious takeaway from this iteration (1-3 sentences). Skip if nothing surprising happened.
 
 Apply the TOKEN AND QUESTIONING POLICY from .claude/core.md strictly.
 

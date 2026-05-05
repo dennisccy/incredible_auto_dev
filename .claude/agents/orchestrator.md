@@ -2,6 +2,8 @@
 name: orchestrator
 description: Phase execution planner. When invoked by run-phase.sh, reads CLAUDE.md and the phase spec, then writes a concise execution plan to runs/<phase>/plan.md. The shell script (run-phase.sh) drives the dev/review/QA loop; the orchestrator's job is planning only.
 model: claude-opus-4-7
+version: 1.0.0
+last_updated: 2026-05-04
 ---
 
 # Orchestrator Agent

@@ -115,6 +115,30 @@ Written when a hard halt fires before normal `iter_end`.
 | `reason` | string | `BUDGET_EXHAUSTED` \| `STALLED` \| `REGRESSION_HALT` \| `ABORTED` |
 | `detected_at_step` | string | Where the halt was detected (e.g., `pre_decomposer`, `post_evaluator`) |
 
+### `claude_usage` (opt-in)
+Written by `claude_with_quota_retry` after a successful Claude invocation when `CHAIN_TELEMETRY_TOKENS=true`. Captures Claude API usage from the stream-json `result` event via `lib/claude_stream_renderer.py`. Disabled by default (no behavioural change to existing pipelines).
+
+| Field | Type | Description |
+|---|---|---|
+| `agent` | string | The agent context that drove the call (set by `record_agent_invocation_start`) |
+| `usage.input_tokens` | number | Non-cached input tokens |
+| `usage.output_tokens` | number | Output tokens generated |
+| `usage.cache_read_input_tokens` | number | Input tokens served from prompt cache |
+| `usage.cache_creation_input_tokens` | number | Input tokens written to prompt cache |
+| `total_cost_usd` | number | Total cost reported by the API for this invocation |
+| `duration_ms` | number | Wall-clock duration of the claude call |
+| `duration_api_ms` | number | API-side duration |
+| `num_turns` | number | Number of model turns (assistant/tool_use cycles) |
+| `is_error` | boolean | True if the result event was an error |
+| `subtype` | string | `success` \| `error_max_turns` \| etc. |
+
+To enable: `export CHAIN_TELEMETRY_TOKENS=true`. To opt out of cache hygiene (`--exclude-dynamic-system-prompt-sections`): `export CHAIN_CLAUDE_DISABLE_CACHE_HYGIENE=true`.
+
+Aggregate per-session and per-agent with:
+```bash
+python3 scripts/automation/lib/analyze_telemetry.py runs/goal-session-<sid>/telemetry.jsonl
+```
+
 ## Reading the telemetry
 
 ```bash
@@ -139,6 +163,12 @@ jq -s '
 # Iteration-by-iteration verdicts
 jq -c 'select(.event=="iter_end") | {iter, verdict, next_depth}' \
   runs/goal-session-<sid>/telemetry.jsonl
+
+# Per-agent token usage and cost (requires CHAIN_TELEMETRY_TOKENS=true during run)
+python3 scripts/automation/lib/analyze_telemetry.py runs/goal-session-<sid>/telemetry.jsonl
+
+# Or as JSON for downstream tooling
+python3 scripts/automation/lib/analyze_telemetry.py --json runs/goal-session-<sid>/telemetry.jsonl
 ```
 
 ## Stability

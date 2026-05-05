@@ -139,3 +139,43 @@ These agents are invoked only by the goal-mode pipeline (`run-goal.sh` and `goal
 - **Output:** `runs/goal-session-<sid>/iter-<N>/eval.md` (verdict + recommendation), updated `journey-history.json` (full atomic write), appended `evaluator-log.md` entry
 - **Verdicts:** `GOAL_ACHIEVED` (halt success), `CONTINUE` (loop), `ESCALATE` (next iter must be full), `REGRESSION` (halt for human review), `STALLED` (halt — evaluator-driven, separate from script-side hash detection)
 - **Role:** Skeptical, evidence-grounded judge of iteration outcomes. Verifies journey claims by reading actual browser-qa results and screenshots, not summaries. Anchors `GOAL_ACHIEVED` decisions on objective journey evidence + anti-goal compliance.
+
+## Agent Versioning
+
+Each agent file in `.claude/agents/` carries a semantic version and last-updated date in its frontmatter:
+
+```yaml
+---
+name: <agent>
+description: <one-line role>
+model: <claude-model-id>
+tools: [...]                         # optional — Claude Code tool list
+version: 1.0.0
+last_updated: YYYY-MM-DD
+disallowed_tools: ["Bash(rm -rf *)"] # optional — added to default deny list
+max_budget_usd: 1.50                 # optional — per-invocation hard cap
+---
+```
+
+**When to bump version:**
+
+- Patch (`1.0.0 → 1.0.1`): typo or wording fix that does not change agent behavior.
+- Minor (`1.0.0 → 1.1.0`): adds new instructions, optional inputs/outputs, or capabilities without breaking existing pipeline contracts.
+- Major (`1.0.0 → 2.0.0`): changes the agent's contract — output format, mandatory inputs, model tier — in a way that downstream agents or scripts must be aware of.
+
+`last_updated` is the date of the most recent meaningful edit (any version bump). Always update it together with the version.
+
+Git history is the source of truth for what changed; the version field exists so a downstream system or eval suite can detect that an agent has changed without diffing the file. The framework does not gate on version equality — the field is informational.
+
+## Per-Agent Permissions and Budget
+
+`lib/quota-retry.sh::claude_with_quota_retry` reads `CHAIN_CURRENT_AGENT` (set by `record_agent_invocation_start`) and overlays:
+
+- **Disallowed tools** — `lib/agent_permissions.py disallowed <agent>` returns the list of `--disallowedTools` patterns. Built from a hardcoded default deny list plus the optional `disallowed_tools:` field in the agent's frontmatter.
+  - Hardcoded default for **all agents**: filesystem-destroying patterns (`Bash(rm -rf /*)`) and force-pushes to `main`/`master`.
+  - Hardcoded default for **all agents except release-manager**: `Bash(git push *)`, `Bash(gh pr merge *)`, `Bash(gh pr close *)`, `Bash(gh release *)`, `Bash(git tag *)`. Only release-manager can publish.
+- **Budget cap** — `lib/agent_permissions.py budget <agent>` returns `max_budget_usd` if set, which is then passed to claude as `--max-budget-usd`. Opt-in per agent — no defaults; you set this only on agents whose cost you want capped.
+
+Disable the overlay (e.g. for debugging) with `CHAIN_DISABLE_PERMISSION_ISOLATION=true`.
+
+`lib/agent_permissions.py self-test` exercises the lookup logic. The eval suite (`scripts/automation/run-evals.sh`) runs the self-test on every CI run.

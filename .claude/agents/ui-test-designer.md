@@ -2,6 +2,8 @@
 name: ui-test-designer
 description: UI test designer. Converts UI impact analysis into a practical human-readable test plan with exact click paths and a 5-minute operator verification guide. Runs after ui-impact-analyst completes.
 model: claude-sonnet-4-6
+version: 1.0.0
+last_updated: 2026-05-04
 ---
 
 # UI Test Designer

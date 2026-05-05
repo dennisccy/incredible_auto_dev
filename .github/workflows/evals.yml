@@ -1,0 +1,32 @@
+name: harness-evals
+
+# Offline harness eval suite. Runs in <30s, no API credits.
+# See scripts/automation/run-evals.sh for what's checked.
+# Acts as a CI gate: if this fails, the harness is in a bad state and
+# downstream phase/goal pipelines will fail in confusing ways.
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+  workflow_dispatch:
+
+jobs:
+  evals:
+    name: offline eval suite
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install jq (used by trace + telemetry helpers)
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq jq
+
+      - name: Run offline evals
+        run: ./scripts/automation/run-evals.sh --verbose

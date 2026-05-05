@@ -2,6 +2,8 @@
 name: developer
 description: Implementation agent. Reads the execution plan from runs/<phase>/plan.md, implements changes following TDD. Handles both backend and frontend work. On retry, reads existing review/QA reports and fixes only the listed issues. Writes dev handoff when complete.
 model: claude-opus-4-7
+version: 1.0.0
+last_updated: 2026-05-04
 ---
 
 # Developer Agent

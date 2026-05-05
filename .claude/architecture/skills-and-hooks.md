@@ -38,8 +38,10 @@ Hooks are shell scripts triggered by Claude Code at specific lifecycle points. T
 
 ### post-write-artifact-quality.sh
 - **Trigger:** PostToolUse (Write/Edit tool)
-- **Purpose:** Warns when phase report artifacts (`reports/phase-*`) contain vague or too-short content.
-- **Behavior:** Advisory only -- always exits 0. Prints warnings for placeholder lines or files under a minimum length.
+- **Purpose:** Two advisory checks on pipeline report artifacts:
+  1. Vague-content / thin-file heuristic (`reports/phase-*` only) — flags placeholder lines (TBD/TODO/etc) and files under a minimum line count.
+  2. Schema validation via `scripts/automation/lib/artifact_schemas.py` — verifies the verdict line is parseable, the verdict value is in the expected enum, and required H2 sections are present. Covers `reports/reviews/<phase>-review.md`, `reports/qa/<phase>-qa.md`, `docs/handoffs/<phase>-audit.md`, `reports/phase-<N>-closure-verdict.md`, `reports/phase-<N>-ux-regression.md`, `reports/phase-<N>-ui-test-results.md`.
+- **Behavior:** Advisory only -- always exits 0. Prints structured warnings to stderr; does not block writes. Run `python3 scripts/automation/lib/artifact_schemas.py list` to see all recognized artifact types and their required sections.
 
 ### on-stop-check-artifacts.sh
 - **Trigger:** Stop (session end)
