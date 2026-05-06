@@ -53,6 +53,9 @@ AUTO_RELEASE=false
 ACK_REGRESSION=false
 PUSH_PER_ITER=false
 PUSH_BRANCH=""
+# Set in the resume branch (off | continuing | opting-in). Stays empty for
+# new sessions; the branch-lifecycle block only consults it when RUN_MODE=resume.
+RESUME_PUSH_MODE=""
 
 # ── Parse flags ───────────────────────────────────────────────────────────
 while [[ $# -gt 0 ]]; do
@@ -156,10 +159,30 @@ if [[ -f "$SESSION_JSON" ]]; then
     echo "  fix the regressed journey, then re-run with --acknowledge-regression." >&2
     exit 1
   fi
-  # Read push config from session.json — resume preserves session intent, so
-  # CLI flags for push_per_iter / push_branch are intentionally ignored here.
-  PUSH_PER_ITER=$(python3 -c "import json; print('true' if json.load(open('$SESSION_JSON')).get('push_per_iter') else 'false')")
-  PUSH_BRANCH=$(python3 -c "import json; print(json.load(open('$SESSION_JSON')).get('push_branch') or '')")
+  # Read push config from session.json. The session value takes precedence
+  # ONLY when it was explicitly true (i.e., the session was already pushing).
+  # Otherwise the CLI flag is honoured, so users with sessions that pre-date
+  # the per-iter push feature — or who simply want to enable it later — can
+  # opt in mid-session with --push-per-iter without having to --reset.
+  _session_push=$(python3 -c "import json; d=json.load(open('$SESSION_JSON')); print('true' if d.get('push_per_iter') else 'false')")
+  _session_push_branch=$(python3 -c "import json; print(json.load(open('$SESSION_JSON')).get('push_branch') or '')")
+  RESUME_PUSH_MODE="off"           # off | continuing | opting-in
+  if [[ "$_session_push" == "true" ]]; then
+    PUSH_PER_ITER="true"
+    PUSH_BRANCH="$_session_push_branch"
+    RESUME_PUSH_MODE="continuing"
+  elif [[ "$PUSH_PER_ITER" == "true" ]]; then
+    RESUME_PUSH_MODE="opting-in"
+    # Resolve the branch default here so the override heredoc below persists
+    # the actual name, not an empty string.
+    if [[ -z "$PUSH_BRANCH" ]]; then
+      PUSH_BRANCH="goal/$SESSION_ID"
+    fi
+    echo "[run-goal] push-per-iter: enabling on resume for session that wasn't pushing previously."
+  else
+    PUSH_PER_ITER="false"
+    PUSH_BRANCH=""
+  fi
   RUN_MODE="resume"
 else
   validate_goal_file
@@ -208,7 +231,9 @@ EOF
   RUN_MODE="new"
 fi
 
-# Allow --max-iter override on resume
+# Allow --max-iter override on resume; also persist the resolved push_per_iter
+# / push_branch values so a subsequent resume picks them up (key may have been
+# absent in older sessions that pre-date the per-iter push feature).
 python3 - <<PY
 import json
 d = json.load(open("$SESSION_JSON"))
@@ -217,6 +242,8 @@ d["halt_config"]["max_iterations"] = $MAX_ITER
 d["halt_config"]["stall_window"] = $STALL_WINDOW
 if $( [[ "$AUTO_RELEASE" == "true" ]] && echo "True" || echo "False" ):
   d["auto_release"] = True
+d["push_per_iter"] = $( [[ "$PUSH_PER_ITER" == "true" ]] && echo "True" || echo "False" )
+d["push_branch"] = "$PUSH_BRANCH"
 if "$RUN_MODE" == "resume" and d.get("status") == "REGRESSION_HALT":
   d["status"] = "in_progress"
 json.dump(d, open("$SESSION_JSON","w"), indent=2); open("$SESSION_JSON","a").write("\n")
@@ -250,8 +277,13 @@ if [[ "$PUSH_PER_ITER" == "true" ]]; then
     PUSH_BRANCH="goal/$SESSION_ID"
   fi
   _current_branch=$(git -C "$REPO_ROOT" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "")
+  _branch_exists=false
+  if git -C "$REPO_ROOT" show-ref --verify --quiet "refs/heads/$PUSH_BRANCH"; then
+    _branch_exists=true
+  fi
+
   if [[ "$RUN_MODE" == "new" ]]; then
-    if git -C "$REPO_ROOT" show-ref --verify --quiet "refs/heads/$PUSH_BRANCH"; then
+    if [[ "$_branch_exists" == "true" ]]; then
       echo "Error: branch '$PUSH_BRANCH' already exists. Pick another name with --push-branch <name>, or delete the existing branch." >&2
       exit 1
     fi
@@ -261,19 +293,41 @@ if [[ "$PUSH_PER_ITER" == "true" ]]; then
     fi
     echo "[run-goal] push-per-iter: created and switched to branch '$PUSH_BRANCH'."
   else
-    # Resume
-    if [[ "$_current_branch" != "$PUSH_BRANCH" ]]; then
-      if ! git -C "$REPO_ROOT" show-ref --verify --quiet "refs/heads/$PUSH_BRANCH"; then
+    # Resume — branch handling depends on whether the session was already
+    # pushing or we're opting in mid-session via --push-per-iter.
+    if [[ "$_branch_exists" == "true" ]]; then
+      # Branch is there. Switch if we aren't already on it.
+      if [[ "$_current_branch" != "$PUSH_BRANCH" ]]; then
+        if ! git -C "$REPO_ROOT" checkout "$PUSH_BRANCH" >/dev/null 2>&1; then
+          echo "Error: failed to switch to branch '$PUSH_BRANCH'. Working tree may have uncommitted changes." >&2
+          exit 1
+        fi
+      fi
+      if [[ "$RESUME_PUSH_MODE" == "opting-in" ]]; then
+        echo "[run-goal] push-per-iter: opted in mid-session; joined existing branch '$PUSH_BRANCH'."
+      else
+        echo "[run-goal] push-per-iter: switched to branch '$PUSH_BRANCH'."
+      fi
+    else
+      # Branch missing on resume.
+      if [[ "$RESUME_PUSH_MODE" == "opting-in" ]]; then
+        # User just enabled push-per-iter on a session that wasn't pushing
+        # before — create the branch from current HEAD. Iter commits will
+        # accumulate from this point forward; prior iters already landed on
+        # whatever branch the session was previously running against.
+        if ! git -C "$REPO_ROOT" checkout -b "$PUSH_BRANCH" >/dev/null 2>&1; then
+          echo "Error: failed to create branch '$PUSH_BRANCH'." >&2
+          exit 1
+        fi
+        echo "[run-goal] push-per-iter: opted in mid-session; created branch '$PUSH_BRANCH' from current HEAD."
+      else
+        # Session was previously pushing to this branch — its disappearance
+        # is a real anomaly, not something we should silently recover from.
         echo "Error: cannot resume — branch '$PUSH_BRANCH' is missing locally." >&2
         echo "  The session was created with push-per-iter on this branch, but it no longer exists." >&2
         echo "  Either restore the branch (git fetch + git checkout -b) or start a fresh session with --reset." >&2
         exit 1
       fi
-      if ! git -C "$REPO_ROOT" checkout "$PUSH_BRANCH" >/dev/null 2>&1; then
-        echo "Error: failed to switch to branch '$PUSH_BRANCH'. Working tree may have uncommitted changes." >&2
-        exit 1
-      fi
-      echo "[run-goal] push-per-iter: switched to branch '$PUSH_BRANCH'."
     fi
   fi
 fi

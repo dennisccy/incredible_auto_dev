@@ -129,6 +129,14 @@ The release-manager runs once at the end of the session (not per iteration), cre
 
 Creates `goal/my-app` from current HEAD and pushes one commit per successful iteration (CONTINUE / ESCALATE / GOAL_ACHIEVED). `REGRESSION` and `STALLED` halts skip the push so the remote isn't left in a state you haven't reviewed. No model invocation per push — direct shell `git`. Override the branch name with `--push-branch <name>`.
 
+You can also enable push-per-iter on an in-flight session that originally started without it — including sessions that pre-date the feature. Just pass `--push-per-iter` on the resume:
+
+```bash
+./scripts/automation/run-goal.sh --resume --session-id my-app --push-per-iter
+```
+
+The branch is created from the current HEAD on first resume, and the choice is persisted to `session.json` so subsequent resumes pick it up automatically. Prior iters that landed on `main` (or whatever branch the session was running against) stay there — only iters from this point forward accumulate on the new branch.
+
 The `summary.md` written when the loop halts includes a ready-to-paste `gh pr create` command. PR creation itself is still manual (or use `--auto-release` for the existing end-of-session PR flow).
 
 Each iteration's commit message includes the verdict and the journey delta counts, so `git log goal/my-app` is a reviewable timeline of the session:
