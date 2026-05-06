@@ -11,7 +11,8 @@
 #                                    [--stall-window N] [--resume] [--reset]
 #                                    [--auto-release]
 #                                    [--acknowledge-regression]
-#                                    [--push-per-iter] [--push-branch <name>]
+#                                    [--no-push-per-iter] [--push-per-iter]
+#                                    [--push-branch <name>]
 #
 # Flags:
 #   --session-id <id>            Session identifier (auto-generated if omitted)
@@ -21,10 +22,15 @@
 #   --reset                      Discard the named session and start fresh
 #   --auto-release               On GOAL_ACHIEVED, run release-manager once for the whole session
 #   --acknowledge-regression     Continue past a prior REGRESSION_HALT
-#   --push-per-iter              Commit + push each successful iter (CONTINUE/ESCALATE/GOAL_ACHIEVED)
-#                                to a per-session branch. No model invocation, no PR per iter — the
-#                                branch is populated incrementally and a PR is opened at the end
-#                                via the existing --auto-release / manual flow.
+#   --push-per-iter              [Default ON for new sessions.] Commit + push each successful
+#                                iteration (CONTINUE / ESCALATE / GOAL_ACHIEVED) to a per-session
+#                                branch. No model invocation, no PR per iter — the branch is
+#                                populated incrementally and a PR is opened at the end via the
+#                                existing --auto-release / manual flow. Useful on resume to
+#                                opt in mid-session for a session that wasn't pushing before.
+#   --no-push-per-iter           Opt out of per-iter push. Use this on a new session to keep
+#                                iter commits local, or on resume to disable push for a session
+#                                that was previously pushing.
 #   --push-branch <name>         Branch name for per-iter commits (default: goal/<session-id>).
 #                                Persists to session.json on new sessions; resume reads from there.
 #
@@ -51,8 +57,14 @@ RESUME=false
 RESET=false
 AUTO_RELEASE=false
 ACK_REGRESSION=false
-PUSH_PER_ITER=false
+# Per-iter push is ON by default for new sessions. Pass --no-push-per-iter to
+# opt out. On resume, the persisted session.json value wins unless overridden
+# by an explicit CLI flag (--push-per-iter or --no-push-per-iter).
+PUSH_PER_ITER=true
 PUSH_BRANCH=""
+# Tristate: "default" (no flag), "yes" (--push-per-iter), "no" (--no-push-per-iter).
+# Used by the resume block to decide whether to override session.json.
+PUSH_FLAG_USER="default"
 # Set in the resume branch (off | continuing | opting-in). Stays empty for
 # new sessions; the branch-lifecycle block only consults it when RUN_MODE=resume.
 RESUME_PUSH_MODE=""
@@ -67,7 +79,8 @@ while [[ $# -gt 0 ]]; do
     --reset)                   RESET=true; shift ;;
     --auto-release)            AUTO_RELEASE=true; shift ;;
     --acknowledge-regression)  ACK_REGRESSION=true; shift ;;
-    --push-per-iter)           PUSH_PER_ITER=true; shift ;;
+    --push-per-iter)           PUSH_PER_ITER=true;  PUSH_FLAG_USER="yes"; shift ;;
+    --no-push-per-iter)        PUSH_PER_ITER=false; PUSH_FLAG_USER="no";  shift ;;
     --push-branch)             PUSH_BRANCH="$2"; shift 2 ;;
     *) echo "Unknown argument: $1" >&2; exit 2 ;;
   esac
@@ -159,29 +172,50 @@ if [[ -f "$SESSION_JSON" ]]; then
     echo "  fix the regressed journey, then re-run with --acknowledge-regression." >&2
     exit 1
   fi
-  # Read push config from session.json. The session value takes precedence
-  # ONLY when it was explicitly true (i.e., the session was already pushing).
-  # Otherwise the CLI flag is honoured, so users with sessions that pre-date
-  # the per-iter push feature — or who simply want to enable it later — can
-  # opt in mid-session with --push-per-iter without having to --reset.
-  _session_push=$(python3 -c "import json; d=json.load(open('$SESSION_JSON')); print('true' if d.get('push_per_iter') else 'false')")
+  # Read push config from session.json and decide the effective value, taking
+  # the explicit-CLI-flag tristate into account.
+  #
+  # Resolution table:
+  #
+  #   PUSH_FLAG_USER  | session push_per_iter      | result
+  #   ────────────────┼────────────────────────────┼─────────────────────────────
+  #   "no"            | any                        | OFF for this run (warning if session was on)
+  #   "yes"           | true                       | continuing (session was already pushing)
+  #   "yes"           | false / missing            | opting-in
+  #   "default"       | true                       | continuing
+  #   "default"       | false (key present)        | OFF (respect explicit prior choice)
+  #   "default"       | missing (pre-feature sess) | opting-in (use new default-on)
+  _session_push_key_present=$(python3 -c "import json; print('true' if 'push_per_iter' in json.load(open('$SESSION_JSON')) else 'false')")
+  _session_push=$(python3 -c "import json; print('true' if json.load(open('$SESSION_JSON')).get('push_per_iter') else 'false')")
   _session_push_branch=$(python3 -c "import json; print(json.load(open('$SESSION_JSON')).get('push_branch') or '')")
   RESUME_PUSH_MODE="off"           # off | continuing | opting-in
-  if [[ "$_session_push" == "true" ]]; then
+
+  if [[ "$PUSH_FLAG_USER" == "no" ]]; then
+    PUSH_PER_ITER="false"
+    PUSH_BRANCH=""
+    if [[ "$_session_push" == "true" ]]; then
+      echo "[run-goal] push-per-iter: --no-push-per-iter passed; disabling for this run despite session being on. (Branch '$_session_push_branch' is left untouched.)"
+    fi
+  elif [[ "$_session_push" == "true" ]]; then
     PUSH_PER_ITER="true"
     PUSH_BRANCH="$_session_push_branch"
     RESUME_PUSH_MODE="continuing"
-  elif [[ "$PUSH_PER_ITER" == "true" ]]; then
+  elif [[ "$PUSH_FLAG_USER" == "yes" ]]; then
+    PUSH_PER_ITER="true"
+    [[ -z "$PUSH_BRANCH" ]] && PUSH_BRANCH="goal/$SESSION_ID"
     RESUME_PUSH_MODE="opting-in"
-    # Resolve the branch default here so the override heredoc below persists
-    # the actual name, not an empty string.
-    if [[ -z "$PUSH_BRANCH" ]]; then
-      PUSH_BRANCH="goal/$SESSION_ID"
-    fi
     echo "[run-goal] push-per-iter: enabling on resume for session that wasn't pushing previously."
-  else
+  elif [[ "$_session_push_key_present" == "true" ]]; then
+    # Session has explicit push_per_iter: false; default-CLI doesn't override.
     PUSH_PER_ITER="false"
     PUSH_BRANCH=""
+  else
+    # Pre-feature session (key never written) AND no CLI flag → adopt the new default.
+    PUSH_PER_ITER="true"
+    [[ -z "$PUSH_BRANCH" ]] && PUSH_BRANCH="goal/$SESSION_ID"
+    RESUME_PUSH_MODE="opting-in"
+    echo "[run-goal] push-per-iter: defaulting ON for resume of pre-feature session (no prior choice recorded)."
+    echo "  Pass --no-push-per-iter on the next resume if you don't want this."
   fi
   RUN_MODE="resume"
 else

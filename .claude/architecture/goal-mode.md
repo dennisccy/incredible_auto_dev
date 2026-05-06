@@ -106,17 +106,31 @@ Per-iteration code/test artifacts use the `goal-<sid>-iter-<N>` prefix and live 
 
 If the prior status is `REGRESSION_HALT`, resume requires `--acknowledge-regression` so the user must explicitly take responsibility for proceeding past a known regression.
 
-## Per-iteration push (opt-in)
+## Per-iteration push (default ON)
 
-`run-goal.sh --push-per-iter` populates a single per-session feature branch (default `goal/<sid>`, override with `--push-branch <name>`) with one commit per successful iteration. The push is direct shell `git` — no model invocation, no agent, no token cost.
+`run-goal.sh` populates a single per-session feature branch (default `goal/<sid>`, override with `--push-branch <name>`) with one commit per successful iteration. The push is direct shell `git` — no model invocation, no agent, no token cost. **Default ON** for new sessions; pass `--no-push-per-iter` to opt out.
+
+**Resolution table** (applied on every invocation):
+
+| `PUSH_FLAG_USER` | `session.json push_per_iter` | Effective value |
+|---|---|---|
+| `--no-push-per-iter` | any | OFF for this run (logs a warning if the session was previously on) |
+| `--push-per-iter` | `true` | `continuing` |
+| `--push-per-iter` | `false` / missing | `opting-in` |
+| (default, no flag) | `true` | `continuing` |
+| (default, no flag) | `false` (explicit) | OFF (respect prior explicit choice) |
+| (default, no flag) | missing (pre-feature session) | `opting-in` (adopt the new default) |
 
 **Branch lifecycle:**
 
-- **New session with `--push-per-iter`:** creates `<push_branch>` (default `goal/<sid>`) from current HEAD, switches to it. Errors if the branch already exists.
+- **New session with push enabled (the default):** creates `<push_branch>` (default `goal/<sid>`) from current HEAD, switches to it. Errors if the branch already exists.
+- **New session with `--no-push-per-iter`:** no branch is created; iter commits stay local.
 - **Resume of a session that was already pushing** (`session.json` has `push_per_iter: true`): reads the session's recorded `push_branch`, switches to it. Errors if the branch has been deleted locally — that's a real anomaly and the script refuses to silently recover.
-- **Resume + `--push-per-iter` (opting in mid-session):** when `session.json` does not have `push_per_iter: true` (either it was created before the feature existed, or the user originally ran without the flag), the CLI flag is honoured. The branch is created from current HEAD if missing, or joined if it already exists. Iter commits accumulate from this point forward — prior iters' code stays on whatever branch the session was previously running against. The choice is persisted to `session.json` so subsequent resumes see it.
-- **Resume without `--push-per-iter`** when the session wasn't pushing: stays off (existing behaviour).
-- `session.json` carries two fields: `push_per_iter` (bool) and `push_branch` (string).
+- **Resume + `--push-per-iter` opting in mid-session:** the branch is created from current HEAD if missing, or joined if it already exists. Iter commits accumulate from this point forward — prior iters' code stays on whatever branch the session was previously running against.
+- **Resume + `--no-push-per-iter` mid-session opt-out:** push is disabled for this run; the session's persisted value is also flipped to `false` so subsequent resumes-without-flag respect it.
+- **Resume of a pre-feature session** (`push_per_iter` key never written): adopts the default-on; the script logs a one-line note and tells the user how to opt out.
+
+`session.json` carries two fields: `push_per_iter` (bool) and `push_branch` (string), persisted on every resume so the chosen state survives.
 
 **Per-iter behaviour (after the evaluator returns a verdict):**
 
