@@ -112,9 +112,11 @@ If the prior status is `REGRESSION_HALT`, resume requires `--acknowledge-regress
 
 **Branch lifecycle:**
 
-- New session with `--push-per-iter`: creates `goal/<sid>` from current HEAD, switches to it. Errors if the branch already exists.
-- Resume: reads `push_per_iter` and `push_branch` from `session.json` (CLI flags are ignored on resume — session intent is preserved). Switches to the recorded branch; errors if it has been deleted.
-- `session.json` gains two fields: `push_per_iter` (bool) and `push_branch` (string).
+- **New session with `--push-per-iter`:** creates `<push_branch>` (default `goal/<sid>`) from current HEAD, switches to it. Errors if the branch already exists.
+- **Resume of a session that was already pushing** (`session.json` has `push_per_iter: true`): reads the session's recorded `push_branch`, switches to it. Errors if the branch has been deleted locally — that's a real anomaly and the script refuses to silently recover.
+- **Resume + `--push-per-iter` (opting in mid-session):** when `session.json` does not have `push_per_iter: true` (either it was created before the feature existed, or the user originally ran without the flag), the CLI flag is honoured. The branch is created from current HEAD if missing, or joined if it already exists. Iter commits accumulate from this point forward — prior iters' code stays on whatever branch the session was previously running against. The choice is persisted to `session.json` so subsequent resumes see it.
+- **Resume without `--push-per-iter`** when the session wasn't pushing: stays off (existing behaviour).
+- `session.json` carries two fields: `push_per_iter` (bool) and `push_branch` (string).
 
 **Per-iter behaviour (after the evaluator returns a verdict):**
 
