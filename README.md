@@ -253,6 +253,44 @@ This framework is designed to be added to project repos as a submodule or subtre
 - **Framework docs**: [`.claude/architecture/`](.claude/architecture/README.md) -- how this framework works
 - **Project docs**: `docs/architecture/` -- what the project has built (auto-updated per phase)
 
+## Token Optimization — Pending Work
+
+Tier 1 (safe, mechanical) shipped in commit `15507dc` (May 2026): telemetry on by default, CLAUDE.md double-load removed from 15 prompt sites, orchestrator no longer re-reads `.claude/architecture/*.md`, goal-mode `evaluator-log.md` / `lessons.md` pre-trimmed and inlined, orphan `ui-workflow-inference` skill wired up.
+
+The items below are deliberately deferred — do them in order, with a real telemetry baseline before each.
+
+### Step 0 — Establish a baseline (do this first)
+
+With `CHAIN_TELEMETRY_TOKENS` now defaulting to true, the next phase or goal iteration writes per-call usage to:
+- Phase mode: `runs/<phase>/trace/trace.jsonl`
+- Goal mode: `runs/goal-session-<sid>/telemetry.jsonl`
+
+Analyze with: `python3 scripts/automation/lib/analyze_telemetry.py runs/<phase>/trace/trace.jsonl` — gives per-agent input/output/cache/cost breakdown. Without this baseline, everything below is guesswork.
+
+### Tier 1 polish (low-risk leftovers, skipped in 15507dc)
+
+- [ ] Remove the duplicated "Token and Questioning Policy" footer from each agent file (`.claude/agents/*.md`). Most footers just paraphrase `core.md`. Keep agent-specific bullets (e.g., developer.md "Ask only about: schema decisions, lifecycle states…"); drop the rest.
+- [ ] Drop `CLAUDE.md` from the "Always read first" list in the 11 remaining agent files (only orchestrator, goal-decomposer, goal-evaluator are done). The script-side fix already prevents the duplicate Read in practice; this is consistency cleanup.
+- [ ] Inline only the sections each agent needs from `.claude/project-template.md` — release-manager needs the never-commit list (5 lines); developer needs most of it. Add a helper in `lib/common.sh` that emits the right slice per agent.
+
+### Tier 2 (needs baseline data first)
+
+- [ ] **Per-agent `--effort` overrides.** `--effort max` is currently passed unconditionally in `lib/quota-retry.sh:398`. Keep it for developer, auditor, goal-decomposer, goal-evaluator. Drop for release-manager (Haiku, git ops), ui-impact-analyst, phase-closure-auditor, ui-test-designer, qa-validate. Wire through `lib/agent_permissions.py` (already plumbed for `budget` and `disallowed`). A/B against telemetry baseline.
+- [ ] **Move orchestrator from Opus → Sonnet** (`config/agent-models.yaml`). Plan-writing is structured-output work. A/B against 2–3 historical phases — revert if plan quality drops.
+- [ ] **Move goal-decomposer from Opus → Sonnet.** Same rationale as orchestrator. Keep goal-evaluator on Opus (skeptical adversarial judgment).
+- [ ] **Skip `generate-test-plan.sh` (Step 2/11) when the spec already lists test scenarios.** Need a clear heuristic for "spec has tests" — don't skip silently.
+- [ ] **Cap audit-failure full-rerun.** `run-phase.sh:649-679` re-runs dev + review + QA on audit fail. If telemetry shows that path firing often, switch to fix-only mode.
+
+### Tier 3 (don't touch unless data forces)
+
+- ~~Downgrade qa below Haiku~~ — qa drives Chrome MCP browser flows; lower may misread DOM. If browser checks regress, **upgrade** to Sonnet, not down.
+- ~~Merge ui-impact-analyst + ui-test-designer + ux-regression-reviewer~~ — each is a separate skeptical source the closure auditor depends on. Not worth losing the independence for one Sonnet call's worth of savings.
+- ~~Eliminate retries~~ — they exist for quality reasons. Only consider capping the audit-failure full-rerun (see Tier 2 above).
+
+### How to know when to stop
+
+If a 30-iteration goal session costs <$X and a phase costs <$Y (your numbers), it's not worth more optimization — invest the time in features instead.
+
 ## Known Limitations
 
 1. **Service bootstrap**: QA expects `CHAIN_START_BACKEND_CMD` or `scripts/start-backend.sh`.
