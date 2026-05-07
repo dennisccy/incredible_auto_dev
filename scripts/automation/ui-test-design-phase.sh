@@ -96,6 +96,19 @@ Every step must be independently executable. No vague steps like 'test the form'
 
 Then STOP." || _utd_rc=$?
 
+# Signal-induced exit (Ctrl-C, SIGKILL, SIGTERM) → do NOT write SKIPPED stubs.
+# A stub would advertise the step as "ran but produced no real artifact," which
+# tricks run-phase.sh's retry loop into advancing the checkpoint past this step
+# (`update_status ... ui_test_designed`). The next resume would then skip the
+# step but closure-check would flag the stub as missing real content. By exiting
+# without stubs, the working tree is unchanged so resume re-runs the step from
+# scratch and run-phase.sh's signal-aware retry guard aborts the run cleanly.
+# See .claude/anti-patterns.md #20.
+if [[ $_utd_rc -eq 130 || $_utd_rc -eq 137 || $_utd_rc -eq 143 ]]; then
+  echo "[ui-test-design] Killed by signal (exit $_utd_rc) — leaving artifacts untouched so resume can re-run this step." >&2
+  exit "$_utd_rc"
+fi
+
 if [[ $_utd_rc -ne 0 && $_utd_rc -ne ${QUOTA_EXHAUSTED_EXIT_CODE:-75} ]]; then
   _reason="ui-test-design-phase.sh Claude CLI exited with code $_utd_rc without writing the expected report(s). Re-run \`./scripts/automation/ui-test-design-phase.sh $PHASE\` once the transient condition has cleared."
   write_failed_artifact_stub "$PHASE" "ui-test-plan"  "$_reason"
