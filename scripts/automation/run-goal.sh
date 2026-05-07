@@ -822,9 +822,38 @@ except Exception as e:
     GOAL_ACHIEVED)
       write_session_summary "GOAL_ACHIEVED" "$((CURRENT_ITER+1))"
       if [[ "$AUTO_RELEASE" == "true" ]]; then
-        echo "[run-goal] --auto-release: invoking release-manager for the whole session."
-        # Best-effort; log only
-        bash "$SCRIPT_DIR/finalize-phase.sh" "$ITER_NAME" || echo "[run-goal] release-manager step failed; review manually." >&2
+        # Direct gh pr create from $PUSH_BRANCH — every iter commit is already
+        # there from the per-iter push, so we only need to open the PR. We
+        # deliberately do NOT invoke finalize-phase.sh / release-manager here:
+        # that path would create a separate `phase/<iter-name>` branch via
+        # release-manager.md's policy, fragmenting the single-branch model.
+        if [[ "$PUSH_PER_ITER" != "true" || -z "$PUSH_BRANCH" ]]; then
+          echo "[run-goal] --auto-release: skipping PR creation — per-iter push was off, so no session branch exists." >&2
+          echo "[run-goal]   To enable: start a fresh session with --push-per-iter, or commit + push manually." >&2
+          record_telemetry_event "goal_release_pr_skipped" '{"reason":"no_session_branch"}'
+        else
+          _final_iter_count=$((CURRENT_ITER+1))
+          _pr_title="goal(${SESSION_ID}): GOAL_ACHIEVED after ${_final_iter_count} iterations"
+          if check_gh_auth; then
+            _pr_create_out=""
+            if _pr_create_out=$(gh pr create --base main --head "$PUSH_BRANCH" --title "$_pr_title" --body-file "$SUMMARY_FILE" 2>&1); then
+              echo "[run-goal] --auto-release: opened PR from $PUSH_BRANCH"
+              echo "[run-goal]   $_pr_create_out"
+              record_telemetry_event "goal_release_pr_created" "$(jq -cn --arg b "$PUSH_BRANCH" --arg url "$_pr_create_out" '{branch:$b, pr_url:$url}' 2>/dev/null || echo '{}')"
+            else
+              echo "[run-goal] --auto-release: gh pr create failed:" >&2
+              echo "[run-goal]   $_pr_create_out" >&2
+              echo "[run-goal]   Branch $PUSH_BRANCH is already pushed. Create the PR manually:" >&2
+              echo "[run-goal]   gh pr create --base main --head $PUSH_BRANCH --title \"$_pr_title\" --body-file $SUMMARY_FILE" >&2
+              record_telemetry_event "goal_release_pr_failed" "$(jq -cn --arg b "$PUSH_BRANCH" --arg err "$_pr_create_out" '{branch:$b, error:$err}' 2>/dev/null || echo '{}')"
+            fi
+          else
+            echo "[run-goal] --auto-release: gh CLI not authenticated. Branch $PUSH_BRANCH is already pushed." >&2
+            echo "[run-goal]   To open the PR: gh auth login && \\" >&2
+            echo "[run-goal]     gh pr create --base main --head $PUSH_BRANCH --title \"$_pr_title\" --body-file $SUMMARY_FILE" >&2
+            record_telemetry_event "goal_release_pr_skipped" '{"reason":"gh_not_authenticated"}'
+          fi
+        fi
       fi
       exit 0
       ;;

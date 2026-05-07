@@ -58,7 +58,7 @@ Goal mode skips per-phase authoring. You write a single `docs/goal.md` with extr
 ./scripts/automation/run-goal.sh --session-id my-app
 ```
 
-Optional flags: `--max-iter N` (cap, default 30), `--stall-window N` (default 3), `--auto-release` (PR on success), `--resume`, `--reset`, `--acknowledge-regression`.
+Optional flags: `--max-iter N` (cap, default 30), `--stall-window N` (default 3), `--auto-release` (opens PR from `goal/<sid>` branch on `GOAL_ACHIEVED`), `--push-per-iter` / `--no-push-per-iter` (per-iter commits land on a single per-session branch; default ON), `--push-branch <name>` (override the default `goal/<sid>` name), `--resume`, `--reset`, `--acknowledge-regression`.
 
 **4. Inspect** `runs/goal-session-my-app/summary.md` when the loop halts. Halt verdicts: `GOAL_ACHIEVED` (success), `BUDGET_EXHAUSTED`, `STALLED`, `REGRESSION_HALT`, `ABORTED`.
 

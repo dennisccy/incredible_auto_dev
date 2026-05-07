@@ -26,6 +26,20 @@ done
 require_phase_arg "$PHASE"
 require_claude
 
+# Goal-mode iteration names look like `goal-<sid>-iter-<N>`. If the user is
+# invoking us with one of those AND a goal/<sid> branch already exists, they
+# almost certainly mean to release from the existing single-branch flow rather
+# than create a redundant `phase/goal-<sid>-iter-<N>` branch. Warn but do not
+# refuse — the user might explicitly want the per-iter PR for some reason.
+if [[ "$PHASE" =~ ^goal-(.+)-iter-[0-9]+$ ]]; then
+  _goal_sid="${BASH_REMATCH[1]}"
+  if git -C "$REPO_ROOT" show-ref --verify --quiet "refs/heads/goal/${_goal_sid}"; then
+    echo "[finalize-phase] Note: '$PHASE' looks like a goal-mode iteration and 'goal/${_goal_sid}' branch exists." >&2
+    echo "[finalize-phase]   Goal-mode release is normally handled by 'run-goal.sh --auto-release', which opens the PR" >&2
+    echo "[finalize-phase]   directly from 'goal/${_goal_sid}'. Continuing here will create a separate 'phase/$PHASE' branch." >&2
+  fi
+fi
+
 QA_REPORT="$REPO_ROOT/reports/qa/${PHASE}-qa.md"
 STATUS_FILE="$REPO_ROOT/runs/${PHASE}/status.json"
 SUMMARY_FILE="$REPO_ROOT/runs/${PHASE}/summary.json"

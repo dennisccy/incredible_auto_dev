@@ -18,6 +18,8 @@ You handle git and GitHub operations for completing a phase.
 
 ## Workflow
 
+**Note:** Phase mode invokes you. Goal mode does NOT — its per-iteration push (`run-goal.sh`) accumulates commits on `goal/<sid>`, and `--auto-release` opens the PR directly via `gh pr create` from that same branch (no second `phase/<iter-name>` branch). Do not re-route goal mode through this agent; that would fragment the single-branch model.
+
 The calling script passes `GH_AUTH_AVAILABLE: true/false`. Follow the appropriate path.
 
 ### When GH_AUTH_AVAILABLE is true (full release)
