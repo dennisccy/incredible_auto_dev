@@ -51,6 +51,13 @@
 #                                     `lib/analyze_telemetry.py` has data to summarize.
 #                                     If the renderer is missing, the wrapper falls back to
 #                                     normal output and logs a warning (no behaviour change).
+#   CHAIN_RENDER_TOOL_USE             Set to "true" to print "[tool: <name> arg=val]" for
+#                                     every tool call the model makes. Default off — only
+#                                     a single progress dot is printed per call. Long
+#                                     goal-mode iterations make hundreds of tool calls
+#                                     each, so verbose output drowns the model's actual
+#                                     text. Enable when debugging an agent that seems
+#                                     stuck on a particular file or command.
 #   CHAIN_TRACE_DIR                   Directory to capture per-invocation trace records. When
 #                                     set to a writable path, each successful claude call
 #                                     appends a line to `$CHAIN_TRACE_DIR/trace.jsonl` (args,

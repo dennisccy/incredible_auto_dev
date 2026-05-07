@@ -13,7 +13,10 @@ Why exist:
 
 Design:
   - Tolerant: any line that fails to parse as JSON is passed through verbatim.
-  - Quiet: text deltas stream as-is; tool calls collapse to a single bracket line.
+  - Quiet by default: text deltas stream as-is; tool calls collapse to a single
+    progress dot. Set CHAIN_RENDER_TOOL_USE=true to print one bracketed line
+    per tool call (the previous default — useful for debugging an agent that
+    seems stuck, but very noisy across long goal-mode sessions).
   - The sidecar is only written if CHAIN_CLAUDE_USAGE_SIDECAR is set AND a
     `result` event with usage data is observed. If claude exits before that,
     the sidecar is absent and the caller emits no token-telemetry event.
@@ -25,11 +28,59 @@ import os
 import sys
 from typing import Any
 
+# When true, print "[tool: name arg=val]" per tool call. Default false (quiet) —
+# only a single progress dot is printed per call, with the model's text output
+# providing the real progress signal. Goal mode runs hundreds of tool calls per
+# iteration and the verbose output drowns the actual narrative.
+_RENDER_TOOL_USE = os.environ.get("CHAIN_RENDER_TOOL_USE", "false").lower() == "true"
+
+# Tracks pending progress dots so we can emit a newline before any real text
+# resumes streaming (otherwise dots and text merge into one ugly line).
+_DOT_BUFFER = 0
+# Wrap the dot stream every N dots so a long tool-only stretch doesn't produce
+# a single line that overflows the terminal.
+_DOT_WRAP = 60
+# Tracks whether the cursor is at column 0. Used so the first progress dot in
+# a stretch starts on its own line instead of being glued to the model's text
+# (e.g., text "Looking up file..." + 3 dots became "Looking up file......").
+_AT_LINE_START = True
+
+
+def _flush_dots() -> None:
+    """Write a newline if we have unflushed progress dots, then reset."""
+    global _DOT_BUFFER, _AT_LINE_START
+    if _DOT_BUFFER > 0:
+        sys.stdout.write("\n")
+        sys.stdout.flush()
+        _DOT_BUFFER = 0
+        _AT_LINE_START = True
+
 
 def _emit_text(text: str) -> None:
+    global _AT_LINE_START
     if not text:
         return
+    _flush_dots()
     sys.stdout.write(text)
+    sys.stdout.flush()
+    _AT_LINE_START = text.endswith("\n")
+
+
+def _emit_tool_dot() -> None:
+    """Quiet-mode tool-call progress: one dot per call, no per-call newline."""
+    global _DOT_BUFFER, _AT_LINE_START
+    if _DOT_BUFFER == 0 and not _AT_LINE_START:
+        # First dot of a fresh stretch and prior text didn't end with \n —
+        # break the line so dots aren't glued to model text.
+        sys.stdout.write("\n")
+    sys.stdout.write(".")
+    _DOT_BUFFER += 1
+    if _DOT_BUFFER >= _DOT_WRAP:
+        sys.stdout.write("\n")
+        _DOT_BUFFER = 0
+        _AT_LINE_START = True
+    else:
+        _AT_LINE_START = False
     sys.stdout.flush()
 
 
@@ -75,7 +126,10 @@ def _handle_event(event: dict[str, Any]) -> None:
             if btype == "text":
                 _emit_text(block.get("text", ""))
             elif btype == "tool_use":
-                _emit_text(_summarize_tool_use(block))
+                if _RENDER_TOOL_USE:
+                    _emit_text(_summarize_tool_use(block))
+                else:
+                    _emit_tool_dot()
             elif btype == "thinking":
                 # Don't echo extended thinking — treat as private reasoning
                 pass
@@ -165,6 +219,7 @@ def main() -> int:
         else:
             _handle_event(event)
 
+    _flush_dots()
     sys.stdout.write("\n")
     sys.stdout.flush()
 
