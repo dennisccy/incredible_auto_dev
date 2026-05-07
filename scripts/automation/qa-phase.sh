@@ -132,9 +132,9 @@ Phase: $PHASE
 Phase spec: $SPEC
 Review report: $REVIEW
 Execution plan: $PLAN_FILE
-CLAUDE.md: $REPO_ROOT/CLAUDE.md
 Project template: .claude/project-template.md  <-- read this for test commands
 Agent instructions: .claude/agents/qa.md  <-- read this first, follow MODE 2 instructions
+(CLAUDE.md is already in your system prompt — do not Read it again.)
 
 Apply the TOKEN AND QUESTIONING POLICY from .claude/core.md strictly.
 

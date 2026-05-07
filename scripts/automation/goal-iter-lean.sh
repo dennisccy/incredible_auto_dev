@@ -83,9 +83,9 @@ run_developer() {
 Iteration: $ITER_NAME
 Iter spec: $SPEC
 Project goal: $GOAL_FILE  <-- read Must-have user journeys and Anti-goals
-CLAUDE.md: $REPO_ROOT/CLAUDE.md
 Project template: .claude/project-template.md
 Agent instructions: .claude/agents/developer.md  <-- read this first
+(CLAUDE.md is already in your system prompt — do not Read it again.)
 
 Mode: $mode_label
 $fix_context
@@ -113,9 +113,9 @@ run_reviewer() {
 Iteration: $ITER_NAME
 Iter spec: $SPEC
 Dev handoff: $DEV_HANDOFF
-CLAUDE.md: $REPO_ROOT/CLAUDE.md
 Project template: .claude/project-template.md
 Agent instructions: .claude/agents/reviewer.md  <-- read this first
+(CLAUDE.md is already in your system prompt — do not Read it again.)
 
 Run: git diff HEAD to see what changed.
 
@@ -210,8 +210,8 @@ claude_with_quota_retry -p "You are the browser-qa-agent for goal-mode lean iter
 Iteration: $ITER_NAME
 Iter spec: $SPEC
 Project goal: $GOAL_FILE  <-- read \"Must-have user journeys\" section for journey definitions
-CLAUDE.md: $REPO_ROOT/CLAUDE.md
 Agent instructions: .claude/agents/browser-qa-agent.md  <-- read this first
+(CLAUDE.md is already in your system prompt — do not Read it again.)
 Skill: .claude/skills/browser-workflow-executor.md  <-- read for Chrome MCP technique
 
 GOAL-MODE LEAN MODE — no separate ui-test-plan.md exists. Instead:

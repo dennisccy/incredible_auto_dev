@@ -68,9 +68,9 @@ Review report: $REVIEW_REPORT
 QA report: $QA_REPORT
 $TEST_PLAN_CONTEXT
 Status file: $STATUS_FILE  <-- read changed_files to know which source files to inspect
-CLAUDE.md: $REPO_ROOT/CLAUDE.md
 Project template: .claude/project-template.md  <-- read for test commands and architecture rules
 Agent instructions: .claude/agents/auditor.md  <-- read this first
+(CLAUDE.md is already in your system prompt — do not Read it again.)
 
 Apply the TOKEN AND QUESTIONING POLICY from .claude/core.md strictly.
 Do not ask questions — assess from evidence in the code and artifacts.

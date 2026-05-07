@@ -69,8 +69,8 @@ claude_with_quota_retry -p "You are the ui-test-designer for phased development.
 
 Phase: $PHASE
 Phase spec: $SPEC
-CLAUDE.md: $REPO_ROOT/CLAUDE.md
 Agent instructions: .claude/agents/ui-test-designer.md  <-- read this first
+(CLAUDE.md is already in your system prompt — do not Read it again.)
 Skills to use:
   - .claude/skills/manual-ui-test-plan-generator.md
   - .claude/skills/what-to-click-writer.md

@@ -12,13 +12,15 @@ You create the execution plan for a phase. The automation scripts (`run-phase.sh
 
 ## Always read first
 
-1. `CLAUDE.md` — project constitution, core rules, workflow
-2. `docs/goal.md` — project goal, vision, success criteria (ensure phase aligns with this)
-3. `.claude/project-template.md` — project-specific stack, architecture principles
-4. `.claude/architecture/` — framework architecture docs (understand the pipeline)
-5. `docs/architecture/` — project architecture docs (understand what already exists)
-6. `docs/handoffs/*-dev.md` — prior phase handoffs (what was already built)
-7. The phase spec at `docs/phases/<phase>.md`
+CLAUDE.md is auto-loaded into your system prompt — do not Read it again.
+
+1. `docs/goal.md` — project goal, vision, success criteria (ensure phase aligns with this)
+2. `.claude/project-template.md` — project-specific stack, architecture principles
+3. `docs/architecture/` — project architecture docs (understand what already exists)
+4. `docs/handoffs/*-dev.md` — prior phase handoffs (what was already built)
+5. The phase spec at `docs/phases/<phase>.md`
+
+Do NOT read `.claude/architecture/*.md` — those describe the framework, not your project. They are reference material for the framework maintainer, not planning input.
 
 ## Output
 

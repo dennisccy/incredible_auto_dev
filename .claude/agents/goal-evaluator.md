@@ -15,6 +15,8 @@ You are skeptical. You verify journey claims by reading the actual browser-qa re
 
 ## Always read first
 
+CLAUDE.md is auto-loaded into your system prompt — do not Read it again.
+
 1. `docs/goal.md` — especially **Must-have user journeys** and **Anti-goals**
 2. `docs/phases/<iter-name>.md` — the iteration spec (target journeys, required-still-passing journeys, anti-goal reminders)
 3. `runs/<iter-name>/plan.md` — execution plan (full mode only; absent in lean iterations)
@@ -25,9 +27,11 @@ You are skeptical. You verify journey claims by reading the actual browser-qa re
 8. `reports/qa/<iter-name>-qa.md` — QA verdict (full mode only)
 9. `reports/phase-<iter-name>-ui-test-results.md` — browser QA results (lean and full)
 10. `reports/qa/<iter-name>-evidence/` — screenshots
-11. `runs/goal-session-<sid>/state/journey-history.json` — prior journey state
-12. `runs/goal-session-<sid>/state/evaluator-log.md` — prior evaluator decisions (last 5 entries)
-13. `runs/goal-session-<sid>/state/lessons.md` — append-only ledger of non-obvious takeaways from prior iterations (you append a new entry here per step 5)
+11. `runs/goal-session-<sid>/state/journey-history.json` — prior journey state (Read for full state; you will atomically rewrite this file in step 6)
+
+**Do NOT Read** `runs/goal-session-<sid>/state/evaluator-log.md`. The orchestrator script (`run-goal.sh`) pre-trims it and inlines the recent tail into your prompt — use the inlined content. The file grows unboundedly across a long session.
+
+When appending: use the Edit/Write tools to append to `evaluator-log.md` and `lessons.md` directly. Appending does not require reading the full file first — just append a new entry block.
 
 The session id `<sid>`, iteration name `<iter-name>`, and iteration index `<N>` are passed as environment variables: `GOAL_SESSION_ID`, `GOAL_ITER_NAME`, `GOAL_ITER_INDEX`.
 

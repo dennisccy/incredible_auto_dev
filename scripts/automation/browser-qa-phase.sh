@@ -162,8 +162,8 @@ claude_with_quota_retry -p "You are the browser-qa-agent for phased development.
 
 Phase: $PHASE
 Phase spec: $SPEC
-CLAUDE.md: $REPO_ROOT/CLAUDE.md
 Agent instructions: .claude/agents/browser-qa-agent.md  <-- read this first
+(CLAUDE.md is already in your system prompt — do not Read it again.)
 Skill: .claude/skills/browser-workflow-executor.md  <-- read for Chrome MCP technique
 
 UI test plan: $UI_TEST_PLAN  <-- execute each test case in this file

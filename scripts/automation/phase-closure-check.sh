@@ -49,8 +49,8 @@ claude_with_quota_retry -p "You are the phase-closure-auditor for phased develop
 
 Phase: $PHASE
 Phase spec: $SPEC
-CLAUDE.md: $REPO_ROOT/CLAUDE.md
 Agent instructions: .claude/agents/phase-closure-auditor.md  <-- read this first
+(CLAUDE.md is already in your system prompt — do not Read it again.)
 Skill: .claude/skills/phase-closure-gate.md
 
 Execution plan: $PLAN_FILE

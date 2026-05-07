@@ -41,14 +41,16 @@
 #                                     (and across machines that share this subtree). Only
 #                                     applies with claude's default system prompt — which is
 #                                     what we use everywhere.
-#   CHAIN_TELEMETRY_TOKENS            Set to "true" to capture Claude API usage (input/output
-#                                     tokens, cache read/write tokens, total_cost_usd) per
-#                                     invocation. When enabled, claude is invoked with
+#   CHAIN_TELEMETRY_TOKENS            Set to "false" to disable Claude API usage capture.
+#                                     When enabled (the default), claude is invoked with
 #                                     `--output-format stream-json` and routed through
 #                                     `lib/claude_stream_renderer.py`, which pretty-prints
 #                                     events to the terminal and writes a usage sidecar JSON
 #                                     consumed by `record_claude_usage_telemetry`. Default
-#                                     off — no behavioural change to existing pipelines.
+#                                     on — captures input/output/cache tokens and cost so
+#                                     `lib/analyze_telemetry.py` has data to summarize.
+#                                     If the renderer is missing, the wrapper falls back to
+#                                     normal output and logs a warning (no behaviour change).
 #   CHAIN_TRACE_DIR                   Directory to capture per-invocation trace records. When
 #                                     set to a writable path, each successful claude call
 #                                     appends a line to `$CHAIN_TRACE_DIR/trace.jsonl` (args,
@@ -79,7 +81,7 @@
 : "${CHAIN_CLAUDE_PRE_RETRY_HOOK:=}"
 : "${CHAIN_CLAUDE_MAX_RUNTIME_SECONDS:=7200}"
 : "${CHAIN_CLAUDE_DISABLE_CACHE_HYGIENE:=false}"
-: "${CHAIN_TELEMETRY_TOKENS:=false}"
+: "${CHAIN_TELEMETRY_TOKENS:=true}"
 : "${CHAIN_TRACE_DIR:=}"
 : "${CHAIN_DISABLE_TRACE:=false}"
 : "${CHAIN_DISABLE_PERMISSION_ISOLATION:=false}"

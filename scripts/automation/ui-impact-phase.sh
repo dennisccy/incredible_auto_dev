@@ -62,11 +62,12 @@ claude_with_quota_retry -p "You are the ui-impact-analyst for phased development
 
 Phase: $PHASE
 Phase spec: $SPEC
-CLAUDE.md: $REPO_ROOT/CLAUDE.md
 Agent instructions: .claude/agents/ui-impact-analyst.md  <-- read this first
+(CLAUDE.md is already in your system prompt — do not Read it again.)
 Skills to use:
   - .claude/skills/diff-to-ui-impact.md
   - .claude/skills/visible-change-summarizer.md
+  - .claude/skills/ui-workflow-inference.md
 
 Execution plan: $PLAN_FILE
 Dev handoff: $DEV_HANDOFF  <-- read to understand what was built

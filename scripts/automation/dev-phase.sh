@@ -85,9 +85,9 @@ claude_with_quota_retry -p "You are the developer agent for phased development.
 
 Phase: $PHASE
 Phase spec: $SPEC
-CLAUDE.md: $REPO_ROOT/CLAUDE.md
 Project template: .claude/project-template.md  <-- read this for stack info, test commands, architecture rules
 Agent instructions: .claude/agents/developer.md  <-- read this first
+(CLAUDE.md is already in your system prompt — do not Read it again.)
 
 Execution plan: $PLAN_FILE  <-- read this to understand what to build
 $FIX_CONTEXT

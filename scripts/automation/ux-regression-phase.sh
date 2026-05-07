@@ -58,8 +58,8 @@ claude_with_quota_retry -p "You are the ux-regression-reviewer for phased develo
 
 Phase: $PHASE
 Phase spec: $SPEC
-CLAUDE.md: $REPO_ROOT/CLAUDE.md
 Agent instructions: .claude/agents/ux-regression-reviewer.md  <-- read this first
+(CLAUDE.md is already in your system prompt — do not Read it again.)
 Skill: .claude/skills/ui-regression-scout.md
 
 Execution plan: $PLAN_FILE

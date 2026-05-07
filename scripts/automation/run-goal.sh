@@ -105,6 +105,21 @@ LESSONS_FILE="$GOAL_SESSION_DIR_LOCAL/state/lessons.md"
 SUMMARY_FILE="$GOAL_SESSION_DIR_LOCAL/summary.md"
 GOAL_FILE="$REPO_ROOT/docs/goal.md"
 
+# Tail an append-only state file to the last N lines, or return a placeholder
+# if the file does not exist yet. Used to keep token usage flat as the goal
+# session grows — agents only need the tail (last few entries), not the full
+# file. The tail size is generous enough to cover the "last 3" / "last 5"
+# entries the agents request, even when entries are multi-paragraph.
+#   _tail_or_placeholder <file> <max-lines> <placeholder>
+_tail_or_placeholder() {
+  local file="$1" max="$2" placeholder="$3"
+  if [[ -f "$file" && -s "$file" ]]; then
+    tail -n "$max" "$file"
+  else
+    printf '%s\n' "$placeholder"
+  fi
+}
+
 if [[ "$RESET" == "true" && -d "$GOAL_SESSION_DIR_LOCAL" ]]; then
   echo "[run-goal] --reset: removing existing $GOAL_SESSION_DIR_LOCAL"
   rm -rf "$GOAL_SESSION_DIR_LOCAL"
@@ -539,6 +554,11 @@ while true; do
   fi
 
   echo "[run-goal] Step 1: goal-decomposer (mode: $DECOMPOSER_MODE)"
+  # Pre-trim historical state — pass only the tail to the decomposer so token
+  # usage stays flat as the session grows. Spec asks for "last 3 entries";
+  # 200 lines is conservative and covers multi-paragraph entries.
+  EVALUATOR_LOG_TAIL=$(_tail_or_placeholder "$EVALUATOR_LOG" 200 "(no entries yet — first iteration)")
+  LESSONS_TAIL=$(_tail_or_placeholder "$LESSONS_FILE" 200 "(no lessons recorded yet)")
   cd "$REPO_ROOT"
   _decomp_start=$(record_agent_invocation_start "goal-decomposer")
   _decomp_rc=0
@@ -551,14 +571,20 @@ Iter name: $ITER_NAME
 Prior verdict: $PRIOR_VERDICT
 Prior depth: $PRIOR_DEPTH
 
-CLAUDE.md: $REPO_ROOT/CLAUDE.md
 Project template: .claude/project-template.md
 Project goal: $GOAL_FILE  <-- read 'Must-have user journeys' and 'Anti-goals'
 Agent instructions: .claude/agents/goal-decomposer.md  <-- read this first
+(CLAUDE.md is already in your system prompt — do not Read it again.)
 
-Journey history: $JOURNEY_HISTORY
-Evaluator log: $EVALUATOR_LOG (last 3 entries are most relevant)
-Lessons learned: $LESSONS_FILE  <-- read before planning; avoid repeating pitfalls captured here
+Recent evaluator log entries (last 3, pre-trimmed):
+\`\`\`
+$EVALUATOR_LOG_TAIL
+\`\`\`
+Lessons learned (full file, append-only):
+\`\`\`
+$LESSONS_TAIL
+\`\`\`
+Journey history: $JOURNEY_HISTORY  <-- read for full journey state
 
 $( [[ $CURRENT_ITER -gt 0 && -f "$GOAL_SESSION_DIR_LOCAL/iter-$((CURRENT_ITER-1))/eval.md" ]] && echo "Last iteration eval: $GOAL_SESSION_DIR_LOCAL/iter-$((CURRENT_ITER-1))/eval.md")
 
@@ -628,6 +654,8 @@ Do NOT write code or implement anything. STOP after writing the spec." || _decom
   # 4. Goal evaluator
   echo "[run-goal] Step 3: goal-evaluator"
   EVAL_OUTPUT="$ITER_DIR/eval.md"
+  # Pre-trim — evaluator spec asks for "last 5 entries"; 300 lines covers it.
+  EVALUATOR_LOG_TAIL_5=$(_tail_or_placeholder "$EVALUATOR_LOG" 300 "(no entries yet — first evaluation)")
   cd "$REPO_ROOT"
   _eval_start=$(record_agent_invocation_start "goal-evaluator")
   _eval_rc=0
@@ -638,10 +666,10 @@ Iteration index: $CURRENT_ITER
 Iter name: $ITER_NAME
 Depth dispatched: $DEPTH
 
-CLAUDE.md: $REPO_ROOT/CLAUDE.md
 Project goal: $GOAL_FILE  <-- read 'Must-have user journeys' and 'Anti-goals'
 Iter spec: $ITER_SPEC_PATH
 Agent instructions: .claude/agents/goal-evaluator.md  <-- read this first
+(CLAUDE.md is already in your system prompt — do not Read it again.)
 
 Iteration artifacts (read what exists):
   Dev handoff: docs/handoffs/${ITER_NAME}-dev.md
@@ -652,9 +680,14 @@ Iteration artifacts (read what exists):
   Evidence: reports/qa/${ITER_NAME}-evidence/
 
 Prior session state:
-  Journey history: $JOURNEY_HISTORY  <-- update this with new state
-  Evaluator log: $EVALUATOR_LOG  <-- append a new entry; do not overwrite
-  Lessons file: $LESSONS_FILE  <-- append a brief lesson entry capturing a non-obvious takeaway from this iteration (1-3 sentences). Skip if nothing surprising happened.
+  Journey history: $JOURNEY_HISTORY  <-- update this with new state (full atomic write)
+  Evaluator log: $EVALUATOR_LOG  <-- append a new entry; do not overwrite or read the full file (last 5 entries pre-trimmed below)
+  Lessons file: $LESSONS_FILE  <-- append a brief lesson entry capturing a non-obvious takeaway (1-3 sentences). Skip if nothing surprising happened.
+
+Recent evaluator log entries (last 5, pre-trimmed):
+\`\`\`
+$EVALUATOR_LOG_TAIL_5
+\`\`\`
 
 Apply the TOKEN AND QUESTIONING POLICY from .claude/core.md strictly.
 

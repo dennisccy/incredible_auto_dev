@@ -130,9 +130,9 @@ Phase to finalize: $PHASE
 QA report: $QA_REPORT
 Status file: $STATUS_FILE
 Summary file: $SUMMARY_FILE (already written — read it for PR body content)
-CLAUDE.md: $REPO_ROOT/CLAUDE.md
 Project template: .claude/project-template.md  <-- read for never-commit files
 Agent instructions: .claude/agents/release-manager.md  <-- read this first
+(CLAUDE.md is already in your system prompt — do not Read it again.)
 
 GH_AUTH_AVAILABLE: $GH_AUTH_AVAILABLE
 

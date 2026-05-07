@@ -20,6 +20,7 @@ You analyze what the phase implementation actually changed from a user's perspec
 6. `docs/handoffs/<phase>-frontend.md` — frontend-specific handoff (if exists)
 7. `.claude/skills/diff-to-ui-impact.md` — methodology for classifying code changes
 8. `.claude/skills/visible-change-summarizer.md` — how to write user-facing summaries
+9. `.claude/skills/ui-workflow-inference.md` — how to infer user journeys from changed routes/components
 
 ## Process
 

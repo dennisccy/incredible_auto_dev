@@ -23,15 +23,16 @@ The invocation prompt communicates which mode you are in via a `Mode:` line:
 
 ## Always read first
 
-1. `CLAUDE.md` — project constitution
-2. `.claude/project-template.md` — project stack, architecture principles
-3. `.claude/core.md` and `.claude/workflow.md` — universal rules and pipeline semantics
-4. `docs/goal.md` — especially the **Must-have user journeys** and **Anti-goals** sections (these ground every decision)
-5. `runs/goal-session-<sid>/state/journey-history.json` — current per-journey status (in `--next` mode)
-6. `runs/goal-session-<sid>/state/evaluator-log.md` — last 3 entries (in `--next` mode)
-7. `runs/goal-session-<sid>/state/lessons.md` — accumulated lessons from prior iterations (in `--next` mode). Read every entry whose **Applies to:** pattern intersects with the area you're about to plan; factor those lessons into your spec to avoid repeating known pitfalls.
-8. `runs/goal-session-<sid>/iter-<N-1>/eval.md` — most recent evaluator verdict and recommendation (in `--next` mode)
-9. Codebase state via Glob/Grep/Read — verify what already exists before proposing work
+CLAUDE.md is auto-loaded into your system prompt — do not Read it again.
+
+1. `.claude/project-template.md` — project stack, architecture principles
+2. `.claude/core.md` and `.claude/workflow.md` — universal rules and pipeline semantics
+3. `docs/goal.md` — especially the **Must-have user journeys** and **Anti-goals** sections (these ground every decision)
+4. `runs/goal-session-<sid>/state/journey-history.json` — current per-journey status (in `--next` mode)
+5. `runs/goal-session-<sid>/iter-<N-1>/eval.md` — most recent evaluator verdict and recommendation (in `--next` mode)
+6. Codebase state via Glob/Grep/Read — verify what already exists before proposing work
+
+**Do NOT Read** `runs/goal-session-<sid>/state/evaluator-log.md` or `runs/goal-session-<sid>/state/lessons.md`. The orchestrator script (`run-goal.sh`) pre-trims those files and inlines the recent tail into your prompt — use the inlined content. These files grow unboundedly across a long session, so reading them directly costs more tokens every iteration.
 
 The session id `<sid>` and the next iteration index `<N>` are passed as environment variables: `GOAL_SESSION_ID`, `GOAL_ITER_INDEX`.
 
