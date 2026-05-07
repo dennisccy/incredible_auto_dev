@@ -79,6 +79,26 @@ fail() {
   exit 1
 }
 
+# Signal-aware abort — invoked by `trap` for SIGINT/SIGTERM AND by retry-loop
+# guards when a child step exits with 130/137/143. Exits without advancing the
+# checkpoint, so the next resume re-runs the in-flight step from scratch.
+# Without this, the warn-and-advance retry pattern (intended for transient
+# agent errors) wrongly treats a signal kill as "step done" and the resume
+# skips an unrun step, leaving SKIPPED stub artifacts that closure-check
+# flags. See .claude/anti-patterns.md #20.
+_is_signal_exit() {
+  local rc="$1"
+  [[ $rc -eq 130 || $rc -eq 137 || $rc -eq 143 ]]
+}
+
+_run_phase_aborted() {
+  echo "" >&2
+  log "Interrupted by signal — aborting WITHOUT advancing checkpoint."
+  log "  Current step in runs/$PHASE/status.json is preserved; resume will re-run the in-flight step."
+  exit 130
+}
+trap _run_phase_aborted INT TERM
+
 # ── Quota-aware step runner ──────────────────────────────────────────────────
 # Runs a phase script and handles quota exhaustion (exit 75) by sleeping until
 # the quota resets, then signaling the caller to retry.
@@ -372,6 +392,10 @@ if [[ "$SKIP_DEV_REVIEW" == "false" ]]; then
         ATTEMPT=$((ATTEMPT - 1))  # don't count quota failures as attempts
         continue
       fi
+      if _is_signal_exit "$dev_rc"; then
+        log "  Step 3 (dev) interrupted by signal (exit $dev_rc) — aborting."
+        exit "$dev_rc"
+      fi
       [[ $dev_rc -ne 0 ]] && log "  Warning: dev-phase.sh exited with error (attempt $ATTEMPT) -- continuing to review"
       update_status "$PHASE" "in_progress" "dev_complete_attempt_${ATTEMPT}"
     fi
@@ -385,6 +409,10 @@ if [[ "$SKIP_DEV_REVIEW" == "false" ]]; then
     if [[ $rev_rc -eq 75 ]]; then
       ATTEMPT=$((ATTEMPT - 1))
       continue
+    fi
+    if _is_signal_exit "$rev_rc"; then
+      log "  Step 3 (review) interrupted by signal (exit $rev_rc) — aborting."
+      exit "$rev_rc"
     fi
     [[ $rev_rc -ne 0 ]] && log "  Warning: review-phase.sh exited with error (attempt $ATTEMPT) -- checking verdict"
 
@@ -414,6 +442,10 @@ if [[ "$SKIP_UI_IMPACT" == "false" ]]; then
     ui_rc=0
     _run_step "$SCRIPT_DIR/ui-impact-phase.sh" "$PHASE" || ui_rc=$?
     if [[ $ui_rc -eq 75 && $ui_q -lt 2 ]]; then ui_q=$((ui_q+1)); continue; fi
+    if _is_signal_exit "$ui_rc"; then
+      log "  Step 4 (ui-impact) interrupted by signal (exit $ui_rc) — aborting."
+      exit "$ui_rc"
+    fi
     [[ $ui_rc -ne 0 && $ui_rc -ne 75 ]] && log "  Warning: ui-impact-phase.sh exited with error -- continuing"
     break
   done
@@ -434,6 +466,10 @@ if [[ "$SKIP_UI_TEST_DESIGN" == "false" ]]; then
       utd_rc=0
       _run_step "$SCRIPT_DIR/ui-test-design-phase.sh" "$PHASE" || utd_rc=$?
       if [[ $utd_rc -eq 75 && $utd_q -lt 2 ]]; then utd_q=$((utd_q+1)); continue; fi
+      if _is_signal_exit "$utd_rc"; then
+        log "  Step 5 (ui-test-design) interrupted by signal (exit $utd_rc) — aborting; resume will re-run this step."
+        exit "$utd_rc"
+      fi
       [[ $utd_rc -ne 0 && $utd_rc -ne 75 ]] && log "  Warning: ui-test-design-phase.sh exited with error -- continuing"
       break
     done
@@ -461,6 +497,10 @@ if [[ "$SKIP_BROWSER_QA" == "false" ]]; then
       bqa_rc=0
       _run_step "$SCRIPT_DIR/browser-qa-phase.sh" "$PHASE" || bqa_rc=$?
       if [[ $bqa_rc -eq 75 && $bqa_q -lt 2 ]]; then bqa_q=$((bqa_q+1)); continue; fi
+      if _is_signal_exit "$bqa_rc"; then
+        log "  Step 6 (browser-qa) interrupted by signal (exit $bqa_rc) — aborting; resume will re-run this step."
+        exit "$bqa_rc"
+      fi
       [[ $bqa_rc -ne 0 && $bqa_rc -ne 75 ]] && log "  Warning: browser-qa-phase.sh exited with error -- continuing"
       break
     done
@@ -495,6 +535,10 @@ if [[ "$SKIP_QA" == "false" ]]; then
       QA_ATTEMPT=$((QA_ATTEMPT - 1))  # don't count quota failures
       continue
     fi
+    if _is_signal_exit "$qa_rc"; then
+      log "  Step 7 (qa) interrupted by signal (exit $qa_rc) — aborting."
+      exit "$qa_rc"
+    fi
     [[ $qa_rc -ne 0 ]] && log "  Warning: qa-phase.sh exited with error (attempt $QA_ATTEMPT) -- checking verdict"
 
     if verdict_passes "$QA_REPORT"; then
@@ -510,10 +554,18 @@ if [[ "$SKIP_QA" == "false" ]]; then
     qd_rc=0
     _run_step "$SCRIPT_DIR/dev-phase.sh" "$PHASE" || qd_rc=$?
     [[ $qd_rc -eq 75 ]] && { QA_ATTEMPT=$((QA_ATTEMPT - 1)); continue; }
+    if _is_signal_exit "$qd_rc"; then
+      log "  Step 7 fix-mode (dev) interrupted by signal (exit $qd_rc) — aborting."
+      exit "$qd_rc"
+    fi
     [[ $qd_rc -ne 0 ]] && log "  Warning: dev-phase.sh exited with error -- continuing"
     qr_rc=0
     _run_step "$SCRIPT_DIR/review-phase.sh" "$PHASE" || qr_rc=$?
     [[ $qr_rc -eq 75 ]] && { QA_ATTEMPT=$((QA_ATTEMPT - 1)); continue; }
+    if _is_signal_exit "$qr_rc"; then
+      log "  Step 7 fix-mode (review) interrupted by signal (exit $qr_rc) — aborting."
+      exit "$qr_rc"
+    fi
     [[ $qr_rc -ne 0 ]] && log "  Warning: review-phase.sh exited with error -- continuing"
   done
 
@@ -538,6 +590,10 @@ if [[ "$SKIP_UX_REGRESSION" == "false" ]]; then
       uxr_rc=0
       _run_step "$SCRIPT_DIR/ux-regression-phase.sh" "$PHASE" || uxr_rc=$?
       if [[ $uxr_rc -eq 75 && $uxr_q -lt 2 ]]; then uxr_q=$((uxr_q+1)); continue; fi
+      if _is_signal_exit "$uxr_rc"; then
+        log "  Step 8 (ux-regression) interrupted by signal (exit $uxr_rc) — aborting."
+        exit "$uxr_rc"
+      fi
       [[ $uxr_rc -ne 0 && $uxr_rc -ne 75 ]] && log "  Warning: ux-regression-phase.sh exited with error -- continuing"
       break
     done
@@ -575,6 +631,10 @@ if [[ "$SKIP_AUDIT" == "false" ]]; then
       AUDIT_ATTEMPT=$((AUDIT_ATTEMPT - 1))  # don't count quota failures
       continue
     fi
+    if _is_signal_exit "$aud_rc"; then
+      log "  Step 9 (audit) interrupted by signal (exit $aud_rc) — aborting."
+      exit "$aud_rc"
+    fi
     [[ $aud_rc -ne 0 ]] && log "  Warning: phase-audit.sh exited with error (attempt $AUDIT_ATTEMPT) -- checking verdict"
 
     if verdict_passes "$AUDIT_REPORT"; then
@@ -590,16 +650,28 @@ if [[ "$SKIP_AUDIT" == "false" ]]; then
     ad_rc=0
     _run_step "$SCRIPT_DIR/dev-phase.sh" "$PHASE" || ad_rc=$?
     [[ $ad_rc -eq 75 ]] && { AUDIT_ATTEMPT=$((AUDIT_ATTEMPT - 1)); continue; }
+    if _is_signal_exit "$ad_rc"; then
+      log "  Step 9 hardening (dev) interrupted by signal (exit $ad_rc) — aborting."
+      exit "$ad_rc"
+    fi
     [[ $ad_rc -ne 0 ]] && log "  Warning: dev-phase.sh exited with error -- continuing"
     ar_rc=0
     _run_step "$SCRIPT_DIR/review-phase.sh" "$PHASE" || ar_rc=$?
     [[ $ar_rc -eq 75 ]] && { AUDIT_ATTEMPT=$((AUDIT_ATTEMPT - 1)); continue; }
+    if _is_signal_exit "$ar_rc"; then
+      log "  Step 9 hardening (review) interrupted by signal (exit $ar_rc) — aborting."
+      exit "$ar_rc"
+    fi
     [[ $ar_rc -ne 0 ]] && log "  Warning: review-phase.sh exited with error -- continuing"
 
     log "  Re-running QA after hardening..."
     aq_rc=0
     _run_step "$SCRIPT_DIR/qa-phase.sh" "$PHASE" || aq_rc=$?
     [[ $aq_rc -eq 75 ]] && { AUDIT_ATTEMPT=$((AUDIT_ATTEMPT - 1)); continue; }
+    if _is_signal_exit "$aq_rc"; then
+      log "  Step 9 hardening (qa) interrupted by signal (exit $aq_rc) — aborting."
+      exit "$aq_rc"
+    fi
     if ! verdict_passes "$QA_REPORT"; then
       fail "QA failed during audit hardening. See: $QA_REPORT" "audit_qa_failed"
     fi

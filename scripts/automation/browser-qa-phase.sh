@@ -197,6 +197,19 @@ The report MUST contain a line at the top:
 
 Then STOP." || _bqa_rc=$?
 
+# Signal-induced exit (Ctrl-C, SIGKILL, SIGTERM) → do NOT write SKIPPED stubs.
+# A stub would advertise the step as "ran but produced no real artifact," which
+# tricks run-phase.sh's retry loop into advancing the checkpoint past this step
+# (`update_status ... browser_qa_complete`). The next resume would then skip
+# the step but closure-check would flag the stub as missing real content. By
+# exiting without stubs, the working tree is unchanged so resume re-runs the
+# step and run-phase.sh's signal-aware retry guard aborts the run cleanly.
+# See .claude/anti-patterns.md #20.
+if [[ $_bqa_rc -eq 130 || $_bqa_rc -eq 137 || $_bqa_rc -eq 143 ]]; then
+  echo "[browser-qa] Killed by signal (exit $_bqa_rc) — leaving artifacts untouched so resume can re-run this step." >&2
+  exit "$_bqa_rc"
+fi
+
 # If the agent exited non-zero AND did not leave a results file (common when
 # the Anthropic stream times out), write a SKIPPED stub so phase closure can
 # still read an artifact rather than blocking on a missing file. Quota
