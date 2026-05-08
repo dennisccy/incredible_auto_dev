@@ -50,9 +50,21 @@ Do NOT assume paths like `apps/backend/.venv/bin/python` — use what project-te
 8. Write dev handoff (see format below)
 9. Update `runs/<phase>/status.json`
 
+## On retry — read inputs in this order
+
+When a previous review/QA/audit returned FAIL, read inputs in this order. **STOP reading further inputs once you have a clear hypothesis for the failure:**
+
+1. `reports/qa/<phase>-failure-digest.md` — structured digest of the failing tests. **Read this first if it exists.** It tells you exactly which test failed, where, and what files were recently changed. Often you do not need to read further.
+2. `reports/qa/<phase>-qa.md` — QA report (browser checks, UI evolution audit, blockers list).
+3. `reports/reviews/<phase>-review.md` — reviewer's structured findings (YAML schema; read the `issues` and `fix_tasks` lists).
+4. `reports/audits/<phase>-audit.md` if present.
+5. The phase spec, dev handoff, and changed files — only if 1–4 don't give you a clear fix path.
+
+Do NOT re-read the raw test log (`reports/qa/<phase>-test.log`) unless the digest is missing or marked "could not parse."
+
 ## Process — Fix mode
 
-1. Read the failing review/QA/audit report carefully
+1. Read the failing review/QA/audit reports in the order above
 2. Read the specific files and lines mentioned
 3. Fix each listed issue — do not change anything else
 4. Re-run tests — all must pass

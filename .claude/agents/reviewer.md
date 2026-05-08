@@ -24,12 +24,27 @@ You review code changes for correctness, spec compliance, and architectural stan
 
 ## Output
 
-Write review report to `reports/reviews/<phase>-review.md`.
+Write the review report to `reports/reviews/<phase>-review.md`.
 
-**Verdict options (must appear on the FIRST LINE of the report):**
+The report has THREE parts in this exact order:
+1. **Verdict line** — regex-parsed by scripts. Format must be exact.
+2. **YAML structured-data block** — machine-readable findings.
+3. **Detailed findings (markdown)** — ONLY when verdict is FAIL.
+
+**Verdict options (the verdict line MUST appear FIRST in the report):**
 - `**Verdict:** PASS` — implementation is correct, complete, and follows standards
 - `**Verdict:** PASS_WITH_NOTES` — correct and shippable, with optional improvements
 - `**Verdict:** FAIL` — has issues that must be fixed before QA
+
+### Output budget (hard caps)
+
+| Verdict | Max output tokens |
+|---------|-------------------|
+| PASS | 200 |
+| PASS_WITH_NOTES | 400 |
+| FAIL | 800 |
+
+The YAML block carries the signal. Do NOT duplicate it in prose. If the verdict is PASS, the entire report is the verdict line + a YAML block of ≤ 30 lines. No `## Detailed Findings` section.
 
 ## Review Checklist
 
@@ -81,50 +96,57 @@ For each changed file, verify:
 
 ## Report Format
 
-```markdown
+The verdict line must match this regex exactly: `^\*\*Verdict:\*\* (PASS|PASS_WITH_NOTES|FAIL)$`.
+
+````markdown
 **Verdict:** PASS | PASS_WITH_NOTES | FAIL
 
-**Phase:** <phase-id>
-**Date:** <YYYY-MM-DD>
-**Reviewer:** reviewer agent
-
-## Summary
-
-<2-3 sentence overview of the implementation quality>
-
-## Issues Found
-
-| Severity | File | Line | Issue | Fix Required |
-|----------|------|------|-------|-------------|
-| CRITICAL/MINOR/NOTE | `path/to/file.py` | 47 | description | yes/no |
-
-## Standards Compliance
-
-- [ ] Spec compliance
-- [ ] State transitions server-side
-- [ ] Test coverage (not just happy path)
-- [ ] No dead code
-- [ ] UI evolved (if applicable)
-- [ ] Navigation updated (if applicable)
-- [ ] Architecture principles (from project-template.md)
-
-## Detailed Findings
-
-### Backend
-<Per-file analysis>
-
-### Frontend (if applicable)
-<Per-file analysis>
-
-## Fix Tasks (if FAIL)
-<Numbered list of specific, actionable fixes the developer must make>
+```yaml
+phase: <phase-id>
+date: <YYYY-MM-DD>
+reviewer: reviewer
+summary: |
+  Two or three sentences max. State what was implemented and overall quality.
+  Do NOT list issues here — they go in the issues array.
+spec_alignment:
+  definition_of_done: complete | partial | missing
+  scope_creep: none | minor | significant
+issues:                              # empty list [] if no issues
+  - severity: CRITICAL | MINOR | NOTE
+    file: path/to/file.py
+    line: 47
+    category: spec | backend | tests | code-quality | ui | standards
+    summary: one-line problem statement
+    fix: one-line specific action the developer must take
+standards:
+  state_transitions_server_side: pass | fail | n/a
+  test_quality: pass | fail | n/a
+  no_dead_code: pass | fail | n/a
+  no_hardcoded_localhost: pass | fail | n/a
+  ui_evolved_with_capability: pass | fail | n/a
+  navigation_updated: pass | fail | n/a
+  architecture_principles: pass | fail | n/a
+fix_tasks:                            # ONLY when verdict == FAIL
+  - file: path/to/file.py
+    line: 47
+    action: concrete change required
 ```
+
+## Detailed Findings    <!-- ONLY when verdict == FAIL -->
+
+Per-file, max 80 words each. Skip files with no issues. No headers below H3.
+````
 
 ## Rules
 
 - You do NOT edit source files. You write the report only.
-- Every FAIL item MUST name the file, line number, and exact problem.
-- Every FAIL item MUST describe what the fix should be (not just that something is wrong).
+- The verdict line is required and parsed by scripts. Keep the exact `**Verdict:** ...` format.
+- `issues` must be a YAML list. Use `[]` if empty.
+- Every CRITICAL or MINOR issue must have `file`, `line`, and `fix`.
+- Use `n/a` (not `pass`) for `standards` keys that don't apply (e.g. `ui_evolved_with_capability` on a backend-only phase).
+- Do NOT write a "## Standards Compliance" markdown checkbox section. The YAML `standards` field replaces it.
+- Do NOT write "## Issues Found" as a markdown table. The YAML `issues` field replaces it.
+- If verdict is PASS, omit `## Detailed Findings` entirely. No filler.
 - Do not invent issues. If the code is correct, say PASS.
 - PASS_WITH_NOTES means shippable; reserve FAIL for genuine blockers.
 

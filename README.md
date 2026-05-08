@@ -291,6 +291,33 @@ Analyze with: `python3 scripts/automation/lib/analyze_telemetry.py runs/<phase>/
 
 If a 30-iteration goal session costs <$X and a phase costs <$Y (your numbers), it's not worth more optimization — invest the time in features instead.
 
+## Pipeline Hardening (Strengthen Claude-only Weak Spots) — Pending Work
+
+Benchmark evidence (May 2026) shows Opus 4.7 trails GPT-5.5 on Terminal-Bench 2.0 by 13.3 points and emits ~3.5x more output tokens per task. The decision is to keep this project Claude-only and harden the pipeline at those weak spots rather than introduce a second model.
+
+### Shipped (or in this branch)
+
+- [x] **Test-failure digest script** (`scripts/automation/lib/test_failure_digest.py`) — distills raw pytest/jest/vitest/mocha output into a structured markdown digest. Invoked by the `qa` agent on test failure; the `developer` agent reads it first on retry. Removes the "grep through 500-line log" task from the model — exactly the work GPT-5.5 leads on.
+- [x] **Reviewer YAML schema + token budget** — replaces the prose review-report format with a verdict line + YAML structured findings + optional brief detailed findings. Hard caps: PASS ≤ 200 tokens, PASS_WITH_NOTES ≤ 400, FAIL ≤ 800 (vs. ~1200–2500 today).
+
+### Deferred — do these one at a time, with telemetry before/after
+
+- [ ] **Move `reviewer` from Opus to Sonnet 4.6** (or Haiku 4.5 for cheap quick reviews). Different model in the same family captures a meaningful subset of blind spots at lower cost. `sync-agent-models.sh` already supports per-agent model assignment. Ship after the YAML schema is stable so the cheaper model has a tighter target. See also Token Optimization Tier 2 for the orchestrator equivalent.
+- [ ] **Extended-thinking on `auditor` + adversarial framing.** Set `thinking.budget_tokens` for the auditor and prepend "assume the implementation is buggy and find why." Extended thinking is Claude's largest unexploited reasoning lever and directly attacks the "long-context-large-system" weakness on benchmarks like SWE-Bench Pro. Test budget vs. latency on 2–3 phases before rolling out broadly.
+- [ ] **Goal-mode iteration-state synthesis.** Have `goal-evaluator` produce a fresh `iteration-state.md` after each iteration, prepended to the next iteration's context. Don't rely on the model's recall of `journey-history.json`. Combats long-loop context drift — which is where Opus 4.7 weakens most relative to GPT-5.5. Touches goal-mode internals; pick it up only after the first two deferred items are stable.
+
+### How to know when each is worth doing
+
+For each deferred item, the trigger is a measured regression — not a guess:
+
+| Item | Signal that says "do it now" |
+|------|------------------------------|
+| Reviewer → Sonnet | Reviewer output tokens still > Sonnet's typical budget after the YAML schema change |
+| Auditor extended-thinking | Auditor returns PASS on phases that ship with bugs (audit gap data from real phases) |
+| Iteration-state synthesis | Goal-mode iterations show drift symptoms — repeated work, forgotten journeys, or loops that re-test fixed regressions |
+
+Without these signals, all three are speculative work — better spent on features.
+
 ## Known Limitations
 
 1. **Service bootstrap**: QA expects `CHAIN_START_BACKEND_CMD` or `scripts/start-backend.sh`.

@@ -131,7 +131,28 @@ If any missing: write QA report with FAIL verdict and list what is missing.
 
 **Step 2: Run backend tests**
 
-Run the test command from `.claude/project-template.md`. Record EXACT output including pass/fail counts. Do NOT summarize.
+Run the test command from `.claude/project-template.md`, capturing both stdout and stderr to a log file. Record EXACT output including pass/fail counts. Do NOT summarize.
+
+```bash
+mkdir -p reports/qa
+TEST_LOG="reports/qa/${PHASE}-test.log"
+<test-command-from-project-template> 2>&1 | tee "$TEST_LOG"
+TEST_EXIT=${PIPESTATUS[0]}
+```
+
+If `$TEST_EXIT` is non-zero, immediately produce a structured digest before continuing:
+
+```bash
+python3 scripts/automation/lib/test_failure_digest.py "$TEST_LOG" --scope . \
+    > "reports/qa/${PHASE}-failure-digest.md"
+```
+
+In your QA report, when tests fail:
+- Include the raw test output verbatim (existing behavior)
+- Add a top-level link: `See structured digest: reports/qa/<phase>-failure-digest.md`
+- The digest is the canonical failure summary the developer agent reads first on retry
+
+If the digest script itself errors, just note "digest unavailable" in the QA report — the raw log is still authoritative.
 
 **Step 3: Run frontend tests (only if Frontend Present: yes)**
 
