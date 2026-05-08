@@ -174,10 +174,26 @@ def _emit_result_summary(result_event: dict[str, Any]) -> None:
     is_error = result_event.get("is_error", False)
     subtype = result_event.get("subtype", "")
     if is_error or subtype not in ("success", "", None):
-        # Surface error result so quota detection / debugging can read it
+        # Surface error result with a visible banner so operators don't miss
+        # it among the streamed text, and so the quota-retry regex in the
+        # bash wrapper can match the result text reliably.
         result_text = result_event.get("result")
-        if isinstance(result_text, str):
-            sys.stdout.write(f"\n{result_text}\n")
+        sys.stdout.write("\n")
+        sys.stdout.write("=" * 68 + "\n")
+        sys.stdout.write(
+            f"*** CLAUDE ERROR (subtype={subtype} is_error={is_error}) ***\n"
+        )
+        sys.stdout.write("=" * 68 + "\n")
+        if isinstance(result_text, str) and result_text.strip():
+            sys.stdout.write(result_text + "\n")
+        else:
+            # No human-readable result text — surface the raw event so debugging
+            # is possible even when claude returns sparse error info.
+            try:
+                sys.stdout.write(f"[debug] raw result event: {json.dumps(result_event)}\n")
+            except (TypeError, ValueError):
+                sys.stdout.write("[debug] result event was not JSON-serializable\n")
+        sys.stdout.write("=" * 68 + "\n")
         sys.stdout.write(
             f"[claude-result] subtype={subtype} is_error={is_error}\n"
         )

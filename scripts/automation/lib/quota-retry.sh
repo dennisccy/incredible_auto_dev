@@ -523,13 +523,32 @@ claude_with_quota_retry() {
 
     # ── Non-quota, non-transient failure ───────────────────────────────────
     if ! _quota_is_exhausted "$tmp_log"; then
-      rm -f "$tmp_log"
+      # Defensive dump: the user should always see *something* when claude
+      # exits non-zero, even if our quota regex didn't match. Without this,
+      # an unrecognized error format (e.g., a new claude error wording in
+      # stream-json mode) would surface as a silent failure: the harness
+      # just returns the exit code with no on-screen explanation.
+      if [[ $exit_code -ne 0 ]]; then
+        echo "" >&2
+        echo "════════════════════════════════════════════════════════════════════" >&2
+        echo "[quota-retry] $(date -Iseconds) *** Claude exited with code $exit_code (not recognized as quota) ***" >&2
+        echo "[quota-retry] $(date -Iseconds) Last 30 lines of output:" >&2
+        echo "─────────────────────────────────────────────────────────────────────" >&2
+        tail -n 30 "$tmp_log" >&2
+        echo "─────────────────────────────────────────────────────────────────────" >&2
+        echo "[quota-retry] $(date -Iseconds) Full output saved to: $tmp_log" >&2
+        echo "════════════════════════════════════════════════════════════════════" >&2
+      else
+        rm -f "$tmp_log"
+      fi
       return "$exit_code"
     fi
 
     # ── Quota exhaustion detected ───────────────────────────────────────────
     echo "" >&2
-    echo "[quota-retry] $(date -Iseconds) *** Claude quota exhaustion detected ***" >&2
+    echo "════════════════════════════════════════════════════════════════════" >&2
+    echo "[quota-retry] $(date -Iseconds) *** CLAUDE QUOTA EXHAUSTION DETECTED ***" >&2
+    echo "════════════════════════════════════════════════════════════════════" >&2
 
     local reset_str
     reset_str=$(_quota_extract_reset_string "$tmp_log")
@@ -580,11 +599,19 @@ claude_with_quota_retry() {
     local reset_epoch=$(( $(date +%s) + sleep_secs ))
     _quota_write_sentinel "$reset_epoch"
 
-    echo "[quota-retry] $(date -Iseconds) Sleeping ${sleep_secs}s ... (retry $retry_count/$max_retries will follow)" >&2
+    # Convert seconds to a human-readable HhMmSs label for the wait line so
+    # the operator can decide whether to interrupt and rerun later.
+    local _human_sleep
+    _human_sleep=$(printf '%dh%02dm%02ds' $(( sleep_secs / 3600 )) $(( (sleep_secs % 3600) / 60 )) $(( sleep_secs % 60 )))
+    echo "[quota-retry] $(date -Iseconds) >>> SLEEPING ${_human_sleep} (${sleep_secs}s) — retry ${retry_count}/${max_retries} will follow <<<" >&2
+    echo "════════════════════════════════════════════════════════════════════" >&2
     _sleep_until_epoch "$reset_epoch"
 
     local actual_sleep=$(( $(date +%s) - sleep_start ))
-    echo "[quota-retry] $(date -Iseconds) Woke up after ${actual_sleep}s. Retrying claude (attempt $retry_count/$max_retries)..." >&2
+    echo "" >&2
+    echo "════════════════════════════════════════════════════════════════════" >&2
+    echo "[quota-retry] $(date -Iseconds) >>> WOKE UP after ${actual_sleep}s. Retrying claude (attempt ${retry_count}/${max_retries}) <<<" >&2
+    echo "════════════════════════════════════════════════════════════════════" >&2
     _quota_run_pre_retry_hook
     echo "" >&2
   done
