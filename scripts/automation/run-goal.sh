@@ -105,6 +105,27 @@ LESSONS_FILE="$GOAL_SESSION_DIR_LOCAL/state/lessons.md"
 SUMMARY_FILE="$GOAL_SESSION_DIR_LOCAL/summary.md"
 GOAL_FILE="$REPO_ROOT/docs/goal.md"
 
+# Render the per-iteration HTML summary. Non-blocking — failures only log.
+# Invoked after each iteration finishes its goal-evaluator step so the user
+# can `open file://...` and inspect what happened that iteration.
+_render_iter_html() {
+  local iter_name="$1"
+  local renderer="$SCRIPT_DIR/lib/render_iteration_summary.py"
+  [[ -f "$renderer" ]] || return 0
+  python3 "$renderer" iteration "$iter_name" 2>&1 \
+    | sed 's/^/[run-goal] /' || echo "[run-goal] Warning: per-iter HTML render failed (non-blocking)"
+}
+
+# Render the session-level index.html that lists every iteration as a card
+# plus the journey progress matrix. Called from write_session_summary, so it
+# refreshes at every session boundary (CONTINUE, ABORT, GOAL_ACHIEVED, …).
+_render_session_index_html() {
+  local renderer="$SCRIPT_DIR/lib/render_iteration_summary.py"
+  [[ -f "$renderer" ]] || return 0
+  python3 "$renderer" session-index "$SESSION_ID" 2>&1 \
+    | sed 's/^/[run-goal] /' || echo "[run-goal] Warning: session-index HTML render failed (non-blocking)"
+}
+
 # Tail an append-only state file to the last N lines, or return a placeholder
 # if the file does not exist yet. Used to keep token usage flat as the goal
 # session grows — agents only need the tail (last few entries), not the full
@@ -489,6 +510,9 @@ See \`runs/goal-session-${SESSION_ID}/telemetry.jsonl\` for the structured event
 EOF
   record_telemetry_event "session_end" "$(jq -cn --arg fv "$final_verdict" --argjson ti $total_iterations --argjson wt $wall_time --argjson qp $quota_pauses '{final_verdict:$fv, total_iterations:$ti, wall_time_seconds:$wt, quota_pause_count:$qp}' 2>/dev/null || printf '{"final_verdict":"%s","total_iterations":%d}' "$final_verdict" "$total_iterations")"
   echo "[run-goal] Session summary: $SUMMARY_FILE"
+  _render_session_index_html
+  local _idx_html="$GOAL_SESSION_DIR_LOCAL/index.html"
+  [[ -f "$_idx_html" ]] && echo "[run-goal] Session HTML: file://$_idx_html"
 }
 
 # Trap: on SIGINT/SIGTERM, write ABORTED summary
@@ -721,6 +745,13 @@ STOP." || _eval_rc=$?
   # Capture journey-history hash for stall detection
   HASH=$(journey_history_hash)
   echo "$HASH" >> "$GOAL_SESSION_DIR_LOCAL/.history-hashes"
+
+  # Render the per-iteration HTML summary now that goal-evaluator has finalized
+  # the journey-history for this iter. Non-blocking; the session index is
+  # refreshed automatically by every write_session_summary call.
+  _render_iter_html "$ITER_NAME"
+  _iter_html="$REPO_ROOT/runs/$ITER_NAME/summary.html"
+  [[ -f "$_iter_html" ]] && echo "[run-goal] Iteration summary: file://$_iter_html"
 
   # Update session.json
   python3 - <<PY

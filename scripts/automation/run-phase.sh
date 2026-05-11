@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # run-phase.sh — Full phase runner: plan -> test-plan -> dev -> review -> UI impact ->
-#                UI test design -> browser QA -> QA -> UX regression -> audit -> closure -> finalize
+#                UI test design -> browser QA -> QA -> UX regression -> audit -> closure ->
+#                html-summary -> finalize
 # Usage: ./scripts/automation/run-phase.sh phase-3 [--auto-release] [--reset] [--no-finalize]
 #
 # Flags:
@@ -71,11 +72,24 @@ MAX_RETRIES=3
 MAX_AUDIT_RETRIES=3
 
 log()  { echo "[run-phase] $*"; }
+
+# Render the human-readable HTML summary for this iteration. Always non-blocking
+# — failures are logged but do not break the pipeline. Called from the success
+# path (Step 10.5) AND from fail() so even failed iterations get a viewable
+# summary of whatever artifacts exist.
+_render_summary_html() {
+  local renderer="$SCRIPT_DIR/lib/render_iteration_summary.py"
+  [[ -f "$renderer" ]] || return 0
+  python3 "$renderer" iteration "$PHASE" 2>&1 \
+    | sed 's/^/[run-phase] /' || log "  Warning: HTML summary render failed (non-blocking)"
+}
+
 fail() {
   local msg="$1"
   local step="${2:-failed}"
   log "FAILED: $msg" >&2
   update_status "$PHASE" "blocked" "$step"
+  _render_summary_html
   exit 1
 }
 
@@ -710,6 +724,13 @@ else
 fi
 echo ""
 
+# ── Step 10.5/11: Render iteration HTML summary ─────────────────────────────
+log "Step 10.5/11 -- Rendering iteration HTML summary..."
+_render_summary_html
+HTML_PATH="$REPO_ROOT/runs/$PHASE/summary.html"
+[[ -f "$HTML_PATH" ]] && log "  Summary: file://$HTML_PATH"
+echo ""
+
 # ── Cleanup: remove temp files generated during the run ─────────────────────
 log "Cleanup: removing temp files..."
 cleanup_phase_artifacts "$PHASE"
@@ -739,6 +760,7 @@ echo "  QA report:                reports/qa/${PHASE}-qa.md"
 echo "  Audit report:             docs/handoffs/${PHASE}-audit.md"
 echo "  Closure verdict:          reports/phase-${PHASE}-closure-verdict.md"
 echo "  Status:                   runs/${PHASE}/status.json"
+echo "  HTML summary:             runs/${PHASE}/summary.html"
 echo "  Project goal:             docs/goal.md (if present)"
 echo "  Architecture docs:        docs/architecture/ (if present)"
 echo ""
