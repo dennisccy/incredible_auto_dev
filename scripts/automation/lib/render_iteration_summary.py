@@ -36,7 +36,25 @@ from typing import Optional
 # Paths
 # ─────────────────────────────────────────────────────────────────────────────
 
-REPO_ROOT = Path(__file__).resolve().parents[3]
+# Fallback REPO_ROOT computed from the source file location. Used only when
+# the CLI receives no `--repo-root=` arg and the marker-walk below finds no
+# project marker. In layouts where the harness is mounted as a subdirectory
+# of a larger project (e.g. `Aplhion/incredible_auto_dev/`), this fallback
+# is the WRONG value — it points at the harness, not the project root —
+# so the shell wrappers always pass `--repo-root="$REPO_ROOT"` to override.
+_FALLBACK_REPO_ROOT = Path(__file__).resolve().parents[3]
+
+# Files / directories that reliably mark a project root in this framework.
+# `docs/goal.md` is required for goal mode, `.claude/project-template.md` is
+# required by the framework, `.git` is the universal repo marker. Order
+# matters: framework-specific markers take precedence over `.git` so a
+# nested layout where the harness is itself a git submodule resolves to the
+# outer project, not to the submodule.
+_PROJECT_MARKERS: tuple[str, ...] = (
+    "docs/goal.md",
+    ".claude/project-template.md",
+    ".git",
+)
 
 GOAL_ITER_RE = re.compile(r"^goal-(?P<sid>.+)-iter-(?P<n>\d+)$")
 
@@ -941,11 +959,55 @@ def session_index_output_path(session_id: str, repo_root: Path) -> Path:
 # ─────────────────────────────────────────────────────────────────────────────
 
 
+def _walk_up_for_marker(start: Path, max_levels: int = 8) -> Optional[Path]:
+    """Walk up from `start` (inclusive) looking for any `_PROJECT_MARKERS`.
+
+    Returns the first ancestor (or start itself) that contains a marker,
+    or None if none found within `max_levels` levels.
+    """
+    cur = start
+    for _ in range(max_levels + 1):
+        for marker in _PROJECT_MARKERS:
+            if (cur / marker).exists():
+                return cur
+        if cur.parent == cur:
+            break
+        cur = cur.parent
+    return None
+
+
 def _resolve_repo_root(extra: list[str]) -> Path:
+    """Determine the project root, in priority order:
+
+    1. `--repo-root=PATH` CLI arg (highest — what the shell wrappers pass).
+    2. `CHAIN_REPO_ROOT` environment variable.
+    3. Walk up from CWD looking for `_PROJECT_MARKERS`.
+    4. Walk up from this file's location looking for the same markers.
+    5. Fall back to `Path(__file__).parents[3]` (works when harness IS the
+       project root).
+
+    An empty value in (1) or (2) is treated as "fall through to next" so
+    callers that set `--repo-root=""` from an unset shell var still work.
+    """
     for arg in extra:
         if arg.startswith("--repo-root="):
-            return Path(arg.split("=", 1)[1]).resolve()
-    return REPO_ROOT
+            value = arg.split("=", 1)[1].strip()
+            if value:
+                return Path(value).resolve()
+
+    env_val = os.environ.get("CHAIN_REPO_ROOT", "").strip()
+    if env_val:
+        return Path(env_val).resolve()
+
+    cwd_found = _walk_up_for_marker(Path.cwd().resolve())
+    if cwd_found is not None:
+        return cwd_found
+
+    file_found = _walk_up_for_marker(Path(__file__).resolve().parent)
+    if file_found is not None:
+        return file_found
+
+    return _FALLBACK_REPO_ROOT
 
 
 def cmd_iteration(args: list[str]) -> int:
@@ -1104,9 +1166,59 @@ def _write_summary_fixture(tmp: Path, phase_id: str, body: str, *, with_screensh
 
 
 def _cmd_self_test(_argv: list[str]) -> int:
-    """Built-in self-test covering parsers and rendering."""
+    """Built-in self-test covering parsers, rendering, and repo-root resolution."""
     import tempfile
     failures: list[str] = []
+
+    # Repo-root resolution priority tests
+    with tempfile.TemporaryDirectory() as raw_tmp:
+        tmp = Path(raw_tmp).resolve()
+        # Nested-harness layout: docs/goal.md lives in tmp/project, harness in
+        # tmp/project/incredible_auto_dev/. CWD-walk should find the outer dir.
+        (tmp / "project" / "docs").mkdir(parents=True)
+        (tmp / "project" / "docs" / "goal.md").write_text("# Test goal\n")
+        (tmp / "project" / "incredible_auto_dev" / "scripts" / "automation" / "lib").mkdir(parents=True)
+        original_cwd = os.getcwd()
+        try:
+            # Case 1: --repo-root takes priority over everything
+            r = _resolve_repo_root([f"--repo-root={tmp / 'project'}"])
+            if r != (tmp / "project").resolve():
+                failures.append(f"resolve: --repo-root flag should win, got {r}")
+
+            # Case 2: empty --repo-root falls through (does not return empty path)
+            os.chdir(tmp / "project")
+            r = _resolve_repo_root(["--repo-root="])
+            if r != (tmp / "project").resolve():
+                failures.append(f"resolve: empty --repo-root should fall through to CWD walk, got {r}")
+
+            # Case 3: CHAIN_REPO_ROOT env var when no --repo-root
+            os.environ["CHAIN_REPO_ROOT"] = str(tmp / "project")
+            try:
+                os.chdir(raw_tmp)  # no marker here, force env var to win
+                r = _resolve_repo_root([])
+                if r != (tmp / "project").resolve():
+                    failures.append(f"resolve: env var should win, got {r}")
+            finally:
+                del os.environ["CHAIN_REPO_ROOT"]
+
+            # Case 4: CWD walk finds outer project even when CWD is inside harness
+            os.chdir(tmp / "project" / "incredible_auto_dev")
+            r = _resolve_repo_root([])
+            if r != (tmp / "project").resolve():
+                failures.append(f"resolve: CWD walk from harness subdir should find outer project, got {r}")
+
+            # Case 5: outside any project — falls back to fallback constant
+            os.chdir(raw_tmp)
+            r = _resolve_repo_root([])
+            # Should be _FALLBACK_REPO_ROOT (the harness checkout we run from)
+            if r != _FALLBACK_REPO_ROOT:
+                # _walk_up_for_marker on __file__ may find the harness root,
+                # which is also acceptable. So allow either.
+                file_walk = _walk_up_for_marker(Path(__file__).resolve().parent)
+                if r != file_walk:
+                    failures.append(f"resolve: outside project should fall back to file-walk or constant, got {r}")
+        finally:
+            os.chdir(original_cwd)
 
     # Parser tests
     header = _parse_summary_header(_FIXTURE_SUMMARY_GOAL)

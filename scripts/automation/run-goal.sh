@@ -159,7 +159,7 @@ _render_iter_html() {
   local iter_name="$1"
   local renderer="$SCRIPT_DIR/lib/render_iteration_summary.py"
   [[ -f "$renderer" ]] || return 0
-  python3 "$renderer" iteration "$iter_name" 2>&1 \
+  python3 "$renderer" iteration "$iter_name" --repo-root="$REPO_ROOT" 2>&1 \
     | sed 's/^/[run-goal] /' || echo "[run-goal] Warning: per-iter HTML render failed (non-blocking)"
 }
 
@@ -169,7 +169,7 @@ _render_iter_html() {
 _render_session_index_html() {
   local renderer="$SCRIPT_DIR/lib/render_iteration_summary.py"
   [[ -f "$renderer" ]] || return 0
-  python3 "$renderer" session-index "$SESSION_ID" 2>&1 \
+  python3 "$renderer" session-index "$SESSION_ID" --repo-root="$REPO_ROOT" 2>&1 \
     | sed 's/^/[run-goal] /' || echo "[run-goal] Warning: session-index HTML render failed (non-blocking)"
 }
 

@@ -5,11 +5,11 @@ A reusable framework for running phased software development with Claude AI agen
 ## What This Is
 
 A collection of:
-- **12 Claude agent definitions** covering the full dev lifecycle and UI visibility
+- **13 Claude agent definitions** covering the full dev lifecycle, UI visibility, and per-iteration summary
 - **16 automation shell scripts** orchestrating an 11-step pipeline
 - **5 security hooks** guarding against supply-chain attacks, dangerous commands, and vague artifacts
 - **9 skills** providing reusable methodologies for UI analysis, test design, and doc updates
-- **15 report templates** for consistent handoffs across all agents
+- **16 report templates** for consistent handoffs across all agents
 - **A modular CLAUDE.md system** (core rules, workflow, project config, anti-patterns, architecture docs)
 
 The chain has checkpoint/resume, quota-exhaustion auto-retry, and a verdict-gated pipeline where each stage must pass before the next runs.
@@ -102,10 +102,35 @@ Phase spec (docs/phases/<phase>.md)
 10. phase-closure      --> closure-verdict
     |
     v
+10.5 iteration-summarizer --> iteration-summary.md + summary.html
+    |
+    v
 11. release-manager    --> summary.json + branch + commit + PR
 ```
 
 Steps 5, 6, and 8 are skipped for backend-only phases (`Frontend Present: no`).
+
+## Iteration Summary + HTML Report
+
+Step 10.5 produces a single conclusive per-iteration markdown at
+`reports/phase-<phase>-iteration-summary.md`. It answers the four questions a
+developer actually has after a run: what was done, what's left, what direction
+the project is moving (improving / holding / stalling / regressing — for goal
+mode), and what the next step is. This MD is the source of truth.
+
+A deterministic HTML renderer turns that MD into a self-contained
+`reports/phase-<phase>-summary.html` (inline CSS, base64-embedded screenshots,
+no remote refs). Goal mode also writes a session-level
+`reports/goal-session-<sid>-index.html` that lists every iteration as a card
+with a journey progress matrix.
+
+Regenerate either or both at any time:
+
+```bash
+bash scripts/automation/render-summary.sh <phase-id>                  # rebuild MD via agent + render HTML
+bash scripts/automation/render-summary.sh <phase-id> --no-resummarize # re-render HTML only (no API tokens)
+bash scripts/automation/render-summary.sh --session-index <sid>       # re-render goal-mode session index
+```
 
 ## Goal Mode Pipeline
 
@@ -158,6 +183,7 @@ Iteration name `goal-<sid>-iter-<N>` is used as the "phase name" so existing scr
 | `browser-qa-agent` | standard | 6 | Executes browser tests via Chrome MCP |
 | `ux-regression-reviewer` | standard | 8 | Checks UI evolved with capabilities, flags regressions |
 | `phase-closure-auditor` | standard | 10 | Final gate: validates all artifacts exist and are non-vague |
+| `iteration-summarizer` | light | 10.5 | Synthesizes the per-iteration summary MD (what was done / left / direction) that drives the HTML report |
 | `goal-decomposer` | strong | (goal mode) | Reads goal + state, writes next iteration spec, picks lean/full depth |
 | `goal-evaluator` | strong | (goal mode) | Skeptical done/regression/stall judgment, updates journey-history |
 
@@ -191,6 +217,9 @@ Model tiers are defined in `config/agent-models.yaml`. Change assignments there 
 ./scripts/automation/check-install.sh "pip install X"  # check install safety
 ./scripts/automation/update-docs.sh --framework        # update framework docs
 ./scripts/automation/update-docs.sh phase-1            # update project docs
+bash scripts/automation/render-summary.sh <phase-id>   # rebuild iteration-summary MD + render HTML
+bash scripts/automation/render-summary.sh <phase-id> --no-resummarize  # re-render HTML only (no API tokens)
+bash scripts/automation/render-summary.sh --session-index <sid>        # re-render goal-mode session index
 
 # Goal mode
 ./scripts/automation/run-goal.sh --session-id my-app                    # full goal-mode loop
@@ -228,6 +257,7 @@ Model tiers are defined in `config/agent-models.yaml`. Change assignments there 
 | `templates/ui-test-results.md` | Browser QA results format |
 | `templates/what-to-click.md` | Operator verification guide format |
 | `templates/closure-verdict.md` | Phase closure verdict format |
+| `templates/iteration-summary.md` | Iteration summary format (drives the HTML report) |
 | `templates/project-goal.md` | Project goal document template (now includes Must-have user journeys + Anti-goals — required for goal mode, ignored by phase mode) |
 | `templates/architecture-overview.md` | Project architecture doc template |
 

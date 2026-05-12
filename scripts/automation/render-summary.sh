@@ -41,7 +41,7 @@ if [[ "$1" == "--session-index" ]]; then
     echo "Error: --session-index requires a session id" >&2
     exit 2
   fi
-  exec python3 "$RENDERER" session-index "$2"
+  exec python3 "$RENDERER" session-index "$2" --repo-root="$REPO_ROOT"
 fi
 
 PHASE="$1"
@@ -114,4 +114,4 @@ When finished, STOP. Do not print the summary to chat."
 fi
 
 # Always render HTML (even if MD missing — renderer emits a placeholder).
-python3 "$RENDERER" iteration "$PHASE"
+python3 "$RENDERER" iteration "$PHASE" --repo-root="$REPO_ROOT"

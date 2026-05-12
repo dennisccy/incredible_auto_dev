@@ -130,7 +130,7 @@ When finished, STOP." \
 _render_summary_html() {
   local renderer="$SCRIPT_DIR/lib/render_iteration_summary.py"
   [[ -f "$renderer" ]] || return 0
-  python3 "$renderer" iteration "$PHASE" 2>&1 \
+  python3 "$renderer" iteration "$PHASE" --repo-root="$REPO_ROOT" 2>&1 \
     | sed 's/^/[run-phase] /' || log "  Warning: HTML summary render failed (non-blocking)"
 }
 
