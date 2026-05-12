@@ -60,6 +60,24 @@ class BrowserQAVerdict(str, Enum):
     SKIPPED = "SKIPPED"
 
 
+class IterationSummaryVerdict(str, Enum):
+    """Iteration summary verdicts (reports/phase-{N}-iteration-summary.md).
+
+    The iteration-summarizer agent carries the verdict forward from the
+    strongest source available (eval.md for goal mode, closure-verdict.md
+    for full phase, review.md as fallback). Covers both phase-mode and
+    goal-mode verdict vocabularies in a single enum.
+    """
+    GOAL_ACHIEVED = "GOAL_ACHIEVED"
+    CONTINUE = "CONTINUE"
+    ESCALATE = "ESCALATE"
+    REGRESSION = "REGRESSION"
+    STALLED = "STALLED"
+    PASS = "PASS"
+    FAIL = "FAIL"
+    IN_PROGRESS = "IN-PROGRESS"
+
+
 class PhaseStatus(str, Enum):
     """Top-level status field in status.json."""
     IN_PROGRESS = "in_progress"

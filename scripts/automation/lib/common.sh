@@ -355,6 +355,11 @@ cleanup_phase_artifacts() {
   rm -f "$REPO_ROOT"/tc[0-9]*-* 2>/dev/null || true
   # Leftover scaffold staging dir
   rm -rf "$REPO_ROOT/apps/frontend-tmp" 2>/dev/null || true
+  # Orphan HTML summaries from the prior runs/<phase>/summary.html location;
+  # the new location is reports/phase-<phase>-summary.html. Drop only the file
+  # at the old path — never touch runs/<phase>/{plan,status,summary}.json etc.
+  rm -f "$REPO_ROOT/runs/$phase/summary.html" 2>/dev/null || true
+  rm -f "$REPO_ROOT/runs/goal-session-"*"/index.html" 2>/dev/null || true
   # /tmp logs from QA and browser-qa (both legacy shared paths and current
   # port-scoped paths written by _qa_log_path)
   rm -f /tmp/qa-backend.log /tmp/qa-frontend.log /tmp/browser-qa-backend.log /tmp/browser-qa-frontend.log 2>/dev/null || true

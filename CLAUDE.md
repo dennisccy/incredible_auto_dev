@@ -102,7 +102,8 @@ Reusable instruction files that agents read during their workflow. Located in `.
 ./scripts/automation/browser-qa-phase.sh phase-1      # run browser QA
 ./scripts/automation/ux-regression-phase.sh phase-1   # check UX regression
 ./scripts/automation/phase-closure-check.sh phase-1   # final closure gate
-bash scripts/automation/render-summary.sh phase-1     # (re)render runs/<phase>/summary.html
+bash scripts/automation/render-summary.sh phase-1     # (re)build iteration-summary.md via summarizer agent + render HTML
+bash scripts/automation/render-summary.sh phase-1 --no-resummarize  # re-render HTML only (no API tokens)
 bash scripts/automation/render-summary.sh --session-index <sid>  # (re)render goal-mode session index
 ./scripts/automation/update-docs.sh --framework        # update framework architecture docs
 ./scripts/automation/update-docs.sh phase-1            # update project architecture docs

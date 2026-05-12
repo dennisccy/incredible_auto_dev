@@ -73,6 +73,56 @@ MAX_AUDIT_RETRIES=3
 
 log()  { echo "[run-phase] $*"; }
 
+# Invoke the iteration-summarizer agent. The agent reads existing artifacts
+# and writes reports/phase-<phase>-iteration-summary.md. Non-blocking — if
+# the agent call fails, the renderer below still runs and falls back to a
+# "no summary available" placeholder.
+_run_iteration_summarizer() {
+  local agent_file="$REPO_ROOT/.claude/agents/iteration-summarizer.md"
+  local summary_md="$REPO_ROOT/reports/phase-${PHASE}-iteration-summary.md"
+  [[ -f "$agent_file" ]] || { log "  Warning: iteration-summarizer agent not found, skipping"; return 0; }
+  mkdir -p "$REPO_ROOT/reports"
+
+  # Pre-trim evaluator-log.md (goal mode only) so token usage stays flat.
+  local eval_log_inline=""
+  if [[ "$PHASE" =~ ^goal-(.+)-iter-[0-9]+$ ]]; then
+    local _sid="${BASH_REMATCH[1]}"
+    local _log="$REPO_ROOT/runs/goal-session-${_sid}/state/evaluator-log.md"
+    [[ -f "$_log" ]] && eval_log_inline=$(tail -n 300 "$_log")
+  fi
+
+  cd "$REPO_ROOT"
+  claude_with_quota_retry -p "You are the iteration-summarizer agent.
+
+Phase id: $PHASE
+Output path: $summary_md
+Agent instructions: .claude/agents/iteration-summarizer.md  <-- read this first
+Template: templates/iteration-summary.md  <-- exact section structure your output must follow
+(CLAUDE.md is already in your system prompt -- do not Read it again.)
+
+Apply the TOKEN AND QUESTIONING POLICY from .claude/core.md strictly.
+
+Read every relevant input listed in your agent instructions. Files that don't
+exist should be silently skipped -- do not warn, do not ask. Use what is present.
+The dispatch wrapper has pre-trimmed evaluator-log.md (last 300 lines below);
+use the inline content, do not read the file directly.
+
+Recent evaluator log entries (last 300 lines, pre-trimmed):
+---
+${eval_log_inline:-(none — phase mode or log not present)}
+---
+
+Write the iteration summary to: $summary_md
+
+Follow the section structure in templates/iteration-summary.md EXACTLY -- the
+HTML renderer keys off the section headings. The verdict line must match the
+form '**Verdict:** VALUE' where VALUE is one of: GOAL_ACHIEVED, CONTINUE,
+ESCALATE, REGRESSION, STALLED, PASS, FAIL, IN-PROGRESS.
+
+When finished, STOP." \
+    || log "  Warning: iteration-summarizer call failed (non-blocking)"
+}
+
 # Render the human-readable HTML summary for this iteration. Always non-blocking
 # — failures are logged but do not break the pipeline. Called from the success
 # path (Step 10.5) AND from fail() so even failed iterations get a viewable
@@ -89,6 +139,7 @@ fail() {
   local step="${2:-failed}"
   log "FAILED: $msg" >&2
   update_status "$PHASE" "blocked" "$step"
+  _run_iteration_summarizer
   _render_summary_html
   exit 1
 }
@@ -724,11 +775,14 @@ else
 fi
 echo ""
 
-# ── Step 10.5/11: Render iteration HTML summary ─────────────────────────────
-log "Step 10.5/11 -- Rendering iteration HTML summary..."
+# ── Step 10.5/11: Build iteration summary + render HTML ─────────────────────
+log "Step 10.5/11 -- Building iteration summary + rendering HTML..."
+_run_iteration_summarizer
 _render_summary_html
-HTML_PATH="$REPO_ROOT/runs/$PHASE/summary.html"
-[[ -f "$HTML_PATH" ]] && log "  Summary: file://$HTML_PATH"
+SUMMARY_MD="$REPO_ROOT/reports/phase-${PHASE}-iteration-summary.md"
+HTML_PATH="$REPO_ROOT/reports/phase-${PHASE}-summary.html"
+[[ -f "$SUMMARY_MD" ]] && log "  Summary MD:   $SUMMARY_MD"
+[[ -f "$HTML_PATH" ]] && log "  Summary HTML: file://$HTML_PATH"
 echo ""
 
 # ── Cleanup: remove temp files generated during the run ─────────────────────
@@ -760,7 +814,8 @@ echo "  QA report:                reports/qa/${PHASE}-qa.md"
 echo "  Audit report:             docs/handoffs/${PHASE}-audit.md"
 echo "  Closure verdict:          reports/phase-${PHASE}-closure-verdict.md"
 echo "  Status:                   runs/${PHASE}/status.json"
-echo "  HTML summary:             runs/${PHASE}/summary.html"
+echo "  Iteration summary:        reports/phase-${PHASE}-iteration-summary.md"
+echo "  HTML summary:             reports/phase-${PHASE}-summary.html"
 echo "  Project goal:             docs/goal.md (if present)"
 echo "  Architecture docs:        docs/architecture/ (if present)"
 echo ""

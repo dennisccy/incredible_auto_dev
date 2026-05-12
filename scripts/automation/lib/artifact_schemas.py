@@ -29,6 +29,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from verdicts import (
     BrowserQAVerdict,
     ClosureVerdict,
+    IterationSummaryVerdict,
     UIVerdict,  # noqa: F401  (referenced by qa schema's optional ui audit)
     UXRegressionVerdict,
     Verdict,
@@ -86,6 +87,13 @@ SCHEMAS: tuple[ArtifactSchema, ...] = (
         verdict_enum=BrowserQAVerdict,
         required_h2=("Results Table",),
         description="Browser QA results — reports/phase-<N>-ui-test-results.md",
+    ),
+    ArtifactSchema(
+        artifact_type="iteration-summary",
+        path_pattern=re.compile(r"reports/phase-.+-iteration-summary\.md$"),
+        verdict_enum=IterationSummaryVerdict,
+        required_h2=("Headline", "Direction", "What was done", "What's left", "Next step"),
+        description="Iteration summary — reports/phase-<N>-iteration-summary.md",
     ),
 )
 
@@ -227,6 +235,31 @@ _FIXTURES = {
         "reports/phase-1-ui-test-results.md",
         "# UI Test Results\n\n**Browser QA Verdict:** PASS\n\n## Results Table\n\n| ... |\n",
         True,
+    ),
+    "iteration_summary_pass_phase": (
+        "reports/phase-1-iteration-summary.md",
+        "# Iteration Summary — phase-1\n\n**Verdict:** PASS\n\n## Headline\n\nAdded login.\n\n"
+        "## Direction\n\n**Signal:** n/a\n\n## What was done\n\n- Login\n\n"
+        "## What's left\n\n- nothing\n\n## Next step\n\nNext phase.\n\n## Artifacts\n\n| - | - | - |\n",
+        True,
+    ),
+    "iteration_summary_pass_goal": (
+        "reports/phase-goal-x-iter-3-iteration-summary.md",
+        "# Iteration Summary — goal-x-iter-3\n\n**Verdict:** CONTINUE\n\n## Headline\n\nJ-04 passes.\n\n"
+        "## Direction\n\n**Signal:** improving\n\n## What was done\n\n- J-04\n\n"
+        "## What's left\n\n- J-05\n\n## Next step\n\nTarget J-05.\n\n## Artifacts\n\n| - | - | - |\n",
+        True,
+    ),
+    "iteration_summary_missing_h2": (
+        "reports/phase-1-iteration-summary.md",
+        "# Iteration Summary — phase-1\n\n**Verdict:** PASS\n\n## Headline\n\nx\n",
+        False,  # missing required H2 sections
+    ),
+    "iteration_summary_invalid_verdict": (
+        "reports/phase-1-iteration-summary.md",
+        "# Iteration Summary\n\n**Verdict:** MAYBE\n\n## Headline\n\nx\n"
+        "## Direction\n\n## What was done\n\n## What's left\n\n## Next step\n",
+        False,
     ),
     "unrecognized": (
         "reports/some-other-file.md",

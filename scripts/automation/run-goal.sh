@@ -105,6 +105,53 @@ LESSONS_FILE="$GOAL_SESSION_DIR_LOCAL/state/lessons.md"
 SUMMARY_FILE="$GOAL_SESSION_DIR_LOCAL/summary.md"
 GOAL_FILE="$REPO_ROOT/docs/goal.md"
 
+# Run the iteration-summarizer agent for one iteration. Writes
+# reports/phase-<iter>-iteration-summary.md. Non-blocking — failures only log.
+# The agent reads the existing artifacts (dev handoff, review, eval.md,
+# journey-history, etc.) and produces the conclusive MD that the HTML
+# renderer then consumes.
+_run_iteration_summarizer() {
+  local iter_name="$1"
+  local agent_file="$REPO_ROOT/.claude/agents/iteration-summarizer.md"
+  local summary_md="$REPO_ROOT/reports/phase-${iter_name}-iteration-summary.md"
+  [[ -f "$agent_file" ]] || { echo "[run-goal] Warning: iteration-summarizer agent missing, skipping"; return 0; }
+  mkdir -p "$REPO_ROOT/reports"
+
+  # Pre-trim evaluator-log.md so token usage stays flat as sessions grow.
+  local eval_log_inline=""
+  eval_log_inline=$(_tail_or_placeholder "$EVALUATOR_LOG" 300 "(none yet)")
+
+  cd "$REPO_ROOT"
+  claude_with_quota_retry -p "You are the iteration-summarizer agent.
+
+Phase id: $iter_name
+Output path: $summary_md
+Agent instructions: .claude/agents/iteration-summarizer.md  <-- read this first
+Template: templates/iteration-summary.md  <-- exact section structure your output must follow
+(CLAUDE.md is already in your system prompt -- do not Read it again.)
+
+Apply the TOKEN AND QUESTIONING POLICY from .claude/core.md strictly.
+
+Read every relevant input listed in your agent instructions. Files that don't
+exist should be silently skipped. Use what is present. The dispatch wrapper
+has pre-trimmed evaluator-log.md below — use the inline content.
+
+Recent evaluator log entries (last 300 lines, pre-trimmed):
+---
+${eval_log_inline}
+---
+
+Write the iteration summary to: $summary_md
+
+Follow the section structure in templates/iteration-summary.md EXACTLY -- the
+HTML renderer keys off the section headings. The verdict line must match the
+form '**Verdict:** VALUE' where VALUE is one of: GOAL_ACHIEVED, CONTINUE,
+ESCALATE, REGRESSION, STALLED, PASS, FAIL, IN-PROGRESS.
+
+When finished, STOP." \
+    || echo "[run-goal] Warning: iteration-summarizer call failed (non-blocking)"
+}
+
 # Render the per-iteration HTML summary. Non-blocking — failures only log.
 # Invoked after each iteration finishes its goal-evaluator step so the user
 # can `open file://...` and inspect what happened that iteration.
@@ -511,7 +558,7 @@ EOF
   record_telemetry_event "session_end" "$(jq -cn --arg fv "$final_verdict" --argjson ti $total_iterations --argjson wt $wall_time --argjson qp $quota_pauses '{final_verdict:$fv, total_iterations:$ti, wall_time_seconds:$wt, quota_pause_count:$qp}' 2>/dev/null || printf '{"final_verdict":"%s","total_iterations":%d}' "$final_verdict" "$total_iterations")"
   echo "[run-goal] Session summary: $SUMMARY_FILE"
   _render_session_index_html
-  local _idx_html="$GOAL_SESSION_DIR_LOCAL/index.html"
+  local _idx_html="$REPO_ROOT/reports/goal-session-${SESSION_ID}-index.html"
   [[ -f "$_idx_html" ]] && echo "[run-goal] Session HTML: file://$_idx_html"
 }
 
@@ -746,12 +793,15 @@ STOP." || _eval_rc=$?
   HASH=$(journey_history_hash)
   echo "$HASH" >> "$GOAL_SESSION_DIR_LOCAL/.history-hashes"
 
-  # Render the per-iteration HTML summary now that goal-evaluator has finalized
-  # the journey-history for this iter. Non-blocking; the session index is
-  # refreshed automatically by every write_session_summary call.
+  # Build the iteration summary MD (via summarizer agent), then render its HTML.
+  # The MD is the source of truth — the renderer just visualizes it.
+  # Non-blocking; the session index is refreshed by every write_session_summary call.
+  _run_iteration_summarizer "$ITER_NAME"
   _render_iter_html "$ITER_NAME"
-  _iter_html="$REPO_ROOT/runs/$ITER_NAME/summary.html"
-  [[ -f "$_iter_html" ]] && echo "[run-goal] Iteration summary: file://$_iter_html"
+  _iter_md="$REPO_ROOT/reports/phase-${ITER_NAME}-iteration-summary.md"
+  _iter_html="$REPO_ROOT/reports/phase-${ITER_NAME}-summary.html"
+  [[ -f "$_iter_md" ]]   && echo "[run-goal] Iteration summary MD:   $_iter_md"
+  [[ -f "$_iter_html" ]] && echo "[run-goal] Iteration summary HTML: file://$_iter_html"
 
   # Update session.json
   python3 - <<PY
