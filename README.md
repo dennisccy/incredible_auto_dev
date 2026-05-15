@@ -26,6 +26,10 @@ The framework supports two modes:
 
 The two modes share all agents and skills. They write to disjoint artifact namespaces (`runs/<phase>/` vs `runs/goal-session-<sid>/`) so you can use both in the same project without collision.
 
+### CLI Provider (Claude or Codex)
+
+Both modes can run on either **Claude Code** (default) or **OpenAI Codex CLI** — pass `--cli claude|codex` to either entry script. A single canonical asset source under `agents/`, `skills/`, `hooks/`, `policy/`, and `config/` is rendered into per-CLI trees (`.claude/`, `.codex/`) on first run; nothing is duplicated. Goal mode pins the choice in `session.json`; phase mode is per-run. Full guide in [`docs/cli-providers.md`](docs/cli-providers.md).
+
 ## Quick Start
 
 **1. Add this repo to your project** (as a submodule, subtree, or direct copy).

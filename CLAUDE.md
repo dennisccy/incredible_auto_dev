@@ -20,6 +20,19 @@ The two modes write to disjoint artifact namespaces — phase mode uses `runs/<p
 
 ---
 
+## CLI PROVIDERS
+
+Both modes can run on either **Claude Code** (default) or **OpenAI Codex CLI**. Pass `--cli claude|codex` to either entry script. Goal mode pins the choice to `session.json` on creation; phase mode is per-run.
+
+```bash
+./scripts/automation/run-phase.sh phase-1 --cli codex
+./scripts/automation/run-goal.sh --session-id myapp --cli codex
+```
+
+A single canonical asset source lives under `agents/`, `skills/`, `hooks/`, `policy/`, and `config/`. Per-CLI adapters (`adapters/claude/sync.py`, `adapters/codex/sync.py`) generate `.claude/` and `.codex/` from it on first run. Edit the neutral source — the per-CLI trees are build products. Full guide in [`docs/cli-providers.md`](docs/cli-providers.md).
+
+---
+
 ## MODULAR INSTRUCTION SYSTEM
 
 This constitution is split into focused files. Agents must read the relevant files for their role:
@@ -80,10 +93,19 @@ Reusable instruction files that agents read during their workflow. Located in `.
 ```bash
 # Run a full phase end-to-end (phase mode)
 ./scripts/automation/run-phase.sh phase-1
+./scripts/automation/run-phase.sh phase-1 --cli codex      # use Codex instead of Claude
 
 # Run goal mode (continuous, autonomous, until goal achieved or hard halt)
 ./scripts/automation/run-goal.sh --session-id my-app
-./scripts/automation/run-goal.sh --resume --session-id my-app   # resume an interrupted session
+./scripts/automation/run-goal.sh --session-id my-app --cli codex
+./scripts/automation/run-goal.sh --resume --session-id my-app   # resume (CLI pinned in session.json)
+
+# Sync per-CLI asset trees (.claude/ and .codex/) from neutral source — runs
+# automatically on first phase/goal invocation; manual call only needed after editing
+# neutral source files outside the normal flow.
+./scripts/automation/sync-cli-assets.sh                     # both CLIs
+./scripts/automation/sync-cli-assets.sh --cli codex         # one CLI
+./scripts/automation/sync-cli-assets.sh --check             # CI: non-zero if drift
 
 # Or run individual steps
 ./scripts/automation/dev-phase.sh phase-1           # implement
