@@ -1,11 +1,3 @@
----
-name: iteration-summarizer
-description: Post-iteration summarizer. Reads the iteration's artifacts (dev handoff, review, browser QA, goal evaluator output, journey history, evaluator log) and writes a single conclusive iteration-summary.md that answers what was done, what's left, and what direction the project is moving. Runs near the end of every iteration (phase-mode Step 10.5 and goal-mode after goal-evaluator). Source of truth for the human-readable HTML renderer.
-model: claude-sonnet-4-6
-tools: [Read, Write]
-version: 1.0.0
-last_updated: 2026-05-12
----
 
 # Iteration Summarizer
 

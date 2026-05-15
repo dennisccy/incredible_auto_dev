@@ -1,34 +1,38 @@
 {
   "_comment": "ai-auto-dev-chain permission settings. Customize for your project.",
   "_doc": "Add project-specific Bash allowances below the generic base. Never put project-specific entries in the deny list — deny list is for universal security.",
-
   "enabledPlugins": {
     "superpowers@claude-plugins-official": true,
     "superpowers-chrome@superpowers-marketplace": true,
     "claude-hud@claude-hud": true
   },
-
   "extraKnownMarketplaces": {
     "claude-plugins-official": {
-      "source": { "source": "github", "repo": "anthropics/claude-plugins-official" }
+      "source": {
+        "source": "github",
+        "repo": "anthropics/claude-plugins-official"
+      }
     },
     "superpowers-marketplace": {
-      "source": { "source": "github", "repo": "obra/superpowers-marketplace" }
+      "source": {
+        "source": "github",
+        "repo": "obra/superpowers-marketplace"
+      }
     },
     "claude-hud": {
-      "source": { "source": "github", "repo": "jarrodwatts/claude-hud" }
+      "source": {
+        "source": "github",
+        "repo": "jarrodwatts/claude-hud"
+      }
     }
   },
-
   "permissions": {
     "allow": [
       "Bash(git *)",
       "Bash(gh *)",
-
       "Bash(npm *)",
       "Bash(npx *)",
       "Bash(node *)",
-
       "Bash(python *)",
       "Bash(python3 *)",
       "Bash(pip *)",
@@ -36,7 +40,6 @@
       "Bash(uv *)",
       "Bash(~/.local/bin/uv *)",
       "Bash(.venv/bin/*)",
-
       "Bash(bash *)",
       "Bash(sh *)",
       "Bash(source *)",
@@ -44,7 +47,6 @@
       "Bash(./scripts/*)",
       "Bash(scripts/*)",
       "Bash(bash .claude/*)",
-
       "Bash(ls *)",
       "Bash(ls)",
       "Bash(pwd)",
@@ -67,13 +69,11 @@
       "Bash(xargs *)",
       "Bash(diff *)",
       "Bash(test *)",
-
       "Bash(mkdir *)",
       "Bash(touch *)",
       "Bash(cp *)",
       "Bash(mv *)",
       "Bash(ln *)",
-
       "Bash(rm -f *)",
       "Bash(rm -rf dist*)",
       "Bash(rm -rf build*)",
@@ -84,7 +84,6 @@
       "Bash(rm -rf *.egg-info*)",
       "Bash(rm -rf coverage*)",
       "Bash(rm -rf /tmp/*)",
-
       "Bash(chmod +x *)",
       "Bash(chmod -x *)",
       "Bash(chmod u+x *)",
@@ -96,18 +95,15 @@
       "Bash(chmod 700 *)",
       "Bash(chmod 664 *)",
       "Bash(chmod 775 *)",
-
       "Bash(export *)",
       "Bash(env *)",
       "Bash(env)",
-
       "Bash(ps *)",
       "Bash(pstree *)",
       "Bash(kill *)",
       "Bash(pkill *)",
       "Bash(lsof *)",
       "Bash(pgrep *)",
-
       "Bash(curl http://localhost*)",
       "Bash(curl -s http://localhost*)",
       "Bash(curl -s \"http://localhost:*)",
@@ -125,7 +121,6 @@
       "Bash(curl -s -o /dev/null -w *)",
       "Bash(curl -sL http://localhost*)",
       "Bash(pstree *)",
-
       "Bash(docker build *)",
       "Bash(docker compose *)",
       "Bash(docker-compose *)",
@@ -144,15 +139,13 @@
       "Bash(docker run *)",
       "Bash(docker exec *)",
       "Bash(docker cp *)",
-
       "Bash(apt-cache *)",
       "Bash(dpkg -l*)",
       "Bash(dpkg --list*)",
-
       "Read(*)",
       "Write(*)",
       "Edit(*)",
-	  "Skill(superpowers-chrome:browsing)",
+      "Skill(superpowers-chrome:browsing)",
       "mcp__plugin_superpowers-chrome_chrome__use_browser"
     ],
     "deny": [
@@ -172,33 +165,27 @@
       "Bash(rm -rf /srv*)",
       "Bash(rm -rf /sys*)",
       "Bash(rm -rf /proc*)",
-
       "Bash(dd *)",
       "Bash(mkfs*)",
       "Bash(fdisk*)",
       "Bash(parted*)",
       "Bash(mount *)",
       "Bash(umount *)",
-
       "Bash(sudo rm*)",
       "Bash(sudo dd*)",
       "Bash(sudo mkfs*)",
       "Bash(sudo mount*)",
       "Bash(sudo chown*)",
       "Bash(sudo chmod*)",
-
       "Bash(chown *)",
-
       "Bash(chmod -R *)",
       "Bash(chmod * /*)",
-
       "Bash(cat ~/.ssh/id_rsa*)",
       "Bash(cat ~/.ssh/id_ed25519*)",
       "Bash(cat ~/.ssh/*.pem*)",
       "Bash(cat ~/.aws/credentials*)",
       "Bash(cat ~/.config/gh/hosts.yml*)",
       "Bash(cat /etc/shadow*)",
-
       "Bash(docker system prune*)",
       "Bash(docker volume prune*)",
       "Bash(docker network prune*)",
@@ -210,7 +197,6 @@
       "Bash(docker run --volume /*)",
       "Bash(docker run -v /*)",
       "Bash(docker exec --privileged*)",
-
       "Bash(sudo apt*)",
       "Bash(sudo apt-get*)",
       "Bash(apt install*)",

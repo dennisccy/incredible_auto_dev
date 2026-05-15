@@ -93,13 +93,28 @@
 : "${CHAIN_DISABLE_TRACE:=false}"
 : "${CHAIN_DISABLE_PERMISSION_ISOLATION:=false}"
 
+# ── CLI selection ─────────────────────────────────────────────────────────────
+# Which CLI provider drives agent invocations. Set per-run by run-phase.sh / per-session
+# by run-goal.sh from the --cli flag, or via env var. claude_with_quota_retry is now a
+# back-compat alias for agent_with_quota_retry, so existing call sites work unchanged.
+: "${CHAIN_CLI:=claude}"
+
+# Codex parallels of the Claude env knobs. Defaults are conservative.
+: "${CHAIN_CODEX_MAX_QUOTA_RETRIES:=3}"
+: "${CHAIN_CODEX_MAX_STREAM_RETRIES:=2}"
+: "${CHAIN_CODEX_STREAM_RETRY_SLEEP:=45}"
+: "${CHAIN_CODEX_FALLBACK_SLEEP_SECONDS:=600}"   # OpenAI rate limits typically reset in <60s, but be safe
+: "${CHAIN_CODEX_MAX_RUNTIME_SECONDS:=7200}"
+
 # Exit code returned when quota retries are exhausted.
 # 75 = EX_TEMPFAIL (POSIX sysexits.h) — "temporary failure, try again later".
 # Callers (run-phase.sh) use this to distinguish quota exhaustion from code failures.
 QUOTA_EXHAUSTED_EXIT_CODE=75
 
-# Sentinel file path — shared across all pipeline stages on this machine.
+# Sentinel file paths — per CLI so Claude and Codex don't trip over each other
+# on machines where both are configured.
 _QUOTA_SENTINEL="/tmp/claude-quota-exhausted"
+_CODEX_QUOTA_SENTINEL="/tmp/codex-quota-exhausted"
 
 # Append a trace record to $CHAIN_TRACE_DIR/trace.jsonl and copy stdout into
 # $CHAIN_TRACE_DIR/<NNNN>-<agent>.log. No-op if CHAIN_TRACE_DIR is unset, the
@@ -132,6 +147,7 @@ _trace_record_invocation() {
   step_padded=$(printf "%04d" "$step")
 
   local agent="${CHAIN_CURRENT_AGENT:-unattributed}"
+  local cli="${CHAIN_CLI:-claude}"
   local stdout_filename="${step_padded}-${agent}.log"
   cp -- "$tmp_log_path" "$trace_dir/$stdout_filename" 2>/dev/null || true
 
@@ -149,20 +165,21 @@ _trace_record_invocation() {
     record=$(jq -cn \
       --argjson step "$step" \
       --arg agent "$agent" \
+      --arg cli "$cli" \
       --arg ts "$ts" \
       --argjson exit_code "$invocation_exit" \
       --argjson duration_seconds "$duration_seconds" \
       --arg stdout_path "$stdout_filename" \
       --argjson args "$args_json" \
       --argjson usage "$usage_json" \
-      '{step:$step, agent:$agent, ts:$ts, exit_code:$exit_code, duration_seconds:$duration_seconds, stdout_path:$stdout_path, args:$args} + $usage' 2>/dev/null) || record=""
+      '{step:$step, agent:$agent, cli:$cli, ts:$ts, exit_code:$exit_code, duration_seconds:$duration_seconds, stdout_path:$stdout_path, args:$args} + $usage' 2>/dev/null) || record=""
     if [[ -n "$record" ]]; then
       printf '%s\n' "$record" >> "$trace_dir/trace.jsonl"
     fi
   else
-    # Minimal fallback (jq absent): step + agent + ts + stdout path only
-    printf '{"step":%d,"agent":"%s","ts":"%s","exit_code":%d,"duration_seconds":%d,"stdout_path":"%s"}\n' \
-      "$step" "$agent" "$ts" "$invocation_exit" "$duration_seconds" "$stdout_filename" \
+    # Minimal fallback (jq absent): step + agent + cli + ts + stdout path only
+    printf '{"step":%d,"agent":"%s","cli":"%s","ts":"%s","exit_code":%d,"duration_seconds":%d,"stdout_path":"%s"}\n' \
+      "$step" "$agent" "$cli" "$ts" "$invocation_exit" "$duration_seconds" "$stdout_filename" \
       >> "$trace_dir/trace.jsonl"
   fi
 }
@@ -368,7 +385,7 @@ _sleep_until_epoch() {
 #   0  — success
 #   75 — quota exhaustion (all retries spent or auto-wait disabled)
 #   *  — non-quota failure from claude (exit code passed through)
-claude_with_quota_retry() {
+_claude_invoke() {
   local retry_count=0
   local max_retries="${CHAIN_CLAUDE_MAX_QUOTA_RETRIES}"
   local stream_retry_count=0
@@ -627,4 +644,270 @@ _quota_run_pre_retry_hook() {
   if ! eval "$CHAIN_CLAUDE_PRE_RETRY_HOOK"; then
     echo "[quota-retry] $(date -Iseconds) Pre-retry hook returned non-zero; continuing." >&2
   fi
+}
+
+# ── Codex invocation path ────────────────────────────────────────────────────
+# Parallel to _claude_invoke but using `codex exec --json`. Codex error/quota
+# patterns differ from Claude's — the patterns below are best-guess until the
+# first real Codex run (Step F of the multi-CLI rollout). The architecture is
+# in place; the regex/sleep specifics will harden as we observe real responses.
+
+_codex_quota_is_exhausted() {
+  local log_file="$1"
+  [[ -f "$log_file" ]] || return 1
+  grep -qiE \
+    "(rate.?limit|quota.?exceeded|insufficient_quota|429|rate_limit_exceeded|usage limit)" \
+    "$log_file" 2>/dev/null
+}
+
+_codex_stream_transient_is_present() {
+  local log_file="$1"
+  [[ -f "$log_file" ]] || return 1
+  grep -qiE \
+    "(stream idle|partial response|server disconnected|connection (reset|closed|aborted)|503|502|504|overloaded)" \
+    "$log_file" 2>/dev/null
+}
+
+# OpenAI rate-limit responses include `Retry-After: <seconds>` in headers and
+# sometimes "Please retry after <N>s" in body. This extracts the seconds value.
+_codex_parse_retry_after() {
+  local log_file="$1"
+  python3 - "$log_file" 2>/dev/null <<'PYEOF'
+import re, sys
+try:
+    text = open(sys.argv[1]).read()
+except Exception:
+    sys.exit(1)
+patterns = [
+    r'retry[\s-]?after[":\s]+(\d+)',
+    r'try again in (\d+)\s*(?:s|sec|seconds?)',
+    r'reset[s]? in (\d+)\s*(?:s|sec|seconds?)',
+]
+for p in patterns:
+    m = re.search(p, text, re.IGNORECASE)
+    if m:
+        # add 30s buffer
+        print(int(m.group(1)) + 30)
+        sys.exit(0)
+sys.exit(1)
+PYEOF
+}
+
+_codex_invoke() {
+  local retry_count=0
+  local max_retries="${CHAIN_CODEX_MAX_QUOTA_RETRIES}"
+  local stream_retry_count=0
+  local max_stream_retries="${CHAIN_CODEX_MAX_STREAM_RETRIES}"
+  local tmp_log
+
+  if ! command -v codex >/dev/null 2>&1; then
+    echo "[quota-retry] $(date -Iseconds) ERROR: 'codex' CLI not found in PATH." >&2
+    echo "[quota-retry] Install OpenAI Codex CLI or set CHAIN_CLI=claude." >&2
+    return 127
+  fi
+
+  # Translate Claude-style args (-p <prompt>, plus claude-only flags) into
+  # Codex's positional-prompt form. The framework's callers always pass the
+  # full agent prompt via `-p`; everything else (model, output format, etc.)
+  # is added by us — so we can safely strip Claude-only flags and surface the
+  # prompt as a positional argument to `codex exec`.
+  local _codex_prompt=""
+  local -a _codex_passthrough=()
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      -p|--prompt|--print)
+        _codex_prompt="$2"
+        shift 2
+        ;;
+      --effort|--exclude-dynamic-system-prompt-sections|--output-format|--verbose|--include-partial-messages|--disallowedTools|--max-budget-usd)
+        # Claude-only flags. Drop. Some take a value (effort/output-format/disallowedTools/max-budget-usd); skip the next arg.
+        case "$1" in
+          --exclude-dynamic-system-prompt-sections|--verbose|--include-partial-messages) shift ;;
+          *) shift 2 ;;
+        esac
+        ;;
+      *)
+        _codex_passthrough+=("$1")
+        shift
+        ;;
+    esac
+  done
+  if [[ -z "$_codex_prompt" && ${#_codex_passthrough[@]} -gt 0 ]]; then
+    # No -p flag found — treat the first positional as the prompt.
+    _codex_prompt="${_codex_passthrough[0]}"
+    _codex_passthrough=("${_codex_passthrough[@]:1}")
+  fi
+  if [[ -z "$_codex_prompt" ]]; then
+    echo "[quota-retry/codex] ERROR: no prompt argument found (expected -p <text> or positional)." >&2
+    return 2
+  fi
+
+  while true; do
+    # Sentinel pre-flight
+    if [[ -f "$_CODEX_QUOTA_SENTINEL" ]]; then
+      local reset_epoch
+      reset_epoch=$(cat "$_CODEX_QUOTA_SENTINEL" 2>/dev/null) || reset_epoch=""
+      if [[ "$reset_epoch" =~ ^[0-9]+$ ]]; then
+        local now_epoch remaining
+        now_epoch=$(date +%s)
+        remaining=$(( reset_epoch - now_epoch ))
+        if [[ $remaining -gt 0 ]]; then
+          echo "[quota-retry/codex] $(date -Iseconds) Sentinel active — quota resets in ${remaining}s. Sleeping..." >&2
+          _sleep_until_epoch "$reset_epoch"
+        fi
+      fi
+      rm -f "$_CODEX_QUOTA_SENTINEL"
+    fi
+
+    tmp_log=$(mktemp /tmp/codex-quota-XXXXXX.log)
+    local sleep_start
+    sleep_start=$(date +%s)
+
+    # Codex's `exec` subcommand runs a non-interactive single task with the
+    # prompt as a positional argument. --json yields NDJSON for our renderer.
+    # --skip-git-repo-check prevents Codex bailing out in directories that
+    # aren't git repos (the test phases sometimes run in subdirs).
+    local -a _codex_extra_args=(exec --json --skip-git-repo-check)
+    # Append codex-side passthrough args (anything the caller passed that wasn't claude-only).
+    if [[ ${#_codex_passthrough[@]} -gt 0 ]]; then
+      _codex_extra_args+=("${_codex_passthrough[@]}")
+    fi
+    # Final positional: the prompt itself.
+    _codex_extra_args+=("$_codex_prompt")
+
+    local _renderer_path=""
+    local _sidecar=""
+    if [[ "$CHAIN_TELEMETRY_TOKENS" == "true" ]]; then
+      _renderer_path="$(dirname "${BASH_SOURCE[0]}")/codex_stream_renderer.py"
+      if [[ -f "$_renderer_path" ]]; then
+        _sidecar=$(mktemp /tmp/codex-usage-XXXXXX.json)
+        export CHAIN_CODEX_USAGE_SIDECAR="$_sidecar"
+        # Reuse the Claude env var name so telemetry.sh's existing helper picks it up
+        export CHAIN_CLAUDE_USAGE_SIDECAR="$_sidecar"
+      else
+        _renderer_path=""
+      fi
+    fi
+
+    local exit_code
+    if [[ "${CHAIN_CODEX_MAX_RUNTIME_SECONDS:-0}" -gt 0 ]] && command -v timeout >/dev/null 2>&1; then
+      if [[ -n "$_renderer_path" ]]; then
+        timeout --foreground --kill-after=60 "$CHAIN_CODEX_MAX_RUNTIME_SECONDS" \
+          codex "${_codex_extra_args[@]}" 2>&1 \
+          | python3 "$_renderer_path" 2>&1 \
+          | tee "$tmp_log"
+        exit_code="${PIPESTATUS[0]}"
+      else
+        timeout --foreground --kill-after=60 "$CHAIN_CODEX_MAX_RUNTIME_SECONDS" \
+          codex "${_codex_extra_args[@]}" 2>&1 | tee "$tmp_log"
+        exit_code="${PIPESTATUS[0]}"
+      fi
+    else
+      if [[ -n "$_renderer_path" ]]; then
+        codex "${_codex_extra_args[@]}" 2>&1 \
+          | python3 "$_renderer_path" 2>&1 \
+          | tee "$tmp_log"
+        exit_code="${PIPESTATUS[0]}"
+      else
+        codex "${_codex_extra_args[@]}" 2>&1 | tee "$tmp_log"
+        exit_code="${PIPESTATUS[0]}"
+      fi
+    fi
+
+    # Success
+    if [[ $exit_code -eq 0 ]] && ! _codex_quota_is_exhausted "$tmp_log"; then
+      local invocation_duration=$(( $(date +%s) - sleep_start ))
+      if [[ -n "${CHAIN_TRACE_DIR:-}" ]]; then
+        _trace_record_invocation "$tmp_log" "${_sidecar:-}" "$invocation_duration" "$exit_code" "$@" || true
+      fi
+      rm -f "$tmp_log"
+      rm -f "$_CODEX_QUOTA_SENTINEL"
+      if [[ -n "$_sidecar" && -f "$_sidecar" ]]; then
+        if declare -F record_claude_usage_from_sidecar >/dev/null 2>&1; then
+          record_claude_usage_from_sidecar "$_sidecar" || true
+        fi
+        rm -f "$_sidecar"
+      fi
+      unset CHAIN_CODEX_USAGE_SIDECAR CHAIN_CLAUDE_USAGE_SIDECAR
+      return 0
+    fi
+
+    # Transient streaming failure
+    if _codex_stream_transient_is_present "$tmp_log" && ! _codex_quota_is_exhausted "$tmp_log"; then
+      stream_retry_count=$((stream_retry_count + 1))
+      if [[ $stream_retry_count -gt $max_stream_retries ]]; then
+        echo "[quota-retry/codex] Transient stream error persisted after $max_stream_retries retries. Giving up." >&2
+        rm -f "$tmp_log"
+        return "$exit_code"
+      fi
+      local stream_sleep=$(( CHAIN_CODEX_STREAM_RETRY_SLEEP * stream_retry_count ))
+      echo "[quota-retry/codex] Transient stream failure (retry $stream_retry_count/$max_stream_retries). Sleeping ${stream_sleep}s..." >&2
+      sleep "$stream_sleep" || true
+      rm -f "$tmp_log"
+      continue
+    fi
+
+    # Non-quota failure
+    if ! _codex_quota_is_exhausted "$tmp_log"; then
+      if [[ $exit_code -ne 0 ]]; then
+        echo "[quota-retry/codex] $(date -Iseconds) *** Codex exited with code $exit_code (not quota) ***" >&2
+        echo "[quota-retry/codex] Last 30 lines:" >&2
+        tail -n 30 "$tmp_log" >&2
+        echo "[quota-retry/codex] Full output: $tmp_log" >&2
+      else
+        rm -f "$tmp_log"
+      fi
+      return "$exit_code"
+    fi
+
+    # Quota exhaustion
+    echo "[quota-retry/codex] $(date -Iseconds) *** CODEX QUOTA / RATE LIMIT DETECTED ***" >&2
+    if [[ "$CHAIN_DISABLE_AUTO_WAIT" == "true" ]]; then
+      return $QUOTA_EXHAUSTED_EXIT_CODE
+    fi
+    retry_count=$((retry_count + 1))
+    if [[ $retry_count -gt $max_retries ]]; then
+      echo "[quota-retry/codex] Max quota retries ($max_retries) reached. Giving up." >&2
+      return $QUOTA_EXHAUSTED_EXIT_CODE
+    fi
+
+    local sleep_secs
+    sleep_secs=$(_codex_parse_retry_after "$tmp_log") || sleep_secs=""
+    if [[ -z "$sleep_secs" || "$sleep_secs" -le 0 ]] 2>/dev/null; then
+      sleep_secs="$CHAIN_CODEX_FALLBACK_SLEEP_SECONDS"
+      echo "[quota-retry/codex] No retry-after found; using fallback ${sleep_secs}s." >&2
+    else
+      echo "[quota-retry/codex] retry-after parsed: ${sleep_secs}s" >&2
+    fi
+
+    local reset_epoch=$(( $(date +%s) + sleep_secs ))
+    echo "$reset_epoch" > "$_CODEX_QUOTA_SENTINEL"
+    echo "[quota-retry/codex] Sleeping ${sleep_secs}s before retry ${retry_count}/${max_retries}..." >&2
+    _sleep_until_epoch "$reset_epoch"
+    rm -f "$_CODEX_QUOTA_SENTINEL"
+    _quota_run_pre_retry_hook
+  done
+}
+
+# ── CLI dispatcher + back-compat alias ────────────────────────────────────────
+# Selects the per-CLI invoke function based on $CHAIN_CLI. All step scripts
+# call claude_with_quota_retry (which is now an alias) so no caller changes
+# are needed when switching CLIs.
+
+agent_with_quota_retry() {
+  local cli="${CHAIN_CLI:-claude}"
+  case "$cli" in
+    claude) _claude_invoke "$@" ;;
+    codex)  _codex_invoke  "$@" ;;
+    *)
+      echo "[quota-retry] Unknown CHAIN_CLI: '$cli' (expected: claude or codex)" >&2
+      return 2
+      ;;
+  esac
+}
+
+# Back-compat alias. Existing scripts call this name; behaviour now depends on
+# $CHAIN_CLI. When $CHAIN_CLI=claude (default), it's a no-op rename.
+claude_with_quota_retry() {
+  agent_with_quota_retry "$@"
 }

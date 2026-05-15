@@ -49,6 +49,15 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/lib/common.sh"
 source "$SCRIPT_DIR/lib/telemetry.sh"
 
+# Pull --cli (and --force-cli) out of the args BEFORE the existing parse loop,
+# so the loop below sees only its known flags.
+extract_cli_arg "$@" || exit $?
+if [[ ${#CHAIN_CLI_REMAINING_ARGS[@]} -gt 0 ]]; then
+  set -- "${CHAIN_CLI_REMAINING_ARGS[@]}"
+else
+  set --
+fi
+
 # ── Defaults ──────────────────────────────────────────────────────────────
 SESSION_ID=""
 MAX_ITER=30
@@ -86,8 +95,6 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-require_claude
-
 if [[ -z "$SESSION_ID" ]]; then
   if [[ "$RESUME" == "true" ]]; then
     echo "Error: --resume requires --session-id <id>" >&2
@@ -99,6 +106,28 @@ fi
 
 GOAL_SESSION_DIR_LOCAL="$REPO_ROOT/runs/goal-session-${SESSION_ID}"
 SESSION_JSON="$GOAL_SESSION_DIR_LOCAL/session.json"
+
+# Resume: pin CHAIN_CLI from session.json unless the user explicitly overrode it.
+# A mismatch errors out unless --force-cli is given.
+if [[ "$RESUME" == "true" && -f "$SESSION_JSON" ]]; then
+  PERSISTED_CLI=$(read_cli_from_json "$SESSION_JSON")
+  if [[ -n "$PERSISTED_CLI" ]]; then
+    if [[ "${CHAIN_CLI_FROM_FLAG:-false}" == "true" && "$CHAIN_CLI" != "$PERSISTED_CLI" ]]; then
+      if [[ "${CHAIN_FORCE_CLI:-false}" != "true" ]]; then
+        echo "Error: session $SESSION_ID was started with --cli=$PERSISTED_CLI" >&2
+        echo "  but --cli=$CHAIN_CLI was passed on resume." >&2
+        echo "  Pass --force-cli to override (telemetry will mix CLIs)." >&2
+        exit 2
+      fi
+      echo "[run-goal] WARNING: overriding session CLI from $PERSISTED_CLI to $CHAIN_CLI (--force-cli)" >&2
+    else
+      export CHAIN_CLI="$PERSISTED_CLI"
+    fi
+  fi
+fi
+
+require_cli
+ensure_cli_assets_synced "$CHAIN_CLI"
 JOURNEY_HISTORY="$GOAL_SESSION_DIR_LOCAL/state/journey-history.json"
 EVALUATOR_LOG="$GOAL_SESSION_DIR_LOCAL/state/evaluator-log.md"
 LESSONS_FILE="$GOAL_SESSION_DIR_LOCAL/state/lessons.md"
@@ -316,6 +345,7 @@ data = {
   "session_id": "$SESSION_ID",
   "started_at": datetime.datetime.now(datetime.UTC).isoformat().replace('+00:00', 'Z'),
   "current_iter": 0,
+  "cli": "${CHAIN_CLI:-claude}",
   "halt_config": {
     "max_iterations": $MAX_ITER,
     "stall_window": $STALL_WINDOW,

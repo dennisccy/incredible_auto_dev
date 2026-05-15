@@ -1,0 +1,39 @@
+_comment: Neutral tool name → per-CLI native name. null on a CLI = drop the tool for that CLI (no equivalent).
+  Adapters consult this when emitting agent tool lists.
+tools:
+  read:
+    claude: Read
+    codex: read_file
+  write:
+    claude: Write
+    codex: write_file
+  edit:
+    claude: Edit
+    codex: apply_patch
+  bash:
+    claude: Bash
+    codex: shell
+  grep:
+    claude: Grep
+    codex: grep
+  glob:
+    claude: Glob
+    codex: glob
+  skill:
+    claude: Skill
+    codex: null
+  webfetch:
+    claude: WebFetch
+    codex: web_fetch
+  websearch:
+    claude: WebSearch
+    codex: web_search
+  agent:
+    claude: Agent
+    codex: null
+  todowrite:
+    claude: TodoWrite
+    codex: null
+  notebookedit:
+    claude: NotebookEdit
+    codex: null

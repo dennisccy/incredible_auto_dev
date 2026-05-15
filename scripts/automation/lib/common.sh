@@ -19,12 +19,127 @@ require_phase_arg() {
   fi
 }
 
-# Check claude CLI is available
-require_claude() {
-  if ! command -v claude &>/dev/null; then
-    echo "Error: 'claude' CLI not found. Install Claude Code." >&2
-    exit 1
+# ── CLI selection (claude vs codex) ──────────────────────────────────────────
+# These helpers were added when multi-CLI support landed. They preserve the
+# previous behaviour when CHAIN_CLI is unset (defaults to claude).
+
+# Parse --cli from the script's argv. Sets CHAIN_CLI and writes the remaining
+# args to the global CHAIN_CLI_REMAINING_ARGS array. Supports both `--cli claude`
+# and `--cli=claude` forms.
+#
+# Usage in callers:
+#   extract_cli_arg "$@" || exit $?
+#   if [[ ${#CHAIN_CLI_REMAINING_ARGS[@]} -gt 0 ]]; then
+#     set -- "${CHAIN_CLI_REMAINING_ARGS[@]}"
+#   else
+#     set --
+#   fi
+extract_cli_arg() {
+  CHAIN_CLI_REMAINING_ARGS=()
+  CHAIN_CLI_FROM_FLAG=false  # tracks whether --cli appeared on the command line
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --cli)
+        if [[ -z "${2:-}" ]]; then
+          echo "Error: --cli requires an argument (claude|codex)" >&2
+          return 2
+        fi
+        export CHAIN_CLI="$2"
+        CHAIN_CLI_FROM_FLAG=true
+        shift 2
+        ;;
+      --cli=*)
+        export CHAIN_CLI="${1#--cli=}"
+        CHAIN_CLI_FROM_FLAG=true
+        shift
+        ;;
+      --force-cli)
+        export CHAIN_FORCE_CLI=true
+        shift
+        ;;
+      *)
+        CHAIN_CLI_REMAINING_ARGS+=("$1")
+        shift
+        ;;
+    esac
+  done
+  : "${CHAIN_CLI:=claude}"
+  case "$CHAIN_CLI" in
+    claude|codex) ;;
+    *)
+      echo "Error: --cli must be claude or codex (got '$CHAIN_CLI')" >&2
+      return 2
+      ;;
+  esac
+}
+
+# Check the right CLI binary is on PATH for the currently selected CLI.
+require_cli() {
+  local cli="${CHAIN_CLI:-claude}"
+  case "$cli" in
+    claude)
+      if ! command -v claude &>/dev/null; then
+        echo "Error: 'claude' CLI not found. Install Claude Code or use --cli codex." >&2
+        exit 1
+      fi
+      ;;
+    codex)
+      if ! command -v codex &>/dev/null; then
+        echo "Error: 'codex' CLI not found. Install OpenAI Codex or use --cli claude." >&2
+        exit 1
+      fi
+      ;;
+  esac
+}
+
+# Back-compat: existing callers say require_claude. Now dispatches via require_cli.
+require_claude() { require_cli; }
+
+# Idempotent: regenerate the per-CLI asset tree from neutral source if it's missing.
+# Called by run-phase.sh / run-goal.sh after CLI selection, before any agent
+# invocation. Force a resync with CHAIN_RESYNC_CLI_ASSETS=true.
+ensure_cli_assets_synced() {
+  local cli="${1:-${CHAIN_CLI:-claude}}"
+  local marker
+  case "$cli" in
+    claude) marker="$REPO_ROOT/.claude/agents/developer.md" ;;
+    codex)  marker="$REPO_ROOT/.codex/agents/developer.toml" ;;
+    *) return 0 ;;
+  esac
+  if [[ -f "$marker" && "${CHAIN_RESYNC_CLI_ASSETS:-false}" != "true" ]]; then
+    return 0
   fi
+  log "ensure_cli_assets_synced: materializing $cli assets from neutral source..."
+  python3 "$REPO_ROOT/scripts/automation/sync-cli-assets.py" --cli "$cli" >&2 || {
+    echo "Error: sync-cli-assets failed for cli=$cli" >&2
+    return 1
+  }
+}
+
+# Persist the active CLI to a status/session JSON file. Idempotent — used by
+# run-phase.sh (status.json) and run-goal.sh (session.json) to record which
+# CLI ran the work, so resume + telemetry can tell them apart.
+record_cli_in_json() {
+  local json_path="$1"
+  local cli="${CHAIN_CLI:-claude}"
+  [[ -f "$json_path" ]] || return 0
+  command -v jq >/dev/null 2>&1 || return 0
+  local tmp
+  tmp=$(mktemp "${json_path}.XXXXXX")
+  if jq --arg cli "$cli" '. + {cli: $cli}' "$json_path" > "$tmp" 2>/dev/null; then
+    mv -f "$tmp" "$json_path"
+  else
+    rm -f "$tmp"
+  fi
+}
+
+# Read the persisted CLI from a status/session JSON file. Echoes the value or
+# empty string. Used by run-goal.sh --resume to pin the CLI from a prior session.
+read_cli_from_json() {
+  local json_path="$1"
+  [[ -f "$json_path" ]] || return 0
+  command -v jq >/dev/null 2>&1 || return 0
+  jq -r '.cli // ""' "$json_path" 2>/dev/null
 }
 
 # Check gh CLI is available and authenticated (hard exit on failure)
@@ -88,6 +203,7 @@ update_status() {
   fi
   local run_dir="$REPO_ROOT/runs/$phase"
   mkdir -p "$run_dir"
+  local _cli="${CHAIN_CLI:-claude}"
   python3 -c "
 import json, datetime, os, sys
 f = '${run_dir}/status.json'
@@ -98,7 +214,9 @@ if os.path.exists(f):
     except Exception: pass
 now = datetime.datetime.now(datetime.UTC).isoformat().replace('+00:00', 'Z')
 d.update({'phase': '${phase}', 'status': '${new_status}', 'current_step': '${new_step}', 'updated_at': now})
-for k, v in [('started_at', now), ('blockers', []), ('changed_files', []), ('tests_run', False), ('browser_checks_run', False), ('next_action', 'none')]:
+# 'cli' is captured on first write only — preserves which CLI started the phase
+# even if CHAIN_CLI is changed between resumes.
+for k, v in [('started_at', now), ('cli', '${_cli}'), ('blockers', []), ('changed_files', []), ('tests_run', False), ('browser_checks_run', False), ('next_action', 'none')]:
     d.setdefault(k, v)
 with open(f, 'w') as fp:
     json.dump(d, fp, indent=2)

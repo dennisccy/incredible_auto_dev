@@ -1,0 +1,3 @@
+_comment: Neutral MCP server definitions. None currently. Add entries here to make a server available
+  to both CLIs.
+servers: {}

@@ -43,10 +43,11 @@ record_telemetry_event() {
   local event_type="${1:-unknown}"
   local payload="${2:-{\}}"
 
-  local ts session_id iter
+  local ts session_id iter cli
   ts="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
   session_id="${GOAL_SESSION_ID:-unknown}"
   iter="${GOAL_ITER_INDEX:-null}"
+  cli="${CHAIN_CLI:-claude}"
 
   local file="$GOAL_SESSION_DIR/telemetry.jsonl"
 
@@ -57,21 +58,23 @@ record_telemetry_event() {
       --arg session_id "$session_id" \
       --argjson iter "$iter" \
       --arg event "$event_type" \
-      '. + {ts:$ts, session_id:$session_id, iter:$iter, event:$event}' 2>/dev/null)"; then
+      --arg cli "$cli" \
+      '. + {ts:$ts, session_id:$session_id, iter:$iter, event:$event, cli:$cli}' 2>/dev/null)"; then
       merged="$(jq -cn \
         --arg ts "$ts" \
         --arg session_id "$session_id" \
         --argjson iter "$iter" \
         --arg event "$event_type" \
+        --arg cli "$cli" \
         --arg raw "$payload" \
-        '{ts:$ts, session_id:$session_id, iter:$iter, event:$event, payload_raw:$raw}')"
+        '{ts:$ts, session_id:$session_id, iter:$iter, event:$event, cli:$cli, payload_raw:$raw}')"
     fi
     printf '%s\n' "$merged" >> "$file"
   else
     local iter_field="$iter"
     [[ "$iter_field" == "null" ]] || iter_field="\"$iter_field\""
-    printf '{"ts":"%s","session_id":"%s","iter":%s,"event":"%s","payload_raw":%s}\n' \
-      "$ts" "$session_id" "$iter_field" "$event_type" "$(printf '%s' "$payload" | sed 's/"/\\"/g; s/^/"/; s/$/"/')" \
+    printf '{"ts":"%s","session_id":"%s","iter":%s,"event":"%s","cli":"%s","payload_raw":%s}\n' \
+      "$ts" "$session_id" "$iter_field" "$event_type" "$cli" "$(printf '%s' "$payload" | sed 's/"/\\"/g; s/^/"/; s/$/"/')" \
       >> "$file"
   fi
 }

@@ -1,3 +1,8 @@
+# Generated CLI asset trees (built from neutral source by sync-cli-assets.sh).
+# Materialized on first run-phase / run-goal invocation; safe to delete locally.
+.codex/
+AGENTS.md
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]

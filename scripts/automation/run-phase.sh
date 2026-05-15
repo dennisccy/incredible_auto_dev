@@ -22,6 +22,15 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/lib/common.sh"
 
+# Pull --cli (and --force-cli) out of the args BEFORE the existing parse loop,
+# so the loop below sees only its known flags. CHAIN_CLI defaults to claude.
+extract_cli_arg "$@" || exit $?
+if [[ ${#CHAIN_CLI_REMAINING_ARGS[@]} -gt 0 ]]; then
+  set -- "${CHAIN_CLI_REMAINING_ARGS[@]}"
+else
+  set --
+fi
+
 PHASE="${1:-}"
 AUTO_RELEASE=false
 FORCE_RESET=false
@@ -43,7 +52,8 @@ if [[ "$NO_FINALIZE" == "true" ]]; then
 fi
 
 require_phase_arg "$PHASE"
-require_claude
+require_cli
+ensure_cli_assets_synced "$CHAIN_CLI"
 
 # ── Auto-assign deterministic per-project ports ──────────────────────────────
 # Helpers live in lib/common.sh (already sourced). Explicit CHAIN_*_PORT wins.

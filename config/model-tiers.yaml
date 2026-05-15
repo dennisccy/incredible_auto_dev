@@ -1,0 +1,27 @@
+_comment: Neutral model-tier mapping. Each agent picks a tier in agents/<name>/agent.yaml; the per-CLI
+  model id is resolved here at sync time. Edit then re-run sync-cli-assets.sh.
+tiers:
+  strong:
+    claude: claude-opus-4-7
+    codex: gpt-5.1-codex
+  standard:
+    claude: claude-sonnet-4-6
+    codex: gpt-5-codex
+  light:
+    claude: claude-haiku-4-5
+    codex: gpt-5-codex-mini
+_legacy_agent_assignments:
+  orchestrator: strong
+  developer: strong
+  reviewer: standard
+  qa: light
+  auditor: strong
+  release-manager: light
+  product-manager: strong
+  ui-impact-analyst: standard
+  ui-test-designer: standard
+  browser-qa-agent: standard
+  ux-regression-reviewer: standard
+  phase-closure-auditor: standard
+  goal-decomposer: strong
+  goal-evaluator: strong

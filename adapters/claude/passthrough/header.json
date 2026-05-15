@@ -1,0 +1,4 @@
+{
+  "_comment": "ai-auto-dev-chain permission settings. Customize for your project.",
+  "_doc": "Add project-specific Bash allowances below the generic base. Never put project-specific entries in the deny list \u2014 deny list is for universal security."
+}

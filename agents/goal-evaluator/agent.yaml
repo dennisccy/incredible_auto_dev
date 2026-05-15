@@ -1,0 +1,17 @@
+name: goal-evaluator
+description: Goal-mode iteration evaluator. Reads iteration outputs (handoffs, browser test results, evidence
+  screenshots) plus accumulated journey-history. Produces a structured verdict (GOAL_ACHIEVED / CONTINUE
+  / ESCALATE / REGRESSION / STALLED) and updates journey-history.json. Skeptical and evidence-grounded;
+  the run-goal.sh outer loop relies on this agent's verdict to decide whether to halt.
+model_tier: strong
+tools_allowed:
+- Read
+- Glob
+- Grep
+- Bash
+- Write
+version: 1.1.0
+last_updated: '2026-05-05'
+body: body.md
+claude:
+  model_override: claude-opus-4-7

@@ -55,7 +55,13 @@ HARD_DEFAULT_DENIALS_ALL: tuple[str, ...] = (
 
 RELEASE_AGENT_NAME = "release-manager"
 
+# Reads from the legacy `.claude/agents/<name>.md` (frontmatter) by default to
+# preserve back-compat for any external caller that imports this module.
+# In the multi-CLI world, the same per-agent permissions live in
+# `agents/<name>/agent.yaml` under `tools_disallowed:` and `max_budget_usd:`.
+# Both layouts are accepted; if neither file is present, defaults apply.
 DEFAULT_AGENTS_DIR = Path(".claude/agents")
+NEUTRAL_AGENTS_DIR = Path("agents")
 
 
 def _parse_frontmatter(text: str) -> dict[str, Any] | None:
@@ -128,11 +134,49 @@ def _agent_file(agent: str, agents_dir: Path = DEFAULT_AGENTS_DIR) -> Path | Non
     return candidate if candidate.is_file() else None
 
 
+def _neutral_agent_yaml(agent: str, neutral_dir: Path = NEUTRAL_AGENTS_DIR) -> Path | None:
+    candidate = neutral_dir / agent / "agent.yaml"
+    return candidate if candidate.is_file() else None
+
+
+def _neutral_yaml_field(path: Path, key: str) -> Any:
+    """Load a single top-level field from agents/<name>/agent.yaml. Returns
+    None if the file or key is missing. Avoids a hard dep on PyYAML when the
+    caller only needs one field — but uses PyYAML when available since these
+    files are small and YAML-safe parsing is the right thing.
+    """
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return None
+    try:
+        import yaml  # type: ignore[import-untyped]
+
+        doc = yaml.safe_load(text) or {}
+        return doc.get(key)
+    except Exception:
+        # PyYAML not installed: do a minimal scan for top-level "key:" lines.
+        # This is good enough for the small set of fields we read.
+        for line in text.splitlines():
+            if line.startswith(f"{key}:"):
+                _, _, val = line.partition(":")
+                return val.strip()
+        return None
+
+
 def disallowed_for(agent: str, agents_dir: Path = DEFAULT_AGENTS_DIR) -> list[str]:
-    """Return the full list of disallowed tool patterns for the named agent."""
+    """Return the full list of disallowed tool patterns for the named agent.
+
+    Looks in BOTH the legacy .claude/agents/<name>.md frontmatter and the
+    neutral agents/<name>/agent.yaml; entries from either source are merged.
+    The neutral source is the source of truth post-migration; the legacy
+    layout is a fallback during the transition period.
+    """
     denials: list[str] = list(HARD_DEFAULT_DENIALS_ALL)
     if agent != RELEASE_AGENT_NAME:
         denials.extend(HARD_DEFAULT_DENIALS_NON_RELEASE)
+
+    # Legacy .claude/agents/<name>.md
     f = _agent_file(agent, agents_dir)
     if f is not None:
         try:
@@ -144,11 +188,34 @@ def disallowed_for(agent: str, agents_dir: Path = DEFAULT_AGENTS_DIR) -> list[st
             for item in extra:
                 if isinstance(item, str) and item not in denials:
                     denials.append(item)
+
+    # Neutral agents/<name>/agent.yaml
+    n = _neutral_agent_yaml(agent)
+    if n is not None:
+        extra2 = _neutral_yaml_field(n, "tools_disallowed") or []
+        if isinstance(extra2, list):
+            for item in extra2:
+                if isinstance(item, str) and item not in denials:
+                    denials.append(item)
     return denials
 
 
 def budget_for(agent: str, agents_dir: Path = DEFAULT_AGENTS_DIR) -> float | None:
-    """Return max_budget_usd from the agent's frontmatter, or None if not set."""
+    """Return max_budget_usd from neutral source first, falling back to the
+    legacy frontmatter. None if neither defines a budget.
+    """
+    # Neutral first
+    n = _neutral_agent_yaml(agent)
+    if n is not None:
+        raw = _neutral_yaml_field(n, "max_budget_usd")
+        if raw is not None:
+            try:
+                v = float(raw)
+                if v > 0:
+                    return v
+            except (TypeError, ValueError):
+                pass
+    # Legacy fallback
     f = _agent_file(agent, agents_dir)
     if f is None:
         return None

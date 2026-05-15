@@ -1,0 +1,27 @@
+install-security-gate.sh:
+  claude:
+  - PreToolUse:Bash
+  codex:
+  - PreToolUse
+  - PermissionRequest
+guard-dangerous-commands.sh:
+  claude:
+  - PreToolUse:Bash
+  codex:
+  - PreToolUse
+  - PermissionRequest
+post-edit-lint.sh:
+  claude:
+  - PostToolUse:Write|Edit
+  codex:
+  - PostToolUse
+post-write-artifact-quality.sh:
+  claude:
+  - PostToolUse:Write|Edit
+  codex:
+  - PostToolUse
+on-stop-check-artifacts.sh:
+  claude:
+  - Stop
+  codex:
+  - Stop
