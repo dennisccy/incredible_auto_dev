@@ -30,6 +30,20 @@ The two modes share all agents and skills. They write to disjoint artifact names
 
 Both modes can run on either **Claude Code** (default) or **OpenAI Codex CLI** — pass `--cli claude|codex` to either entry script. A single canonical asset source under `agents/`, `skills/`, `hooks/`, `policy/`, and `config/` is rendered into per-CLI trees (`.claude/`, `.codex/`) on first run; nothing is duplicated. Goal mode pins the choice in `session.json`; phase mode is per-run. Full guide in [`docs/cli-providers.md`](docs/cli-providers.md).
 
+#### Multi-CLI — deferred / TODO
+
+The multi-CLI infrastructure is in place and the Claude path is verified non-regressing at the script level. The following are intentionally **not yet done** — each needs an API-token budget or a heavier cleanup pass:
+
+- [ ] **Real end-to-end Claude no-regression run.** Run a full phase with `--cli claude` and diff every artifact against a pre-migration baseline. (Script-level + semantic-equivalence checks pass; a real token-burning run is the final gate.)
+- [ ] **Real Codex end-to-end run + hardening.** `_codex_invoke` quota/error regexes in `lib/quota-retry.sh` are best-guess. First real `--cli codex` run will reveal the actual OpenAI rate-limit/error wording to match. Expect 1–2 tightening passes.
+- [ ] **Codex stream parsing.** `lib/codex_stream_renderer.py` handles several plausible event shapes; confirm against real `codex exec --json` NDJSON and trim to the actual schema.
+- [ ] **Retire legacy `.claude/` files from git.** `.claude/agents/*.md`, `.claude/settings.json`, `.claude/hooks/*`, `.claude/skills/*` are still tracked and regenerated on sync (producing small, functionally-identical cosmetic diffs). Move them to `.gitignore` and `git rm --cached` once the Claude no-regression run passes.
+- [ ] **`hooks/lib/normalize-input.sh` / `normalize-output.sh`.** Planned shims so one hook script reads a uniform input schema and writes a uniform allow/block decision across both CLIs. Currently each hook still handles per-CLI env vars itself.
+- [ ] **Architecture docs.** `.claude/architecture/*.md` still describe the pre-migration Claude-only layout; update for the neutral source + adapter model.
+- [ ] **MCP servers in neutral source.** `policy/mcp-servers.yaml` is a stub; Claude MCP/plugins currently live in `adapters/claude/passthrough/`. Promote to neutral source when a shared MCP definition is actually needed.
+- [ ] **Mixed-CLI runs (per-agent override).** Architecture supports a per-agent `cli:` field in `agent.yaml`; not wired up. Deferred until there's a real use case.
+- [ ] **Codex profiles for non-default tiers.** Generated `.codex/config.toml` sticks to a single profile.
+
 ## Quick Start
 
 **1. Add this repo to your project** (as a submodule, subtree, or direct copy).
