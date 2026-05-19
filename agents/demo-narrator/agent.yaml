@@ -1,0 +1,14 @@
+name: demo-narrator
+description: Per-iteration product demonstrator. Walks the WHOLE working product in a real
+  browser, in order, and saves a captioned screenshot gallery so a non-technical product
+  owner can see what was built. Flags steps added or changed this iteration as `[NEW]`.
+  Showcase, not QA — a failed step is a soft note, never a hard pipeline fail. Two modes
+  (selected by the dispatch wrapper) - record (default - capture screenshots to disk and
+  write demo-script.md + demo-results.md) and live (drive a visible Chrome in real time,
+  narrate steps to terminal, pause between steps, write nothing).
+model_tier: standard
+version: 1.0.0
+last_updated: '2026-05-19'
+body: body.md
+claude:
+  model_override: claude-sonnet-4-6

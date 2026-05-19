@@ -88,6 +88,10 @@ class IterationData:
     # External resources
     journeys: list[dict] = field(default_factory=list)
     screenshots: list[Path] = field(default_factory=list)
+    # Captioned demo gallery (record-mode demo-narrator output).
+    demo_verdict: str = ""  # RECORDED | RECORDED_WITH_NOTES | SKIPPED | NOT_YET
+    demo_steps: list[dict] = field(default_factory=list)
+    demo_notes: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -103,6 +107,13 @@ class SessionData:
     journeys: list[dict] = field(default_factory=list)
     iterations: list[IterationData] = field(default_factory=list)
     latest_evaluator_note: str = ""
+    # Cumulative plain-language story (state/project-story.md). Markdown source.
+    project_story_md: str = ""
+    # Reference to the most recent iteration whose demo gallery is renderable.
+    latest_demo_iter: Optional["IterationData"] = None
+    # True if reports/goal-session-<sid>-delivered.md / .html exists.
+    delivered_md_exists: bool = False
+    delivered_html_path: Optional[Path] = None
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -198,6 +209,30 @@ def _parse_summary_header(md: str) -> dict[str, str]:
 # ─────────────────────────────────────────────────────────────────────────────
 
 _SIGNAL_VALUES = {"improving", "holding", "stalling", "regressing", "n/a"}
+
+
+_PLAIN_WORDS_LABELS = ("What you can do now", "What changed this time", "What's next")
+
+
+def _parse_plain_words(body: str) -> dict[str, str]:
+    """Extract the three labelled parts from a '## In plain words' section body.
+
+    Robust to multi-line values, extra blank lines, and label order changes.
+    Each value runs until the next bold-label marker (`**Some Label:**`) or EOF.
+    Returns labels mapped to their text (possibly empty if missing).
+    """
+    out = {label: "" for label in _PLAIN_WORDS_LABELS}
+    if not body:
+        return out
+    for label in _PLAIN_WORDS_LABELS:
+        pat = re.compile(
+            rf"\*\*{re.escape(label)}:\*\*\s*(.+?)(?=\n\s*\*\*[A-Za-z][^*\n]*:\*\*|\Z)",
+            re.DOTALL,
+        )
+        m = pat.search(body)
+        if m:
+            out[label] = re.sub(r"\s+", " ", m.group(1)).strip()
+    return out
 
 
 def _parse_direction_signal(direction_body: str) -> tuple[str, str]:
@@ -309,6 +344,22 @@ def load_iteration(phase_id: str, repo_root: Path) -> IterationData:
             if full.exists() and full.is_file():
                 data.screenshots.append(full)
 
+    # Demo gallery — record-mode demo-narrator output. Soft-loaded so the page
+    # still renders when no demo exists yet.
+    demo_results = _read_text(repo_root / "reports" / f"phase-{phase_id}-demo-results.md")
+    if demo_results:
+        data.demo_verdict, data.demo_steps, data.demo_notes = _parse_demo_results(demo_results)
+        demo_script = _read_text(repo_root / "reports" / f"phase-{phase_id}-demo-script.md")
+        narrations = _parse_demo_script_narrations(demo_script or "")
+        for step in data.demo_steps:
+            step["narration"] = narrations.get(step["number"], "")
+            shot = step.get("screenshot", "")
+            if shot:
+                shot_path = repo_root / shot
+                step["_screenshot_path"] = shot_path if shot_path.exists() else None
+            else:
+                step["_screenshot_path"] = None
+
     return data
 
 
@@ -322,6 +373,86 @@ def _parse_journey_history(data: dict) -> list[dict]:
             "last_verified_iter": info.get("last_verified_iter"),
             "last_passing_iter": info.get("last_passing_iter"),
         })
+    return out
+
+
+_DEMO_VERDICTS = {"RECORDED", "RECORDED_WITH_NOTES", "SKIPPED", "NOT_YET"}
+_DEMO_VERDICT_RE = re.compile(r"^\*\*Demo Verdict:\*\*\s+([A-Z_]+)\s*$", re.MULTILINE)
+
+
+def _parse_demo_results(md: str) -> tuple[str, list[dict], list[str]]:
+    """Return (verdict, captured_steps, soft_notes) from a demo-results.md body.
+
+    - verdict: one of _DEMO_VERDICTS, or "" if missing/invalid.
+    - captured_steps: list of dicts {number, title, is_new, screenshot} parsed
+      from the 'Captured Steps' pipe-table. Empty if no table.
+    - soft_notes: bullet lines under the '## Soft notes' section.
+    """
+    verdict = ""
+    if md:
+        m = _DEMO_VERDICT_RE.search(md)
+        if m and m.group(1) in _DEMO_VERDICTS:
+            verdict = m.group(1)
+
+    sections = _split_h2_sections(md or "")
+    steps: list[dict] = []
+    body = sections.get("Captured Steps", "")
+    header, rows = _parse_md_table(body)
+    if header and rows:
+        idx = {name.strip().lower(): i for i, name in enumerate(header)}
+        for r in rows:
+            def _get(name: str) -> str:
+                i = idx.get(name)
+                return r[i].strip() if i is not None and i < len(r) else ""
+            step_text = _get("step")
+            if not step_text or step_text == "-":
+                continue
+            try:
+                number = int(re.sub(r"[^0-9]", "", step_text) or 0)
+            except ValueError:
+                number = 0
+            if number == 0:
+                continue
+            new_text = _get("new").lower()
+            is_new = new_text in {"yes", "y", "true", "✓", "✔", "new"}
+            steps.append({
+                "number": number,
+                "title": _get("title"),
+                "is_new": is_new,
+                "screenshot": _get("screenshot"),
+            })
+        steps.sort(key=lambda s: s["number"])
+
+    notes = _extract_bullets(sections.get("Soft notes", ""))
+    return verdict, steps, notes
+
+
+# Per-step narration is sourced from the demo-script.md if present so the
+# gallery caption is one short sentence instead of the bare title.
+_DEMO_SCRIPT_STEP_RE = re.compile(
+    r"^###\s+Step\s+(?P<num>\d+)\b[^\n]*\n(?P<body>(?:.*\n)*?)(?=^###\s+Step|\Z)",
+    re.MULTILINE,
+)
+_DEMO_SCRIPT_NARRATION_RE = re.compile(
+    r"^[-*]\s+\*\*Narration:\*\*\s*(.+?)\s*$",
+    re.MULTILINE,
+)
+
+
+def _parse_demo_script_narrations(md: str) -> dict[int, str]:
+    """Map step number → narration sentence from a demo-script.md body."""
+    out: dict[int, str] = {}
+    if not md:
+        return out
+    for m in _DEMO_SCRIPT_STEP_RE.finditer(md):
+        try:
+            num = int(m.group("num"))
+        except ValueError:
+            continue
+        body = m.group("body")
+        nm = _DEMO_SCRIPT_NARRATION_RE.search(body)
+        if nm:
+            out[num] = nm.group(1).strip()
     return out
 
 
@@ -387,6 +518,26 @@ def load_session(session_id: str, repo_root: Path) -> SessionData:
         parts = re.split(r"^##\s+Iteration\b", log, flags=re.MULTILINE)
         if len(parts) > 1:
             s.latest_evaluator_note = ("## Iteration" + parts[-1]).strip()
+
+    # Cumulative project story (plain-language running narrative).
+    story = _read_text(session_dir / "state" / "project-story.md")
+    if story:
+        s.project_story_md = story
+
+    # Latest iteration that has a renderable demo gallery — used to embed the
+    # most recent narrated walkthrough at the session level.
+    for it in reversed(s.iterations):
+        if it.demo_steps:
+            s.latest_demo_iter = it
+            break
+
+    # Detect the one-time delivered wrap.
+    delivered_md = repo_root / "reports" / f"goal-session-{session_id}-delivered.md"
+    if delivered_md.exists():
+        s.delivered_md_exists = True
+        delivered_html = repo_root / "reports" / f"goal-session-{session_id}-delivered.html"
+        if delivered_html.exists():
+            s.delivered_html_path = delivered_html
 
     return s
 
@@ -576,6 +727,144 @@ ol.steps > li::before {
   background: #fff8c5; border: 1px solid #eed888; padding: 14px 18px;
   border-radius: 8px; color: #9a6700; margin-bottom: 14px;
 }
+/* Plain-language layer — the primary, non-technical view. */
+.plain-words {
+  background: linear-gradient(180deg, #ffffff 0%, #f6fbff 100%);
+  border: 1px solid #d6e4f0; border-radius: 10px;
+  padding: 22px 24px; margin: 18px 0 6px;
+  box-shadow: 0 1px 2px rgba(20, 40, 80, 0.04);
+}
+.plain-words .pw-heading {
+  margin: 0 0 14px; font-size: 1.15rem; color: #0969da;
+  text-transform: uppercase; letter-spacing: 0.05em;
+}
+.pw-grid {
+  display: grid; gap: 14px;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+}
+.pw-card {
+  background: white; border-radius: 8px; padding: 14px 16px;
+  border: 1px solid #e3eaf3;
+}
+.pw-card .pw-label {
+  font-size: 0.78rem; font-weight: 600; color: #57606a;
+  text-transform: uppercase; letter-spacing: 0.04em; margin-bottom: 6px;
+}
+.pw-card .pw-text {
+  margin: 0; font-size: 1rem; color: #1f2328; line-height: 1.45;
+}
+.pw-empty { color: #8c959f; font-style: italic; font-size: 0.95rem; }
+.tech-divider {
+  margin: 18px 0 8px; text-align: center;
+  color: #6e7781; font-size: 0.82rem; font-style: italic;
+  border-top: 1px dashed #d0d7de; padding-top: 12px;
+}
+/* Watch-it-work — narrated screenshot gallery from demo-narrator. */
+.watch-it-work {
+  background: white; border: 1px solid #d6e4f0; border-radius: 10px;
+  padding: 18px 22px; margin: 10px 0 6px;
+}
+.wiw-head {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 12px; margin-bottom: 14px; flex-wrap: wrap;
+}
+.wiw-heading {
+  margin: 0; font-size: 1.05rem; color: #0969da;
+  text-transform: uppercase; letter-spacing: 0.05em;
+}
+.demo-badge {
+  font-size: 0.75rem; font-weight: 600; padding: 4px 10px; border-radius: 12px;
+  border: 1px solid transparent; letter-spacing: 0.04em;
+}
+.demo-badge.demo-recorded { background: #dafbe1; color: #1a7f37; border-color: #aceebb; }
+.demo-badge.demo-notes    { background: #fff8c5; color: #9a6700; border-color: #e8d97e; }
+.demo-badge.demo-skipped  { background: #f6f8fa; color: #57606a; border-color: #d0d7de; }
+.demo-badge.demo-pending  { background: #ddf4ff; color: #0969da; border-color: #b6e3ff; }
+.demo-grid {
+  display: grid; gap: 14px;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+}
+.demo-step {
+  margin: 0; padding: 12px; background: #f6f8fa;
+  border: 1px solid #d0d7de; border-radius: 8px;
+}
+.demo-step-head {
+  display: flex; align-items: center; gap: 8px; margin-bottom: 8px;
+  font-size: 0.9rem;
+}
+.demo-step-num {
+  font-weight: 600; color: #57606a; font-variant-numeric: tabular-nums;
+}
+.demo-step-title { color: #1f2328; font-weight: 500; }
+.demo-new {
+  background: #ddf4ff; color: #0969da; font-size: 0.7rem; font-weight: 700;
+  padding: 2px 6px; border-radius: 4px; letter-spacing: 0.06em;
+}
+.demo-shot { margin-bottom: 8px; }
+.demo-shot img {
+  width: 100%; height: auto; border-radius: 4px; border: 1px solid #d0d7de;
+  display: block;
+}
+.demo-narration {
+  margin: 0; color: #1f2328; font-size: 0.92rem; line-height: 1.4;
+}
+.demo-empty {
+  margin: 8px 0 0; color: #57606a; font-style: italic;
+}
+.demo-notes-wrap { margin-top: 14px; }
+.demo-notes-wrap summary {
+  cursor: pointer; color: #9a6700; font-weight: 500; font-size: 0.9rem;
+}
+.demo-notes-wrap[open] summary { margin-bottom: 6px; }
+/* Story so far + latest demo (session index plain-language top). */
+.story-so-far {
+  background: linear-gradient(180deg, #ffffff 0%, #f6fbff 100%);
+  border: 1px solid #d6e4f0; border-radius: 10px;
+  padding: 22px 26px; margin: 14px 0 6px;
+  box-shadow: 0 1px 2px rgba(20, 40, 80, 0.04);
+}
+.story-heading {
+  margin: 0 0 12px; font-size: 1.1rem; color: #0969da;
+  text-transform: uppercase; letter-spacing: 0.05em;
+}
+.story-body { font-size: 1rem; color: #1f2328; line-height: 1.55; }
+.story-body .story-h { margin: 14px 0 6px; color: #1f2328; }
+.story-body p { margin: 0 0 10px; }
+.session-demo {
+  background: white; border: 1px solid #d6e4f0; border-radius: 10px;
+  padding: 0; margin: 8px 0 6px; overflow: hidden;
+}
+.session-demo-head {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 10px; padding: 12px 22px;
+  background: #f6f8fa; border-bottom: 1px solid #d6e4f0;
+  font-weight: 600; color: #1f2328; font-size: 0.95rem;
+}
+.session-demo-head a.open { color: #0969da; text-decoration: none; font-weight: 500; font-size: 0.9rem; }
+.session-demo-head a.open:hover { text-decoration: underline; }
+.session-demo .watch-it-work {
+  border: none; border-radius: 0; box-shadow: none; margin: 0;
+}
+/* Delivered link banner — sits on the session index when GOAL_ACHIEVED. */
+.delivered-link {
+  margin: 14px 0; padding: 14px 22px;
+  background: #dafbe1; border: 1px solid #aceebb; border-radius: 10px;
+  color: #1a7f37; font-size: 1rem;
+}
+.delivered-link a {
+  color: #1a7f37; font-weight: 600; text-decoration: none; margin-left: 8px;
+}
+.delivered-link a:hover { text-decoration: underline; }
+.delivered-back {
+  margin: 8px 0 14px; padding: 0; font-size: 0.9rem;
+}
+.delivered-back a { color: #0969da; text-decoration: none; }
+.delivered-back a:hover { text-decoration: underline; }
+.delivered-body {
+  background: white; border: 1px solid #d6e4f0; border-radius: 10px;
+  padding: 22px 28px; margin: 12px 0;
+}
+.delivered-body h2.story-h { margin-top: 0; }
 """
 
 SVG_CHECK = """<svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true">
@@ -633,6 +922,11 @@ def render_html_iteration(data: IterationData) -> str:
     if not data.summary_md:
         parts.append(_render_no_summary_placeholder(data))
     else:
+        # Plain-language layer leads — for non-technical readers. The technical
+        # accordions below are collapsed by default.
+        parts.append(_render_plain_words(data))
+        parts.append(_render_watch_it_work(data))
+        parts.append(_render_technical_intro())
         parts.append(_render_what_was_done(data))
         parts.append(_render_whats_left_next_step(data))
         parts.append(_render_direction_trend(data))
@@ -641,6 +935,140 @@ def render_html_iteration(data: IterationData) -> str:
     parts.append(_render_footer(data))
     parts.append("</div></body></html>")
     return "\n".join(p for p in parts if p)
+
+
+def _render_plain_words(data: IterationData) -> str:
+    body = data.sections.get("In plain words", "")
+    parts = _parse_plain_words(body)
+    # Skip rendering only when every part is empty AND the section header is
+    # absent — older summaries written before this layer existed.
+    if not body and not any(parts.values()):
+        return ""
+
+    def _card(label: str, text: str, *, fallback: str) -> str:
+        rendered = escape(text) if text else f"<em class='pw-empty'>{escape(fallback)}</em>"
+        return (
+            "<div class='pw-card'>"
+            f"<div class='pw-label'>{escape(label)}</div>"
+            f"<p class='pw-text'>{rendered}</p>"
+            "</div>"
+        )
+
+    cards = "".join((
+        _card(
+            "What you can do now",
+            parts["What you can do now"],
+            fallback="Just getting started — nothing for users to try yet.",
+        ),
+        _card(
+            "What changed this time",
+            parts["What changed this time"],
+            fallback="No user-visible changes this iteration.",
+        ),
+        _card(
+            "What's next",
+            parts["What's next"],
+            fallback="To be decided.",
+        ),
+    ))
+    return (
+        "<section class='plain-words'>"
+        "<h2 class='pw-heading'>In plain words</h2>"
+        f"<div class='pw-grid'>{cards}</div>"
+        "</section>"
+    )
+
+
+def _render_technical_intro() -> str:
+    """Small divider hint that the sections below are the technical detail.
+
+    Helps non-technical readers know they can stop scrolling.
+    """
+    return (
+        "<div class='tech-divider'>"
+        "<span>Technical detail below — open if you want the developer view.</span>"
+        "</div>"
+    )
+
+
+def _render_watch_it_work(data: IterationData) -> str:
+    """Captioned screenshot gallery from the record-mode demo-narrator."""
+    # When no demo artifact at all — render nothing.
+    if not data.demo_verdict and not data.demo_steps:
+        return ""
+
+    # Headline state badge for the gallery section.
+    badge_text = data.demo_verdict or "PENDING"
+    badge_class = {
+        "RECORDED": "demo-recorded",
+        "RECORDED_WITH_NOTES": "demo-notes",
+        "SKIPPED": "demo-skipped",
+        "NOT_YET": "demo-pending",
+    }.get(data.demo_verdict, "demo-pending")
+
+    cards: list[str] = []
+    for step in data.demo_steps:
+        title = escape(step.get("title", "") or f"Step {step['number']:02d}")
+        narration = escape(step.get("narration", "") or "")
+        new_badge = (
+            "<span class='demo-new'>NEW</span>"
+            if step.get("is_new") else ""
+        )
+        shot_html = ""
+        shot_path = step.get("_screenshot_path")
+        if shot_path:
+            url = embed_image(shot_path)
+            if url:
+                shot_html = (
+                    f"<div class='demo-shot'><img src='{url}' "
+                    f"alt='Step {step['number']:02d}: {title}'></div>"
+                )
+        cards.append(
+            "<figure class='demo-step'>"
+            f"<div class='demo-step-head'>"
+            f"<span class='demo-step-num'>Step {step['number']:02d}</span>"
+            f"{new_badge}"
+            f"<span class='demo-step-title'>{title}</span>"
+            "</div>"
+            f"{shot_html}"
+            + (f"<figcaption class='demo-narration'>{narration}</figcaption>"
+               if narration else "")
+            + "</figure>"
+        )
+
+    # Verdict-only states (SKIPPED / NOT_YET / no captured steps) get a friendly
+    # one-liner instead of an empty grid.
+    if not cards:
+        explainer = {
+            "SKIPPED": "No browser walkthrough this iteration — backend-only work or the app wasn't reachable.",
+            "NOT_YET": "Just getting started — nothing for users to try yet.",
+            "RECORDED": "Recorded, but no steps were captured.",
+            "RECORDED_WITH_NOTES": "Recorded, but no steps were captured.",
+        }.get(data.demo_verdict, "Demo recording pending.")
+        body_inner = f"<p class='demo-empty'>{escape(explainer)}</p>"
+    else:
+        body_inner = f"<div class='demo-grid'>{''.join(cards)}</div>"
+
+    notes_html = ""
+    if data.demo_notes:
+        items = "".join(f"<li>{escape(n)}</li>" for n in data.demo_notes)
+        notes_html = (
+            "<details class='demo-notes-wrap'>"
+            "<summary>Notes from the walk-through</summary>"
+            f"<ul class='bullets'>{items}</ul>"
+            "</details>"
+        )
+
+    return (
+        "<section class='watch-it-work'>"
+        "<div class='wiw-head'>"
+        "<h2 class='wiw-heading'>Watch it work</h2>"
+        f"<span class='demo-badge {badge_class}'>{escape(badge_text)}</span>"
+        "</div>"
+        f"{body_inner}"
+        f"{notes_html}"
+        "</section>"
+    )
 
 
 def _render_hero(data: IterationData) -> str:
@@ -713,7 +1141,7 @@ def _render_what_was_done(data: IterationData) -> str:
         return ""
     items = "".join(f"<li>{escape(b)}</li>" for b in bullets)
     return (
-        f"<details open><summary>What was done</summary>"
+        f"<details><summary>What was done</summary>"
         f"<div class='accordion-body'><ul class='bullets'>{items}</ul></div></details>"
     )
 
@@ -731,7 +1159,7 @@ def _render_whats_left_next_step(data: IterationData) -> str:
     if not parts:
         return ""
     return (
-        f"<details open><summary>What's left + Next step</summary>"
+        f"<details><summary>What's left + Next step</summary>"
         f"<div class='accordion-body'>{''.join(parts)}</div></details>"
     )
 
@@ -756,9 +1184,10 @@ def _render_direction_trend(data: IterationData) -> str:
         )
     if not parts:
         return ""
-    is_goal = data.is_goal_iter and signal != "n/a"
+    # All technical accordions are collapsed by default — the plain-words
+    # block above is the primary view; this one is opt-in even in goal mode.
     return (
-        f"<details {'open' if is_goal else ''}><summary>Direction signal</summary>"
+        f"<details><summary>Direction signal</summary>"
         f"<div class='accordion-body'>{''.join(parts)}</div></details>"
     )
 
@@ -782,7 +1211,7 @@ def _render_quick_verify(data: IterationData) -> str:
             f"<li><span class='step-action'>{escape(step)}</span>{shot_html}</li>"
         )
     return (
-        f"<details open><summary>Quick verify (5 min)</summary>"
+        f"<details><summary>Quick verify (5 min)</summary>"
         f"<div class='accordion-body'><ol class='steps'>{''.join(items)}</ol></div></details>"
     )
 
@@ -847,6 +1276,10 @@ def render_html_session_index(data: SessionData) -> str:
         f"<style>{CSS}</style>",
         "</head><body><div class='container'>",
         _render_session_hero(data),
+        _render_delivered_link(data),
+        _render_story_so_far(data),
+        _render_latest_demo(data),
+        _render_session_technical_intro(data),
         _render_journey_matrix(data),
         _render_iter_cards(data),
         _render_evaluator_note(data),
@@ -854,6 +1287,109 @@ def render_html_session_index(data: SessionData) -> str:
         "</div></body></html>",
     ]
     return "\n".join(p for p in parts if p)
+
+
+def _render_story_so_far(data: SessionData) -> str:
+    if not data.project_story_md:
+        return ""
+    html_body = _markdown_lite_to_html(data.project_story_md)
+    return (
+        "<section class='story-so-far'>"
+        "<h2 class='story-heading'>The story so far</h2>"
+        f"<div class='story-body'>{html_body}</div>"
+        "</section>"
+    )
+
+
+def _render_latest_demo(data: SessionData) -> str:
+    it = data.latest_demo_iter
+    if not it or not it.demo_steps:
+        return ""
+    label = f"iter-{it.iter_num}" if it.iter_num is not None else escape(it.phase_id)
+    iter_link = f"phase-{it.phase_id}-summary.html"
+    # Reuse the iteration-level helper so the gallery looks identical to the
+    # per-iteration page (NEW badges, captions, demo-verdict badge).
+    gallery_html = _render_watch_it_work(it)
+    if not gallery_html:
+        return ""
+    return (
+        "<section class='session-demo'>"
+        f"<div class='session-demo-head'><span>Latest walkthrough — {escape(label)}</span>"
+        f"<a class='open' href='{escape(iter_link)}'>Open full iteration →</a></div>"
+        f"{gallery_html}"
+        "</section>"
+    )
+
+
+def _render_session_technical_intro(data: SessionData) -> str:
+    # Only show the divider when there is plain-language content above it,
+    # otherwise the matrix/cards stand on their own as before.
+    if not (data.project_story_md or data.latest_demo_iter):
+        return ""
+    return (
+        "<div class='tech-divider'>"
+        "<span>Journey-by-journey progress and per-iteration cards below — open if you want the developer view.</span>"
+        "</div>"
+    )
+
+
+def _render_delivered_link(data: SessionData) -> str:
+    if not data.delivered_md_exists:
+        return ""
+    if data.delivered_html_path is not None:
+        href = data.delivered_html_path.name
+    else:
+        href = f"goal-session-{data.session_id}-delivered.html"
+    return (
+        "<aside class='delivered-link'>"
+        "<strong>Goal achieved.</strong> "
+        f"<a href='{escape(href)}'>Read the &ldquo;What we delivered&rdquo; wrap →</a>"
+        "</aside>"
+    )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Lightweight Markdown → HTML for the cumulative project story
+# Handles H1/H2, paragraphs, italics — enough for project-story.md.
+# Avoids pulling in a full Markdown lib (keeps the renderer dependency-free).
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def _markdown_lite_to_html(md: str) -> str:
+    out: list[str] = []
+    para: list[str] = []
+
+    def _flush_para() -> None:
+        if not para:
+            return
+        joined = " ".join(line.strip() for line in para).strip()
+        if joined:
+            out.append(f"<p>{_md_inline(joined)}</p>")
+        para.clear()
+
+    for raw_line in md.splitlines():
+        line = raw_line.rstrip()
+        if not line.strip():
+            _flush_para()
+            continue
+        m = re.match(r"^(#{1,3})\s+(.+?)\s*$", line)
+        if m:
+            _flush_para()
+            level = len(m.group(1))
+            tag = {1: "h2", 2: "h3", 3: "h4"}[level]
+            out.append(f"<{tag} class='story-h'>{_md_inline(m.group(2))}</{tag}>")
+            continue
+        para.append(line)
+    _flush_para()
+    return "\n".join(out)
+
+
+def _md_inline(s: str) -> str:
+    s = escape(s)
+    s = re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", s)
+    s = re.sub(r"(?<![*_])_(.+?)_(?![*_])", r"<em>\1</em>", s)
+    s = re.sub(r"\*(.+?)\*", r"<em>\1</em>", s)
+    return s
 
 
 def _render_session_hero(data: SessionData) -> str:
@@ -954,6 +1490,60 @@ def session_index_output_path(session_id: str, repo_root: Path) -> Path:
     return repo_root / "reports" / f"goal-session-{session_id}-index.html"
 
 
+def delivered_output_path(session_id: str, repo_root: Path) -> Path:
+    return repo_root / "reports" / f"goal-session-{session_id}-delivered.html"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# HTML — delivered wrap (one-time, fires on GOAL_ACHIEVED)
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def render_html_delivered(data: SessionData, delivered_md: str) -> str:
+    body_html = _markdown_lite_to_html(delivered_md)
+    # Latest demo gallery embedded — the user-facing companion to the wrap.
+    gallery_html = ""
+    if data.latest_demo_iter and data.latest_demo_iter.demo_steps:
+        gallery_html = _render_watch_it_work(data.latest_demo_iter)
+    minutes = data.wall_time_seconds // 60
+    pass_count = sum(
+        1 for j in data.journeys if j["status"] in ("passing", "already_passing")
+    )
+    hero = (
+        f"<section class='hero pass'>"
+        f"<div class='badge-row'><div class='badge pass'>{SVG_CHECK}<span>GOAL ACHIEVED</span></div></div>"
+        f"<h1>{escape(data.goal_title or 'Goal session ' + data.session_id)}</h1>"
+        f"<h2>Session <code>{escape(data.session_id)}</code></h2>"
+        f"<div class='meta'>{data.total_iterations} iterations · "
+        f"{pass_count}/{len(data.journeys)} journeys delivered · "
+        f"{minutes} min wall time</div>"
+        f"</section>"
+    )
+    back_link = (
+        f"<aside class='delivered-back'>"
+        f"<a href='goal-session-{escape(data.session_id)}-index.html'>← Back to session index</a>"
+        f"</aside>"
+    )
+    parts = [
+        "<!doctype html>",
+        '<html lang="en"><head>',
+        '<meta charset="utf-8">',
+        f"<title>Delivered — {escape(data.goal_title or data.session_id)}</title>",
+        f"<style>{CSS}</style>",
+        "</head><body><div class='container'>",
+        hero,
+        back_link,
+        "<section class='delivered-body'>",
+        body_html,
+        "</section>",
+        gallery_html,
+        f"<div class='footer-note'>Generated {escape(_dt.datetime.now().strftime('%Y-%m-%d %H:%M'))} "
+        "by <code>render_iteration_summary.py</code></div>",
+        "</div></body></html>",
+    ]
+    return "\n".join(p for p in parts if p)
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # CLI
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1040,6 +1630,29 @@ def cmd_session_index(args: list[str]) -> int:
     return 0
 
 
+def cmd_delivered(args: list[str]) -> int:
+    if not args:
+        print("Usage: render_iteration_summary.py delivered <session-id>", file=sys.stderr)
+        return 2
+    session_id = args[0]
+    repo_root = _resolve_repo_root(args[1:])
+    delivered_md_path = repo_root / "reports" / f"goal-session-{session_id}-delivered.md"
+    if not delivered_md_path.exists():
+        print(
+            f"[render-summary] Delivered source not found: {delivered_md_path} — skipping.",
+            file=sys.stderr,
+        )
+        return 0
+    delivered_md = delivered_md_path.read_text(encoding="utf-8")
+    data = load_session(session_id, repo_root)
+    html = render_html_delivered(data, delivered_md)
+    out = delivered_output_path(session_id, repo_root)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(html, encoding="utf-8")
+    print(f"[render-summary] Wrote {out} ({out.stat().st_size // 1024} KB)")
+    return 0
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Self-test
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1050,6 +1663,14 @@ _FIXTURE_SUMMARY_FULL = """# Iteration Summary — phase-7
 **Verdict:** PASS
 **Iteration type:** phase
 **Date:** 2026-05-12
+
+## In plain words
+
+**What you can do now:** Sign in with your email and password, and edit your profile bio.
+
+**What changed this time:** You can now open your profile and write a short bio about yourself.
+
+**What's next:** Next we'll let you add a profile photo.
 
 ## Headline
 
@@ -1098,6 +1719,14 @@ _FIXTURE_SUMMARY_GOAL = """# Iteration Summary — goal-money-first-iter-18
 **Iteration type:** goal-lean
 **Date:** 2026-05-12
 **Iteration:** 18
+
+## In plain words
+
+**What you can do now:** Sign in with email and view your account. Browse products.
+
+**What changed this time:** You can now sign in with your email and password.
+
+**What's next:** Next we'll let you check out with a payment method.
 
 ## Headline
 
@@ -1165,6 +1794,52 @@ def _write_summary_fixture(tmp: Path, phase_id: str, body: str, *, with_screensh
         (tmp / "reports" / f"phase-{phase_id}-ui-test-results.md").write_text(results)
 
 
+def _write_demo_fixture(
+    tmp: Path,
+    phase_id: str,
+    *,
+    verdict: str = "RECORDED",
+    steps: Optional[list[dict]] = None,
+    soft_notes: Optional[list[str]] = None,
+) -> None:
+    """Write a demo-results.md + demo-script.md + step screenshots fixture."""
+    steps = steps if steps is not None else [
+        {"num": 1, "title": "Open sign-in", "is_new": True,
+         "narration": "Open the app and click Sign in."},
+        {"num": 2, "title": "Submit credentials", "is_new": False,
+         "narration": "Enter your email and password."},
+    ]
+    (tmp / "reports").mkdir(parents=True, exist_ok=True)
+    demo_dir = tmp / "reports" / "demo" / phase_id
+    demo_dir.mkdir(parents=True, exist_ok=True)
+    rows: list[str] = ["| Step | Title | New | Screenshot |", "|------|-------|-----|------------|"]
+    script_blocks: list[str] = ["# Demo Script — " + phase_id, ""]
+    for step in steps:
+        n = step["num"]
+        shot_rel = f"reports/demo/{phase_id}/step-{n:02d}.png"
+        (tmp / shot_rel).write_bytes(_FIXTURE_PNG)
+        new_cell = "yes" if step["is_new"] else ""
+        rows.append(f"| {n:02d} | {step['title']} | {new_cell} | {shot_rel} |")
+        new_tag = "  [NEW]" if step["is_new"] else ""
+        script_blocks.append(f"### Step {n:02d} — {step['title']}{new_tag}")
+        script_blocks.append(f"- **Narration:** {step['narration']}")
+        script_blocks.append("- **Action:** click")
+        script_blocks.append("- **Point out:** ...")
+        script_blocks.append(f"- **Screenshot:** {shot_rel}")
+        script_blocks.append("")
+    notes_block = ""
+    if soft_notes:
+        notes_block = "\n## Soft notes\n\n" + "\n".join(f"- {n}" for n in soft_notes) + "\n"
+    (tmp / "reports" / f"phase-{phase_id}-demo-results.md").write_text(
+        f"# Demo Results — {phase_id}\n\n"
+        f"**Demo Verdict:** {verdict}\n\n"
+        f"## Captured Steps\n\n" + "\n".join(rows) + "\n" + notes_block
+    )
+    (tmp / "reports" / f"phase-{phase_id}-demo-script.md").write_text(
+        "\n".join(script_blocks) + "\n"
+    )
+
+
 def _cmd_self_test(_argv: list[str]) -> int:
     """Built-in self-test covering parsers, rendering, and repo-root resolution."""
     import tempfile
@@ -1230,11 +1905,24 @@ def _cmd_self_test(_argv: list[str]) -> int:
     sections = _split_h2_sections(_FIXTURE_SUMMARY_GOAL)
     if "Direction" not in sections:
         failures.append("split_h2: Direction section missing")
+    if "In plain words" not in sections:
+        failures.append("split_h2: 'In plain words' section missing")
     signal, why = _parse_direction_signal(sections.get("Direction", ""))
     if signal != "improving":
         failures.append(f"signal: expected improving, got {signal}")
     if "Newly passing J-04" not in why and "J-04" not in why:
         failures.append(f"why: expected to mention J-04, got: {why}")
+
+    pw = _parse_plain_words(sections.get("In plain words", ""))
+    if "Sign in" not in pw["What you can do now"]:
+        failures.append(f"plain words 'what you can do now' missing expected text: {pw}")
+    if "sign in" not in pw["What changed this time"].lower():
+        failures.append(f"plain words 'what changed this time' missing expected text: {pw}")
+    if "check out" not in pw["What's next"].lower():
+        failures.append(f"plain words 'what's next' missing expected text: {pw}")
+    # Verdict line is still parseable above the new section.
+    if header.get("Verdict") != "CONTINUE":
+        failures.append("plain words insertion broke header verdict parsing")
 
     trend = _parse_trend_block(sections.get("Direction", ""))
     if not trend or len(trend) < 5:
@@ -1253,10 +1941,57 @@ def _cmd_self_test(_argv: list[str]) -> int:
     if len(rows) != 5:
         failures.append(f"artifacts table: expected 5 rows, got {len(rows)}")
 
+    # Parse demo-results directly — verdict + table parsing.
+    _demo_md = (
+        "# Demo Results — phase-1\n\n"
+        "**Demo Verdict:** RECORDED_WITH_NOTES\n\n"
+        "## Captured Steps\n\n"
+        "| Step | Title | New | Screenshot |\n"
+        "|------|-------|-----|------------|\n"
+        "| 01   | Open app | yes | reports/demo/phase-1/step-01.png |\n"
+        "| 02   | Sign in  |     | reports/demo/phase-1/step-02.png |\n\n"
+        "## Soft notes\n\n- Step 2 expected toast did not appear.\n"
+    )
+    dv, dsteps, dnotes = _parse_demo_results(_demo_md)
+    if dv != "RECORDED_WITH_NOTES":
+        failures.append(f"_parse_demo_results: verdict {dv}")
+    if len(dsteps) != 2:
+        failures.append(f"_parse_demo_results: steps {len(dsteps)}")
+    elif not dsteps[0]["is_new"] or dsteps[1]["is_new"]:
+        failures.append(f"_parse_demo_results: NEW flags wrong: {dsteps}")
+    if len(dnotes) != 1:
+        failures.append(f"_parse_demo_results: notes {len(dnotes)}")
+
+    # Parse narrations from a demo-script.md body.
+    _demo_script = (
+        "# Demo Script — phase-1\n\n"
+        "### Step 01 — Open app  [NEW]\n"
+        "- **Narration:** Open the home page and look for the Sign in button.\n"
+        "- **Action:** Navigate http://localhost\n\n"
+        "### Step 02 — Sign in\n"
+        "- **Narration:** Type your email and password.\n"
+        "- **Action:** Click Submit\n"
+    )
+    narr = _parse_demo_script_narrations(_demo_script)
+    if narr.get(1, "") != "Open the home page and look for the Sign in button.":
+        failures.append(f"_parse_demo_script_narrations: step 1 missing: {narr}")
+    if narr.get(2, "") != "Type your email and password.":
+        failures.append(f"_parse_demo_script_narrations: step 2 missing: {narr}")
+
     # End-to-end render — goal-mode iter with screenshots
     with tempfile.TemporaryDirectory() as raw_tmp:
         tmp = Path(raw_tmp)
         _write_summary_fixture(tmp, "goal-money-first-iter-18", _FIXTURE_SUMMARY_GOAL)
+        _write_demo_fixture(
+            tmp, "goal-money-first-iter-18",
+            verdict="RECORDED",
+            steps=[
+                {"num": 1, "title": "Open sign-in", "is_new": True,
+                 "narration": "Open the app and click Sign in."},
+                {"num": 2, "title": "Submit credentials", "is_new": False,
+                 "narration": "Enter your email and password."},
+            ],
+        )
         # Session journey-history
         sd = tmp / "runs" / "goal-session-money-first" / "state"
         sd.mkdir(parents=True, exist_ok=True)
@@ -1281,6 +2016,14 @@ def _cmd_self_test(_argv: list[str]) -> int:
         if len(data.screenshots) != 3:
             failures.append(f"screenshots count {len(data.screenshots)}")
         html = render_html_iteration(data)
+        if data.demo_verdict != "RECORDED":
+            failures.append(f"load_iteration: demo_verdict {data.demo_verdict}")
+        if len(data.demo_steps) != 2:
+            failures.append(f"load_iteration: demo_steps count {len(data.demo_steps)}")
+        elif data.demo_steps[0].get("narration") != "Open the app and click Sign in.":
+            failures.append(
+                f"load_iteration: demo narration not attached: {data.demo_steps[0]}"
+            )
         for expect in (
             "CONTINUE",
             "Direction: improving",
@@ -1289,11 +2032,34 @@ def _cmd_self_test(_argv: list[str]) -> int:
             "Direction signal",
             "Latest evaluator reasoning",
             "data:image/png;base64,",
+            # Plain-words layer — leads the body and is prominent.
+            "class='plain-words'",
+            "In plain words",
+            "Sign in with email",
+            "Technical detail below",
+            # Watch-it-work gallery — present, with NEW badge and narration.
+            "class='watch-it-work'",
+            "Watch it work",
+            "demo-recorded",
+            ">NEW<",
+            "Open sign-in",
+            "Enter your email and password.",
         ):
             if expect not in html:
                 failures.append(f"goal render missing: {expect}")
         if 'src="http' in html:
             failures.append("goal render contains remote refs")
+        # The technical accordions must all be collapsed by default — no
+        # `<details open>` should appear anywhere in the body.
+        if "<details open>" in html:
+            failures.append("goal render leaves a technical accordion open by default")
+        # The plain-words section must render BEFORE any technical accordion.
+        pw_pos = html.find("class='plain-words'")
+        first_details = html.find("<details")
+        if pw_pos < 0 or first_details < 0 or pw_pos > first_details:
+            failures.append(
+                "goal render: plain-words section must come before first <details>"
+            )
 
         # Phase-mode iter (no goal context)
         _write_summary_fixture(tmp, "phase-7", _FIXTURE_SUMMARY_FULL, with_screenshots=False)
@@ -1303,11 +2069,19 @@ def _cmd_self_test(_argv: list[str]) -> int:
         if data_p.iter_type != "phase":
             failures.append(f"phase iter_type {data_p.iter_type}")
         html_p = render_html_iteration(data_p)
-        for expect in ("PASS", "Added user profile page", "Quick verify"):
+        for expect in (
+            "PASS",
+            "Added user profile page",
+            "Quick verify",
+            "class='plain-words'",
+            "edit your profile bio",
+        ):
             if expect not in html_p:
                 failures.append(f"phase render missing: {expect}")
         if "Direction: " in html_p:
             failures.append("phase render should hide direction badge (n/a)")
+        if "<details open>" in html_p:
+            failures.append("phase render leaves a technical accordion open by default")
 
         # Missing-summary fallback
         empty_data = load_iteration("missing-phase", tmp)
@@ -1339,9 +2113,39 @@ def _cmd_self_test(_argv: list[str]) -> int:
         (tmp / "runs" / "goal-demo-iter-1").mkdir(parents=True, exist_ok=True)
         (tmp / "docs").mkdir(exist_ok=True)
         (tmp / "docs" / "goal.md").write_text("# Build the money app\n")
+        # Write a project-story.md so the session index leads with the
+        # cumulative narrative.
+        (demo_dir / "state" / "project-story.md").write_text(
+            "# Project story so far\n\n"
+            "A small money app that lets users sign in and view their account.\n\n"
+            "## How it has grown\n\n"
+            "Started with login, then added the account page. Sign-in passes browser checks.\n\n"
+            "## What it can do today\n\n"
+            "The product lets users sign in and view their account.\n\n"
+            "_Last updated: 2026-05-12 after iteration 1._\n"
+        )
+        # Give iter-1 a demo fixture so the session index can embed the latest
+        # gallery.
+        _write_demo_fixture(
+            tmp, "goal-demo-iter-1",
+            verdict="RECORDED",
+            steps=[
+                {"num": 1, "title": "Open sign-in", "is_new": True,
+                 "narration": "Open the home page."},
+                {"num": 2, "title": "Submit credentials", "is_new": False,
+                 "narration": "Sign in and land on the account page."},
+            ],
+        )
         sess = load_session("demo", tmp)
         if len(sess.iterations) != 2:
             failures.append(f"session iterations: {len(sess.iterations)}")
+        if not sess.project_story_md:
+            failures.append("session: project_story_md not loaded")
+        if sess.latest_demo_iter is None or sess.latest_demo_iter.phase_id != "goal-demo-iter-1":
+            failures.append(
+                f"session: latest_demo_iter expected goal-demo-iter-1, got "
+                f"{sess.latest_demo_iter.phase_id if sess.latest_demo_iter else None}"
+            )
         idx_html = render_html_session_index(sess)
         if idx_html.count("class='iter-card'") != 2:
             failures.append(f"session cards: {idx_html.count('iter-card')}")
@@ -1349,6 +2153,64 @@ def _cmd_self_test(_argv: list[str]) -> int:
             failures.append("session: cross-iter href should target reports/ flat name")
         if "Build the money app" not in idx_html:
             failures.append("session: title missing")
+        for expect in (
+            "class='story-so-far'",
+            "The story so far",
+            "How it has grown",
+            "class='session-demo'",
+            "Latest walkthrough",
+            "Open sign-in",
+            "Open the home page.",
+            "Journey-by-journey progress",
+        ):
+            if expect not in idx_html:
+                failures.append(f"session index missing: {expect}")
+        # 'The story so far' section must come before the journey matrix.
+        story_pos = idx_html.find("class='story-so-far'")
+        matrix_pos = idx_html.find("class='matrix'")
+        if story_pos < 0 or matrix_pos < 0 or story_pos > matrix_pos:
+            failures.append("session index: story section must come before matrix")
+
+        # Delivered wrap fixture — drop a delivered.md and exercise the new
+        # `delivered` command + the session-index 'delivered-link' banner.
+        delivered_md = (
+            "# Delivered — Build the money app\n\n"
+            "**Session:** demo\n**Date:** 2026-05-12\n**Final verdict:** GOAL_ACHIEVED\n"
+            "**Iterations:** 2\n\n"
+            "## What you can do today\n\n"
+            "Sign in with email. View account.\n\n"
+            "## How it came together\n\n"
+            "First we built sign-in. Then the account page.\n"
+        )
+        (tmp / "reports" / "goal-session-demo-delivered.md").write_text(delivered_md)
+        rc = cmd_delivered(["demo", f"--repo-root={tmp}"])
+        if rc != 0:
+            failures.append(f"cmd_delivered exit {rc}")
+        d_out = delivered_output_path("demo", tmp)
+        if not d_out.exists():
+            failures.append(f"delivered HTML not written at {d_out}")
+        else:
+            d_html = d_out.read_text(encoding="utf-8")
+            for expect in (
+                "GOAL ACHIEVED",
+                "Build the money app",
+                "class='delivered-body'",
+                "What you can do today",
+                "How it came together",
+                "class='watch-it-work'",  # latest demo gallery embedded
+                "goal-session-demo-index.html",  # back link
+            ):
+                if expect not in d_html:
+                    failures.append(f"delivered HTML missing: {expect}")
+        # Re-render session index — now it should surface the delivered link.
+        sess2 = load_session("demo", tmp)
+        if not sess2.delivered_md_exists:
+            failures.append("session: delivered_md_exists should be true after writing")
+        idx_html2 = render_html_session_index(sess2)
+        if "class='delivered-link'" not in idx_html2:
+            failures.append("session index: delivered-link banner missing after GOAL_ACHIEVED")
+        if "goal-session-demo-delivered.html" not in idx_html2:
+            failures.append("session index: delivered href missing")
 
         # Output path correctness
         ip = iteration_output_path("phase-7", tmp)
@@ -1357,6 +2219,9 @@ def _cmd_self_test(_argv: list[str]) -> int:
         sp = session_index_output_path("demo", tmp)
         if not str(sp).endswith("/reports/goal-session-demo-index.html"):
             failures.append(f"session_index_output_path: unexpected {sp}")
+        dp = delivered_output_path("demo", tmp)
+        if not str(dp).endswith("/reports/goal-session-demo-delivered.html"):
+            failures.append(f"delivered_output_path: unexpected {dp}")
 
     if failures:
         print("self-test FAILED:", file=sys.stderr)
@@ -1370,6 +2235,7 @@ def _cmd_self_test(_argv: list[str]) -> int:
 _COMMANDS = {
     "iteration": cmd_iteration,
     "session-index": cmd_session_index,
+    "delivered": cmd_delivered,
     "self-test": _cmd_self_test,
     "--self-test": _cmd_self_test,
 }

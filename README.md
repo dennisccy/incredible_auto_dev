@@ -5,11 +5,11 @@ A reusable framework for running phased software development with Claude AI agen
 ## What This Is
 
 A collection of:
-- **13 Claude agent definitions** covering the full dev lifecycle, UI visibility, and per-iteration summary
-- **16 automation shell scripts** orchestrating an 11-step pipeline
+- **14 Claude agent definitions** covering the full dev lifecycle, UI visibility, per-iteration summary, and an auto-recorded product demo
+- **18 automation shell scripts** orchestrating an 11-step pipeline plus an on-demand demo viewer
 - **5 security hooks** guarding against supply-chain attacks, dangerous commands, and vague artifacts
 - **9 skills** providing reusable methodologies for UI analysis, test design, and doc updates
-- **16 report templates** for consistent handoffs across all agents
+- **18 report templates** for consistent handoffs across all agents
 - **A modular CLAUDE.md system** (core rules, workflow, project config, anti-patterns, architecture docs)
 
 The chain has checkpoint/resume, quota-exhaustion auto-retry, and a verdict-gated pipeline where each stage must pass before the next runs.
@@ -108,6 +108,9 @@ Phase spec (docs/phases/<phase>.md)
  6. browser-qa-agent   --> ui-test-results                       [frontend only]
     |
     v
+ 6.5 demo-narrator      --> demo-script + demo-results + screenshots [frontend only, showcase]
+    |
+    v
  7. qa (validate)      --> qa-report                    (loop: max 3 attempts)
     |
     v
@@ -126,7 +129,9 @@ Phase spec (docs/phases/<phase>.md)
 11. release-manager    --> summary.json + branch + commit + PR
 ```
 
-Steps 5, 6, and 8 are skipped for backend-only phases (`Frontend Present: no`).
+Steps 5, 6, 6.5, and 8 are skipped for backend-only phases (`Frontend Present: no`).
+
+Step 6.5 (the demo) is **showcase, not gate** — a failed step is a soft note, never a hard pipeline fail. It re-uses the app already booted by browser QA in the same window (idempotent `ensure_services_running`), so no second app boot.
 
 ## Iteration Summary + HTML Report
 
@@ -149,6 +154,55 @@ bash scripts/automation/render-summary.sh <phase-id>                  # rebuild 
 bash scripts/automation/render-summary.sh <phase-id> --no-resummarize # re-render HTML only (no API tokens)
 bash scripts/automation/render-summary.sh --session-index <sid>       # re-render goal-mode session index
 ```
+
+## Non-Technical Summary & Live Demo
+
+The framework writes a layered view of every iteration so that **anyone — not just developers — can understand what was built and decide what's next.** Three things happen, automatically, on every iteration:
+
+1. **Plain-language layer in the iteration summary.** The iteration-summary HTML (the page at `reports/phase-<phase>-summary.html`) now *leads* with a `## In plain words` block: *What you can do now / What changed this time / What's next*. No jargon, no file names, no journey IDs. The technical sections (Direction, What was done, Quick verify, Artifacts) are kept exactly as before — they just sit below, **collapsed by default**, for when a developer wants to drill down.
+
+2. **An auto-recorded narrated demo (Step 6.5).** Right after browser QA — in the same app-up window — a new `demo-narrator` agent walks the **whole working product so far** in a real browser, captures one captioned screenshot per step, and assembles them into a "Watch it work" gallery on the same page. Steps that were added or visibly changed this iteration are flagged `[NEW]`. Showcase, not QA — a failed step is a soft note in `demo-results.md`, never a hard pipeline fail.
+
+3. **A continuously-updated "Project story so far" + GOAL_ACHIEVED wrap** (goal mode only). The `iteration-summarizer` agent also maintains `runs/goal-session-<sid>/state/project-story.md` — one flowing plain-language narrative of how the product grew, rewritten each iteration so it reads end-to-end. The session index HTML (`reports/goal-session-<sid>-index.html`) leads with this story plus the latest demo gallery. When `goal-evaluator` finally returns `GOAL_ACHIEVED`, the framework emits a one-time polished `goal-session-<sid>-delivered.html` — a celebratory "what we delivered" page with the final walkthrough embedded, linked from a banner on the session index.
+
+### Commands a non-technical owner can run
+
+```bash
+# Open the most recent walkthrough in your browser
+./scripts/automation/demo.sh --latest
+
+# Open a specific iteration's gallery (auto-detects phase vs. session id)
+./scripts/automation/demo.sh phase-1
+./scripts/automation/demo.sh goal-money-iter-3
+./scripts/automation/demo.sh money-first                # session-level index
+
+# Open the GOAL_ACHIEVED "delivered" wrap for a session
+./scripts/automation/demo.sh money-first --delivered
+
+# Live walkthrough — the agent drives a visible Chrome step-by-step
+# while you watch and narrates each action to the terminal
+./scripts/automation/demo.sh phase-1 --live
+
+# Re-record the gallery on demand (boots the app if not running)
+./scripts/automation/demo-phase.sh phase-1              # record mode (default)
+./scripts/automation/demo-phase.sh phase-1 --live       # alias for `demo.sh phase-1 --live`
+```
+
+### Outputs produced
+
+| Artifact | Where | Audience |
+|----------|-------|----------|
+| Plain-language section + Watch-it-work gallery + technical accordions | `reports/phase-<phase>-summary.html` | Everyone |
+| Narrated demo script (record mode) | `reports/phase-<phase>-demo-script.md` | Reviewable text source for the gallery |
+| Demo results + verdict (`RECORDED` / `RECORDED_WITH_NOTES` / `SKIPPED` / `NOT_YET`) | `reports/phase-<phase>-demo-results.md` | Renderer + audit trail |
+| Captioned screenshots | `reports/demo/<phase>/step-NN.png` | Embedded into the HTML |
+| Cumulative "Project story so far" (goal mode) | `runs/goal-session-<sid>/state/project-story.md` | Rendered into the session index |
+| Session index (story + latest gallery + matrix + per-iter cards) | `reports/goal-session-<sid>-index.html` | Everyone |
+| One-time delivered wrap (MD + HTML) | `reports/goal-session-<sid>-delivered.{md,html}` | Everyone, on `GOAL_ACHIEVED` |
+
+For more, see [`docs/goal-mode-quickstart.md`](docs/goal-mode-quickstart.md), [`runs/SCHEMA.md`](runs/SCHEMA.md) (artifact registry), and [`.claude/architecture/artifacts.md`](.claude/architecture/artifacts.md) (producer/consumer matrix).
+
+Screenshots of the rendered HTML appear in this section after your first iteration runs end-to-end — the artifacts are real, not mocked.
 
 ## Goal Mode Pipeline
 
@@ -201,7 +255,8 @@ Iteration name `goal-<sid>-iter-<N>` is used as the "phase name" so existing scr
 | `browser-qa-agent` | standard | 6 | Executes browser tests via Chrome MCP |
 | `ux-regression-reviewer` | standard | 8 | Checks UI evolved with capabilities, flags regressions |
 | `phase-closure-auditor` | standard | 10 | Final gate: validates all artifacts exist and are non-vague |
-| `iteration-summarizer` | light | 10.5 | Synthesizes the per-iteration summary MD (what was done / left / direction) that drives the HTML report |
+| `iteration-summarizer` | light | 10.5 | Synthesizes the per-iteration summary MD (what was done / left / direction) that drives the HTML report; also maintains the cumulative `project-story.md` and writes the one-time `delivered.md` wrap on `GOAL_ACHIEVED` |
+| `demo-narrator` | standard | 6.5 | Drives the running app via Chrome MCP and captures a narrated, captioned "Watch it work" gallery (record mode) or walks a visible Chrome live (live mode). Showcase, not gate. |
 | `goal-decomposer` | strong | (goal mode) | Reads goal + state, writes next iteration spec, picks lean/full depth |
 | `goal-evaluator` | strong | (goal mode) | Skeptical done/regression/stall judgment, updates journey-history |
 
@@ -225,8 +280,15 @@ Model tiers are defined in `config/agent-models.yaml`. Change assignments there 
 ./scripts/automation/ui-impact-phase.sh phase-1        # analyze UI impact
 ./scripts/automation/ui-test-design-phase.sh phase-1   # create UI test plan
 ./scripts/automation/browser-qa-phase.sh phase-1       # run browser QA
+./scripts/automation/demo-phase.sh phase-1             # auto-record a narrated product demo (showcase, non-gating)
 ./scripts/automation/ux-regression-phase.sh phase-1    # check UX regression
 ./scripts/automation/phase-closure-check.sh phase-1    # final closure gate
+
+# Demo viewer (non-technical owner UX)
+./scripts/automation/demo.sh --latest                  # open most recent walkthrough
+./scripts/automation/demo.sh <id>                      # open recorded gallery (phase OR session id)
+./scripts/automation/demo.sh <id> --live               # live walkthrough — agent drives a visible Chrome
+./scripts/automation/demo.sh <sid> --delivered         # open the GOAL_ACHIEVED "delivered" wrap
 
 # Utilities
 ./scripts/automation/generate-test-plan.sh phase-1     # write test plan before dev
@@ -275,7 +337,9 @@ bash scripts/automation/render-summary.sh --session-index <sid>        # re-rend
 | `templates/ui-test-results.md` | Browser QA results format |
 | `templates/what-to-click.md` | Operator verification guide format |
 | `templates/closure-verdict.md` | Phase closure verdict format |
-| `templates/iteration-summary.md` | Iteration summary format (drives the HTML report) |
+| `templates/iteration-summary.md` | Iteration summary format (drives the HTML report; includes the new plain-language `## In plain words` section) |
+| `templates/demo-script.md` | Per-iteration narrated demo script (Highlights + Full tour) |
+| `templates/demo-results.md` | Per-iteration demo verdict + captured-steps table |
 | `templates/project-goal.md` | Project goal document template (now includes Must-have user journeys + Anti-goals — required for goal mode, ignored by phase mode) |
 | `templates/architecture-overview.md` | Project architecture doc template |
 

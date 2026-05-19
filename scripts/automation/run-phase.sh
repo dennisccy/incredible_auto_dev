@@ -590,7 +590,34 @@ else
 fi
 echo ""
 
-# Kill any servers left behind by previous steps (browser QA, dev, etc.)
+# ── Step 6.5/11: Product demo (showcase, not gate) ──────────────────────────
+# Runs in the SAME app-up window as browser QA — the idempotent
+# ensure_services_running in demo-phase.sh is a no-op when the app is still
+# warm, so the standard pipeline pays NO second boot. Showcase-only: the demo
+# never halts the pipeline (signals and quota propagate; any other failure
+# becomes a SKIPPED stub and exit 0). Skipped for backend-only iterations and
+# when browser QA itself was skipped.
+if [[ "$SKIP_BROWSER_QA" == "false" && "$FRONTEND_PRESENT" == "yes" ]]; then
+  log "Step 6.5/11 -- Product demo (showcase)..."
+  demo_rc=0
+  _run_step "$SCRIPT_DIR/demo-phase.sh" "$PHASE" || demo_rc=$?
+  if _is_signal_exit "$demo_rc"; then
+    log "  Step 6.5 (demo) interrupted by signal (exit $demo_rc) — aborting; resume will re-run this step."
+    exit "$demo_rc"
+  fi
+  if [[ $demo_rc -eq 75 ]]; then
+    log "  Step 6.5 (demo) hit quota (exit 75) — outer loop will handle."
+    exit 75
+  fi
+  if [[ $demo_rc -ne 0 ]]; then
+    log "  Warning: demo-phase.sh exited with code $demo_rc — continuing (showcase, non-gating)"
+  fi
+else
+  log "Step 6.5/11 -- Product demo: skipped (backend-only or browser-qa skipped)"
+fi
+echo ""
+
+# Kill any servers left behind by previous steps (browser QA, demo, dev, etc.)
 kill_phase_servers
 
 # ── Step 7/11: QA loop ────────────────────────────────────────────────────────

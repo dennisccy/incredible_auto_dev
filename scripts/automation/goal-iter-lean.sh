@@ -263,6 +263,14 @@ if [[ $_bqa_rc -ne 0 && $_bqa_rc -ne ${QUOTA_EXHAUSTED_EXIT_CODE:-75} ]]; then
   fi
 fi
 
+# ── Product demo (showcase) ───────────────────────────────────────────────
+# Reuses the still-running app (cleanup_iter_servers fires only on EXIT). The
+# idempotent ensure_services_running in demo-phase.sh is a no-op when ports
+# are warm, so no second boot. Non-gating: failures become a SKIPPED stub and
+# the lean iteration continues to its closing summary.
+bash "$SCRIPT_DIR/demo-phase.sh" "$ITER_NAME" \
+  || echo "[goal-iter-lean] demo-phase.sh exited non-zero — continuing (showcase, non-gating)"
+
 echo "[goal-iter-lean] Done. Iteration artifacts:"
 echo "  Dev handoff:   $DEV_HANDOFF"
 echo "  Review report: $REVIEW_REPORT"

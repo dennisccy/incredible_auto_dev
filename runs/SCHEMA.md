@@ -146,6 +146,12 @@ Also included as a section inside `reports/qa/<phase>-qa.md` when `Frontend Pres
 | Iteration summary (MD) | `reports/phase-<phase>-iteration-summary.md` |
 | HTML iteration summary | `reports/phase-<phase>-summary.html` |
 | Goal-mode session index | `reports/goal-session-<sid>-index.html` |
+| Demo script (per iter) | `reports/phase-<phase>-demo-script.md` |
+| Demo results (per iter) | `reports/phase-<phase>-demo-results.md` |
+| Demo screenshots (per iter) | `reports/demo/<phase>/step-NN.png` |
+| Cumulative project story (goal mode) | `runs/goal-session-<sid>/state/project-story.md` |
+| GOAL_ACHIEVED delivered wrap (MD) | `reports/goal-session-<sid>-delivered.md` |
+| GOAL_ACHIEVED delivered wrap (HTML) | `reports/goal-session-<sid>-delivered.html` |
 
 ---
 
@@ -268,6 +274,72 @@ The renderer is non-blocking: failure never fails the pipeline.
 
 Goal-mode-only. Written by every `write_session_summary` call (each
 session boundary — CONTINUE, ABORT, GOAL_ACHIEVED, REGRESSION_HALT,
-STALLED, BUDGET_EXHAUSTED). Contains the goal title, overall verdict, a
-journey progress matrix (rows × iterations), and one card per iteration
-linking to its `phase-<iter-name>-summary.html`.
+STALLED, BUDGET_EXHAUSTED). Contains the goal title, overall verdict, **the
+cumulative plain-language "story so far"** (rendered from
+`state/project-story.md`), **the latest iteration's narrated demo gallery**,
+a journey progress matrix (rows × iterations), and one card per iteration
+linking to its `phase-<iter-name>-summary.html`. When the session has
+reached GOAL_ACHIEVED, a prominent banner links to the delivered wrap.
+
+---
+
+## Demo gallery (per iteration)
+
+For frontend iterations, the `demo-narrator` agent
+(`.claude/agents/demo-narrator.md`) runs immediately after browser QA — in
+the same app-up window — and walks the **whole working product so far**,
+flagging steps added/changed this iteration as `[NEW]`. It is a showcase,
+not QA: a failed step is a soft note, never a hard pipeline fail.
+
+### reports/phase-\<phase\>-demo-script.md
+
+Plain-language narrated script of every demo step. Sections: **Highlights**
+(up to 8 steps, each captured as a screenshot) and **Full tour** (text-only
+extras). Each step records narration, exact action, and what to point out.
+
+### reports/phase-\<phase\>-demo-results.md
+
+The machine-readable companion. Top of file:
+`**Demo Verdict:** RECORDED | RECORDED_WITH_NOTES | SKIPPED | NOT_YET`
+plus a `## Captured Steps` pipe-table (Step | Title | New | Screenshot) and
+an optional `## Soft notes` bullet list. The HTML renderer keys off the
+table and the verdict badge.
+
+### reports/demo/\<phase\>/step-NN.png
+
+One PNG per Highlights step, captured by the agent via Chrome MCP against
+the running app. Base64-embedded into the iteration HTML by the renderer.
+
+---
+
+## Cumulative project story (goal mode only)
+
+### runs/goal-session-\<sid\>/state/project-story.md
+
+A single flowing plain-language narrative of how the product has grown
+across all iterations in the session. Maintained by the
+`iteration-summarizer` agent on every iteration (it reads the existing
+file, weaves in this iteration's "In plain words" content, and rewrites
+the whole story). Capped at ~400 words; older filler is condensed as
+newer content is added. Rendered as the leading section of the session
+index HTML.
+
+---
+
+## Delivered wrap (goal mode, GOAL_ACHIEVED only)
+
+When goal-evaluator returns `GOAL_ACHIEVED`, `run-goal.sh` triggers a
+one-time polished "what we delivered" pass via the iteration-summarizer
+in delivered mode.
+
+### reports/goal-session-\<sid\>-delivered.md
+
+Friendly, non-technical summary of everything the product can do, how it
+came together (one short paragraph per major milestone), and a pointer to
+the embedded walkthrough. No journey IDs, no file names.
+
+### reports/goal-session-\<sid\>-delivered.html
+
+Self-contained HTML companion. Goal-achieved hero, the delivered MD body,
+and the latest demo gallery embedded. The session index surfaces a banner
+linking to this page once it exists.

@@ -38,6 +38,15 @@ All inter-agent communication happens through filesystem artifacts. This documen
 | Closure verdict | `reports/phase-{N}-closure-verdict.md` | phase-closure-auditor | finalize-phase.sh |
 | UI audit report | `reports/qa/<phase>-ui-audit.md` | ui-audit-phase.sh | qa (standalone) |
 | Browser evidence | `reports/qa/<phase>-evidence/*.png` | browser-qa-agent | phase-closure-auditor |
+| Iteration summary (MD) | `reports/phase-<phase>-iteration-summary.md` | iteration-summarizer | render_iteration_summary.py, human |
+| HTML iteration summary | `reports/phase-<phase>-summary.html` | render_iteration_summary.py | human |
+| Goal-mode session index | `reports/goal-session-<sid>-index.html` | render_iteration_summary.py | human |
+| Demo script | `reports/phase-<phase>-demo-script.md` | demo-narrator | render_iteration_summary.py, human |
+| Demo results | `reports/phase-<phase>-demo-results.md` | demo-narrator | render_iteration_summary.py, human |
+| Demo screenshots | `reports/demo/<phase>/step-NN.png` | demo-narrator | render_iteration_summary.py |
+| Cumulative project story | `runs/goal-session-<sid>/state/project-story.md` | iteration-summarizer (goal mode) | render_iteration_summary.py, human |
+| Delivered wrap (MD) | `reports/goal-session-<sid>-delivered.md` | iteration-summarizer (delivered mode, GOAL_ACHIEVED only) | render_iteration_summary.py, human |
+| Delivered wrap (HTML) | `reports/goal-session-<sid>-delivered.html` | render_iteration_summary.py (`delivered` command) | human |
 | Install decisions | `reports/security/install-decisions.jsonl` | install-security-gate.sh | human review |
 | Framework architecture | `.claude/architecture/*.md` | update-docs.sh | all agents (reference) |
 
@@ -54,6 +63,8 @@ All verdicts use the prefix `**Verdict:**` followed by the exact value. Scripts 
 | Browser QA | `PASS`, `FAIL`, `SKIPPED` |
 | Phase Closure | `CLOSURE-PASS`, `CLOSURE-FAIL` |
 | UX Regression | `UX-REGRESSION-PASS`, `UX-REGRESSION-WARN`, `UX-REGRESSION-FAIL` |
+| Iteration summary | `GOAL_ACHIEVED`, `CONTINUE`, `ESCALATE`, `REGRESSION`, `STALLED`, `PASS`, `FAIL`, `IN-PROGRESS` |
+| Demo results | `RECORDED`, `RECORDED_WITH_NOTES`, `SKIPPED`, `NOT_YET` (showcase, never blocks the pipeline) |
 
 ## Backend-Only N/A Stubs
 
