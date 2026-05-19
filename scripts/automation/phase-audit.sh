@@ -58,6 +58,7 @@ fi
 echo "[phase-audit] Running post-phase audit for: $PHASE"
 
 cd "$REPO_ROOT"
+export CHAIN_CURRENT_AGENT=auditor
 claude_with_quota_retry -p "You are the auditor agent for phased development.
 
 Phase: $PHASE

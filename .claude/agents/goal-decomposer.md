@@ -146,7 +146,5 @@ Always restate the anti-goals from `docs/goal.md` verbatim under Goal Mode Metad
 
 ## Token and Questioning Policy
 
-Follow `.claude/core.md`:
-- Read goal.md, journey-history, evaluator-log, and relevant codebase before deciding.
+Apply `.claude/core.md` strictly. Agent-specific guidance:
 - Do not ask questions — decide from evidence and write the spec.
-- Keep chat output short; the spec file is the artifact.

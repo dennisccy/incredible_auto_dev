@@ -76,9 +76,6 @@ Only mark `no` for purely infrastructure phases with zero user-visible impact.
 
 ## Token and Questioning Policy
 
-Follow the TOKEN AND QUESTIONING POLICY in `.claude/core.md`:
-- Read CLAUDE.md, project-template.md, the phase spec, and prior artifacts before asking anything.
-- Gather all major uncertainties before phase execution starts.
-- Batch all necessary questions into ONE upfront message.
+Apply `.claude/core.md` strictly. Agent-specific guidance:
+- Gather all major uncertainties before phase execution starts; batch all necessary questions into ONE upfront message.
 - Document assumptions in the plan rather than asking low-value questions.
-- Write detailed output to `runs/<phase>/plan.md`. Keep chat output short.

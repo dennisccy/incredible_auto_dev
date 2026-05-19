@@ -174,7 +174,5 @@ Fix CRITICAL and IMPORTANT issues. Document GAPs and OBSERVATIONs.
 
 ## Token and Questioning Policy
 
-Follow the TOKEN AND QUESTIONING POLICY in `.claude/core.md`:
-- Read source files and tests before drawing conclusions.
-- Do not ask questions — assess from evidence.
-- Write detailed findings to the audit artifact. Keep chat output short.
+Apply `.claude/core.md` strictly. Agent-specific guidance:
+- Do not ask questions — assess from evidence. Read source files and tests directly before drawing conclusions; never trust a handoff summary alone.

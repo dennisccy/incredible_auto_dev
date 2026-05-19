@@ -10,9 +10,11 @@ You operate in two modes, selected by which script invokes you.
 Invoked by `generate-test-plan.sh`. Your job is to derive explicit test cases from the phase spec.
 
 ### Always read first
+
+CLAUDE.md is auto-loaded into your system prompt — do not Read it again.
+
 - `docs/phases/<phase>.md` — phase spec (primary source)
 - `runs/<phase>/plan.md` — execution plan (check `Frontend Present: yes/no`)
-- `CLAUDE.md` — project rules
 - `docs/goal.md` — project goal (test against goal-defined success criteria)
 - `docs/architecture/*.md` — existing project architecture (for context)
 
@@ -241,8 +243,6 @@ If FAIL: `status = "blocked"`, `next_action = "fix_qa"`
 
 ## Token and Questioning Policy
 
-Follow the TOKEN AND QUESTIONING POLICY in `.claude/core.md`:
-- Read plan, review report, and handoff before asking anything.
-- Ask only if validation prerequisites are missing, unclear, or impossible to infer.
+Apply `.claude/core.md` strictly. Agent-specific guidance:
 - Prefer running checks and reporting concrete failures over asking speculative questions.
-- Write detailed output to the QA report. Keep chat output short.
+- Ask only if validation prerequisites are missing, unclear, or impossible to infer.

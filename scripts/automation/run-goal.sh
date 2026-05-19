@@ -66,6 +66,7 @@ RESUME=false
 RESET=false
 AUTO_RELEASE=false
 ACK_REGRESSION=false
+FAST_MODE=false
 # Per-iter push is ON by default for new sessions. Pass --no-push-per-iter to
 # opt out. On resume, the persisted session.json value wins unless overridden
 # by an explicit CLI flag (--push-per-iter or --no-push-per-iter).
@@ -91,6 +92,7 @@ while [[ $# -gt 0 ]]; do
     --push-per-iter)           PUSH_PER_ITER=true;  PUSH_FLAG_USER="yes"; shift ;;
     --no-push-per-iter)        PUSH_PER_ITER=false; PUSH_FLAG_USER="no";  shift ;;
     --push-branch)             PUSH_BRANCH="$2"; shift 2 ;;
+    --fast)                    FAST_MODE=true; shift ;;
     *) echo "Unknown argument: $1" >&2; exit 2 ;;
   esac
 done
@@ -154,6 +156,7 @@ _run_iteration_summarizer() {
   mkdir -p "$REPO_ROOT/runs/goal-session-${SESSION_ID}/state"
 
   cd "$REPO_ROOT"
+  export CHAIN_CURRENT_AGENT=iteration-summarizer
   claude_with_quota_retry -p "You are the iteration-summarizer agent.
 
 mode: normal
@@ -210,6 +213,7 @@ _render_final_delivered() {
   mkdir -p "$REPO_ROOT/reports"
 
   cd "$REPO_ROOT"
+  export CHAIN_CURRENT_AGENT=iteration-summarizer
   claude_with_quota_retry -p "You are the iteration-summarizer agent.
 
 mode: delivered
@@ -800,14 +804,25 @@ Do NOT write code or implement anything. STOP after writing the spec." || _decom
 
   # 3. Dispatch
   if [[ "$DEPTH" == "full" ]]; then
-    echo "[run-goal] Dispatching FULL pipeline via run-phase.sh --no-finalize ..."
+    # Propagate --fast into the full-iteration path so the parallel post-dev
+    # fanout in run-phase.sh kicks in. Lean iterations have no parallelisable
+    # surface (dev → review → browser-qa → demo are strictly sequential), so
+    # --fast is a no-op there and we just log the fact for visibility.
+    _full_extra_args=(--no-finalize)
+    if [[ "$FAST_MODE" == "true" ]]; then
+      _full_extra_args+=(--fast)
+    fi
+    echo "[run-goal] Dispatching FULL pipeline via run-phase.sh ${_full_extra_args[*]} ..."
     if grep -q '\-\-no-finalize' "$SCRIPT_DIR/run-phase.sh"; then
-      bash "$SCRIPT_DIR/run-phase.sh" "$ITER_NAME" --no-finalize || _exec_rc=$?
+      bash "$SCRIPT_DIR/run-phase.sh" "$ITER_NAME" "${_full_extra_args[@]}" || _exec_rc=$?
     else
       echo "[run-goal] run-phase.sh does not yet support --no-finalize. Falling back to lean for safety." >&2
       bash "$SCRIPT_DIR/goal-iter-lean.sh" "$ITER_NAME" || _exec_rc=$?
     fi
   else
+    if [[ "$FAST_MODE" == "true" ]]; then
+      echo "[run-goal] --fast is a no-op for lean iterations (no parallelisable steps); Tier 1 polish + per-agent --effort overrides still apply."
+    fi
     echo "[run-goal] Dispatching LEAN pipeline via goal-iter-lean.sh ..."
     bash "$SCRIPT_DIR/goal-iter-lean.sh" "$ITER_NAME" || _exec_rc=$?
   fi

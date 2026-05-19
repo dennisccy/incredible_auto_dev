@@ -89,7 +89,13 @@ _cleanup_browser_qa_services() {
     _stop_pid_tree "$pid"
   done
 }
-trap _cleanup_browser_qa_services EXIT
+# When CHAIN_SHARED_SERVICES=true, the caller (run-phase.sh's --fast fanout)
+# owns service lifecycle for the whole post-dev batch — we MUST NOT install
+# the EXIT trap or the first branch to finish would tear down the shared app
+# under the other still-running branch.
+if [[ "${CHAIN_SHARED_SERVICES:-false}" != "true" ]]; then
+  trap _cleanup_browser_qa_services EXIT
+fi
 
 # Resolve start commands
 BACKEND_START_CMD="${CHAIN_START_BACKEND_CMD:-}"
@@ -137,7 +143,11 @@ export QA_FRONTEND_START_CMD="$FRONTEND_START_CMD"
 export QA_FRONTEND_LOG
 export QA_FRONTEND_REQUIRED="yes"
 
-ensure_services_running
+# Skip the boot when the caller has already booted services (--fast fanout).
+# The caller's _boot_shared_services already called ensure_services_running.
+if [[ "${CHAIN_SHARED_SERVICES:-false}" != "true" ]]; then
+  ensure_services_running
+fi
 
 FRONTEND_RUNNING_STATUS=$(curl -s -o /dev/null -w "%{http_code}" "$FRONTEND_URL" 2>/dev/null || true)
 if [[ "$FRONTEND_RUNNING_STATUS" =~ ^[23] ]]; then
@@ -155,6 +165,7 @@ export CHAIN_CLAUDE_PRE_RETRY_HOOK="ensure_services_running"
 
 # ── Run browser QA agent ───────────────────────────────────────────────────
 cd "$REPO_ROOT"
+export CHAIN_CURRENT_AGENT=browser-qa-agent
 # Guard against `set -e` so we can inspect the exit code and fall back to
 # writing a SKIPPED stub when the agent leaves no results file.
 _bqa_rc=0

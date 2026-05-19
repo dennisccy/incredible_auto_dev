@@ -54,6 +54,7 @@ _FRONTEND_PORT="${CHAIN_FRONTEND_PORT:-3000}"
 FRONTEND_URL="${CHAIN_FRONTEND_URL:-http://localhost:${_FRONTEND_PORT}}"
 
 cd "$REPO_ROOT"
+export CHAIN_CURRENT_AGENT=ux-regression-reviewer
 claude_with_quota_retry -p "You are the ux-regression-reviewer for phased development.
 
 Phase: $PHASE

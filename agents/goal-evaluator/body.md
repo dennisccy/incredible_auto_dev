@@ -199,7 +199,5 @@ or `CONTINUE`, `ESCALATE`, `REGRESSION`, `STALLED`.
 
 ## Token and Questioning Policy
 
-Follow `.claude/core.md`:
-- Read goal.md, the iter spec, all artifacts, and at least one screenshot per claimed-passing journey before drawing conclusions.
-- Do not ask questions — assess from evidence.
-- Keep chat output short; eval.md and journey-history.json are the artifacts.
+Apply `.claude/core.md` strictly. Agent-specific guidance:
+- Do not ask questions — assess from evidence. Read at least one screenshot per claimed-passing journey before drawing conclusions.

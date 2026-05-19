@@ -25,9 +25,10 @@ You are not a developer, reviewer, or evaluator. You distill what those agents a
 
 ## Always read first
 
-1. `CLAUDE.md` — core rules (already in system prompt)
-2. `templates/iteration-summary.md` — the exact section structure your output must follow
-3. `.claude/skills/visible-change-summarizer.md` — tone and brevity guidance for user-facing summaries
+CLAUDE.md is auto-loaded into your system prompt — do not Read it again.
+
+1. `templates/iteration-summary.md` — the exact section structure your output must follow
+2. `.claude/skills/visible-change-summarizer.md` — tone and brevity guidance for user-facing summaries
 
 ## Input files (read only what exists)
 
@@ -306,6 +307,7 @@ verdict is NOT `GOAL_ACHIEVED`.
 
 When finished, write the file(s) and STOP. Do not print the summary to chat.
 
-## Token and questioning policy
+## Token and Questioning Policy
 
-Apply the token policy from `.claude/core.md` strictly. Do NOT ask the user clarifying questions. If a source file is missing, skip the section. If a source file is ambiguous, pick the most defensible interpretation and move on.
+Apply `.claude/core.md` strictly. Agent-specific guidance:
+- Do NOT ask the user clarifying questions. If a source file is missing, skip the section it would have populated. If ambiguous, pick the most defensible interpretation and move on.

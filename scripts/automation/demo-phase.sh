@@ -132,17 +132,21 @@ FRONTEND_URL="${CHAIN_FRONTEND_URL:-http://localhost:${_FRONTEND_PORT}}"
 # Idempotent boot. ensure_services_running is a no-op when ports are already
 # answering, so the standard pipeline (where browser-qa-phase.sh just booted
 # them moments ago) does NOT pay a second boot.
-QA_BACKEND_LOG=$(_qa_log_path "demo-backend")
-QA_FRONTEND_LOG=$(_qa_log_path "demo-frontend")
-export QA_BACKEND_HEALTH_URL="$BACKEND_HEALTH_URL"
-export QA_BACKEND_START_CMD="$BACKEND_START_CMD"
-export QA_BACKEND_LOG
-export QA_FRONTEND_URL="$FRONTEND_URL"
-export QA_FRONTEND_START_CMD="$FRONTEND_START_CMD"
-export QA_FRONTEND_LOG
-export QA_FRONTEND_REQUIRED="yes"
+# When CHAIN_SHARED_SERVICES=true (run-phase.sh --fast fanout), the caller has
+# already booted services and owns the EXIT-time teardown — skip the boot.
+if [[ "${CHAIN_SHARED_SERVICES:-false}" != "true" ]]; then
+  QA_BACKEND_LOG=$(_qa_log_path "demo-backend")
+  QA_FRONTEND_LOG=$(_qa_log_path "demo-frontend")
+  export QA_BACKEND_HEALTH_URL="$BACKEND_HEALTH_URL"
+  export QA_BACKEND_START_CMD="$BACKEND_START_CMD"
+  export QA_BACKEND_LOG
+  export QA_FRONTEND_URL="$FRONTEND_URL"
+  export QA_FRONTEND_START_CMD="$FRONTEND_START_CMD"
+  export QA_FRONTEND_LOG
+  export QA_FRONTEND_REQUIRED="yes"
 
-ensure_services_running
+  ensure_services_running
+fi
 
 FRONTEND_RUNNING_STATUS=$(curl -s -o /dev/null -w "%{http_code}" "$FRONTEND_URL" 2>/dev/null || true)
 if [[ "$FRONTEND_RUNNING_STATUS" =~ ^[23] ]]; then
@@ -164,6 +168,8 @@ mkdir -p "$DEMO_SHOTS_DIR"
 # ── Run the demo-narrator agent ────────────────────────────────────────────
 cd "$REPO_ROOT"
 _demo_rc=0
+
+export CHAIN_CURRENT_AGENT=demo-narrator
 
 if [[ "$MODE" == "live" ]]; then
   # Live mode: agent narrates to chat and drives a visible browser. No

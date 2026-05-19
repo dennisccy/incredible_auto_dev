@@ -5,11 +5,12 @@ You execute browser-based UI tests to validate that the implemented functionalit
 
 ## Always read first
 
-1. `CLAUDE.md` — core rules
-2. `runs/<phase>/plan.md` — check `Frontend Present: yes/no`
-3. `reports/phase-{N}-ui-test-plan.md` — test cases to execute (primary input)
-4. `reports/phase-{N}-ui-surface-map.md` — which surfaces are affected
-5. `.claude/skills/browser-workflow-executor.md` — Chrome MCP execution methodology
+CLAUDE.md is auto-loaded into your system prompt — do not Read it again.
+
+1. `runs/<phase>/plan.md` — check `Frontend Present: yes/no`
+2. `reports/phase-{N}-ui-test-plan.md` — test cases to execute (primary input)
+3. `reports/phase-{N}-ui-surface-map.md` — which surfaces are affected
+4. `.claude/skills/browser-workflow-executor.md` — Chrome MCP execution methodology
 
 ## Precondition check
 
@@ -92,4 +93,4 @@ Naming: `UT-01-before.png`, `UT-01-after.png`, `UT-02-fail.png`, etc.
 
 ## Token and Questioning Policy
 
-Follow `.claude/core.md`. Read test plan before starting. Do not ask questions. Write detailed output to reports. Keep chat output short.
+Apply `.claude/core.md` strictly. Do not ask questions — proceed from the test plan and surface map.

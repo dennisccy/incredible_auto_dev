@@ -36,6 +36,7 @@ echo "[generate-test-plan] Generating test plan for: $PHASE (frontend: $FRONTEND
 mkdir -p "$REPO_ROOT/reports/qa"
 
 cd "$REPO_ROOT"
+export CHAIN_CURRENT_AGENT=qa
 claude_with_quota_retry -p "You are the qa agent operating in TEST PLAN GENERATION mode for phased development.
 
 Phase: $PHASE

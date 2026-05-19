@@ -88,6 +88,7 @@ Every step updates `runs/<phase>/status.json` with the current step name. If a r
 | `ui_impact_complete` | Steps 1-4 |
 | `ui_test_designed` | Steps 1-5 |
 | `browser_qa_complete` | Steps 1-6 |
+| `post_dev_parallel_complete` | Steps 1-7 (only written by `run-phase.sh --fast` after both branches of the post-dev fanout succeed; see [Parallel post-dev fanout (--fast)](#parallel-post-dev-fanout---fast) below) |
 | `qa_passed` | Steps 1-7 |
 | `ux_regression_complete` | Steps 1-8 |
 | `audit_passed` | Steps 1-9 |
@@ -104,3 +105,38 @@ When the plan contains `Frontend Present: no`:
 - N/A stub files are written automatically by `write_na_ui_artifacts()` in `lib/common.sh`
 - Step 4 (UI impact) still runs but writes N/A stubs
 - Step 10 (phase closure) accepts N/A stubs for backend-only phases
+
+## Parallel post-dev fanout (`--fast`)
+
+When `run-phase.sh` is invoked with `--fast` AND `Frontend Present: yes`, Steps 4 → 5 → 6 → 6.5 → 7 are replaced with a single **parallel fanout** that runs after Step 3 completes:
+
+```
+            (Step 3 review_passed)
+                    │
+                    ▼
+        ┌──── single shared service boot ────┐
+        │  (ensure_services_running once)    │
+        ▼                                    ▼
+  Branch A — UI chain (sequential)     Branch B — QA validate
+  ui-impact → ui-test-design           qa-phase.sh
+   → browser-qa → demo                 (single-shot, no retry)
+        │                                    │
+        └─────── wait for both ──────────────┘
+                    │
+                    ▼
+            post_dev_parallel_complete checkpoint
+                    │
+                    ▼
+            Step 8 (ux-regression), then 9, 10, 10.5, 11
+```
+
+Key contracts:
+
+- **Shared services.** `run-phase.sh` exports `CHAIN_SHARED_SERVICES=true` before launching the fanout. `browser-qa-phase.sh`, `qa-phase.sh`, and `demo-phase.sh` honor this env var by skipping their own `ensure_services_running` call **and** their own `trap … EXIT` teardown. The caller is responsible for `kill_phase_servers` after the fanout completes. Without `--fast`, the env var is unset and each script manages its own services exactly as today.
+- **Soft-fail QA.** If Branch B's qa-phase.sh writes a FAIL verdict, the fanout's `SKIP_QA` flag stays `false` and the existing sequential Step 7 retry loop runs to self-heal (dev → review → qa, up to 3 attempts). This preserves today's QA-retry semantics.
+- **Soft-fail UI chain.** A non-zero exit inside Branch A's ui-impact/ui-test-design/browser-qa is logged as a warning but the chain continues to the next step — same "warn and continue" pattern the sequential blocks use today. Demo (Step 6.5) is non-gating and never aborts the chain.
+- **Signal / quota propagation.** A signal exit (130/137/143) inside either branch is forwarded by `lib/parallel.sh::parallel_run` to the other branch as SIGTERM, then propagated up so `run-phase.sh`'s outer signal guard aborts the run cleanly; the next resume re-runs the fanout. Quota exhaustion (exit 75) propagates immediately so the outer `_run_step` quota loop can sleep and retry.
+- **Single checkpoint.** After both branches succeed, `run-phase.sh` writes `current_step: post_dev_parallel_complete` to `runs/<phase>/status.json`. On resume, this label maps to "skip all of Steps 4–7." If the fanout is interrupted mid-batch, the checkpoint stays at the previous step (`review_passed`) and the whole fanout re-runs from scratch.
+- **Backward compatibility.** Without `--fast`, none of the above fires. The sequential Step 4 → 5 → 6 → 6.5 → 7 blocks run in their original order with each script booting and tearing down its own services as before.
+
+Goal mode propagates `--fast` from `run-goal.sh` into `run-phase.sh --no-finalize` for full iterations only. Lean iterations (`goal-iter-lean.sh`) have no parallelisable surface and log a one-line no-op note instead. The always-on Tier 1 prompt polish and per-agent `--effort` overrides apply to both lean and full iterations regardless of `--fast`.

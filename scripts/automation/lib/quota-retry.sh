@@ -416,12 +416,34 @@ _claude_invoke() {
     sleep_start=$(date +%s)
     local exit_code
 
-    # Build claude args. Always pass --effort max. Add --exclude-dynamic-system-prompt-sections
-    # by default (improves prompt-cache reuse across machines / sessions; disable via
-    # CHAIN_CLAUDE_DISABLE_CACHE_HYGIENE=true). When CHAIN_TELEMETRY_TOKENS=true, also
-    # request stream-json output and route through claude_stream_renderer.py so the
-    # final usage block lands in $CHAIN_CLAUDE_USAGE_SIDECAR for telemetry capture.
-    local -a _claude_extra_args=(--effort max)
+    # Build claude args.
+    #
+    # Per-agent `--effort` resolution:
+    #   - Default `--effort max` (unchanged historical behavior).
+    #   - When CHAIN_CURRENT_AGENT is set AND CHAIN_DISABLE_EFFORT_OVERRIDE is
+    #     NOT "true", look up the agent's effort policy in agent_permissions.py.
+    #     Light/structured agents (release-manager, qa, ui-test-designer,
+    #     ui-impact-analyst, phase-closure-auditor) drop to "medium"; everyone
+    #     else stays at "max". The lookup is non-fatal — any error keeps "max".
+    #
+    # Cache hygiene: --exclude-dynamic-system-prompt-sections is added by default
+    # (improves prompt-cache reuse; disable via CHAIN_CLAUDE_DISABLE_CACHE_HYGIENE=true).
+    # Telemetry: when CHAIN_TELEMETRY_TOKENS=true, request stream-json output and
+    # route through claude_stream_renderer.py so the final usage block lands in
+    # $CHAIN_CLAUDE_USAGE_SIDECAR for telemetry capture.
+    local _effort="max"
+    if [[ "$CHAIN_DISABLE_EFFORT_OVERRIDE" != "true" && -n "${CHAIN_CURRENT_AGENT:-}" ]]; then
+      local _perms_script_for_effort
+      _perms_script_for_effort="$(dirname "${BASH_SOURCE[0]}")/agent_permissions.py"
+      if [[ -f "$_perms_script_for_effort" ]]; then
+        local _eff_lookup
+        _eff_lookup=$(python3 "$_perms_script_for_effort" effort "$CHAIN_CURRENT_AGENT" 2>/dev/null) || _eff_lookup=""
+        if [[ -n "$_eff_lookup" ]]; then
+          _effort="$_eff_lookup"
+        fi
+      fi
+    fi
+    local -a _claude_extra_args=(--effort "$_effort")
     if [[ "$CHAIN_CLAUDE_DISABLE_CACHE_HYGIENE" != "true" ]]; then
       _claude_extra_args+=(--exclude-dynamic-system-prompt-sections)
     fi

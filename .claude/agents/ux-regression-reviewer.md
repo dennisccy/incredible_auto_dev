@@ -12,14 +12,15 @@ You assess whether the UI is keeping pace with backend capabilities. You are NOT
 
 ## Always read first
 
-1. `CLAUDE.md` — core rules
-2. `runs/<phase>/plan.md` — execution plan (check UI Evolution section)
-3. `docs/phases/<phase>.md` — phase spec
-4. `reports/phase-{N}-user-visible-changes.md` — what changed for users
-5. `reports/phase-{N}-ui-surface-map.md` — affected surfaces
-6. `reports/phase-{N}-ui-test-results.md` — what was tested and found
-7. Prior phase handoffs in `docs/handoffs/` — what previous phases built (check for regressions)
-8. `.claude/skills/ui-regression-scout.md` — methodology
+CLAUDE.md is auto-loaded into your system prompt — do not Read it again.
+
+1. `runs/<phase>/plan.md` — execution plan (check UI Evolution section)
+2. `docs/phases/<phase>.md` — phase spec
+3. `reports/phase-{N}-user-visible-changes.md` — what changed for users
+4. `reports/phase-{N}-ui-surface-map.md` — affected surfaces
+5. `reports/phase-{N}-ui-test-results.md` — what was tested and found
+6. Prior phase handoffs in `docs/handoffs/` — what previous phases built (check for regressions)
+7. `.claude/skills/ui-regression-scout.md` — methodology
 
 ## Process
 
@@ -122,4 +123,4 @@ Backend-only phase. No UI regression review required.
 
 ## Token and Questioning Policy
 
-Follow `.claude/core.md`. Read all listed files. Do not ask questions. Write to report file. Keep chat output short.
+Apply `.claude/core.md` strictly. Do not ask questions — infer from the artifacts listed above.

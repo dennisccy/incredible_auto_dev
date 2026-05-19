@@ -55,6 +55,23 @@ HARD_DEFAULT_DENIALS_ALL: tuple[str, ...] = (
 
 RELEASE_AGENT_NAME = "release-manager"
 
+# Per-agent `--effort` override map for the Claude CLI. Default is "max" for
+# all agents; this dict lists agents that have been deliberately downgraded
+# to a lighter effort because their work is structured / mechanical and does
+# not benefit from maximum reasoning effort. Downgrade reduces output token
+# count and per-call latency without changing model tier.
+#
+# Set CHAIN_DISABLE_EFFORT_OVERRIDE=true in the environment to restore
+# `--effort max` for every agent (escape hatch for users who want to revert).
+EFFORT_DEFAULT = "max"
+EFFORT_OVERRIDES: dict[str, str] = {
+    "release-manager":       "medium",
+    "ui-test-designer":      "medium",
+    "phase-closure-auditor": "medium",
+    "ui-impact-analyst":     "medium",
+    "qa":                    "medium",  # both generate-mode and validate-mode
+}
+
 # Reads from the legacy `.claude/agents/<name>.md` (frontmatter) by default to
 # preserve back-compat for any external caller that imports this module.
 # In the multi-CLI world, the same per-agent permissions live in
@@ -200,6 +217,17 @@ def disallowed_for(agent: str, agents_dir: Path = DEFAULT_AGENTS_DIR) -> list[st
     return denials
 
 
+def effort_for(agent: str) -> str:
+    """Return the `--effort` flag value for the named agent.
+
+    Default `EFFORT_DEFAULT` ("max") unless the agent is in the override map.
+    The CHAIN_DISABLE_EFFORT_OVERRIDE env var is honored by the calling shell
+    wrapper, not here — this function returns the policy value regardless,
+    and the caller decides whether to apply it.
+    """
+    return EFFORT_OVERRIDES.get(agent, EFFORT_DEFAULT)
+
+
 def budget_for(agent: str, agents_dir: Path = DEFAULT_AGENTS_DIR) -> float | None:
     """Return max_budget_usd from neutral source first, falling back to the
     legacy frontmatter. None if neither defines a budget.
@@ -259,6 +287,15 @@ def _cmd_budget(args: list[str]) -> int:
     return 0
 
 
+def _cmd_effort(args: list[str]) -> int:
+    """Print the --effort value for the named agent (max | medium | …)."""
+    if not args:
+        print("Usage: agent_permissions.py effort <agent>", file=sys.stderr)
+        return 2
+    print(effort_for(args[0]))
+    return 0
+
+
 def _self_test() -> int:
     import tempfile
 
@@ -302,6 +339,16 @@ def _self_test() -> int:
         assert budget_for("release-manager", agents_dir=d) is None
         assert budget_for("nonexistent-agent", agents_dir=d) is None
 
+        # Effort overrides — defaults to "max" except for the listed lighter agents.
+        assert effort_for("developer") == "max", "developer must stay at --effort max"
+        assert effort_for("auditor") == "max", "auditor must stay at --effort max"
+        assert effort_for("release-manager") == "medium", "release-manager must drop to medium"
+        assert effort_for("ui-test-designer") == "medium"
+        assert effort_for("phase-closure-auditor") == "medium"
+        assert effort_for("ui-impact-analyst") == "medium"
+        assert effort_for("qa") == "medium", "qa must drop to medium for both modes"
+        assert effort_for("some-unknown-agent") == "max", "default must be max"
+
     print("self-test passed")
     return 0
 
@@ -309,6 +356,7 @@ def _self_test() -> int:
 _COMMANDS = {
     "disallowed": _cmd_disallowed,
     "budget": _cmd_budget,
+    "effort": _cmd_effort,
     "self-test": lambda _args: _self_test(),
 }
 

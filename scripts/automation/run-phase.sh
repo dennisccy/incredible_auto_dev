@@ -2,7 +2,7 @@
 # run-phase.sh — Full phase runner: plan -> test-plan -> dev -> review -> UI impact ->
 #                UI test design -> browser QA -> QA -> UX regression -> audit -> closure ->
 #                html-summary -> finalize
-# Usage: ./scripts/automation/run-phase.sh phase-3 [--auto-release] [--reset] [--no-finalize]
+# Usage: ./scripts/automation/run-phase.sh phase-3 [--auto-release] [--reset] [--no-finalize] [--fast]
 #
 # Flags:
 #   --auto-release   Automatically finalize (branch + commit + PR) when all checks pass.
@@ -12,6 +12,12 @@
 #                    --auto-release if it was passed alongside. Used by run-goal.sh
 #                    to dispatch a full-mode iteration without committing/creating a PR
 #                    for each iteration; release-manager runs once at goal-session end.
+#   --fast           Opt-in speed mode. After Step 3, run the safe post-dev pairs in
+#                    parallel: Branch A (ui-impact → ui-test-design → browser-qa → demo)
+#                    runs concurrently with Branch B (qa-validate). Services are booted
+#                    once for the fanout and torn down after Step 8. Default behavior
+#                    (without --fast) is identical to today; no checkpoint or artifact
+#                    differences.
 #
 # Resume behavior:
 #   If a run was interrupted, rerunning this script resumes from the last
@@ -21,6 +27,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/lib/common.sh"
+source "$SCRIPT_DIR/lib/parallel.sh"
 
 # Pull --cli (and --force-cli) out of the args BEFORE the existing parse loop,
 # so the loop below sees only its known flags. CHAIN_CLI defaults to claude.
@@ -35,6 +42,7 @@ PHASE="${1:-}"
 AUTO_RELEASE=false
 FORCE_RESET=false
 NO_FINALIZE=false
+FAST_MODE=false
 
 # Parse flags (allow flag in any position)
 for arg in "$@"; do
@@ -42,6 +50,7 @@ for arg in "$@"; do
     --auto-release) AUTO_RELEASE=true ;;
     --reset)        FORCE_RESET=true ;;
     --no-finalize)  NO_FINALIZE=true ;;
+    --fast)         FAST_MODE=true ;;
   esac
 done
 
@@ -102,6 +111,7 @@ _run_iteration_summarizer() {
   fi
 
   cd "$REPO_ROOT"
+  export CHAIN_CURRENT_AGENT=iteration-summarizer
   claude_with_quota_retry -p "You are the iteration-summarizer agent.
 
 Phase id: $PHASE
@@ -142,6 +152,73 @@ _render_summary_html() {
   [[ -f "$renderer" ]] || return 0
   python3 "$renderer" iteration "$PHASE" --repo-root="$REPO_ROOT" 2>&1 \
     | sed 's/^/[run-phase] /' || log "  Warning: HTML summary render failed (non-blocking)"
+}
+
+# Boot backend/frontend services once for the post-dev fanout, then export
+# CHAIN_SHARED_SERVICES=true so each underlying step script (browser-qa,
+# qa-validate, demo) skips its own boot AND its own EXIT-trap teardown.
+# The caller is responsible for `kill_phase_servers` AFTER the fanout completes.
+# Mirrors the env contract `browser-qa-phase.sh` already uses for its own boot.
+_boot_shared_services() {
+  local _be_port="${CHAIN_BACKEND_PORT:-8000}"
+  local _fe_port="${CHAIN_FRONTEND_PORT:-3000}"
+  local _be_health="${CHAIN_BACKEND_HEALTH_URL:-http://localhost:${_be_port}/health}"
+  local _fe_url="${CHAIN_FRONTEND_URL:-http://localhost:${_fe_port}}"
+  local _be_cmd="${CHAIN_START_BACKEND_CMD:-}"
+  local _fe_cmd="${CHAIN_START_FRONTEND_CMD:-}"
+  if [[ -z "$_be_cmd" && -f "$REPO_ROOT/scripts/start-backend.sh" ]]; then
+    _be_cmd="bash $REPO_ROOT/scripts/start-backend.sh"
+  fi
+  if [[ -z "$_fe_cmd" && -f "$REPO_ROOT/scripts/start-frontend.sh" ]]; then
+    _fe_cmd="bash $REPO_ROOT/scripts/start-frontend.sh"
+  fi
+  export QA_BACKEND_HEALTH_URL="$_be_health"
+  export QA_BACKEND_START_CMD="$_be_cmd"
+  export QA_BACKEND_LOG; QA_BACKEND_LOG=$(_qa_log_path "fanout-backend")
+  export QA_FRONTEND_URL="$_fe_url"
+  export QA_FRONTEND_START_CMD="$_fe_cmd"
+  export QA_FRONTEND_LOG; QA_FRONTEND_LOG=$(_qa_log_path "fanout-frontend")
+  export QA_FRONTEND_REQUIRED="yes"
+  ensure_services_running
+  export CHAIN_SHARED_SERVICES=true
+}
+
+# Run Branch A (UI chain: ui-impact → ui-test-design → browser-qa → demo) as a
+# single sequential function suitable for backgrounding. Each underlying script
+# runs as a child process; its exit code is captured. A non-zero exit aborts
+# the chain so the caller sees the first real failure.
+_branch_a_ui_chain() {
+  local _rc=0
+  bash "$SCRIPT_DIR/ui-impact-phase.sh"      "$PHASE" || { _rc=$?; echo "[branch-A] ui-impact-phase.sh exit $_rc — aborting chain"; return "$_rc"; }
+  bash "$SCRIPT_DIR/ui-test-design-phase.sh" "$PHASE" || { _rc=$?; echo "[branch-A] ui-test-design-phase.sh exit $_rc — aborting chain"; return "$_rc"; }
+  bash "$SCRIPT_DIR/browser-qa-phase.sh"     "$PHASE" || { _rc=$?; echo "[branch-A] browser-qa-phase.sh exit $_rc — aborting chain"; return "$_rc"; }
+  # Demo is showcase, non-gating — never abort the chain on its exit code.
+  bash "$SCRIPT_DIR/demo-phase.sh"           "$PHASE" || echo "[branch-A] demo-phase.sh exit $? — continuing (showcase, non-gating)"
+  return 0
+}
+
+# Post-dev parallel fanout for --fast mode. Replaces the sequential Step 4 → 5
+# → 6 → 6.5 → 7 block with two concurrent branches that share a single boot
+# of the backend/frontend services. Step 8 (ux-regression) runs sequentially
+# after both branches succeed; the caller then tears down services.
+#
+# Returns 0 on success, 75 on quota exhaustion (caller's _run_step retries),
+# 130/137/143 on signal (caller aborts), or another non-zero code if at least
+# one branch soft-failed (caller treats as non-fatal per existing browser-QA
+# pattern — Step 4–7 already follow "warn and continue" semantics today).
+_run_post_dev_fanout() {
+  log "Step 4-7/11 -- Post-dev parallel fanout (--fast)..."
+  _boot_shared_services
+  local _rc=0
+  parallel_run \
+    Branch-UI _branch_a_ui_chain \
+    -- \
+    Branch-QA bash "$SCRIPT_DIR/qa-phase.sh" "$PHASE" \
+    || _rc=$?
+  # Always unset the shared-services flag so subsequent steps (ux-regression
+  # below, plus anything in fail()) follow today's per-script boot semantics.
+  unset CHAIN_SHARED_SERVICES
+  return "$_rc"
 }
 
 fail() {
@@ -374,6 +451,7 @@ if [[ "$SKIP_PLAN" == "false" ]]; then
   log "Step 1/11 -- Orchestrator: creating execution plan..."
 
   cd "$REPO_ROOT"
+  export CHAIN_CURRENT_AGENT=orchestrator
   claude_with_quota_retry -p "You are acting as the orchestrator for phased development.
 
 Phase: $PHASE
@@ -508,6 +586,51 @@ else
   log "Step 3/11 -- Dev + Review: skipped (checkpoint: $CURRENT_STEP)"
 fi
 echo ""
+
+# ── Step 4-7/11: Optional parallel post-dev fanout (--fast) ─────────────────
+# When --fast is passed AND none of Steps 4-7 are already SKIP'd (resume / flag
+# combination), run the safe pairs (Branch A = ui-impact → ui-test-design →
+# browser-qa → demo; Branch B = qa-validate) concurrently with shared services.
+# After the fanout, flip the SKIP_ flags for the steps that completed so the
+# existing sequential blocks below become no-ops. Step 7's flag is only set if
+# QA passed — otherwise we let the existing retry loop handle the fix path.
+# When --fast is NOT passed, this whole block is skipped and the pipeline runs
+# byte-identically to today.
+if [[ "$FAST_MODE" == "true" \
+   && "$FRONTEND_PRESENT" == "yes" \
+   && "$SKIP_UI_IMPACT" == "false" \
+   && "$SKIP_UI_TEST_DESIGN" == "false" \
+   && "$SKIP_BROWSER_QA" == "false" \
+   && "$SKIP_QA" == "false" ]]; then
+  fanout_rc=0
+  _run_post_dev_fanout || fanout_rc=$?
+  if _is_signal_exit "$fanout_rc"; then
+    log "  Fanout (Step 4-7/11) interrupted by signal (exit $fanout_rc) — aborting; resume will re-run."
+    exit "$fanout_rc"
+  fi
+  if [[ $fanout_rc -eq 75 ]]; then
+    log "  Fanout (Step 4-7/11) hit quota (exit 75) — outer loop will handle."
+    exit 75
+  fi
+  if [[ $fanout_rc -ne 0 ]]; then
+    log "  Warning: post-dev fanout exited $fanout_rc — sequential retry will pick up any failed step"
+  fi
+  # The UI chain steps (4, 5, 6, 6.5) are always idempotent and write their
+  # artifacts (or N/A stubs) regardless — mark them complete unconditionally.
+  SKIP_UI_IMPACT=true
+  SKIP_UI_TEST_DESIGN=true
+  SKIP_BROWSER_QA=true
+  update_status "$PHASE" "in_progress" "post_dev_parallel_complete"
+  # Step 7 (QA): only skip the existing retry loop if QA passed in the fanout.
+  # Otherwise leave SKIP_QA=false so the sequential retry path runs as today.
+  if [[ -f "$QA_REPORT" ]] && verdict_passes "$QA_REPORT"; then
+    SKIP_QA=true
+    log "  [fast] Post-dev fanout complete — QA passed in fanout; Step 7 retry loop skipped."
+  else
+    log "  [fast] Post-dev fanout complete — QA did not pass; Step 7 retry loop will run."
+  fi
+  echo ""
+fi
 
 # ── Step 4/11: UI Impact Analysis ────────────────────────────────────────────
 if [[ "$SKIP_UI_IMPACT" == "false" ]]; then

@@ -5,9 +5,10 @@ You review code changes for correctness, spec compliance, and architectural stan
 
 ## Inputs
 
+CLAUDE.md is auto-loaded into your system prompt — do not Read it again.
+
 - Dev handoff: `docs/handoffs/<phase>-dev.md`
 - Phase spec: `docs/phases/<phase>.md`
-- `CLAUDE.md` — core quality standards
 - `docs/goal.md` — project goal (flag implementation that drifts from project goals)
 - `docs/architecture/*.md` — existing project architecture (check consistency)
 - `.claude/project-template.md` — project-specific architecture principles
@@ -144,8 +145,5 @@ Per-file, max 80 words each. Skip files with no issues. No headers below H3.
 
 ## Token and Questioning Policy
 
-Follow the TOKEN AND QUESTIONING POLICY in `.claude/core.md`:
-- Read CLAUDE.md, project-template.md, the phase spec, dev handoff, and changed files before asking anything.
-- Do not ask exploratory questions.
+Apply `.claude/core.md` strictly. Agent-specific guidance:
 - Ask only if the review cannot be completed because a requirement or acceptance criterion is missing or contradictory.
-- Write all findings directly into the review report. Keep chat output short.

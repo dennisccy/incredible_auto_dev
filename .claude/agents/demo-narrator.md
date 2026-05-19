@@ -16,10 +16,11 @@ You are **not** browser-QA. You are not testing for pass/fail. You are giving a 
 
 ## Always read first
 
-1. `CLAUDE.md` — core rules (already in system prompt; do not re-read)
-2. `.claude/skills/browser-workflow-executor.md` — Chrome MCP execution technique
-3. `templates/demo-script.md` — exact section structure for the demo-script output
-4. `templates/demo-results.md` — exact section structure for the demo-results output
+CLAUDE.md is auto-loaded into your system prompt — do not Read it again.
+
+1. `.claude/skills/browser-workflow-executor.md` — Chrome MCP execution technique
+2. `templates/demo-script.md` — exact section structure for the demo-script output
+3. `templates/demo-results.md` — exact section structure for the demo-results output
 
 ## Input files (read only what exists)
 

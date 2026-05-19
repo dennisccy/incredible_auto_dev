@@ -204,6 +204,45 @@ For more, see [`docs/goal-mode-quickstart.md`](docs/goal-mode-quickstart.md), [`
 
 Screenshots of the rendered HTML appear in this section after your first iteration runs end-to-end — the artifacts are real, not mocked.
 
+## Faster Iterations
+
+Two always-on improvements and one opt-in flag shorten every iteration:
+
+- **Always on — Tier 1 prompt polish.** Per-agent prompts no longer re-read `CLAUDE.md` (it's auto-loaded into the system prompt) and the duplicated "Token and Questioning Policy" boilerplate that paraphrased `.claude/core.md` has been removed from every agent body. Each call is smaller and the static prefix is more cache-friendly. **Behavior is unchanged** — same artifacts, same verdicts.
+- **Always on — per-agent `--effort` overrides.** Reasoning-heavy agents (`developer`, `reviewer`, `auditor`, `orchestrator`, `goal-decomposer`, `goal-evaluator`, `browser-qa-agent`, `demo-narrator`) stay at `--effort max`. Structured / mechanical agents (`release-manager`, `qa`, `ui-test-designer`, `ui-impact-analyst`, `phase-closure-auditor`) drop to `--effort medium` for shorter responses without losing what they need to do their job. Set `CHAIN_DISABLE_EFFORT_OVERRIDE=true` to restore `--effort max` for every agent.
+- **Opt-in — `--fast` flag.** After Step 3 finishes, the safe post-dev pairs run **in parallel** with shared services:
+
+```
+                        (Step 3: dev + review)
+                                │
+                                ▼
+                  ┌─────────────── shared app boot ──────────────┐
+                  │                                              │
+  ┌─ Branch A (UI chain, sequential) ─┐    ┌─ Branch B (QA) ─┐
+  │  ui-impact   →  ui-test-design    │    │  qa-validate    │
+  │     →  browser-qa  →  demo        │    │                 │
+  └──────────────┬───────────────────┘    └──────┬──────────┘
+                 │                               │
+                 └────────── wait both ──────────┘
+                                │
+                                ▼
+                    Step 8: ux-regression   →   close + finalize
+```
+
+The fanout writes a single `post_dev_parallel_complete` checkpoint after both branches succeed. If Branch B's QA verdict fails, the existing sequential Step 7 retry loop still runs (dev → review → qa, up to 3 attempts) — so the self-heal path is preserved. If either branch is interrupted by signal or hits quota, the parent propagates the same exit code and the next resume re-runs the fanout from scratch.
+
+Expected wall-clock reduction with `--fast`: **~30–50% for full phase iterations**, **~15–25% for lean goal-mode iterations** (lean has nothing to parallelise; only Tier 1 polish + `--effort` drops apply).
+
+Backward compatibility: **default behavior is unchanged.** Without `--fast` the pipeline runs exactly as today, with the same artifacts and the same checkpoint labels (the new label only appears when `--fast` is used). All eval-suite tests stay green.
+
+```bash
+./scripts/automation/run-phase.sh phase-1 --fast              # phase mode
+./scripts/automation/run-goal.sh --session-id my-app --fast   # goal mode (full iters get parallel; lean iters log no-op)
+CHAIN_DISABLE_EFFORT_OVERRIDE=true ./scripts/automation/run-phase.sh phase-1   # escape hatch: restore --effort max
+```
+
+Implementation notes for advanced users: the parallel runner is in [`scripts/automation/lib/parallel.sh`](scripts/automation/lib/parallel.sh); shared services are coordinated via the `CHAIN_SHARED_SERVICES=true` env contract that `browser-qa-phase.sh`, `qa-phase.sh`, and `demo-phase.sh` honor; per-agent effort is resolved by `agent_permissions.py effort <agent>`. Telemetry (`CHAIN_TELEMETRY_TOKENS=true`, default) records per-agent input/output/cache/cost so you can quantify the gain on your own workloads.
+
 ## Goal Mode Pipeline
 
 Goal mode wraps the phase pipeline in an outer loop driven by an AI evaluator.
@@ -268,6 +307,7 @@ Model tiers are defined in `config/agent-models.yaml`. Change assignments there 
 # Full pipeline
 ./scripts/automation/run-phase.sh phase-1              # all 11 steps
 ./scripts/automation/run-phase.sh phase-1 --auto-release  # auto-commit + PR
+./scripts/automation/run-phase.sh phase-1 --fast       # parallel post-dev fanout (~30-50% faster)
 
 # Individual steps
 ./scripts/automation/dev-phase.sh phase-1              # implement
@@ -309,6 +349,7 @@ bash scripts/automation/render-summary.sh --session-index <sid>        # re-rend
 ./scripts/automation/run-goal.sh --session-id my-app --stall-window 5   # widen stall window
 ./scripts/automation/run-goal.sh --session-id my-app --auto-release     # release-manager runs once on GOAL_ACHIEVED
 ./scripts/automation/run-goal.sh --session-id my-app --acknowledge-regression  # continue past REGRESSION_HALT
+./scripts/automation/run-goal.sh --session-id my-app --fast             # parallel post-dev fanout for full iters; no-op for lean
 ./scripts/automation/goal-iter-lean.sh <iter-name>                      # single lean iteration (advanced)
 ```
 
@@ -379,19 +420,23 @@ With `CHAIN_TELEMETRY_TOKENS` now defaulting to true, the next phase or goal ite
 
 Analyze with: `python3 scripts/automation/lib/analyze_telemetry.py runs/<phase>/trace/trace.jsonl` — gives per-agent input/output/cache/cost breakdown. Without this baseline, everything below is guesswork.
 
-### Tier 1 polish (low-risk leftovers, skipped in 15507dc)
+### Tier 1 polish (low-risk leftovers)
 
-- [ ] Remove the duplicated "Token and Questioning Policy" footer from each agent file (`.claude/agents/*.md`). Most footers just paraphrase `core.md`. Keep agent-specific bullets (e.g., developer.md "Ask only about: schema decisions, lifecycle states…"); drop the rest.
-- [ ] Drop `CLAUDE.md` from the "Always read first" list in the 11 remaining agent files (only orchestrator, goal-decomposer, goal-evaluator are done). The script-side fix already prevents the duplicate Read in practice; this is consistency cleanup.
-- [ ] Inline only the sections each agent needs from `.claude/project-template.md` — release-manager needs the never-commit list (5 lines); developer needs most of it. Add a helper in `lib/common.sh` that emits the right slice per agent.
+- [x] **Shipped** — Remove the duplicated "Token and Questioning Policy" footer from each agent file (`.claude/agents/*.md`). Agent-specific bullets are kept (e.g., developer.md "Ask only about: schema decisions, lifecycle states…"); generic paraphrasing of `core.md` is gone. See `agents/<name>/body.md`.
+- [x] **Shipped** — Drop `CLAUDE.md` from the "Always read first" list in the 11 remaining agent files. CLAUDE.md is auto-loaded into the system prompt; each agent now has a friendly one-line reassurance instead of re-reading the file.
+- [ ] Inline only the sections each agent needs from `.claude/project-template.md` — release-manager needs the never-commit list (5 lines); developer needs most of it. Add a helper in `lib/common.sh` that emits the right slice per agent. (Deferred until measured token win is meaningful.)
 
 ### Tier 2 (needs baseline data first)
 
-- [ ] **Per-agent `--effort` overrides.** `--effort max` is currently passed unconditionally in `lib/quota-retry.sh:398`. Keep it for developer, auditor, goal-decomposer, goal-evaluator. Drop for release-manager (Haiku, git ops), ui-impact-analyst, phase-closure-auditor, ui-test-designer, qa-validate. Wire through `lib/agent_permissions.py` (already plumbed for `budget` and `disallowed`). A/B against telemetry baseline.
+- [x] **Shipped — Per-agent `--effort` overrides.** Resolved per agent via `lib/agent_permissions.py effort <agent>`. `developer`, `reviewer`, `auditor`, `orchestrator`, `goal-decomposer`, `goal-evaluator`, `browser-qa-agent`, and `demo-narrator` stay at `--effort max`. `release-manager`, `qa`, `ui-test-designer`, `phase-closure-auditor`, and `ui-impact-analyst` drop to `--effort medium`. Escape hatch: `CHAIN_DISABLE_EFFORT_OVERRIDE=true`.
 - [ ] **Move orchestrator from Opus → Sonnet** (`config/agent-models.yaml`). Plan-writing is structured-output work. A/B against 2–3 historical phases — revert if plan quality drops.
 - [ ] **Move goal-decomposer from Opus → Sonnet.** Same rationale as orchestrator. Keep goal-evaluator on Opus (skeptical adversarial judgment).
 - [ ] **Skip `generate-test-plan.sh` (Step 2/11) when the spec already lists test scenarios.** Need a clear heuristic for "spec has tests" — don't skip silently.
 - [ ] **Cap audit-failure full-rerun.** `run-phase.sh:649-679` re-runs dev + review + QA on audit fail. If telemetry shows that path firing often, switch to fix-only mode.
+
+### Pipeline parallelism (shipped)
+
+- [x] **Parallel post-dev fanout (`--fast`).** Branch A (ui-impact → ui-test-design → browser-qa → demo) runs in parallel with Branch B (qa-validate), with shared services. See the [Faster Iterations](#faster-iterations) section. Opt-in; default behavior unchanged.
 
 ### Tier 3 (don't touch unless data forces)
 

@@ -5,14 +5,15 @@ You turn UI impact analysis into structured, actionable test plans. You write fo
 
 ## Always read first
 
-1. `CLAUDE.md` — core rules
-2. `runs/<phase>/plan.md` — execution plan
-3. `docs/phases/<phase>.md` — phase spec
-4. `reports/phase-{N}-user-visible-changes.md` — what changed for users
-5. `reports/phase-{N}-ui-surface-map.md` — which surfaces were affected
-6. `reports/qa/<phase>-test-plan.md` — existing functional test plan (for context)
-7. `.claude/skills/manual-ui-test-plan-generator.md` — methodology for test case design
-8. `.claude/skills/what-to-click-writer.md` — how to write the operator guide
+CLAUDE.md is auto-loaded into your system prompt — do not Read it again.
+
+1. `runs/<phase>/plan.md` — execution plan
+2. `docs/phases/<phase>.md` — phase spec
+3. `reports/phase-{N}-user-visible-changes.md` — what changed for users
+4. `reports/phase-{N}-ui-surface-map.md` — which surfaces were affected
+5. `reports/qa/<phase>-test-plan.md` — existing functional test plan (for context)
+6. `.claude/skills/manual-ui-test-plan-generator.md` — methodology for test case design
+7. `.claude/skills/what-to-click-writer.md` — how to write the operator guide
 
 ## Process
 
@@ -94,4 +95,4 @@ Then STOP.
 
 ## Token and Questioning Policy
 
-Follow `.claude/core.md`. Read all listed files before writing. Do not ask questions. Write detailed output to reports. Keep chat output short.
+Apply `.claude/core.md` strictly. Do not ask questions — infer from the artifacts listed above.

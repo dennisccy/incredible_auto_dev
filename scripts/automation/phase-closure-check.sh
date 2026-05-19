@@ -45,6 +45,7 @@ check_backend_only_claim "$PHASE" || \
   echo "[closure-check] Warning: user-visible-changes may be inconsistent with actual file changes."
 
 cd "$REPO_ROOT"
+export CHAIN_CURRENT_AGENT=phase-closure-auditor
 claude_with_quota_retry -p "You are the phase-closure-auditor for phased development.
 
 Phase: $PHASE

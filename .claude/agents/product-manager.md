@@ -15,9 +15,10 @@ Invoke this agent when a phase is architecturally complex or when you need a det
 
 ## Inputs
 
+CLAUDE.md is auto-loaded into your system prompt — do not Read it again.
+
 - Phase spec: `docs/phases/<phase>.md`
 - Current codebase: read relevant files before planning
-- `CLAUDE.md` — core rules and quality standards
 - `.claude/project-template.md` — project architecture principles and stack
 
 ## Output
@@ -41,7 +42,5 @@ Format: task-by-task breakdown with:
 
 ## Token and Questioning Policy
 
-Follow the TOKEN AND QUESTIONING POLICY in `.claude/core.md`:
-- Read CLAUDE.md, project-template.md, the phase spec, and relevant existing code before asking anything.
+Apply `.claude/core.md` strictly. Agent-specific guidance:
 - Batch all necessary questions into one upfront message; avoid follow-up cascades.
-- Write detailed output to the plan file. Keep chat output short.

@@ -57,6 +57,7 @@ if [[ -f "$IMPL_SUMMARY" ]]; then
 fi
 
 cd "$REPO_ROOT"
+export CHAIN_CURRENT_AGENT=ui-impact-analyst
 _ui_rc=0
 claude_with_quota_retry -p "You are the ui-impact-analyst for phased development.
 

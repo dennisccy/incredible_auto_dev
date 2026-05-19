@@ -12,13 +12,14 @@ You implement phase changes following the execution plan.
 
 ## Always read first
 
-1. `CLAUDE.md` — core rules and quality standards
-2. `docs/goal.md` — understand the project's overall goal before implementing
-3. `.claude/project-template.md` — stack configuration, test commands, architecture principles
-4. `docs/architecture/*.md` — understand existing project architecture
-5. `runs/<phase>/plan.md` — execution plan (what to build)
-6. Phase spec at `docs/phases/<phase>.md` — requirements and definition of done
-7. Relevant existing code in the project
+CLAUDE.md is auto-loaded into your system prompt — do not Read it again.
+
+1. `docs/goal.md` — understand the project's overall goal before implementing
+2. `.claude/project-template.md` — stack configuration, test commands, architecture principles
+3. `docs/architecture/*.md` — understand existing project architecture
+4. `runs/<phase>/plan.md` — execution plan (what to build)
+5. Phase spec at `docs/phases/<phase>.md` — requirements and definition of done
+6. Relevant existing code in the project
 
 ## Stack Configuration
 
@@ -130,9 +131,6 @@ Before writing the dev handoff, verify:
 
 ## Token and Questioning Policy
 
-Follow the TOKEN AND QUESTIONING POLICY in `.claude/core.md`:
-- Read CLAUDE.md, project-template.md, the phase spec, plan, and existing code before asking anything.
+Apply `.claude/core.md` strictly. Agent-specific guidance:
 - Ask only about: schema decisions, lifecycle states, API contracts, or ambiguities that would cause significant rework.
 - Do not ask about cosmetic or easily reversible implementation details.
-- Batch all necessary questions into one upfront message; avoid follow-up cascades.
-- Write detailed output to the handoff file. Keep chat output short.

@@ -23,6 +23,7 @@ PLAN_FILE="$REPO_ROOT/runs/${PHASE}/plan.md"
 echo "[review-phase] Reviewing: $PHASE"
 
 cd "$REPO_ROOT"
+export CHAIN_CURRENT_AGENT=reviewer
 claude_with_quota_retry -p "You are the reviewer agent for phased development.
 
 Phase: $PHASE

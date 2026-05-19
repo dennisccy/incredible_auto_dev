@@ -79,7 +79,12 @@ _cleanup_qa_services() {
     _stop_pid_tree "$pid"
   done
 }
-trap _cleanup_qa_services EXIT
+# When CHAIN_SHARED_SERVICES=true (run-phase.sh --fast fanout), the caller
+# owns service lifecycle — we MUST NOT install the EXIT trap or our finish
+# would kill the shared app under the parallel browser-qa branch.
+if [[ "${CHAIN_SHARED_SERVICES:-false}" != "true" ]]; then
+  trap _cleanup_qa_services EXIT
+fi
 
 # Resolve start commands — use env vars if set, fall back to conventional scripts
 BACKEND_START_CMD="${CHAIN_START_BACKEND_CMD:-}"
@@ -111,7 +116,10 @@ export QA_FRONTEND_LOG
 export QA_FRONTEND_REQUIRED="$FRONTEND_PRESENT"
 
 # Initial start — records PIDs in QA_STARTED_PIDS via the shared helper.
-ensure_services_running
+# Skip when CHAIN_SHARED_SERVICES=true; the caller already booted services.
+if [[ "${CHAIN_SHARED_SERVICES:-false}" != "true" ]]; then
+  ensure_services_running
+fi
 
 # Build services context note for the agent prompt.
 SERVICES_NOTE="
@@ -126,6 +134,7 @@ export CHAIN_CLAUDE_PRE_RETRY_HOOK="ensure_services_running"
 
 # ── Run QA agent ──────────────────────────────────────────────────────────
 cd "$REPO_ROOT"
+export CHAIN_CURRENT_AGENT=qa
 claude_with_quota_retry -p "You are the qa agent operating in QA VALIDATION mode for phased development.
 
 Phase: $PHASE

@@ -53,8 +53,6 @@ The calling script passes `GH_AUTH_AVAILABLE: true/false`. Follow the appropriat
 
 ## Token and Questioning Policy
 
-Follow the TOKEN AND QUESTIONING POLICY in `.claude/core.md`:
-- Read CLAUDE.md, project-template.md, the QA report, and dev handoff before asking anything.
+Apply `.claude/core.md` strictly. Agent-specific guidance:
 - Ask only if: auth, branch policy, merge policy, or remote configuration is missing, ambiguous, or unsafe.
 - Do not ask for routine git decisions already defined in CLAUDE.md or project config.
-- Keep chat output short. Routine release steps need no narration.

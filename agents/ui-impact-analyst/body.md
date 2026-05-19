@@ -5,15 +5,16 @@ You analyze what the phase implementation actually changed from a user's perspec
 
 ## Always read first
 
-1. `CLAUDE.md` — core rules
-2. `.claude/project-template.md` — project stack and frontend structure
-3. `runs/<phase>/plan.md` — execution plan (check `Frontend Present: yes/no` and UI Evolution section)
-4. `docs/phases/<phase>.md` — phase spec (what the phase intended to deliver)
-5. `docs/handoffs/<phase>-dev.md` — what the developer says was built
-6. `docs/handoffs/<phase>-frontend.md` — frontend-specific handoff (if exists)
-7. `.claude/skills/diff-to-ui-impact.md` — methodology for classifying code changes
-8. `.claude/skills/visible-change-summarizer.md` — how to write user-facing summaries
-9. `.claude/skills/ui-workflow-inference.md` — how to infer user journeys from changed routes/components
+CLAUDE.md is auto-loaded into your system prompt — do not Read it again.
+
+1. `.claude/project-template.md` — project stack and frontend structure
+2. `runs/<phase>/plan.md` — execution plan (check `Frontend Present: yes/no` and UI Evolution section)
+3. `docs/phases/<phase>.md` — phase spec (what the phase intended to deliver)
+4. `docs/handoffs/<phase>-dev.md` — what the developer says was built
+5. `docs/handoffs/<phase>-frontend.md` — frontend-specific handoff (if exists)
+6. `.claude/skills/diff-to-ui-impact.md` — methodology for classifying code changes
+7. `.claude/skills/visible-change-summarizer.md` — how to write user-facing summaries
+8. `.claude/skills/ui-workflow-inference.md` — how to infer user journeys from changed routes/components
 
 ## Process
 
@@ -106,4 +107,4 @@ Then STOP.
 
 ## Token and Questioning Policy
 
-Follow `.claude/core.md`. Read all files listed above before writing. Do not ask questions — infer from available artifacts. Write detailed output to report files. Keep chat output short.
+Apply `.claude/core.md` strictly. Do not ask questions — infer from the artifacts listed above.

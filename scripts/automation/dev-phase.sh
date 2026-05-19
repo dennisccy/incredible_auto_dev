@@ -81,6 +81,7 @@ trap cleanup_dev_servers EXIT
 
 # ── Developer agent ──────────────────────────────────────────────────────
 cd "$REPO_ROOT"
+export CHAIN_CURRENT_AGENT=developer
 claude_with_quota_retry -p "You are the developer agent for phased development.
 
 Phase: $PHASE
