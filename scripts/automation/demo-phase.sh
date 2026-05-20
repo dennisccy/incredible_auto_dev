@@ -132,7 +132,7 @@ FRONTEND_URL="${CHAIN_FRONTEND_URL:-http://localhost:${_FRONTEND_PORT}}"
 # Idempotent boot. ensure_services_running is a no-op when ports are already
 # answering, so the standard pipeline (where browser-qa-phase.sh just booted
 # them moments ago) does NOT pay a second boot.
-# When CHAIN_SHARED_SERVICES=true (run-phase.sh --fast fanout), the caller has
+# When CHAIN_SHARED_SERVICES=true (run-phase.sh post-dev fanout), the caller has
 # already booted services and owns the EXIT-time teardown — skip the boot.
 if [[ "${CHAIN_SHARED_SERVICES:-false}" != "true" ]]; then
   QA_BACKEND_LOG=$(_qa_log_path "demo-backend")

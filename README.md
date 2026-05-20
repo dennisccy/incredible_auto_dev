@@ -206,11 +206,11 @@ Screenshots of the rendered HTML appear in this section after your first iterati
 
 ## Faster Iterations
 
-Two always-on improvements and one opt-in flag shorten every iteration:
+Three always-on improvements shorten every iteration:
 
-- **Always on — Tier 1 prompt polish.** Per-agent prompts no longer re-read `CLAUDE.md` (it's auto-loaded into the system prompt) and the duplicated "Token and Questioning Policy" boilerplate that paraphrased `.claude/core.md` has been removed from every agent body. Each call is smaller and the static prefix is more cache-friendly. **Behavior is unchanged** — same artifacts, same verdicts.
-- **Always on — per-agent `--effort` overrides.** Reasoning-heavy agents (`developer`, `reviewer`, `auditor`, `orchestrator`, `goal-decomposer`, `goal-evaluator`, `browser-qa-agent`, `demo-narrator`) stay at `--effort max`. Structured / mechanical agents (`release-manager`, `qa`, `ui-test-designer`, `ui-impact-analyst`, `phase-closure-auditor`) drop to `--effort medium` for shorter responses without losing what they need to do their job. Set `CHAIN_DISABLE_EFFORT_OVERRIDE=true` to restore `--effort max` for every agent.
-- **Opt-in — `--fast` flag.** After Step 3 finishes, the safe post-dev pairs run **in parallel** with shared services:
+- **Tier 1 prompt polish.** Per-agent prompts no longer re-read `CLAUDE.md` (it's auto-loaded into the system prompt) and the duplicated "Token and Questioning Policy" boilerplate that paraphrased `.claude/core.md` has been removed from every agent body. Each call is smaller and the static prefix is more cache-friendly. **Behavior is unchanged** — same artifacts, same verdicts.
+- **Per-agent `--effort` overrides.** Reasoning-heavy agents (`developer`, `reviewer`, `auditor`, `orchestrator`, `goal-decomposer`, `goal-evaluator`, `browser-qa-agent`, `demo-narrator`) stay at `--effort max`. Structured / mechanical agents (`release-manager`, `qa`, `ui-test-designer`, `ui-impact-analyst`, `phase-closure-auditor`) drop to `--effort medium` for shorter responses without losing what they need to do their job. Set `CHAIN_DISABLE_EFFORT_OVERRIDE=true` to restore `--effort max` for every agent.
+- **Parallel post-dev fanout.** After Step 3 finishes, the safe post-dev pairs run **in parallel** with shared services:
 
 ```
                         (Step 3: dev + review)
@@ -229,15 +229,11 @@ Two always-on improvements and one opt-in flag shorten every iteration:
                     Step 8: ux-regression   →   close + finalize
 ```
 
-The fanout writes a single `post_dev_parallel_complete` checkpoint after both branches succeed. If Branch B's QA verdict fails, the existing sequential Step 7 retry loop still runs (dev → review → qa, up to 3 attempts) — so the self-heal path is preserved. If either branch is interrupted by signal or hits quota, the parent propagates the same exit code and the next resume re-runs the fanout from scratch.
+The fanout writes a single `post_dev_parallel_complete` checkpoint after both branches succeed. If Branch B's QA verdict fails, the existing sequential Step 7 retry loop still runs (dev → review → qa, up to 3 attempts) — so the self-heal path is preserved. If either branch is interrupted by signal or hits quota, the parent propagates the same exit code and the next resume re-runs the fanout from scratch. Backend-only phases (`Frontend Present: no`) skip the fanout and run the sequential Step 4 → 5 → 6 → 6.5 → 7 blocks instead.
 
-Expected wall-clock reduction with `--fast`: **~30–50% for full phase iterations**, **~15–25% for lean goal-mode iterations** (lean has nothing to parallelise; only Tier 1 polish + `--effort` drops apply).
-
-Backward compatibility: **default behavior is unchanged.** Without `--fast` the pipeline runs exactly as today, with the same artifacts and the same checkpoint labels (the new label only appears when `--fast` is used). All eval-suite tests stay green.
+Expected wall-clock reduction over the pre-parallel pipeline: **~30–50% for full phase iterations**, **~15–25% for lean goal-mode iterations** (lean has nothing to parallelise; the gain comes entirely from Tier 1 polish + `--effort` drops).
 
 ```bash
-./scripts/automation/run-phase.sh phase-1 --fast              # phase mode
-./scripts/automation/run-goal.sh --session-id my-app --fast   # goal mode (full iters get parallel; lean iters log no-op)
 CHAIN_DISABLE_EFFORT_OVERRIDE=true ./scripts/automation/run-phase.sh phase-1   # escape hatch: restore --effort max
 ```
 
@@ -307,7 +303,6 @@ Model tiers are defined in `config/agent-models.yaml`. Change assignments there 
 # Full pipeline
 ./scripts/automation/run-phase.sh phase-1              # all 11 steps
 ./scripts/automation/run-phase.sh phase-1 --auto-release  # auto-commit + PR
-./scripts/automation/run-phase.sh phase-1 --fast       # parallel post-dev fanout (~30-50% faster)
 
 # Individual steps
 ./scripts/automation/dev-phase.sh phase-1              # implement
@@ -349,7 +344,6 @@ bash scripts/automation/render-summary.sh --session-index <sid>        # re-rend
 ./scripts/automation/run-goal.sh --session-id my-app --stall-window 5   # widen stall window
 ./scripts/automation/run-goal.sh --session-id my-app --auto-release     # release-manager runs once on GOAL_ACHIEVED
 ./scripts/automation/run-goal.sh --session-id my-app --acknowledge-regression  # continue past REGRESSION_HALT
-./scripts/automation/run-goal.sh --session-id my-app --fast             # parallel post-dev fanout for full iters; no-op for lean
 ./scripts/automation/goal-iter-lean.sh <iter-name>                      # single lean iteration (advanced)
 ```
 
@@ -436,7 +430,7 @@ Analyze with: `python3 scripts/automation/lib/analyze_telemetry.py runs/<phase>/
 
 ### Pipeline parallelism (shipped)
 
-- [x] **Parallel post-dev fanout (`--fast`).** Branch A (ui-impact → ui-test-design → browser-qa → demo) runs in parallel with Branch B (qa-validate), with shared services. See the [Faster Iterations](#faster-iterations) section. Opt-in; default behavior unchanged.
+- [x] **Parallel post-dev fanout.** Branch A (ui-impact → ui-test-design → browser-qa → demo) runs in parallel with Branch B (qa-validate), with shared services. See the [Faster Iterations](#faster-iterations) section. Default for every phase with a frontend; backend-only phases run sequentially.
 
 ### Tier 3 (don't touch unless data forces)
 

@@ -2,7 +2,7 @@
 # run-phase.sh — Full phase runner: plan -> test-plan -> dev -> review -> UI impact ->
 #                UI test design -> browser QA -> QA -> UX regression -> audit -> closure ->
 #                html-summary -> finalize
-# Usage: ./scripts/automation/run-phase.sh phase-3 [--auto-release] [--reset] [--no-finalize] [--fast]
+# Usage: ./scripts/automation/run-phase.sh phase-3 [--auto-release] [--reset] [--no-finalize]
 #
 # Flags:
 #   --auto-release   Automatically finalize (branch + commit + PR) when all checks pass.
@@ -12,12 +12,12 @@
 #                    --auto-release if it was passed alongside. Used by run-goal.sh
 #                    to dispatch a full-mode iteration without committing/creating a PR
 #                    for each iteration; release-manager runs once at goal-session end.
-#   --fast           Opt-in speed mode. After Step 3, run the safe post-dev pairs in
-#                    parallel: Branch A (ui-impact → ui-test-design → browser-qa → demo)
-#                    runs concurrently with Branch B (qa-validate). Services are booted
-#                    once for the fanout and torn down after Step 8. Default behavior
-#                    (without --fast) is identical to today; no checkpoint or artifact
-#                    differences.
+#
+# Post-dev parallel fanout: after Step 3, when the phase has a frontend, Branch A
+# (ui-impact → ui-test-design → browser-qa → demo) runs concurrently with
+# Branch B (qa-validate) under a single service boot. Backend-only phases and
+# resume runs where one of those steps already completed fall through to the
+# sequential blocks. This is the default; there is no flag.
 #
 # Resume behavior:
 #   If a run was interrupted, rerunning this script resumes from the last
@@ -42,15 +42,15 @@ PHASE="${1:-}"
 AUTO_RELEASE=false
 FORCE_RESET=false
 NO_FINALIZE=false
-FAST_MODE=false
 
-# Parse flags (allow flag in any position)
+# Parse flags (allow flag in any position). Unknown long flags hard-error;
+# positional args (phase name) and short forms fall through.
 for arg in "$@"; do
   case "$arg" in
     --auto-release) AUTO_RELEASE=true ;;
     --reset)        FORCE_RESET=true ;;
     --no-finalize)  NO_FINALIZE=true ;;
-    --fast)         FAST_MODE=true ;;
+    --*)            echo "Error: unknown flag '$arg'" >&2; exit 2 ;;
   esac
 done
 
@@ -197,17 +197,17 @@ _branch_a_ui_chain() {
   return 0
 }
 
-# Post-dev parallel fanout for --fast mode. Replaces the sequential Step 4 → 5
-# → 6 → 6.5 → 7 block with two concurrent branches that share a single boot
-# of the backend/frontend services. Step 8 (ux-regression) runs sequentially
-# after both branches succeed; the caller then tears down services.
+# Post-dev parallel fanout. Replaces the sequential Step 4 → 5 → 6 → 6.5 → 7
+# block with two concurrent branches that share a single boot of the
+# backend/frontend services. Step 8 (ux-regression) runs sequentially after
+# both branches succeed; the caller then tears down services.
 #
 # Returns 0 on success, 75 on quota exhaustion (caller's _run_step retries),
 # 130/137/143 on signal (caller aborts), or another non-zero code if at least
 # one branch soft-failed (caller treats as non-fatal per existing browser-QA
 # pattern — Step 4–7 already follow "warn and continue" semantics today).
 _run_post_dev_fanout() {
-  log "Step 4-7/11 -- Post-dev parallel fanout (--fast)..."
+  log "Step 4-7/11 -- Post-dev parallel fanout..."
   _boot_shared_services
   local _rc=0
   parallel_run \
@@ -587,17 +587,16 @@ else
 fi
 echo ""
 
-# ── Step 4-7/11: Optional parallel post-dev fanout (--fast) ─────────────────
-# When --fast is passed AND none of Steps 4-7 are already SKIP'd (resume / flag
-# combination), run the safe pairs (Branch A = ui-impact → ui-test-design →
-# browser-qa → demo; Branch B = qa-validate) concurrently with shared services.
-# After the fanout, flip the SKIP_ flags for the steps that completed so the
-# existing sequential blocks below become no-ops. Step 7's flag is only set if
-# QA passed — otherwise we let the existing retry loop handle the fix path.
-# When --fast is NOT passed, this whole block is skipped and the pipeline runs
-# byte-identically to today.
-if [[ "$FAST_MODE" == "true" \
-   && "$FRONTEND_PRESENT" == "yes" \
+# ── Step 4-7/11: Parallel post-dev fanout ───────────────────────────────────
+# When the phase has a frontend AND none of Steps 4-7 are already SKIP'd (resume),
+# run the safe pairs (Branch A = ui-impact → ui-test-design → browser-qa → demo;
+# Branch B = qa-validate) concurrently with shared services. After the fanout,
+# flip the SKIP_ flags for the steps that completed so the existing sequential
+# blocks below become no-ops. Step 7's flag is only set if QA passed — otherwise
+# we let the existing retry loop handle the fix path.
+# When the gating conditions fail (backend-only phase, or resume after one of
+# these steps), this block is skipped and the sequential blocks below run.
+if [[ "$FRONTEND_PRESENT" == "yes" \
    && "$SKIP_UI_IMPACT" == "false" \
    && "$SKIP_UI_TEST_DESIGN" == "false" \
    && "$SKIP_BROWSER_QA" == "false" \
@@ -625,9 +624,9 @@ if [[ "$FAST_MODE" == "true" \
   # Otherwise leave SKIP_QA=false so the sequential retry path runs as today.
   if [[ -f "$QA_REPORT" ]] && verdict_passes "$QA_REPORT"; then
     SKIP_QA=true
-    log "  [fast] Post-dev fanout complete — QA passed in fanout; Step 7 retry loop skipped."
+    log "  Post-dev fanout complete — QA passed in fanout; Step 7 retry loop skipped."
   else
-    log "  [fast] Post-dev fanout complete — QA did not pass; Step 7 retry loop will run."
+    log "  Post-dev fanout complete — QA did not pass; Step 7 retry loop will run."
   fi
   echo ""
 fi

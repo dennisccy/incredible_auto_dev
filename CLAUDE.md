@@ -96,12 +96,10 @@ Reusable instruction files that agents read during their workflow. Located in `.
 # Run a full phase end-to-end (phase mode)
 ./scripts/automation/run-phase.sh phase-1
 ./scripts/automation/run-phase.sh phase-1 --cli codex      # use Codex instead of Claude
-./scripts/automation/run-phase.sh phase-1 --fast           # parallel post-dev fanout (~30-50% faster)
 
 # Run goal mode (continuous, autonomous, until goal achieved or hard halt)
 ./scripts/automation/run-goal.sh --session-id my-app
 ./scripts/automation/run-goal.sh --session-id my-app --cli codex
-./scripts/automation/run-goal.sh --session-id my-app --fast     # full iters use parallel fanout; lean iters are unchanged
 ./scripts/automation/run-goal.sh --resume --session-id my-app   # resume (CLI pinned in session.json)
 
 # Sync per-CLI asset trees (.claude/ and .codex/) from neutral source — runs

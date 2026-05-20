@@ -79,7 +79,7 @@ _cleanup_qa_services() {
     _stop_pid_tree "$pid"
   done
 }
-# When CHAIN_SHARED_SERVICES=true (run-phase.sh --fast fanout), the caller
+# When CHAIN_SHARED_SERVICES=true (run-phase.sh post-dev fanout), the caller
 # owns service lifecycle — we MUST NOT install the EXIT trap or our finish
 # would kill the shared app under the parallel browser-qa branch.
 if [[ "${CHAIN_SHARED_SERVICES:-false}" != "true" ]]; then

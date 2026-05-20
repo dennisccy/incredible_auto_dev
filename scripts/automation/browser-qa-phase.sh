@@ -89,7 +89,7 @@ _cleanup_browser_qa_services() {
     _stop_pid_tree "$pid"
   done
 }
-# When CHAIN_SHARED_SERVICES=true, the caller (run-phase.sh's --fast fanout)
+# When CHAIN_SHARED_SERVICES=true, the caller (run-phase.sh's post-dev fanout)
 # owns service lifecycle for the whole post-dev batch — we MUST NOT install
 # the EXIT trap or the first branch to finish would tear down the shared app
 # under the other still-running branch.
@@ -143,7 +143,7 @@ export QA_FRONTEND_START_CMD="$FRONTEND_START_CMD"
 export QA_FRONTEND_LOG
 export QA_FRONTEND_REQUIRED="yes"
 
-# Skip the boot when the caller has already booted services (--fast fanout).
+# Skip the boot when the caller has already booted services (post-dev fanout).
 # The caller's _boot_shared_services already called ensure_services_running.
 if [[ "${CHAIN_SHARED_SERVICES:-false}" != "true" ]]; then
   ensure_services_running

@@ -2,7 +2,7 @@
 # parallel.sh — run two phase-step branches concurrently with prefixed,
 # interleaved log output and a single aggregated exit code.
 #
-# Used by run-phase.sh's --fast post-dev fanout: Branch A (UI chain
+# Used by run-phase.sh's post-dev fanout: Branch A (UI chain
 # ui-impact → ui-test-design → browser-qa → demo) runs in parallel with
 # Branch B (qa-validate).
 #

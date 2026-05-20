@@ -35,7 +35,7 @@ Read by `run-phase.sh` to determine checkpoint resume behavior.
 | `ui_impact_complete` | Plan, test plan, dev+review, UI impact analysis |
 | `ui_test_designed` | Plan, test plan, dev+review, UI impact, UI test design |
 | `browser_qa_complete` | Plan through browser QA |
-| `post_dev_parallel_complete` | Plan through Steps 4–7 — only written by `run-phase.sh --fast` after the parallel post-dev fanout (UI chain + QA-validate) succeeds. Resumes proceed to Step 8. |
+| `post_dev_parallel_complete` | Plan through Steps 4–7 — written by `run-phase.sh` after the parallel post-dev fanout (UI chain + QA-validate) succeeds. Backend-only phases skip the fanout and never write this label. Resumes proceed to Step 8. |
 | `ux_regression_complete` | Plan through UX regression review |
 | `closure_passed` | All steps — only finalize runs |
 | `summary.json` has `status: "finalized"` | All steps — exits immediately |
