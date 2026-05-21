@@ -29,8 +29,10 @@ CLAUDE.md is auto-loaded into your system prompt — do not Read it again.
 2. `.claude/core.md` and `.claude/workflow.md` — universal rules and pipeline semantics
 3. `docs/goal.md` — especially the **Must-have user journeys** and **Anti-goals** sections (these ground every decision)
 4. `runs/goal-session-<sid>/state/journey-history.json` — current per-journey status (in `--next` mode)
-5. `runs/goal-session-<sid>/iter-<N-1>/eval.md` — most recent evaluator verdict and recommendation (in `--next` mode)
-6. Codebase state via Glob/Grep/Read — verify what already exists before proposing work
+5. `runs/goal-session-<sid>/state/blueprint.md` — the coherence contract: **Information Architecture** (nav skeleton + the canonical home for each feature) and **Data Contract** (each displayed value → its single computing module → its single serving endpoint). In `--next` mode this is REQUIRED reading — you plan new work *into* this structure and register any new value in it. In `baseline` mode it does not exist yet; you CREATE it (see Baseline mode specifics).
+6. `runs/goal-session-<sid>/iter-<N-1>/eval.md` — most recent evaluator verdict and recommendation (in `--next` mode)
+7. `runs/goal-session-<sid>/iter-<N-1>/coherence.md` — last coherence verdict (in `--next` mode). If it was `COHERENCE-FAIL`, this iteration MUST be a consolidation pass that fixes the listed violations before adding any new scope.
+8. Codebase state via Glob/Grep/Read — verify what already exists before proposing work
 
 **Do NOT Read** `runs/goal-session-<sid>/state/evaluator-log.md` or `runs/goal-session-<sid>/state/lessons.md`. The orchestrator script (`run-goal.sh`) pre-trims those files and inlines the recent tail into your prompt — use the inlined content. These files grow unboundedly across a long session, so reading them directly costs more tokens every iteration.
 
@@ -86,6 +88,12 @@ Write the iteration spec to `docs/phases/goal-<sid>-iter-<N>.md`. The file MUST 
 ### Product surface delta
 <how the product experience changes>
 
+### Blueprint conformance
+<which Information Architecture section/home this iteration's pages live under — must match an existing home in `blueprint.md`; or "no new surfaces">
+
+### Data-contract additions
+<any NEW displayed value this iteration introduces, each with its single canonical computing module + serving endpoint (to be registered in `blueprint.md`); or "none". Never introduce a second way to compute or fetch a value already in the Data Contract — read the registered canonical source.>
+
 ## OUT OF SCOPE
 
 - <explicit exclusion to keep scope tight>
@@ -130,6 +138,12 @@ In `Mode: baseline` (iter 0), write a spec that:
 
 For an existing project, this is the moment that distinguishes "already implemented" from "yet to build" — the goal-evaluator will mark already-passing journeys as `already_passing` so subsequent iterations skip them.
 
+**Also draft the blueprint.** In baseline mode you additionally write `runs/goal-session-<sid>/state/blueprint.md` (use `.claude/templates/blueprint.md` as the structure), populated from `docs/goal.md` — the `## Product Shape` section if present, plus the Must-have journeys and Key Capabilities:
+- **Information Architecture:** propose the layout shell + nav skeleton, and give every Must-have journey/feature a canonical home reachable in ≤2 clicks from the persistent nav.
+- **Data Contract:** list every value that will appear in the UI and must read the same everywhere (numbers, derived metrics, shared entities), each with ONE canonical computing module and ONE serving endpoint. If `## Product Shape` names canonical values, use them verbatim. If the product has no shared numeric/derived values, write "No shared canonical values."
+
+Keep the blueprint to roughly one screen — it must be human-reviewable in ~3 minutes. After baseline, `run-goal.sh` pauses for the human to review/edit/approve this file before any feature is built, so it does not need to be perfect — sane and concise beats exhaustive. This is the only file you create in baseline mode besides the verify-only iter spec.
+
 ## Anti-goal handling
 
 Always restate the anti-goals from `docs/goal.md` verbatim under Goal Mode Metadata. Even though every agent reads goal.md, repeating them in the iter spec keeps them salient for the developer and evaluator.
@@ -143,6 +157,8 @@ Always restate the anti-goals from `docs/goal.md` verbatim under Goal Mode Metad
 - If `journey-history.json` shows zero remaining FAILING journeys, write a one-line spec saying "All journeys passing — evaluator should declare GOAL_ACHIEVED" and let the evaluator decide. Do NOT artificially manufacture more work.
 - Flag scope creep: if a journey requires capabilities outside `docs/goal.md` Key Capabilities, note it and exclude.
 - Apply lessons. When a `lessons.md` entry's **Applies to:** pattern matches what you're planning, surface the lesson in the iteration spec's BACKGROUND or NOTES section so the developer/reviewer/evaluator sees it. Repeating a documented past mistake is the opposite of episodic memory's purpose.
+- **Conform to the blueprint, and keep it current.** In `--next` mode, plan new pages into the existing Information Architecture and register every new displayed value in the Data Contract by editing `blueprint.md` directly. These *additive* edits — new value rows, a new page under an existing nav section — need no human approval. If you must change the **nav skeleton itself** (add/rename/remove a top-level section, or move a feature's canonical home), make the edit AND write a one-line reason to `runs/goal-session-<sid>/state/blueprint.reapproval-requested`; `run-goal.sh` will pause for the human to re-approve before the next iteration. Do this only when genuinely necessary — the IA is meant to hold across the whole session.
+- **Never duplicate a contract value.** If a journey needs a value already in the Data Contract, plan to read it from its registered canonical endpoint. Do not plan a second computation or a second endpoint for it — that is exactly the drift the coherence-auditor will FAIL.
 
 ## Token and Questioning Policy
 

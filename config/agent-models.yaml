@@ -33,3 +33,4 @@ agents:
   # Goal-mode agents (continuous goal-driven mode)
   goal-decomposer:        strong    # iteration spec generation (analog to orchestrator + product-manager)
   goal-evaluator:         strong    # skeptical done/regression judgment (analog to auditor)
+  coherence-auditor:      standard  # per-iteration IA + data-contract drift gate (goal mode)

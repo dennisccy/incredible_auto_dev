@@ -22,11 +22,12 @@ goal-iter-lean.sh   single lean iteration: developer → reviewer → browser-qa
 run-phase.sh        existing 11-step pipeline (used unchanged for full iterations,
                     invoked with --no-finalize so release runs only at session end)
 
-.claude/agents/goal-decomposer.md   reads goal + state, writes next iter spec
-.claude/agents/goal-evaluator.md    reads iter outputs + history, emits verdict
+.claude/agents/goal-decomposer.md   reads goal + state, writes next iter spec; drafts the blueprint at baseline
+.claude/agents/goal-evaluator.md    reads iter outputs + history + coherence, emits verdict
+.claude/agents/coherence-auditor.md audits the iter diff vs state/blueprint.md (IA + data contract)
 
 scripts/automation/lib/telemetry.sh  records structured JSONL events
-config/agent-models.yaml             two new entries (goal-decomposer, goal-evaluator → strong tier)
+config/agent-models.yaml             three goal-mode entries (goal-decomposer, goal-evaluator → strong; coherence-auditor → standard)
 ```
 
 All other agents (developer, reviewer, qa, auditor, browser-qa-agent, ui-impact-analyst, ui-test-designer, ux-regression-reviewer, phase-closure-auditor, release-manager, orchestrator, product-manager) and all skills are reused unchanged.
@@ -49,6 +50,9 @@ All other agents (developer, reviewer, qa, auditor, browser-qa-agent, ui-impact-
    developer→reviewer→browser-qa             (full 11-step pipeline)
             │                                        │
             └───────────────────┬────────────────────┘
+                                ▼
+                       coherence-auditor   (reads state/blueprint.md;
+                                │            writes iter-<N>/coherence.md)
                                 ▼
                           goal-evaluator
                                 │
@@ -81,6 +85,10 @@ After the evaluator runs, the verdict directly drives the loop:
 
 **Quota exhaustion is NOT a halt.** The wrapped `claude_with_quota_retry` library transparently sleeps until the quota resets, then resumes the same agent invocation. Telemetry records the quota pause for observability.
 
+**Blueprint approval pause.** At the top of the loop, before the first building iteration (and again only when the decomposer flags a *structural* blueprint change via `state/blueprint.reapproval-requested`), the loop sets `session.json.status = AWAITING_BLUEPRINT_APPROVAL` and exits 0 so the human can review `state/blueprint.md`. `--resume` continues (resuming counts as approval and creates `state/blueprint.approved`); `--auto-approve-blueprint` skips the pause. This is the one human checkpoint in an otherwise unattended run. The gate sits at the top of the loop precisely so the baseline-drafted blueprint is never re-drafted out from under the human.
+
+**Coherence veto.** The `coherence-auditor` runs after dispatch and writes `iter-<N>/coherence.md` with `COHERENCE-PASS | COHERENCE-WARN | COHERENCE-FAIL`. It hard-fails only on objective rules — a Data-Contract value recomputed/served via a new path, or a new feature with no nav path / a duplicate home. The goal-evaluator treats `COHERENCE-FAIL` as a structural veto: it will not emit `GOAL_ACHIEVED` while coherence is failing, and instead emits `CONTINUE` driving a consolidation iteration. Repeated coherence failures fall through to the existing `STALLED`/`ESCALATE` paths, so the gate cannot loop forever. An auditor that produces no output is treated as a non-blocking PASS.
+
 ## State
 
 ```
@@ -90,10 +98,13 @@ runs/goal-session-<sid>/
 ├── state/
 │   ├── journey-history.json    # per-journey status, anti-goal violations, timestamps
 │   ├── evaluator-log.md        # append-only chronicle of evaluator decisions
-│   └── lessons.md              # append-only ledger of non-obvious takeaways; goal-decomposer reads before planning
-├── iter-0/eval.md              # baseline evaluation
-├── iter-1/eval.md              # first dev iteration evaluation
-├── iter-N/eval.md              # ...
+│   ├── lessons.md              # append-only ledger of non-obvious takeaways; goal-decomposer reads before planning
+│   ├── blueprint.md            # coherence contract: information architecture + data contract (drafted at baseline, human-approved, enforced each iter)
+│   ├── blueprint.approved      # marker: human approved the blueprint (created on first --resume, or by --auto-approve-blueprint)
+│   └── blueprint.reapproval-requested  # transient: decomposer flagged a structural change → triggers a re-approval pause
+├── iter-0/eval.md              # baseline evaluation (no coherence.md — no code yet)
+├── iter-1/eval.md + coherence.md   # first dev iteration: evaluation + coherence audit
+├── iter-N/eval.md + coherence.md   # ...
 ├── .history-hashes             # one journey-history hash per line (stall detection)
 └── summary.md                  # written when the loop halts
 ```

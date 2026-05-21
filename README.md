@@ -66,7 +66,7 @@ See [`.claude/architecture/adoption-guide.md`](.claude/architecture/adoption-gui
 
 Goal mode skips per-phase authoring. You write a single `docs/goal.md` with extra sections for must-have user journeys and anti-goals, then run a continuous loop until an AI evaluator declares the goal achieved.
 
-**1. Author `docs/goal.md` from `templates/project-goal.md`**, including the **Must-have user journeys** and **Anti-goals** sections (required for goal mode; phase mode ignores them).
+**1. Author `docs/goal.md` from `templates/project-goal.md`**, including the **Must-have user journeys** and **Anti-goals** sections (required for goal mode; phase mode ignores them). Optionally fill the **Product Shape** section (a navigation sketch + the list of *canonical values*) — it seeds the coherence blueprint and is the best defense against the same number showing different values on different pages.
 
 **2. Configure `.claude/project-template.md`** the same way you would for phase mode.
 
@@ -76,9 +76,11 @@ Goal mode skips per-phase authoring. You write a single `docs/goal.md` with extr
 ./scripts/automation/run-goal.sh --session-id my-app
 ```
 
-Optional flags: `--max-iter N` (cap, default 30), `--stall-window N` (default 3), `--auto-release` (opens PR from `goal/<sid>` branch on `GOAL_ACHIEVED`), `--push-per-iter` / `--no-push-per-iter` (per-iter commits land on a single per-session branch; default ON), `--push-branch <name>` (override the default `goal/<sid>` name), `--resume`, `--reset`, `--acknowledge-regression`.
+Optional flags: `--max-iter N` (cap, default 30), `--stall-window N` (default 3), `--auto-release` (opens PR from `goal/<sid>` branch on `GOAL_ACHIEVED`), `--push-per-iter` / `--no-push-per-iter` (per-iter commits land on a single per-session branch; default ON), `--push-branch <name>` (override the default `goal/<sid>` name), `--auto-approve-blueprint` (skip the one-time blueprint review), `--resume`, `--reset`, `--acknowledge-regression`.
 
-**4. Inspect** `runs/goal-session-my-app/summary.md` when the loop halts. Halt verdicts: `GOAL_ACHIEVED` (success), `BUDGET_EXHAUSTED`, `STALLED`, `REGRESSION_HALT`, `ABORTED`.
+After baseline, the loop **pauses once** (`AWAITING_BLUEPRINT_APPROVAL`) for you to review the drafted coherence blueprint at `runs/goal-session-my-app/state/blueprint.md` (~3 min: sane navigation? every shared value has one source?). Edit it if needed and `--resume` (resuming counts as approval), or pass `--auto-approve-blueprint` to skip the pause entirely. From then on the run is unattended again, and a `coherence-auditor` enforces the blueprint every iteration.
+
+**4. Inspect** `runs/goal-session-my-app/summary.md` when the loop halts. Halt verdicts: `GOAL_ACHIEVED` (success), `BUDGET_EXHAUSTED`, `STALLED`, `REGRESSION_HALT`, `ABORTED`, `AWAITING_BLUEPRINT_APPROVAL` (resumable pause for blueprint review).
 
 Quota exhaustion is NOT a halt — the loop pauses and auto-resumes when the quota resets.
 
@@ -250,9 +252,11 @@ docs/goal.md  (Must-have user journeys + Anti-goals)
  +-- run-goal.sh outer loop ---------------------------------------+
  |                                                                 |
  |   Halt checks (max-iter | stall | regression | quota = pause)   |
+ |   Blueprint approval pause (after baseline / structural change) |
  |       |                                                         |
  |       v                                                         |
  |   goal-decomposer  --> docs/phases/goal-<sid>-iter-<N>.md       |
+ |       (baseline also drafts state/blueprint.md)                 |
  |       |                                                         |
  |       v                                                         |
  |   depth: lean ?  ----- yes ---->  goal-iter-lean.sh             |
@@ -264,7 +268,11 @@ docs/goal.md  (Must-have user journeys + Anti-goals)
  |   (existing 11-step pipeline; release deferred to session end)  |
  |       |                                                         |
  |       v                                                         |
+ |   coherence-auditor --> iter-<N>/coherence.md (vs blueprint)    |
+ |       |                                                         |
+ |       v                                                         |
  |   goal-evaluator  --> verdict + journey-history.json + log      |
+ |       (COHERENCE-FAIL vetoes GOAL_ACHIEVED -> consolidation)    |
  |       |                                                         |
  |   loop unless GOAL_ACHIEVED, BUDGET_EXHAUSTED, STALLED, or      |
  |   REGRESSION_HALT                                               |
@@ -292,8 +300,9 @@ Iteration name `goal-<sid>-iter-<N>` is used as the "phase name" so existing scr
 | `phase-closure-auditor` | standard | 10 | Final gate: validates all artifacts exist and are non-vague |
 | `iteration-summarizer` | light | 10.5 | Synthesizes the per-iteration summary MD (what was done / left / direction) that drives the HTML report; also maintains the cumulative `project-story.md` and writes the one-time `delivered.md` wrap on `GOAL_ACHIEVED` |
 | `demo-narrator` | standard | 6.5 | Drives the running app via Chrome MCP and captures a narrated, captioned "Watch it work" gallery (record mode) or walks a visible Chrome live (live mode). Showcase, not gate. |
-| `goal-decomposer` | strong | (goal mode) | Reads goal + state, writes next iteration spec, picks lean/full depth |
-| `goal-evaluator` | strong | (goal mode) | Skeptical done/regression/stall judgment, updates journey-history |
+| `goal-decomposer` | strong | (goal mode) | Reads goal + state, writes next iteration spec, picks lean/full depth; drafts the blueprint at baseline |
+| `goal-evaluator` | strong | (goal mode) | Skeptical done/regression/stall judgment, updates journey-history; vetoes GOAL_ACHIEVED on COHERENCE-FAIL |
+| `coherence-auditor` | standard | (goal mode) | Audits each iteration's diff against the blueprint (information architecture + data contract); hard-fails only on objective drift |
 
 Model tiers are defined in `config/agent-models.yaml`. Change assignments there and run `./scripts/automation/sync-agent-models.sh`.
 
@@ -344,6 +353,7 @@ bash scripts/automation/render-summary.sh --session-index <sid>        # re-rend
 ./scripts/automation/run-goal.sh --session-id my-app --stall-window 5   # widen stall window
 ./scripts/automation/run-goal.sh --session-id my-app --auto-release     # release-manager runs once on GOAL_ACHIEVED
 ./scripts/automation/run-goal.sh --session-id my-app --acknowledge-regression  # continue past REGRESSION_HALT
+./scripts/automation/run-goal.sh --session-id my-app --auto-approve-blueprint  # skip the one-time blueprint review pause
 ./scripts/automation/goal-iter-lean.sh <iter-name>                      # single lean iteration (advanced)
 ```
 

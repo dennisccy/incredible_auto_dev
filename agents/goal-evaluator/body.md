@@ -20,6 +20,7 @@ CLAUDE.md is auto-loaded into your system prompt — do not Read it again.
 9. `reports/phase-<iter-name>-ui-test-results.md` — browser QA results (lean and full)
 10. `reports/qa/<iter-name>-evidence/` — screenshots
 11. `runs/goal-session-<sid>/state/journey-history.json` — prior journey state (Read for full state; you will atomically rewrite this file in step 6)
+12. `runs/goal-session-<sid>/iter-<N>/coherence.md` — this iteration's coherence audit (information-architecture + data-contract drift). Treat a `COHERENCE-FAIL` as a structural veto, exactly like an unresolved anti-goal violation.
 
 **Do NOT Read** `runs/goal-session-<sid>/state/evaluator-log.md`. The orchestrator script (`run-goal.sh`) pre-trims it and inlines the recent tail into your prompt — use the inlined content. The file grows unboundedly across a long session.
 
@@ -35,6 +36,8 @@ Inspect each artifact above. For each Must-have journey listed in `docs/goal.md`
 - Find its result in `reports/phase-<iter-name>-ui-test-results.md`
 - Verify the screenshot in `reports/qa/<iter-name>-evidence/` actually shows the claimed end state
 - Cross-check with prior `journey-history.json` to detect changes (newly passing, newly failing, regressed)
+
+Also read this iteration's `coherence.md` and note its verdict. A `COHERENCE-FAIL` is a structural veto on `GOAL_ACHIEVED` and drives a consolidation `CONTINUE` (see Verdicts).
 
 ### 2. Check anti-goals
 
@@ -170,9 +173,9 @@ or `CONTINUE`, `ESCALATE`, `REGRESSION`, `STALLED`.
 
 ### When to use each
 
-- **GOAL_ACHIEVED** — every Must-have journey has status `passing` or `already_passing` AND no critical anti-goal violations exist. Loop halts with success.
+- **GOAL_ACHIEVED** — every Must-have journey has status `passing` or `already_passing`, no critical anti-goal violations exist, AND this iteration's `coherence.md` is not `COHERENCE-FAIL`. Loop halts with success.
 
-- **CONTINUE** — progress was made (≥1 journey newly passing) OR no progress this iter but failing journeys remain that are tractable. Recommend the next iteration's depth and target. Loop continues.
+- **CONTINUE** — progress was made (≥1 journey newly passing) OR no progress this iter but failing journeys remain that are tractable. Recommend the next iteration's depth and target. Loop continues. **If this iteration's `coherence.md` is `COHERENCE-FAIL`, return `CONTINUE`** and make the next-step recommendation a *consolidation pass* that fixes the listed coherence violations (cite them verbatim) before any new feature work — even if every journey passed.
 
 - **ESCALATE** — a lean iteration uncovered ambiguity, complexity, or an issue that warrants the full pipeline (audit, ux-regression, closure). The next iteration MUST run as `full`. Use sparingly — escalating every iter defeats the purpose of adaptive depth.
 
@@ -193,6 +196,7 @@ or `CONTINUE`, `ESCALATE`, `REGRESSION`, `STALLED`.
 - Every verdict must be justified by specific evidence references (artifact paths, screenshot filenames, file:line references for anti-goal violations).
 - Do NOT mark `GOAL_ACHIEVED` if any Must-have journey has status `failing` or `unknown`. All journeys must have positive evidence of passing.
 - Do NOT mark `GOAL_ACHIEVED` if any anti-goal violation is unresolved.
+- Do NOT mark `GOAL_ACHIEVED` if this iteration's `coherence.md` is `COHERENCE-FAIL`. A coherence failure is a structural veto — the product is incoherent (scattered navigation, a duplicate home, or the same value computed/served more than one way) even if all journeys pass. Drive a consolidation `CONTINUE` instead.
 - Update `journey-history.json` atomically — write the full new state, do not partial-update.
 - Append to `evaluator-log.md` — never overwrite prior entries; this is the chronological record.
 - If you cannot find evidence for a journey (e.g., browser-qa-agent skipped it), set its status to `unknown` and note the gap in the evaluation. Do NOT guess.

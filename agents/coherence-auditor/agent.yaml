@@ -1,0 +1,12 @@
+name: coherence-auditor
+description: Coherence auditor (goal mode). Audits each iteration's diff against the session blueprint
+  (information architecture + data contract). Hard-fails only on objective rules — a contract value
+  recomputed in a new code path, a contract value served from a non-canonical endpoint, or a new feature
+  with no navigation path / a duplicate home for an existing entity. Subjective issues are advisory.
+  Runs after the iteration's dispatch and before the goal-evaluator.
+model_tier: standard
+version: 1.0.0
+last_updated: '2026-05-21'
+body: body.md
+claude:
+  model_override: claude-sonnet-4-6

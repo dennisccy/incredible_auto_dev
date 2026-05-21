@@ -11,6 +11,7 @@
 #                                    [--stall-window N] [--resume] [--reset]
 #                                    [--auto-release]
 #                                    [--acknowledge-regression]
+#                                    [--auto-approve-blueprint]
 #                                    [--no-push-per-iter] [--push-per-iter]
 #                                    [--push-branch <name>]
 #
@@ -22,6 +23,9 @@
 #   --reset                      Discard the named session and start fresh
 #   --auto-release               On GOAL_ACHIEVED, run release-manager once for the whole session
 #   --acknowledge-regression     Continue past a prior REGRESSION_HALT
+#   --auto-approve-blueprint     Skip the one-time blueprint-review pause after baseline (and any
+#                                structural re-approval pause); use the AI-drafted blueprint as-is.
+#                                Per-run flag — pass it on each invocation/resume to keep it on.
 #   --push-per-iter              [Default ON for new sessions.] Commit + push each successful
 #                                iteration (CONTINUE / ESCALATE / GOAL_ACHIEVED) to a per-session
 #                                branch. No model invocation, no PR per iter — the branch is
@@ -40,6 +44,9 @@
 #   STALLED          - journey-history hash unchanged for stall_window iterations
 #   REGRESSION_HALT  - goal-evaluator emitted REGRESSION verdict
 #   ABORTED          - user interrupted (SIGINT/SIGTERM)
+#   AWAITING_BLUEPRINT_APPROVAL - paused after baseline (or after a structural blueprint change) for
+#                                 the human to review/edit state/blueprint.md; resume with --resume
+#                                 (resuming counts as approval) or pre-empt with --auto-approve-blueprint
 #
 # Quota exhaustion is NOT a halt: claude_with_quota_retry transparently sleeps
 # until the quota resets and resumes.
@@ -66,6 +73,9 @@ RESUME=false
 RESET=false
 AUTO_RELEASE=false
 ACK_REGRESSION=false
+# Skip the one-time blueprint-approval pause (and any structural re-approval
+# pause). Per-run flag; pass it on each invocation/resume if you want it.
+AUTO_APPROVE_BLUEPRINT=false
 # Per-iter push is ON by default for new sessions. Pass --no-push-per-iter to
 # opt out. On resume, the persisted session.json value wins unless overridden
 # by an explicit CLI flag (--push-per-iter or --no-push-per-iter).
@@ -88,6 +98,7 @@ while [[ $# -gt 0 ]]; do
     --reset)                   RESET=true; shift ;;
     --auto-release)            AUTO_RELEASE=true; shift ;;
     --acknowledge-regression)  ACK_REGRESSION=true; shift ;;
+    --auto-approve-blueprint)  AUTO_APPROVE_BLUEPRINT=true; shift ;;
     --push-per-iter)           PUSH_PER_ITER=true;  PUSH_FLAG_USER="yes"; shift ;;
     --no-push-per-iter)        PUSH_PER_ITER=false; PUSH_FLAG_USER="no";  shift ;;
     --push-branch)             PUSH_BRANCH="$2"; shift 2 ;;
@@ -131,6 +142,11 @@ ensure_cli_assets_synced "$CHAIN_CLI"
 JOURNEY_HISTORY="$GOAL_SESSION_DIR_LOCAL/state/journey-history.json"
 EVALUATOR_LOG="$GOAL_SESSION_DIR_LOCAL/state/evaluator-log.md"
 LESSONS_FILE="$GOAL_SESSION_DIR_LOCAL/state/lessons.md"
+# Coherence blueprint (information architecture + data contract). Drafted by the
+# baseline decomposer, approved once by the human, enforced each iteration.
+BLUEPRINT_FILE="$GOAL_SESSION_DIR_LOCAL/state/blueprint.md"
+BLUEPRINT_APPROVED="$GOAL_SESSION_DIR_LOCAL/state/blueprint.approved"
+BLUEPRINT_REAPPROVAL="$GOAL_SESSION_DIR_LOCAL/state/blueprint.reapproval-requested"
 SUMMARY_FILE="$GOAL_SESSION_DIR_LOCAL/summary.md"
 GOAL_FILE="$REPO_ROOT/docs/goal.md"
 
@@ -454,10 +470,19 @@ if $( [[ "$AUTO_RELEASE" == "true" ]] && echo "True" || echo "False" ):
   d["auto_release"] = True
 d["push_per_iter"] = $( [[ "$PUSH_PER_ITER" == "true" ]] && echo "True" || echo "False" )
 d["push_branch"] = "$PUSH_BRANCH"
-if "$RUN_MODE" == "resume" and d.get("status") == "REGRESSION_HALT":
+if "$RUN_MODE" == "resume" and d.get("status") in ("REGRESSION_HALT", "AWAITING_BLUEPRINT_APPROVAL"):
   d["status"] = "in_progress"
 json.dump(d, open("$SESSION_JSON","w"), indent=2); open("$SESSION_JSON","a").write("\n")
 PY
+
+# Resuming from a blueprint-approval pause: the human has reviewed (and possibly
+# edited) state/blueprint.md. Treat the act of resuming as approval, and clear any
+# structural re-approval request so the loop proceeds.
+if [[ "$RUN_MODE" == "resume" && "$PRIOR_STATUS" == "AWAITING_BLUEPRINT_APPROVAL" ]]; then
+  echo "[run-goal] Resuming from blueprint approval — treating your review of $BLUEPRINT_FILE as approval."
+  touch "$BLUEPRINT_APPROVED"
+  rm -f "$BLUEPRINT_REAPPROVAL"
+fi
 
 # ── Export shared env for invoked agents ──────────────────────────────────
 export GOAL_SESSION_ID="$SESSION_ID"
@@ -680,6 +705,55 @@ while true; do
     exit 0
   fi
 
+  # 1b. Blueprint approval gate (coherence). Pauses at the TOP of the loop —
+  # never mid-iteration — so the blueprint is never re-drafted out from under the
+  # human. Two triggers: (initial) baseline drafted a blueprint not yet approved;
+  # (structural) a later decomposer flagged a nav-skeleton change via the
+  # reapproval marker. Additive blueprint edits never set that marker, so they
+  # never pause.
+  _need_bp_approval=false
+  if [[ "$AUTO_APPROVE_BLUEPRINT" == "true" ]]; then
+    if [[ -f "$BLUEPRINT_FILE" ]]; then touch "$BLUEPRINT_APPROVED"; fi
+    rm -f "$BLUEPRINT_REAPPROVAL"
+  elif [[ -f "$BLUEPRINT_REAPPROVAL" ]]; then
+    _need_bp_approval=true
+  elif [[ -f "$BLUEPRINT_FILE" && ! -f "$BLUEPRINT_APPROVED" ]]; then
+    _need_bp_approval=true
+  fi
+  if [[ "$_need_bp_approval" == "true" ]]; then
+    python3 - <<PY
+import json, datetime
+d = json.load(open("$SESSION_JSON"))
+d["status"] = "AWAITING_BLUEPRINT_APPROVAL"
+d["updated_at"] = datetime.datetime.now(datetime.UTC).isoformat().replace('+00:00','Z')
+json.dump(d, open("$SESSION_JSON","w"), indent=2); open("$SESSION_JSON","a").write("\n")
+PY
+    record_telemetry_event "halt" '{"reason":"AWAITING_BLUEPRINT_APPROVAL","detected_at_step":"pre_decomposer"}'
+    echo ""
+    echo "════════════════════════════════════════════════════════════════════"
+    if [[ -f "$BLUEPRINT_REAPPROVAL" ]]; then
+      echo "[run-goal] PAUSED — a structural blueprint change needs your approval"
+      echo "════════════════════════════════════════════════════════════════════"
+      echo "Reason: $(cat "$BLUEPRINT_REAPPROVAL" 2>/dev/null)"
+    else
+      echo "[run-goal] PAUSED — blueprint approval needed (one time)"
+      echo "════════════════════════════════════════════════════════════════════"
+      echo "The baseline drafted your app blueprint."
+    fi
+    echo ""
+    echo "Review (~3 min):  $BLUEPRINT_FILE"
+    echo "  1. Information Architecture — are the nav sections sensible, and does"
+    echo "     every feature have an obvious home?"
+    echo "  2. Data Contract — is every \"same-number-everywhere\" value listed with"
+    echo "     exactly ONE source? Add any the AI missed; fix wrong sources."
+    echo "Edit the file directly to correct anything — your edits ARE the approval."
+    echo ""
+    echo "Resume:  ./scripts/automation/run-goal.sh --resume --session-id $SESSION_ID"
+    echo "Skip the review next time:  add --auto-approve-blueprint"
+    echo "════════════════════════════════════════════════════════════════════"
+    exit 0
+  fi
+
   ITER_NAME="goal-${SESSION_ID}-iter-${CURRENT_ITER}"
   ITER_DIR="$GOAL_SESSION_DIR_LOCAL/iter-${CURRENT_ITER}"
   mkdir -p "$ITER_DIR"
@@ -755,13 +829,14 @@ $( [[ $CURRENT_ITER -gt 0 && -f "$GOAL_SESSION_DIR_LOCAL/iter-$((CURRENT_ITER-1)
 Apply the TOKEN AND QUESTIONING POLICY from .claude/core.md strictly.
 
 Write the iteration spec to: docs/phases/${ITER_NAME}.md
+$( if [[ "$DECOMPOSER_MODE" == "baseline" ]]; then echo "BASELINE also: draft the coherence blueprint to $BLUEPRINT_FILE per your agent instructions (Information Architecture + Data Contract, ~one screen, from docs/goal.md's Product Shape + Must-have journeys + Key Capabilities). The loop pauses for human approval of this file after baseline."; else echo "Also keep $BLUEPRINT_FILE current per your agent instructions: register any new displayed value in the Data Contract and place new pages under an existing Information-Architecture home (additive edits only). For a nav-skeleton change, make the edit AND write a one-line reason to $BLUEPRINT_REAPPROVAL."; fi )
 
 The spec MUST include a 'Goal Mode Metadata' section with at minimum:
   - Mode: $DECOMPOSER_MODE
   - Depth: lean | full
   - Target journeys: <comma-separated journey IDs>
 
-Do NOT write code or implement anything. STOP after writing the spec." || _decomp_rc=$?
+Do NOT write code or implement anything. The iteration spec and any blueprint edits are planning documents, not code. STOP after writing them." || _decomp_rc=$?
 
   record_agent_invocation_end "goal-decomposer" "$_decomp_start" "$_decomp_rc"
 
@@ -816,6 +891,51 @@ Do NOT write code or implement anything. STOP after writing the spec." || _decom
   fi
   _exec_rc=${_exec_rc:-0}
 
+  # 3b. Coherence auditor — information-architecture + data-contract drift gate.
+  # Goal-mode only; one integration point covering both lean and full dispatch.
+  # Skipped at baseline (iter 0 has no code). Writes iter-<N>/coherence.md; the
+  # goal-evaluator vetoes GOAL_ACHIEVED on COHERENCE-FAIL and drives a
+  # consolidation CONTINUE. An auditor crash is non-blocking (stubbed PASS) so a
+  # safety-net agent can never wedge the session.
+  COHERENCE_OUTPUT="$ITER_DIR/coherence.md"
+  if [[ $CURRENT_ITER -gt 0 && -f "$BLUEPRINT_FILE" ]]; then
+    echo "[run-goal] Step 2b: coherence-auditor"
+    _snapshot_sha="$(cat "$ITER_DIR/snapshot-sha" 2>/dev/null || echo "")"
+    cd "$REPO_ROOT"
+    _coh_start=$(record_agent_invocation_start "coherence-auditor")
+    _coh_rc=0
+    claude_with_quota_retry -p "You are the coherence-auditor agent for goal-mode coherence enforcement.
+
+Session ID: $SESSION_ID
+Iteration index: $CURRENT_ITER
+Iter name: $ITER_NAME
+
+Blueprint (the contract): $BLUEPRINT_FILE
+Iter spec: $ITER_SPEC_PATH
+Agent instructions: .claude/agents/coherence-auditor.md  <-- read this first
+Methodology: .claude/skills/coherence-audit.md
+(CLAUDE.md is already in your system prompt — do not Read it again.)
+
+This iteration's changes: run \`git diff ${_snapshot_sha}\` (and \`git status\` / \`git diff HEAD\` for uncommitted changes). If the snapshot SHA is empty, fall back to \`git diff HEAD~1\`.
+UI surface map (read if it exists): reports/phase-${ITER_NAME}-ui-surface-map.md
+
+Apply the TOKEN AND QUESTIONING POLICY from .claude/core.md strictly.
+
+Write your verdict to: $COHERENCE_OUTPUT
+The verdict line MUST appear first and start exactly with:
+**Verdict:** COHERENCE-PASS
+  or **Verdict:** COHERENCE-WARN
+  or **Verdict:** COHERENCE-FAIL" || _coh_rc=$?
+    record_agent_invocation_end "coherence-auditor" "$_coh_start" "$_coh_rc"
+    if [[ ! -f "$COHERENCE_OUTPUT" ]]; then
+      echo "[run-goal] coherence-auditor wrote no output — recording non-blocking PASS and continuing." >&2
+      printf '**Verdict:** COHERENCE-PASS\n\n(Coherence auditor produced no output; treated as a non-blocking pass.)\n' > "$COHERENCE_OUTPUT"
+    fi
+    _coh_verdict=$(grep -m1 -E '^\*\*Verdict:\*\*' "$COHERENCE_OUTPUT" | sed -E 's/^\*\*Verdict:\*\*[[:space:]]*//' | awk '{print $1}')
+    echo "[run-goal] Coherence verdict: ${_coh_verdict:-unknown}"
+    record_telemetry_event "coherence_audit" "$(jq -cn --arg v "${_coh_verdict:-unknown}" '{verdict:$v}' 2>/dev/null || printf '{"verdict":"%s"}' "${_coh_verdict:-unknown}")"
+  fi
+
   # 4. Goal evaluator
   echo "[run-goal] Step 3: goal-evaluator"
   EVAL_OUTPUT="$ITER_DIR/eval.md"
@@ -843,6 +963,7 @@ Iteration artifacts (read what exists):
   Audit handoff: docs/handoffs/${ITER_NAME}-audit.md (full mode only)
   Browser QA results: reports/phase-${ITER_NAME}-ui-test-results.md
   Evidence: reports/qa/${ITER_NAME}-evidence/
+  Coherence audit: $COHERENCE_OUTPUT  <-- COHERENCE-FAIL vetoes GOAL_ACHIEVED and drives a consolidation CONTINUE
 
 Prior session state:
   Journey history: $JOURNEY_HISTORY  <-- update this with new state (full atomic write)

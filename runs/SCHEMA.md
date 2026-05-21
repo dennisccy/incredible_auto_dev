@@ -151,6 +151,8 @@ Also included as a section inside `reports/qa/<phase>-qa.md` when `Frontend Pres
 | Demo results (per iter) | `reports/phase-<phase>-demo-results.md` |
 | Demo screenshots (per iter) | `reports/demo/<phase>/step-NN.png` |
 | Cumulative project story (goal mode) | `runs/goal-session-<sid>/state/project-story.md` |
+| Coherence blueprint (goal mode) | `runs/goal-session-<sid>/state/blueprint.md` |
+| Coherence audit per iter (goal mode) | `runs/goal-session-<sid>/iter-<N>/coherence.md` |
 | GOAL_ACHIEVED delivered wrap (MD) | `reports/goal-session-<sid>-delivered.md` |
 | GOAL_ACHIEVED delivered wrap (HTML) | `reports/goal-session-<sid>-delivered.html` |
 
@@ -324,6 +326,35 @@ file, weaves in this iteration's "In plain words" content, and rewrites
 the whole story). Capped at ~400 words; older filler is condensed as
 newer content is added. Rendered as the leading section of the session
 index HTML.
+
+---
+
+## Coherence blueprint + audit (goal mode only)
+
+### runs/goal-session-\<sid\>/state/blueprint.md
+
+The coherence contract for the whole app. Drafted by the `goal-decomposer` in baseline mode,
+reviewed/approved once by the human (the loop pauses with status `AWAITING_BLUEPRINT_APPROVAL` until
+`--resume`, or `--auto-approve-blueprint` skips the pause), and enforced every iteration by the
+`coherence-auditor`. Two sections:
+
+- **Information Architecture** — layout shell, navigation skeleton, and the canonical home for each
+  feature/entity (each reachable in ≤2 clicks from the persistent nav).
+- **Data Contract** — one row per displayed value/entity: the single module that computes it and the
+  single endpoint that serves it. No surface may recompute or re-fetch a registered value elsewhere.
+
+Approval is recorded by the marker file `state/blueprint.approved`. A
+`state/blueprint.reapproval-requested` marker (written by the decomposer only when it changes the nav
+skeleton) triggers another approval pause. Template: `templates/blueprint.md`.
+
+### runs/goal-session-\<sid\>/iter-\<N\>/coherence.md
+
+Written by the `coherence-auditor` after each building iteration (skipped at baseline — no code yet).
+Top line: `**Verdict:** COHERENCE-PASS | COHERENCE-WARN | COHERENCE-FAIL`. Contains a Data-Contract
+check table, an Information-Architecture check table, blocking violations (FAIL only — each with a
+`file:line` and a concrete finite fix), and advisory notes. The `goal-evaluator` treats
+`COHERENCE-FAIL` as a veto on `GOAL_ACHIEVED` and drives a consolidation `CONTINUE`. A missing file is
+treated as a non-blocking PASS. Template: `templates/coherence-verdict.md`.
 
 ---
 

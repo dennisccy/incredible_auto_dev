@@ -33,6 +33,27 @@
 - Mood: <e.g., professional, high-tech, approachable>
 - Reference: <URL or description of a visual reference — screenshot, site, or design system>
 
+## Product Shape
+<!--
+OPTIONAL but high-leverage (especially for data-heavy apps). Goal mode keeps an app coherent across
+many iterations by drafting a "blueprint" at the start — an Information Architecture (how the app is
+navigated) and a Data Contract (each shared value has ONE source, so the same number never differs
+across pages). The goal-decomposer drafts that blueprint from this section; if you leave this blank,
+it proposes one from your journeys, and you review/approve it once at the first pause.
+
+Filling in the canonical values below is the single best way to prevent the "the same metric shows
+different numbers on different pages" problem.
+-->
+
+### Navigation / information architecture
+<The main sections of the app and roughly what lives where. A short tree is enough; or leave blank.>
+- <e.g., Dashboard | Strategies | Backtests | Settings>
+
+### Canonical values (single source of truth)
+<Values/metrics/entities that must read the SAME everywhere they appear. Name each one; the framework
+will pin each to exactly one computing module + one endpoint. Or write "none".>
+- <e.g., total return, CAGR, Sharpe ratio — each computed once, displayed everywhere from that source>
+
 ## Must-have user journeys
 <!--
 Required for goal mode (`./scripts/automation/run-goal.sh`). Optional / ignored by phase mode.

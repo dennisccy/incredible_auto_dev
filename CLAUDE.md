@@ -66,7 +66,8 @@ Specialist subagent definitions live in `.claude/agents/`:
 | `phase-closure-auditor` | `.claude/agents/phase-closure-auditor.md` | Final gate: validates all UI artifacts exist and are non-vague |
 | `ux-regression-reviewer` | `.claude/agents/ux-regression-reviewer.md` | Checks UI evolved with new capabilities, flags hidden/undiscoverable features |
 | `goal-decomposer` | `.claude/agents/goal-decomposer.md` | Goal mode: reads goal + state, writes next iteration spec, picks lean/full depth |
-| `goal-evaluator` | `.claude/agents/goal-evaluator.md` | Goal mode: skeptical done/regression/stall judgment, updates journey-history |
+| `goal-evaluator` | `.claude/agents/goal-evaluator.md` | Goal mode: skeptical done/regression/stall judgment, updates journey-history; vetoes GOAL_ACHIEVED on COHERENCE-FAIL |
+| `coherence-auditor` | `.claude/agents/coherence-auditor.md` | Goal mode: audits each iteration's diff against the session blueprint (information architecture + data contract); hard-fails only on objective drift (a contract value recomputed/served via a new path, or a feature with no nav path / duplicate home). Runs after dispatch, before the goal-evaluator |
 | `iteration-summarizer` | `.claude/agents/iteration-summarizer.md` | Post-iteration synthesis: writes the plain-language + technical iteration summary and maintains the cumulative `project-story.md` in goal mode; emits the one-time `delivered.md` wrap on GOAL_ACHIEVED |
 | `demo-narrator` | `.claude/agents/demo-narrator.md` | Per-iteration product demonstrator: drives the running app via Chrome MCP, captures a captioned narrated screenshot gallery (record mode) or walks a visible Chrome live (live mode). Showcase, not QA — never halts the pipeline |
 
@@ -87,6 +88,7 @@ Reusable instruction files that agents read during their workflow. Located in `.
 | `ui-regression-scout.md` | ux-regression-reviewer | Identify old journeys affected by new changes |
 | `what-to-click-writer.md` | ui-test-designer | Write fast operator verification guides |
 | `architecture-doc-updater.md` | update-docs.sh | Update framework or project architecture docs on drift |
+| `coherence-audit.md` | coherence-auditor | Audit an iteration's diff for information-architecture + data-contract drift against the blueprint (goal mode) |
 
 ---
 
@@ -100,7 +102,8 @@ Reusable instruction files that agents read during their workflow. Located in `.
 # Run goal mode (continuous, autonomous, until goal achieved or hard halt)
 ./scripts/automation/run-goal.sh --session-id my-app
 ./scripts/automation/run-goal.sh --session-id my-app --cli codex
-./scripts/automation/run-goal.sh --resume --session-id my-app   # resume (CLI pinned in session.json)
+./scripts/automation/run-goal.sh --resume --session-id my-app   # resume (CLI pinned in session.json) — also how you approve the blueprint after the baseline pause
+./scripts/automation/run-goal.sh --session-id my-app --auto-approve-blueprint   # skip the one-time blueprint review pause (fully hands-off)
 
 # Sync per-CLI asset trees (.claude/ and .codex/) from neutral source — runs
 # automatically on first phase/goal invocation; manual call only needed after editing
