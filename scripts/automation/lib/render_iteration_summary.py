@@ -99,6 +99,11 @@ class SessionData:
     session_id: str
     repo_root: Path
     goal_title: str = ""
+    # One-line vision/summary pulled from docs/goal.md "## Vision".
+    goal_vision: str = ""
+    # Ordered list of `{id, name, acceptance, steps_md}` parsed from
+    # docs/goal.md "## Must-have user journeys" — drives the feature manual.
+    goal_must_haves: list[dict] = field(default_factory=list)
     final_verdict: str = "IN-PROGRESS"
     total_iterations: int = 0
     wall_time_seconds: int = 0
@@ -380,12 +385,18 @@ _DEMO_VERDICTS = {"RECORDED", "RECORDED_WITH_NOTES", "SKIPPED", "NOT_YET"}
 _DEMO_VERDICT_RE = re.compile(r"^\*\*Demo Verdict:\*\*\s+([A-Z_]+)\s*$", re.MULTILINE)
 
 
+_JOURNEY_TAG_RE = re.compile(r"\bJ-\d+\b")
+
+
 def _parse_demo_results(md: str) -> tuple[str, list[dict], list[str]]:
     """Return (verdict, captured_steps, soft_notes) from a demo-results.md body.
 
     - verdict: one of _DEMO_VERDICTS, or "" if missing/invalid.
-    - captured_steps: list of dicts {number, title, is_new, screenshot} parsed
-      from the 'Captured Steps' pipe-table. Empty if no table.
+    - captured_steps: list of dicts {number, title, is_new, screenshot, journey}
+      parsed from the 'Captured Steps' pipe-table. Empty if no table.
+      `journey` is the J-XX tag for the step (empty when the column is absent
+      or the cell does not contain a tag) — feature manual uses it to group
+      steps by journey.
     - soft_notes: bullet lines under the '## Soft notes' section.
     """
     verdict = ""
@@ -415,11 +426,18 @@ def _parse_demo_results(md: str) -> tuple[str, list[dict], list[str]]:
                 continue
             new_text = _get("new").lower()
             is_new = new_text in {"yes", "y", "true", "✓", "✔", "new"}
+            journey_cell = _get("journey")
+            journey = ""
+            if journey_cell:
+                jm = _JOURNEY_TAG_RE.search(journey_cell)
+                if jm:
+                    journey = jm.group(0)
             steps.append({
                 "number": number,
                 "title": _get("title"),
                 "is_new": is_new,
                 "screenshot": _get("screenshot"),
+                "journey": journey,
             })
         steps.sort(key=lambda s: s["number"])
 
@@ -490,7 +508,10 @@ def load_session(session_id: str, repo_root: Path) -> SessionData:
         except Exception:
             pass
 
-    s.goal_title = _parse_goal_title(_read_text(repo_root / "docs" / "goal.md"))
+    goal_md = _read_text(repo_root / "docs" / "goal.md")
+    s.goal_title = _parse_goal_title(goal_md)
+    s.goal_vision = _parse_goal_vision(goal_md)
+    s.goal_must_haves = _parse_goal_must_haves(goal_md)
 
     jh = session_dir / "state" / "journey-history.json"
     if jh.exists():
@@ -550,6 +571,95 @@ def _parse_goal_title(md: Optional[str]) -> str:
         if m:
             return m.group(1).strip()
     return ""
+
+
+_GOAL_VISION_RE = re.compile(
+    r"^##\s+Vision\s*$\s*(?P<body>.*?)(?=^##\s+|\Z)",
+    re.MULTILINE | re.DOTALL,
+)
+
+
+def _parse_goal_vision(md: Optional[str]) -> str:
+    """First non-comment, non-empty paragraph of the '## Vision' section.
+
+    Returns "" when the section is missing or only contains a `<!-- … -->`
+    placeholder.
+    """
+    if not md:
+        return ""
+    m = _GOAL_VISION_RE.search(md)
+    if not m:
+        return ""
+    body = _strip_html_comments(m.group("body"))
+    lines: list[str] = []
+    for raw in body.splitlines():
+        line = raw.strip()
+        if not line:
+            if lines:
+                break
+            continue
+        lines.append(line)
+    return " ".join(lines).strip()
+
+
+_GOAL_MUSTHAVES_RE = re.compile(
+    r"^##\s+Must-have user journeys\s*$\s*(?P<body>.*?)(?=^##\s+|\Z)",
+    re.MULTILINE | re.DOTALL,
+)
+_JOURNEY_HEADER_RE = re.compile(
+    r"^-\s+\*\*(?P<id>J-\d+):\s*(?P<name>[^*]+?)\*\*\s*$",
+    re.MULTILINE,
+)
+
+
+def _parse_goal_must_haves(md: Optional[str]) -> list[dict]:
+    """Parse the '## Must-have user journeys' section of docs/goal.md.
+
+    Returns an ordered list of `{id, name, acceptance, steps_md}` — order is
+    authoring order in goal.md, which the feature manual uses as the TOC
+    order. `acceptance` is the friendly description shown in the manual.
+    """
+    if not md:
+        return []
+    sect = _GOAL_MUSTHAVES_RE.search(md)
+    if not sect:
+        return []
+    body = _strip_html_comments(sect.group("body"))
+    # Find each `- **J-XX: Name**` line and slice the body between successive
+    # journey headers to capture each entry's nested bullets (Steps, Acceptance).
+    headers = list(_JOURNEY_HEADER_RE.finditer(body))
+    out: list[dict] = []
+    for i, h in enumerate(headers):
+        start = h.end()
+        end = headers[i + 1].start() if i + 1 < len(headers) else len(body)
+        chunk = body[start:end]
+        acceptance = ""
+        # Match the "Acceptance:" line (case-insensitive). The label may be
+        # bare or wrapped in `**…**`; tolerate both.
+        am = re.search(
+            r"^\s*-\s+\*{0,2}Acceptance\*{0,2}:\s*(.+?)\s*$",
+            chunk,
+            re.MULTILINE | re.IGNORECASE,
+        )
+        if am:
+            acceptance = am.group(1).strip()
+        # Pull the nested Steps block raw so the manual can fall back to it
+        # when Acceptance is empty.
+        steps_md = ""
+        sm = re.search(
+            r"^\s*-\s+\*{0,2}Steps\*{0,2}:\s*(?P<rest>.*?)(?=^\s*-\s+\*{0,2}Acceptance|\Z)",
+            chunk,
+            re.MULTILINE | re.DOTALL | re.IGNORECASE,
+        )
+        if sm:
+            steps_md = sm.group("rest").strip()
+        out.append({
+            "id": h.group("id").strip(),
+            "name": h.group("name").strip(),
+            "acceptance": acceptance,
+            "steps_md": steps_md,
+        })
+    return out
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -865,6 +975,89 @@ ol.steps > li::before {
   padding: 22px 28px; margin: 12px 0;
 }
 .delivered-body h2.story-h { margin-top: 0; }
+/* Feature manual (session index, top of page). */
+.cover-vision {
+  margin: 8px 0 14px; color: #57606a; font-size: 1.02rem;
+  font-style: italic; max-width: 60ch;
+}
+.feature-toc {
+  background: white; border: 1px solid #d6e4f0; border-radius: 10px;
+  padding: 20px 26px; margin: 14px 0;
+  box-shadow: 0 1px 2px rgba(20, 40, 80, 0.04);
+}
+.feature-toc-heading {
+  margin: 0 0 14px; font-size: 1.05rem; color: #0969da;
+  text-transform: uppercase; letter-spacing: 0.05em;
+}
+.feature-toc-list {
+  margin: 0; padding-left: 22px; font-size: 1rem; line-height: 1.7;
+}
+.feature-toc-list li { padding: 2px 0; }
+.feature-toc-list a {
+  color: #1f2328; text-decoration: none; font-weight: 500;
+}
+.feature-toc-list a:hover { color: #0969da; text-decoration: underline; }
+.toc-extra-header {
+  list-style: none; margin: 10px 0 4px -22px;
+  font-size: 0.82rem; color: #57606a; font-weight: 600;
+  text-transform: uppercase; letter-spacing: 0.04em;
+}
+.feature-manual { margin: 14px 0; }
+.feature-section {
+  background: white; border: 1px solid #d6e4f0; border-radius: 10px;
+  padding: 22px 26px; margin: 16px 0;
+  box-shadow: 0 1px 2px rgba(20, 40, 80, 0.04);
+  scroll-margin-top: 12px;
+}
+.feature-heading {
+  margin: 0 0 10px; font-size: 1.2rem; color: #1f2328;
+  display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+}
+.feature-description {
+  margin: 0 0 16px; color: #1f2328; font-size: 1rem; line-height: 1.55;
+}
+.feature-description-label {
+  font-weight: 600; color: #57606a; margin-right: 4px;
+}
+.feature-note {
+  margin: 8px 0 12px; padding: 8px 12px;
+  background: #fff8c5; border: 1px solid #eed888; border-radius: 6px;
+  color: #9a6700; font-size: 0.88rem;
+}
+.feature-source {
+  margin: 12px 0 0; font-size: 0.88rem; color: #57606a;
+}
+.feature-source a { color: #0969da; text-decoration: none; }
+.feature-source a:hover { text-decoration: underline; }
+.feature-empty {
+  margin: 10px 0; padding: 12px 16px;
+  background: #f6f8fa; border: 1px solid #d0d7de; border-radius: 6px;
+  color: #57606a; font-style: italic;
+}
+.status-pill {
+  font-size: 0.78rem; font-weight: 600; padding: 3px 10px; border-radius: 12px;
+  letter-spacing: 0.04em; white-space: nowrap; display: inline-block;
+}
+.status-pill-passing { background: #dafbe1; color: #1a7f37; border: 1px solid #aceebb; }
+.status-pill-failing { background: #ffebe9; color: #cf222e; border: 1px solid #f2b8b5; }
+.status-pill-regressed { background: #ffebe9; color: #cf222e; border: 1px solid #f2b8b5; }
+.status-pill-partial { background: #fff8c5; color: #9a6700; border: 1px solid #e8d97e; }
+.status-pill-unknown { background: #f6f8fa; color: #57606a; border: 1px solid #d0d7de; }
+.status-pill-coming-soon { background: #f6f8fa; color: #57606a; border: 1px solid #d0d7de; }
+.developer-view {
+  margin: 28px 0 6px;
+  border: 1px dashed #d0d7de; border-radius: 8px;
+}
+.developer-view > summary {
+  cursor: pointer; padding: 12px 16px;
+  color: #57606a; font-size: 0.92rem; font-weight: 500;
+  background: #f6f8fa; border-radius: 8px;
+}
+.developer-view[open] > summary {
+  border-bottom: 1px dashed #d0d7de;
+  border-radius: 8px 8px 0 0;
+}
+.developer-view-body { padding: 12px 18px; }
 """
 
 SVG_CHECK = """<svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true">
@@ -991,6 +1184,41 @@ def _render_technical_intro() -> str:
     )
 
 
+def _render_demo_step_card(step: dict) -> str:
+    """Render one demo step as a <figure> card.
+
+    Shared between `_render_watch_it_work` (whole-iter gallery) and the
+    feature manual (per-journey gallery on the session index).
+    """
+    title = escape(step.get("title", "") or f"Step {step['number']:02d}")
+    narration = escape(step.get("narration", "") or "")
+    new_badge = (
+        "<span class='demo-new'>NEW</span>"
+        if step.get("is_new") else ""
+    )
+    shot_html = ""
+    shot_path = step.get("_screenshot_path")
+    if shot_path:
+        url = embed_image(shot_path)
+        if url:
+            shot_html = (
+                f"<div class='demo-shot'><img src='{url}' "
+                f"alt='Step {step['number']:02d}: {title}'></div>"
+            )
+    return (
+        "<figure class='demo-step'>"
+        f"<div class='demo-step-head'>"
+        f"<span class='demo-step-num'>Step {step['number']:02d}</span>"
+        f"{new_badge}"
+        f"<span class='demo-step-title'>{title}</span>"
+        "</div>"
+        f"{shot_html}"
+        + (f"<figcaption class='demo-narration'>{narration}</figcaption>"
+           if narration else "")
+        + "</figure>"
+    )
+
+
 def _render_watch_it_work(data: IterationData) -> str:
     """Captioned screenshot gallery from the record-mode demo-narrator."""
     # When no demo artifact at all — render nothing.
@@ -1006,35 +1234,7 @@ def _render_watch_it_work(data: IterationData) -> str:
         "NOT_YET": "demo-pending",
     }.get(data.demo_verdict, "demo-pending")
 
-    cards: list[str] = []
-    for step in data.demo_steps:
-        title = escape(step.get("title", "") or f"Step {step['number']:02d}")
-        narration = escape(step.get("narration", "") or "")
-        new_badge = (
-            "<span class='demo-new'>NEW</span>"
-            if step.get("is_new") else ""
-        )
-        shot_html = ""
-        shot_path = step.get("_screenshot_path")
-        if shot_path:
-            url = embed_image(shot_path)
-            if url:
-                shot_html = (
-                    f"<div class='demo-shot'><img src='{url}' "
-                    f"alt='Step {step['number']:02d}: {title}'></div>"
-                )
-        cards.append(
-            "<figure class='demo-step'>"
-            f"<div class='demo-step-head'>"
-            f"<span class='demo-step-num'>Step {step['number']:02d}</span>"
-            f"{new_badge}"
-            f"<span class='demo-step-title'>{title}</span>"
-            "</div>"
-            f"{shot_html}"
-            + (f"<figcaption class='demo-narration'>{narration}</figcaption>"
-               if narration else "")
-            + "</figure>"
-        )
+    cards = [_render_demo_step_card(step) for step in data.demo_steps]
 
     # Verdict-only states (SKIPPED / NOT_YET / no captured steps) get a friendly
     # one-liner instead of an empty grid.
@@ -1268,21 +1468,27 @@ def _render_footer(data: IterationData) -> str:
 
 
 def render_html_session_index(data: SessionData) -> str:
+    """Session-index page: a feature-organized user manual.
+
+    Layout: cover (verdict + title + vision) → delivered banner (if any) →
+    'The story so far' narrative → 'Contents' TOC of every journey →
+    one feature section per journey with its own step-by-step gallery →
+    collapsed 'Developer view' wrapping the matrix + iter cards + evaluator
+    note. The technical detail is preserved but moved out of the front door.
+    """
+    title = data.goal_title or f"Goal session {data.session_id}"
     parts: list[str] = [
         "<!doctype html>",
         '<html lang="en"><head>',
         '<meta charset="utf-8">',
-        f"<title>Goal session {escape(data.session_id)}</title>",
+        f"<title>{escape(title)} — Session</title>",
         f"<style>{CSS}</style>",
         "</head><body><div class='container'>",
-        _render_session_hero(data),
+        _render_cover(data),
         _render_delivered_link(data),
         _render_story_so_far(data),
-        _render_latest_demo(data),
-        _render_session_technical_intro(data),
-        _render_journey_matrix(data),
-        _render_iter_cards(data),
-        _render_evaluator_note(data),
+        _render_feature_manual(data),
+        _render_developer_view(data),
         f"<div class='footer-note'>Generated {escape(_dt.datetime.now().strftime('%Y-%m-%d %H:%M'))}</div>",
         "</div></body></html>",
     ]
@@ -1301,35 +1507,219 @@ def _render_story_so_far(data: SessionData) -> str:
     )
 
 
-def _render_latest_demo(data: SessionData) -> str:
-    it = data.latest_demo_iter
-    if not it or not it.demo_steps:
+# ─────────────────────────────────────────────────────────────────────────────
+# Feature manual — feature-by-feature user-guide rendering for the session index
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+_FEATURE_STATUS_MAP: dict[str, tuple[str, str]] = {
+    "passing":          ("status-pill-passing", "✓ working"),
+    "already_passing":  ("status-pill-passing", "✓ working"),
+    "failing":          ("status-pill-failing", "✗ broken"),
+    "regressed":        ("status-pill-regressed", "⚠ regressed"),
+    "partial":          ("status-pill-partial", "~ partial"),
+    "unknown":          ("status-pill-unknown", "? unknown"),
+}
+
+
+def _feature_status_pill(status: str) -> tuple[str, str]:
+    """Return (CSS class, display text) for a journey status."""
+    return _FEATURE_STATUS_MAP.get((status or "").lower(), ("status-pill-coming-soon", "· not yet"))
+
+
+def _render_feature_manual(data: SessionData) -> str:
+    """User-manual-shaped body for the session index.
+
+    Contents:
+      - A 'Contents' TOC of every journey from `docs/goal.md`, in authored
+        order, with a status pill linking to that feature's section.
+      - One `<section>` per journey: title, "What this does" description,
+        status pill, per-feature step gallery (or graceful fallback if no
+        tagged steps exist yet), and a "Last shown in iteration N" link.
+      - Journeys that appear in `journey-history.json` but NOT in goal.md
+        are surfaced at the end under "Other journeys observed" so the data
+        is never silently dropped.
+
+    Falls back to an empty-state notice when the goal file has no
+    Must-have user journeys section to base the manual on.
+    """
+    if not data.goal_must_haves and not data.journeys:
         return ""
-    label = f"iter-{it.iter_num}" if it.iter_num is not None else escape(it.phase_id)
-    iter_link = f"phase-{it.phase_id}-summary.html"
-    # Reuse the iteration-level helper so the gallery looks identical to the
-    # per-iteration page (NEW badges, captions, demo-verdict badge).
-    gallery_html = _render_watch_it_work(it)
-    if not gallery_html:
-        return ""
-    return (
-        "<section class='session-demo'>"
-        f"<div class='session-demo-head'><span>Latest walkthrough — {escape(label)}</span>"
-        f"<a class='open' href='{escape(iter_link)}'>Open full iteration →</a></div>"
-        f"{gallery_html}"
+    if not data.goal_must_haves:
+        return (
+            "<section class='feature-manual'>"
+            "<p class='feature-empty'>No <em>Must-have user journeys</em> "
+            "section found in <code>docs/goal.md</code> — the feature manual "
+            "needs that to know which features to document. See the developer "
+            "view below for the raw journey + iteration data.</p>"
+            "</section>"
+        )
+
+    jh_index = {j["id"]: j for j in data.journeys}
+    listed_ids = {mh["id"] for mh in data.goal_must_haves}
+    extra_journeys = [j for j in data.journeys if j["id"] not in listed_ids]
+
+    # Build TOC
+    toc_items: list[str] = []
+    for idx, mh in enumerate(data.goal_must_haves, start=1):
+        jh = jh_index.get(mh["id"], {})
+        pill_cls, pill_text = _feature_status_pill(jh.get("status", ""))
+        toc_items.append(
+            f"<li><a href='#feature-{escape(mh['id'])}'>"
+            f"{idx}. {escape(mh['name'])}</a> "
+            f"<span class='status-pill {pill_cls}'>{escape(pill_text)}</span></li>"
+        )
+    if extra_journeys:
+        toc_items.append("<li class='toc-extra-header'>Other journeys observed</li>")
+        for j in extra_journeys:
+            pill_cls, pill_text = _feature_status_pill(j.get("status", ""))
+            toc_items.append(
+                f"<li><a href='#feature-{escape(j['id'])}'>{escape(j['name'])}</a> "
+                f"<span class='status-pill {pill_cls}'>{escape(pill_text)}</span></li>"
+            )
+    toc_html = (
+        "<section class='feature-toc'>"
+        "<h2 class='feature-toc-heading'>Contents</h2>"
+        f"<ol class='feature-toc-list'>{''.join(toc_items)}</ol>"
         "</section>"
     )
 
+    sections: list[str] = []
+    for idx, mh in enumerate(data.goal_must_haves, start=1):
+        sections.append(_render_one_feature(data, mh, jh_index.get(mh["id"]), idx))
+    for j in extra_journeys:
+        synthetic_mh = {
+            "id": j["id"], "name": j["name"], "acceptance": "", "steps_md": "",
+        }
+        sections.append(_render_one_feature(data, synthetic_mh, j, None))
 
-def _render_session_technical_intro(data: SessionData) -> str:
-    # Only show the divider when there is plain-language content above it,
-    # otherwise the matrix/cards stand on their own as before.
-    if not (data.project_story_md or data.latest_demo_iter):
+    return (
+        f"{toc_html}"
+        f"<section class='feature-manual'>{''.join(sections)}</section>"
+    )
+
+
+def _render_one_feature(
+    data: SessionData,
+    mh: dict,
+    jh: Optional[dict],
+    idx: Optional[int],
+) -> str:
+    """Render one feature section.
+
+    Strategy for picking the gallery:
+      1. If any iteration has demo steps tagged for this journey id (the
+         new `Journey` column in demo-results.md), use the most-recent
+         tagged set — that's the canonical per-feature walkthrough.
+      2. Else, if the journey is currently passing and `last_passing_iter`
+         names an iteration that has any demo steps, embed that iter's
+         full gallery with a note explaining the manual is showing the
+         broader walkthrough until per-feature tagging catches up.
+      3. Else, show a 'Walkthrough not yet captured' placeholder (for
+         passing journeys without any demo) or nothing (for not-yet
+         journeys) — the description + status pill carry the section.
+    """
+    jid = mh["id"]
+    name = mh["name"]
+    status = jh.get("status") if jh else ""
+    pill_cls, pill_text = _feature_status_pill(status)
+
+    description = (mh.get("acceptance") or "").strip()
+    # Skip placeholder descriptions (`<observable end state>` from the
+    # template) — they would mislead readers.
+    if description.startswith("<") and description.endswith(">"):
+        description = ""
+    description_html = ""
+    if description:
+        description_html = (
+            "<p class='feature-description'>"
+            "<span class='feature-description-label'>What this does:</span> "
+            f"{escape(description)}</p>"
+        )
+
+    # Find tagged steps for this journey, newest iter first.
+    tagged: list[tuple[IterationData, list[dict]]] = []
+    untagged: list[tuple[IterationData, list[dict]]] = []
+    for it in reversed(data.iterations):
+        these = [s for s in it.demo_steps if s.get("journey") == jid]
+        if these:
+            tagged.append((it, these))
+        elif it.demo_steps:
+            untagged.append((it, it.demo_steps))
+
+    gallery_html = ""
+    fallback_note = ""
+    source_iter: Optional[IterationData] = None
+
+    if tagged:
+        source_iter, steps = tagged[0]
+        gallery_html = f"<div class='demo-grid'>{''.join(_render_demo_step_card(s) for s in steps)}</div>"
+    elif status in ("passing", "already_passing") and jh and jh.get("last_passing_iter"):
+        lpi = jh["last_passing_iter"]
+        for it, steps in untagged:
+            if it.phase_id == lpi:
+                source_iter = it
+                gallery_html = f"<div class='demo-grid'>{''.join(_render_demo_step_card(s) for s in steps)}</div>"
+                iter_label = (
+                    f"iteration {it.iter_num}" if it.iter_num is not None
+                    else it.phase_id
+                )
+                fallback_note = (
+                    "<p class='feature-note'>Showing "
+                    f"{escape(iter_label)}'s full walkthrough — feature-specific "
+                    "tagging is not yet available for this iteration.</p>"
+                )
+                break
+
+    if not gallery_html:
+        if status in ("passing", "already_passing"):
+            gallery_html = (
+                "<p class='feature-empty'>Walkthrough not yet captured for this feature.</p>"
+            )
+        else:
+            gallery_html = ""
+
+    source_link = ""
+    if source_iter is not None:
+        href = f"phase-{source_iter.phase_id}-summary.html"
+        iter_label = (
+            f"iteration {source_iter.iter_num}" if source_iter.iter_num is not None
+            else source_iter.phase_id
+        )
+        source_link = (
+            f"<p class='feature-source'>Last shown in "
+            f"<a href='{escape(href)}'>{escape(iter_label)}</a>.</p>"
+        )
+
+    prefix = f"{idx}. " if idx is not None else ""
+    return (
+        f"<section class='feature-section' id='feature-{escape(jid)}'>"
+        f"<h2 class='feature-heading'>{escape(prefix)}{escape(name)} "
+        f"<span class='status-pill {pill_cls}'>{escape(pill_text)}</span></h2>"
+        f"{description_html}"
+        f"{fallback_note}"
+        f"{gallery_html}"
+        f"{source_link}"
+        f"</section>"
+    )
+
+
+def _render_developer_view(data: SessionData) -> str:
+    """Collapse the journey matrix + iter cards + evaluator note into a
+    single `<details>` element so the page leads with the user manual."""
+    inner_parts = [
+        _render_journey_matrix(data),
+        _render_iter_cards(data),
+        _render_evaluator_note(data),
+    ]
+    inner = "\n".join(p for p in inner_parts if p)
+    if not inner.strip():
         return ""
     return (
-        "<div class='tech-divider'>"
-        "<span>Journey-by-journey progress and per-iteration cards below — open if you want the developer view.</span>"
-        "</div>"
+        "<details class='developer-view'>"
+        "<summary>Developer view — journey matrix, per-iteration cards, evaluator note</summary>"
+        f"<div class='developer-view-body'>{inner}</div>"
+        "</details>"
     )
 
 
@@ -1392,15 +1782,28 @@ def _md_inline(s: str) -> str:
     return s
 
 
-def _render_session_hero(data: SessionData) -> str:
+def _render_cover(data: SessionData) -> str:
+    """Hero band for the session index — title, vision one-liner, meta."""
     cls = _verdict_class(data.final_verdict)
     icon = _verdict_icon(data.final_verdict)
-    pass_count = sum(1 for j in data.journeys if j["status"] in ("passing", "already_passing"))
+    pass_count = sum(
+        1 for j in data.journeys if j["status"] in ("passing", "already_passing")
+    )
     minutes = data.wall_time_seconds // 60
+    title = data.goal_title or f"Goal session {data.session_id}"
+
+    vision = (data.goal_vision or "").strip()
+    # Suppress the template placeholder `<What is this project? …>` — only
+    # show real vision text.
+    if vision.startswith("<") and vision.endswith(">"):
+        vision = ""
+    vision_html = f"<p class='cover-vision'>{escape(vision)}</p>" if vision else ""
+
     return (
         f"<section class='hero {cls}'>"
         f"<div class='badge-row'><div class='badge {cls}'>{icon}<span>{escape(data.final_verdict)}</span></div></div>"
-        f"<h1>{escape(data.goal_title or 'Goal session ' + data.session_id)}</h1>"
+        f"<h1>{escape(title)}</h1>"
+        f"{vision_html}"
         f"<h2>Session <code>{escape(data.session_id)}</code></h2>"
         f"<div class='meta'>{data.total_iterations} iterations · "
         f"{pass_count}/{len(data.journeys)} journeys passing · "
@@ -1801,8 +2204,15 @@ def _write_demo_fixture(
     verdict: str = "RECORDED",
     steps: Optional[list[dict]] = None,
     soft_notes: Optional[list[str]] = None,
+    include_journey_column: bool = True,
 ) -> None:
-    """Write a demo-results.md + demo-script.md + step screenshots fixture."""
+    """Write a demo-results.md + demo-script.md + step screenshots fixture.
+
+    When `include_journey_column` is True (default), each step dict may carry
+    an optional `journey` key (e.g. "J-04") which is rendered into the
+    Journey column. This lets fixtures exercise the per-feature gallery
+    grouping. Set it to False to write a legacy (pre-tagging) demo-results.
+    """
     steps = steps if steps is not None else [
         {"num": 1, "title": "Open sign-in", "is_new": True,
          "narration": "Open the app and click Sign in."},
@@ -1812,14 +2222,23 @@ def _write_demo_fixture(
     (tmp / "reports").mkdir(parents=True, exist_ok=True)
     demo_dir = tmp / "reports" / "demo" / phase_id
     demo_dir.mkdir(parents=True, exist_ok=True)
-    rows: list[str] = ["| Step | Title | New | Screenshot |", "|------|-------|-----|------------|"]
+    if include_journey_column:
+        rows = ["| Step | Title | Journey | New | Screenshot |",
+                "|------|-------|---------|-----|------------|"]
+    else:
+        rows = ["| Step | Title | New | Screenshot |",
+                "|------|-------|-----|------------|"]
     script_blocks: list[str] = ["# Demo Script — " + phase_id, ""]
     for step in steps:
         n = step["num"]
         shot_rel = f"reports/demo/{phase_id}/step-{n:02d}.png"
         (tmp / shot_rel).write_bytes(_FIXTURE_PNG)
         new_cell = "yes" if step["is_new"] else ""
-        rows.append(f"| {n:02d} | {step['title']} | {new_cell} | {shot_rel} |")
+        if include_journey_column:
+            jcell = step.get("journey", "")
+            rows.append(f"| {n:02d} | {step['title']} | {jcell} | {new_cell} | {shot_rel} |")
+        else:
+            rows.append(f"| {n:02d} | {step['title']} | {new_cell} | {shot_rel} |")
         new_tag = "  [NEW]" if step["is_new"] else ""
         script_blocks.append(f"### Step {n:02d} — {step['title']}{new_tag}")
         script_blocks.append(f"- **Narration:** {step['narration']}")
@@ -2094,7 +2513,11 @@ def _cmd_self_test(_argv: list[str]) -> int:
         if "missing-phase" not in html_e:
             failures.append("missing-phase: hero should show phase id")
 
-        # Session index — 2 iters
+        # Session index — 2 iters, J-04 tagged via the new Journey column on
+        # iter-1 (per-feature gallery path), J-06 listed in goal.md but
+        # failing (description-only feature path), and iter-0 carries an
+        # untagged demo to exercise the fallback "show this iter's full
+        # gallery under the feature" path.
         _write_summary_fixture(tmp, "goal-demo-iter-0", _FIXTURE_SUMMARY_GOAL.replace("iter-18", "iter-0").replace("18", "0"), with_screenshots=False)
         _write_summary_fixture(tmp, "goal-demo-iter-1", _FIXTURE_SUMMARY_GOAL.replace("iter-18", "iter-1").replace("18", "1"), with_screenshots=False)
         demo_dir = tmp / "runs" / "goal-session-demo"
@@ -2104,15 +2527,36 @@ def _cmd_self_test(_argv: list[str]) -> int:
             "started_at": "2026-05-12T10:00:00Z", "finished_at": "",
         }))
         (demo_dir / "state" / "journey-history.json").write_text(json.dumps({
-            "journeys": {"J-04": {"id": "J-04", "name": "Login", "status": "passing",
-                                    "last_verified_iter": "goal-demo-iter-1",
-                                    "last_passing_iter": "goal-demo-iter-1"}}
+            "journeys": {
+                "J-04": {"id": "J-04", "name": "Login", "status": "passing",
+                         "last_verified_iter": "goal-demo-iter-1",
+                         "last_passing_iter": "goal-demo-iter-1"},
+                "J-06": {"id": "J-06", "name": "Checkout", "status": "failing",
+                         "last_verified_iter": "goal-demo-iter-1"},
+            }
         }))
         # Also create iter dirs so load_session discovers them
         (tmp / "runs" / "goal-demo-iter-0").mkdir(parents=True, exist_ok=True)
         (tmp / "runs" / "goal-demo-iter-1").mkdir(parents=True, exist_ok=True)
         (tmp / "docs").mkdir(exist_ok=True)
-        (tmp / "docs" / "goal.md").write_text("# Build the money app\n")
+        (tmp / "docs" / "goal.md").write_text(
+            "# Build the money app\n\n"
+            "## Vision\n\n"
+            "Let users sign in, browse products, and check out with a payment method.\n\n"
+            "## Must-have user journeys\n\n"
+            "- **J-04: Sign in**\n"
+            "  - Steps:\n"
+            "    1. Visit `/login`\n"
+            "    2. Enter email + password\n"
+            "  - Acceptance: dashboard shows the user's email\n\n"
+            "- **J-06: Checkout**\n"
+            "  - Steps:\n"
+            "    1. Add an item to cart\n"
+            "    2. Click checkout\n"
+            "  - Acceptance: a payment confirmation appears\n\n"
+            "## Anti-goals\n\n"
+            "- No hard-coded credentials in source.\n"
+        )
         # Write a project-story.md so the session index leads with the
         # cumulative narrative.
         (demo_dir / "state" / "project-story.md").write_text(
@@ -2124,15 +2568,17 @@ def _cmd_self_test(_argv: list[str]) -> int:
             "The product lets users sign in and view their account.\n\n"
             "_Last updated: 2026-05-12 after iteration 1._\n"
         )
-        # Give iter-1 a demo fixture so the session index can embed the latest
-        # gallery.
+        # iter-1 has demo steps tagged with the J-04 journey — this exercises
+        # the per-feature gallery (tagged-steps) path of the feature manual.
         _write_demo_fixture(
             tmp, "goal-demo-iter-1",
             verdict="RECORDED",
             steps=[
                 {"num": 1, "title": "Open sign-in", "is_new": True,
+                 "journey": "J-04",
                  "narration": "Open the home page."},
                 {"num": 2, "title": "Submit credentials", "is_new": False,
+                 "journey": "J-04",
                  "narration": "Sign in and land on the account page."},
             ],
         )
@@ -2146,30 +2592,158 @@ def _cmd_self_test(_argv: list[str]) -> int:
                 f"session: latest_demo_iter expected goal-demo-iter-1, got "
                 f"{sess.latest_demo_iter.phase_id if sess.latest_demo_iter else None}"
             )
+        if len(sess.goal_must_haves) != 2:
+            failures.append(f"session: goal_must_haves count {len(sess.goal_must_haves)}")
+        elif sess.goal_must_haves[0]["id"] != "J-04":
+            failures.append(
+                f"session: goal_must_haves order — first should be J-04, got "
+                f"{sess.goal_must_haves[0]['id']}"
+            )
+        if "Sign in" not in sess.goal_must_haves[0]["name"]:
+            failures.append("session: goal_must_haves J-04 name not parsed")
+        if "dashboard" not in sess.goal_must_haves[0]["acceptance"]:
+            failures.append(
+                f"session: J-04 acceptance not parsed: "
+                f"{sess.goal_must_haves[0]['acceptance']!r}"
+            )
+        # Demo step Journey column parsed onto the step dicts.
+        iter1 = next(it for it in sess.iterations if it.phase_id == "goal-demo-iter-1")
+        if not all(s.get("journey") == "J-04" for s in iter1.demo_steps):
+            failures.append(
+                f"session: iter-1 demo steps should all be tagged J-04: "
+                f"{[s.get('journey') for s in iter1.demo_steps]}"
+            )
+
         idx_html = render_html_session_index(sess)
+        if "Build the money app" not in idx_html:
+            failures.append("session: title missing")
+        for expect in (
+            # Cover + vision
+            "class='cover-vision'",
+            "Let users sign in",
+            # Story (unchanged)
+            "class='story-so-far'",
+            "The story so far",
+            "How it has grown",
+            # Contents TOC
+            "class='feature-toc'",
+            "Contents",
+            "#feature-J-04",
+            "#feature-J-06",
+            # Feature sections
+            "id='feature-J-04'",
+            "id='feature-J-06'",
+            "class='feature-section'",
+            "Sign in",          # J-04 name
+            "Checkout",         # J-06 name
+            "dashboard shows",  # J-04 acceptance
+            "status-pill-passing",
+            "status-pill-failing",
+            # Per-feature gallery — pulled by Journey tag, not by iter.
+            "Open sign-in",
+            "Open the home page.",
+            "data:image/png;base64,",
+            # Developer view — collapsed wrapper around matrix + cards.
+            "class='developer-view'",
+            "Developer view",
+            "class='matrix'",
+            "class='iter-card'",
+        ):
+            if expect not in idx_html:
+                failures.append(f"session index missing: {expect}")
+        # Story section must come before the feature manual.
+        story_pos = idx_html.find("class='story-so-far'")
+        toc_pos = idx_html.find("class='feature-toc'")
+        feature_pos = idx_html.find("class='feature-section'")
+        dev_pos = idx_html.find("class='developer-view'")
+        if not (0 <= story_pos < toc_pos < feature_pos < dev_pos):
+            failures.append(
+                f"session index: section order broken (story={story_pos}, "
+                f"toc={toc_pos}, feature={feature_pos}, dev={dev_pos})"
+            )
+        # Iter cards count survives, just nested inside the developer view.
         if idx_html.count("class='iter-card'") != 2:
             failures.append(f"session cards: {idx_html.count('iter-card')}")
         if "phase-goal-demo-iter-0-summary.html" not in idx_html:
             failures.append("session: cross-iter href should target reports/ flat name")
-        if "Build the money app" not in idx_html:
-            failures.append("session: title missing")
-        for expect in (
-            "class='story-so-far'",
-            "The story so far",
-            "How it has grown",
-            "class='session-demo'",
-            "Latest walkthrough",
-            "Open sign-in",
-            "Open the home page.",
-            "Journey-by-journey progress",
-        ):
-            if expect not in idx_html:
-                failures.append(f"session index missing: {expect}")
-        # 'The story so far' section must come before the journey matrix.
-        story_pos = idx_html.find("class='story-so-far'")
-        matrix_pos = idx_html.find("class='matrix'")
-        if story_pos < 0 or matrix_pos < 0 or story_pos > matrix_pos:
-            failures.append("session index: story section must come before matrix")
+        # Developer view must be a <details> element (collapsed by default).
+        if "<details class='developer-view'>" not in idx_html:
+            failures.append(
+                "session index: developer view should be a collapsed <details>"
+            )
+        # J-06 (failing) gets the description + status pill but NO gallery
+        # — confirm the not-yet-passing path is silent on the demo grid.
+        # We assert by checking the slice between the J-06 heading and the
+        # next feature heading contains no demo-grid.
+        j06_start = idx_html.find("id='feature-J-06'")
+        next_section = idx_html.find("class='feature-section'", j06_start + 1)
+        if next_section < 0:
+            next_section = idx_html.find("class='developer-view'", j06_start)
+        slice_j06 = idx_html[j06_start:next_section] if j06_start >= 0 else ""
+        if "class='demo-grid'" in slice_j06:
+            failures.append(
+                "session index: J-06 (failing) should not have a demo-grid"
+            )
+
+        # Backward-compat: an iter with an untagged demo gallery + a passing
+        # journey whose last_passing_iter points to it should fall through to
+        # the iter-gallery fallback (with the "tagging not yet available"
+        # note). Drop a second session-fixture for this path.
+        backcompat_root = tmp / "bc"
+        backcompat_root.mkdir()
+        (backcompat_root / "docs").mkdir()
+        (backcompat_root / "docs" / "goal.md").write_text(
+            "# Old session\n\n"
+            "## Must-have user journeys\n\n"
+            "- **J-04: Sign in**\n"
+            "  - Acceptance: user lands on the dashboard\n"
+        )
+        bc_session_dir = backcompat_root / "runs" / "goal-session-old"
+        (bc_session_dir / "state").mkdir(parents=True)
+        (bc_session_dir / "session.json").write_text(json.dumps({
+            "status": "IN-PROGRESS", "total_iterations": 1, "wall_time_seconds": 60,
+            "started_at": "2026-05-12T10:00:00Z", "finished_at": "",
+        }))
+        (bc_session_dir / "state" / "journey-history.json").write_text(json.dumps({
+            "journeys": {"J-04": {"id": "J-04", "name": "Sign in", "status": "passing",
+                                  "last_verified_iter": "goal-old-iter-0",
+                                  "last_passing_iter": "goal-old-iter-0"}}
+        }))
+        (backcompat_root / "runs" / "goal-old-iter-0").mkdir(parents=True)
+        _write_summary_fixture(
+            backcompat_root, "goal-old-iter-0",
+            _FIXTURE_SUMMARY_GOAL.replace("iter-18", "iter-0").replace("18", "0"),
+            with_screenshots=False,
+        )
+        # Untagged demo (no Journey column) — exercises the fallback path.
+        _write_demo_fixture(
+            backcompat_root, "goal-old-iter-0",
+            include_journey_column=False,
+            steps=[
+                {"num": 1, "title": "Open the app", "is_new": True,
+                 "narration": "Open the home page."},
+            ],
+        )
+        bc_sess = load_session("old", backcompat_root)
+        bc_iter0 = bc_sess.iterations[0]
+        if any(s.get("journey") for s in bc_iter0.demo_steps):
+            failures.append(
+                f"backcompat: untagged demo should have empty journey field: "
+                f"{[s.get('journey') for s in bc_iter0.demo_steps]}"
+            )
+        bc_html = render_html_session_index(bc_sess)
+        if "class='feature-note'" not in bc_html:
+            failures.append(
+                "backcompat: untagged-fallback note class missing from feature section"
+            )
+        if "tagging is not yet available" not in bc_html:
+            failures.append(
+                "backcompat: untagged-fallback note text missing"
+            )
+        if "Open the app" not in bc_html:
+            failures.append(
+                "backcompat: fallback should still embed the iter gallery"
+            )
 
         # Delivered wrap fixture — drop a delivered.md and exercise the new
         # `delivered` command + the session-index 'delivered-link' banner.

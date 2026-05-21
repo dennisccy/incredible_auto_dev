@@ -58,13 +58,14 @@ In goal mode the demo surface is "every journey with status `passing` or `alread
 
 Produce an ordered list of demo steps covering the **whole working product so far**, in a natural narrative order (sign in → primary flow → secondary flows → exit). Each step is one click / type / navigate / observe action.
 
-For each step, capture three things:
+For each step, capture four things:
 
 ```
 Step <NN> — <plain-language 1-line title>
   Narration: <1-2 friendly sentences a non-technical owner would understand. No jargon, no UT-IDs, no file names.>
   Action:    <exact concrete action — Navigate / Click / Type / Wait — with the exact URL, button text, or field name from what-to-click.md / ui-test-plan.md>
   Point out: <what the owner should notice on screen after this step>
+  Journey:   <J-XX> — the journey ID from journey-history.json this step demonstrates, OR empty for general orientation steps. (Goal mode only; phase mode may leave empty.)
   Tag:       [NEW] if this step's action was added or visibly changed this iteration (see Tagging rule), otherwise omit.
 ```
 
@@ -75,6 +76,14 @@ Step <NN> — <plain-language 1-line title>
 3. The action exercises a file in `status.json.changed_files` (for phase mode without journey-history)
 
 When in doubt, omit `[NEW]` — false positives mislead the viewer more than missing ones.
+
+**Journey tagging rule** (goal mode):
+
+For each Highlights step that demonstrates a real product feature, identify which journey from `runs/goal-session-<sid>/state/journey-history.json` it most directly verifies — usually the journey whose `Acceptance` condition matches the step's expected outcome. Write that journey id (e.g. `J-04`) in the Journey column of the Captured Steps table. The session-index renderer groups per-feature galleries by this tag, so an empty tag means the step won't appear under any feature.
+
+Leave the Journey column empty for general orientation steps that don't exercise a specific journey ("open the homepage", "scroll to bottom"). Empty tags are honest — false tags will surface a screenshot under the wrong feature.
+
+If a single step legitimately demonstrates two journeys (e.g. login is a prerequisite for the verified feature), pick the journey whose `Acceptance` it most directly verifies, not the prerequisite.
 
 **Length cap & split.** The captured (screenshot-bearing) portion of the demo is called **Highlights** and is capped at **8 steps**. Pick the highest-impact 8 — the cheapest end-to-end smoke of the product. Remaining flows go into a **Full tour** section that is text-only (narration + action + point-out, no screenshot) so the gallery stays viewable but the script remains a complete record. If the total never exceeds 8 steps, omit the Full tour section entirely.
 
@@ -153,10 +162,14 @@ Write to `reports/phase-<phase-id>-demo-results.md` following `templates/demo-re
 
 ## Captured Steps
 
-| Step | Title | New | Screenshot |
-|------|-------|-----|------------|
-| 01   | ...   | yes | reports/demo/<phase-id>/step-01.png |
-| 02   | ...   |     | reports/demo/<phase-id>/step-02.png |
+| Step | Title | Journey | New | Screenshot |
+|------|-------|---------|-----|------------|
+| 01   | ...   | J-04    | yes | reports/demo/<phase-id>/step-01.png |
+| 02   | ...   |         |     | reports/demo/<phase-id>/step-02.png |
+
+The Journey column is required in goal mode for any step that demonstrates
+a specific journey from journey-history.json — leave it empty for general
+orientation steps. Phase mode may leave it empty throughout.
 
 ## Soft notes
 

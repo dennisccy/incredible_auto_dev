@@ -889,13 +889,17 @@ STOP." || _eval_rc=$?
 
   # Build the iteration summary MD (via summarizer agent), then render its HTML.
   # The MD is the source of truth — the renderer just visualizes it.
-  # Non-blocking; the session index is refreshed by every write_session_summary call.
+  # Non-blocking; the session index is also refreshed below so the
+  # feature-organized user-manual view stays current mid-session.
   _run_iteration_summarizer "$ITER_NAME"
   _render_iter_html "$ITER_NAME"
+  _render_session_index_html
   _iter_md="$REPO_ROOT/reports/phase-${ITER_NAME}-iteration-summary.md"
   _iter_html="$REPO_ROOT/reports/phase-${ITER_NAME}-summary.html"
-  [[ -f "$_iter_md" ]]   && echo "[run-goal] Iteration summary MD:   $_iter_md"
-  [[ -f "$_iter_html" ]] && echo "[run-goal] Iteration summary HTML: file://$_iter_html"
+  _session_index_html="$REPO_ROOT/reports/goal-session-${SESSION_ID}-index.html"
+  [[ -f "$_iter_md" ]]            && echo "[run-goal] Iteration summary MD:   $_iter_md"
+  [[ -f "$_iter_html" ]]          && echo "[run-goal] Iteration summary HTML: file://$_iter_html"
+  [[ -f "$_session_index_html" ]] && echo "[run-goal] Session index HTML:     file://$_session_index_html"
 
   # Update session.json
   python3 - <<PY
