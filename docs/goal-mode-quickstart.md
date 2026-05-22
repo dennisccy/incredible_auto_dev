@@ -79,6 +79,18 @@ When the loop halts, read:
 - `runs/goal-session-my-app/state/evaluator-log.md` — chronicle of every iteration's evaluator decision
 - `runs/goal-session-my-app/telemetry.jsonl` — structured event log for analysis
 
+…or **watch the product run** in a real browser with plain-language narration in
+your terminal (press Enter to step through it):
+
+```bash
+./scripts/automation/demo.sh my-app --session-live   # live tour of the WHOLE product built so far
+./scripts/automation/demo.sh goal-my-app-iter-3 --live  # live tour of one iteration
+./scripts/automation/demo.sh my-app                   # open the recorded gallery / session index instead
+```
+
+See the "Watch your app" section of the [README](../README.md) for what to
+expect and prerequisites (it needs a display; works over SSH X11 forwarding).
+
 Halt verdicts:
 - `GOAL_ACHIEVED` — every Must-have journey passes, no anti-goal violations
 - `BUDGET_EXHAUSTED` — hit `--max-iter` cap; resume with a higher cap to continue

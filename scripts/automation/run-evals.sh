@@ -69,6 +69,7 @@ _run_self_test scripts/automation/lib/analyze_telemetry.py --self-test
 _run_self_test scripts/automation/lib/replay_trace.py self-test
 _run_self_test scripts/automation/lib/agent_permissions.py self-test
 _run_self_test scripts/automation/lib/render_iteration_summary.py self-test
+_run_self_test scripts/automation/lib/demo_runner.py self-test
 
 # Telemetry has its own test mode (sourced + invoked with "test" arg)
 if bash scripts/automation/lib/telemetry.sh test >/dev/null 2>&1; then

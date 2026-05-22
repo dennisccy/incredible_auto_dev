@@ -5,7 +5,8 @@
 #   ./scripts/automation/demo.sh <id>                   # open recorded gallery
 #   ./scripts/automation/demo.sh <id> --replay          # alias for default
 #   ./scripts/automation/demo.sh <id> --delivered       # open delivered wrap
-#   ./scripts/automation/demo.sh <id> --live            # live browser walkthrough
+#   ./scripts/automation/demo.sh <id> --live            # live walkthrough of one iteration
+#   ./scripts/automation/demo.sh <sid> --session-live   # live walkthrough of the WHOLE product
 #   ./scripts/automation/demo.sh --latest               # open most recent gallery
 #   ./scripts/automation/demo.sh --help                 # show this help
 #
@@ -20,9 +21,13 @@
 #   --delivered        : Open the one-time `delivered.html` wrap for the
 #                        session with id <id> (only valid for goal sessions
 #                        that hit GOAL_ACHIEVED).
-#   --live             : Delegate to demo-phase.sh <id> --live so the
-#                        demo-narrator agent drives a visible Chrome window
-#                        step-by-step. Boots the app if not running.
+#   --live             : Delegate to demo-phase.sh <id> --live — the
+#                        deterministic Playwright runner drives a visible Chrome
+#                        window step-by-step (press Enter to advance). Boots the
+#                        app if not running.
+#   --session-live     : Delegate to demo-phase.sh <sid> --session — a live
+#                        walkthrough of the WHOLE working product across all
+#                        iterations (every passing journey).
 #   --latest           : Find the most recently modified summary HTML under
 #                        reports/ and open it.
 set -e
@@ -48,6 +53,9 @@ while [[ $# -gt 0 ]]; do
       ;;
     --live)
       MODE="live"; shift
+      ;;
+    --session-live)
+      MODE="session-live"; shift
       ;;
     --replay)
       MODE="replay"; shift
@@ -125,6 +133,17 @@ case "$MODE" in
     fi
     echo "[demo] Launching live walkthrough via demo-phase.sh $TARGET_ID --live"
     exec bash "$DEMO_SH" "$TARGET_ID" --live
+    ;;
+
+  session-live)
+    [[ -z "$TARGET_ID" ]] && { echo "Error: --session-live requires a session id." >&2; exit 2; }
+    DEMO_SH="$SCRIPT_DIR/demo-phase.sh"
+    if [[ ! -f "$DEMO_SH" ]]; then
+      echo "Error: $DEMO_SH not found." >&2
+      exit 1
+    fi
+    echo "[demo] Launching whole-product walkthrough via demo-phase.sh $TARGET_ID --session"
+    exec bash "$DEMO_SH" "$TARGET_ID" --session
     ;;
 
   replay|*)

@@ -69,7 +69,7 @@ Specialist subagent definitions live in `.claude/agents/`:
 | `goal-evaluator` | `.claude/agents/goal-evaluator.md` | Goal mode: skeptical done/regression/stall judgment, updates journey-history; vetoes GOAL_ACHIEVED on COHERENCE-FAIL |
 | `coherence-auditor` | `.claude/agents/coherence-auditor.md` | Goal mode: audits each iteration's diff against the session blueprint (information architecture + data contract); hard-fails only on objective drift (a contract value recomputed/served via a new path, or a feature with no nav path / duplicate home). Runs after dispatch, before the goal-evaluator |
 | `iteration-summarizer` | `.claude/agents/iteration-summarizer.md` | Post-iteration synthesis: writes the plain-language + technical iteration summary and maintains the cumulative `project-story.md` in goal mode; emits the one-time `delivered.md` wrap on GOAL_ACHIEVED |
-| `demo-narrator` | `.claude/agents/demo-narrator.md` | Per-iteration product demonstrator: drives the running app via Chrome MCP, captures a captioned narrated screenshot gallery (record mode) or walks a visible Chrome live (live mode). Showcase, not QA — never halts the pipeline |
+| `demo-narrator` | `.claude/agents/demo-narrator.md` | Per-iteration product demonstrator: authors a machine-executable demo-script (steps + narration) from the iteration's verified flows — it does NOT drive a browser. The deterministic Playwright runner (`scripts/automation/lib/demo_runner.py`) executes that script for the recorded gallery (record) and the live, press-Enter-to-advance walkthrough (live / session). Showcase, not QA — never halts the pipeline |
 
 ---
 
@@ -129,7 +129,8 @@ Reusable instruction files that agents read during their workflow. Located in `.
 ./scripts/automation/browser-qa-phase.sh phase-1      # run browser QA
 ./scripts/automation/demo-phase.sh phase-1            # auto-record a narrated product demo (showcase, non-gating)
 ./scripts/automation/demo.sh phase-1                  # open the saved demo gallery for a phase or session
-./scripts/automation/demo.sh phase-1 --live           # live walkthrough — agent drives a visible Chrome
+./scripts/automation/demo.sh phase-1 --live           # live walkthrough of one iteration (deterministic; press Enter to advance)
+./scripts/automation/demo.sh <sid> --session-live     # live walkthrough of the WHOLE product across iterations
 ./scripts/automation/demo.sh <sid> --delivered        # open the one-time GOAL_ACHIEVED "delivered" wrap
 ./scripts/automation/demo.sh --latest                 # open the most recently rendered HTML
 ./scripts/automation/ux-regression-phase.sh phase-1   # check UX regression

@@ -41,9 +41,10 @@ All inter-agent communication happens through filesystem artifacts. This documen
 | Iteration summary (MD) | `reports/phase-<phase>-iteration-summary.md` | iteration-summarizer | render_iteration_summary.py, human |
 | HTML iteration summary | `reports/phase-<phase>-summary.html` | render_iteration_summary.py | human |
 | Goal-mode session index | `reports/goal-session-<sid>-index.html` | render_iteration_summary.py | human |
-| Demo script | `reports/phase-<phase>-demo-script.md` | demo-narrator | render_iteration_summary.py, human |
-| Demo results | `reports/phase-<phase>-demo-results.md` | demo-narrator | render_iteration_summary.py, human |
-| Demo screenshots | `reports/demo/<phase>/step-NN.png` | demo-narrator | render_iteration_summary.py |
+| Demo script (executable JSON) | `reports/phase-<phase>-demo.json` | demo-narrator | demo_runner.py |
+| Demo script (captions) | `reports/phase-<phase>-demo-script.md` | demo_runner.py | render_iteration_summary.py, human |
+| Demo results | `reports/phase-<phase>-demo-results.md` | demo_runner.py | render_iteration_summary.py, human |
+| Demo screenshots | `reports/demo/<phase>/step-NN.png` | demo_runner.py | render_iteration_summary.py |
 | Cumulative project story | `runs/goal-session-<sid>/state/project-story.md` | iteration-summarizer (goal mode) | render_iteration_summary.py, human |
 | Delivered wrap (MD) | `reports/goal-session-<sid>-delivered.md` | iteration-summarizer (delivered mode, GOAL_ACHIEVED only) | render_iteration_summary.py, human |
 | Delivered wrap (HTML) | `reports/goal-session-<sid>-delivered.html` | render_iteration_summary.py (`delivered` command) | human |

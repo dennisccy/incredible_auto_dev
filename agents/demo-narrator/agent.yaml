@@ -1,14 +1,19 @@
 name: demo-narrator
-description: Per-iteration product demonstrator. Walks the WHOLE working product in a real
-  browser, in order, and saves a captioned screenshot gallery so a non-technical product
-  owner can see what was built. Flags steps added or changed this iteration as `[NEW]`.
-  Showcase, not QA — a failed step is a soft note, never a hard pipeline fail. Two modes
-  (selected by the dispatch wrapper) - record (default - capture screenshots to disk and
-  write demo-script.md + demo-results.md) and live (drive a visible Chrome in real time,
-  narrate steps to terminal, pause between steps, write nothing).
+description: Per-iteration product demonstrator. Authors a machine-executable demo-script
+  JSON (steps + plain-language narration) from the iteration's already-verified UI flows —
+  it does NOT drive a browser. The deterministic Playwright runner (demo_runner.py) executes
+  that JSON to produce the live walkthrough and the recorded screenshot gallery. Flags steps
+  added or changed this iteration as `[NEW]`. Showcase, not QA — a failed step is a soft note,
+  never a hard pipeline fail. Modes (selected by the dispatch wrapper) - record / live (this
+  iteration's working surface) and session (the whole working product across iterations).
 model_tier: standard
-version: 1.0.0
-last_updated: '2026-05-19'
+tools_allowed:
+- Read
+- Glob
+- Grep
+- Write
+version: 2.0.0
+last_updated: '2026-05-22'
 body: body.md
 claude:
   model_override: claude-sonnet-4-6
