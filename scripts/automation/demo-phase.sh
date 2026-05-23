@@ -156,6 +156,14 @@ if [[ -z "$FRONTEND_START_CMD" ]] && [[ -f "$REPO_ROOT/scripts/start-frontend.sh
   FRONTEND_START_CMD="bash $REPO_ROOT/scripts/start-frontend.sh"
 fi
 
+# Agree on the per-project offset ports the start scripts use. When invoked
+# standalone (e.g. `demo.sh ... --session-live`) the pipeline runner has not
+# run, so CHAIN_*_PORT are unset and we would poll 3000/8000 while
+# start-{frontend,backend}.sh bind the deterministic offset ports (e.g.
+# 3691/8691) — they never meet and the demo is wrongly skipped. ensure_phase_ports
+# is idempotent: a no-op when the pipeline already exported these.
+ensure_phase_ports
+
 _BACKEND_PORT="${CHAIN_BACKEND_PORT:-8000}"
 _FRONTEND_PORT="${CHAIN_FRONTEND_PORT:-3000}"
 BACKEND_HEALTH_URL="${CHAIN_BACKEND_HEALTH_URL:-http://localhost:${_BACKEND_PORT}/health}"
