@@ -108,11 +108,62 @@ if [[ -z "$FRONTEND_START_CMD" ]] && [[ -f "$REPO_ROOT/scripts/start-frontend.sh
   FRONTEND_START_CMD="bash $REPO_ROOT/scripts/start-frontend.sh"
 fi
 
-# Derive URLs from port env vars
-_BACKEND_PORT="${CHAIN_BACKEND_PORT:-8000}"
-_FRONTEND_PORT="${CHAIN_FRONTEND_PORT:-3000}"
+# ── Resolve per-project ports the SAME way the app binds them ────────────────
+# scripts/dev.sh and scripts/start-frontend.sh bind the deterministic offset
+# ports (3000+offset / 8000+offset, offset = hash($REPO_ROOT)) — NOT base
+# :3000/:8000. This block used to hard-default to :8000/:3000, so the probe hit
+# a dead base port, the FE-availability gate saw "no frontend," and every browser
+# test SKIPPED. Use the canonical helper (do NOT re-implement the offset math —
+# duplicate-and-drift produced the earlier :3692-vs-:3691 miss) so the probe port
+# matches the bound port. Called BEFORE the stale-server kill below so that kill
+# targets the right port, and the resolved values are exported so
+# ensure_services_running / start-frontend.sh inherit the SAME port.
+ensure_phase_ports
+
+# Enforce the invariant "probe the port the app is ACTUALLY bound to". Two drift
+# sources make the resolved CHAIN_*_PORT point at a dead port while the live app
+# sits on the base offset port:
+#   1. ensure_phase_ports derives via _find_free_port, which scans UPWARD past a
+#      port that is already LISTENing — so a running app on :3691 pushes it to a
+#      dead :3692.
+#   2. The goal-mode caller may EXPORT a pre-derived CHAIN_FRONTEND_PORT that has
+#      since drifted from where dev.sh bound the app (the historical :3692-vs-:3691
+#      miss). ensure_phase_ports respects that exported value, so the drift sticks.
+# dev.sh / start-frontend.sh bind the BASE offset port (3000+off / 8000+off)
+# DIRECTLY. So the rule is independent of who set the candidate: if the resolved
+# probe port does NOT answer 2xx/3xx but the base offset port DOES, the app is on
+# the base — reconcile the probe there. (Cold start: neither serves yet → keep the
+# resolved port and let ensure_services_running boot the app on it.)
+_port_offset=$(_project_port_offset)
+_base_fe=$((3000 + _port_offset))
+_base_be=$((8000 + _port_offset))
+if [[ "${CHAIN_FRONTEND_PORT}" != "$_base_fe" ]]; then
+  _cur_fe_code=$(curl -s -o /dev/null -w "%{http_code}" "http://localhost:${CHAIN_FRONTEND_PORT}" 2>/dev/null || true)
+  if [[ ! "$_cur_fe_code" =~ ^[23] ]]; then
+    _base_fe_code=$(curl -s -o /dev/null -w "%{http_code}" "http://localhost:${_base_fe}" 2>/dev/null || true)
+    if [[ "$_base_fe_code" =~ ^[23] ]]; then
+      echo "[browser-qa] Resolved FE port :${CHAIN_FRONTEND_PORT} is dead but the app is live on base :${_base_fe} — reconciling probe to :${_base_fe}."
+      export CHAIN_FRONTEND_PORT="$_base_fe"
+    fi
+  fi
+fi
+if [[ "${CHAIN_BACKEND_PORT}" != "$_base_be" ]]; then
+  _cur_be_code=$(curl -s -o /dev/null -w "%{http_code}" "http://localhost:${CHAIN_BACKEND_PORT}/health" 2>/dev/null || true)
+  if [[ ! "$_cur_be_code" =~ ^[23] ]]; then
+    _base_be_code=$(curl -s -o /dev/null -w "%{http_code}" "http://localhost:${_base_be}/health" 2>/dev/null || true)
+    if [[ "$_base_be_code" =~ ^[23] ]]; then
+      echo "[browser-qa] Resolved BE port :${CHAIN_BACKEND_PORT} is dead but the backend is live on base :${_base_be} — reconciling probe to :${_base_be}."
+      export CHAIN_BACKEND_PORT="$_base_be"
+    fi
+  fi
+fi
+
+# Derive URLs from the resolved port env vars
+_BACKEND_PORT="${CHAIN_BACKEND_PORT}"
+_FRONTEND_PORT="${CHAIN_FRONTEND_PORT}"
 BACKEND_HEALTH_URL="${CHAIN_BACKEND_HEALTH_URL:-http://localhost:${_BACKEND_PORT}/health}"
 FRONTEND_URL="${CHAIN_FRONTEND_URL:-http://localhost:${_FRONTEND_PORT}}"
+echo "[browser-qa] Resolved ports: frontend=${FRONTEND_URL} backend=${BACKEND_HEALTH_URL}"
 
 # Kill any stale Next.js dev server for this project before starting — Next.js 16+
 # refuses to start a second dev server in the same directory even on a different
@@ -149,12 +200,16 @@ if [[ "${CHAIN_SHARED_SERVICES:-false}" != "true" ]]; then
   ensure_services_running
 fi
 
-FRONTEND_RUNNING_STATUS=$(curl -s -o /dev/null -w "%{http_code}" "$FRONTEND_URL" 2>/dev/null || true)
-if [[ "$FRONTEND_RUNNING_STATUS" =~ ^[23] ]]; then
+# Re-probe the frontend across a cold-start budget rather than deciding once.
+# A dev frontend (Vite/Next) can take >10s to compile its first request; a single
+# curl right after ensure_services_running can race a still-booting FE and wrongly
+# mark every test SKIPPED. _wait_for_url retries every 3s up to the budget before
+# giving up — a slow boot is no longer misread as "frontend not available."
+if _wait_for_url "$FRONTEND_URL" "frontend" 90; then
   FRONTEND_AVAILABLE="yes"
 else
   FRONTEND_AVAILABLE="no"
-  echo "[browser-qa] Frontend not available — browser tests will be marked SKIPPED."
+  echo "[browser-qa] Frontend not available after re-probe — browser tests will be marked SKIPPED."
 fi
 
 SERVICES_NOTE="Note: browser-qa-phase.sh manages backend (${BACKEND_HEALTH_URL}, log: ${QA_BACKEND_LOG}) and frontend (${FRONTEND_URL}, log: ${QA_FRONTEND_LOG}). Services are restarted automatically if they die during quota-retry sleeps."
