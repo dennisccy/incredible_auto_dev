@@ -162,6 +162,13 @@ fi
 # start-{frontend,backend}.sh bind the deterministic offset ports (e.g.
 # 3691/8691) — they never meet and the demo is wrongly skipped. ensure_phase_ports
 # is idempotent: a no-op when the pipeline already exported these.
+#
+# First reclaim the canonical offset ports: orphaned dev servers from a previous
+# run cause ensure_phase_ports to drift to a neighbour port for the backend while
+# a stale frontend keeps the old (now-dead) backend port baked into its proxy —
+# leaving the demo browser loading a UI whose every /api call 500s. Skipped when
+# the caller already pinned CHAIN_*_PORT (i.e. inside the pipeline).
+reclaim_canonical_phase_ports
 ensure_phase_ports
 
 _BACKEND_PORT="${CHAIN_BACKEND_PORT:-8000}"

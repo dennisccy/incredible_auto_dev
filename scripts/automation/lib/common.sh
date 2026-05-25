@@ -334,6 +334,28 @@ kill_phase_servers() {
   done
 }
 
+# Reclaim this project's *canonical* offset ports before a fresh standalone
+# bring-up (demo / standalone QA), killing any orphaned dev servers squatting
+# on them. Without this, ensure_phase_ports' "next free port" search DRIFTS to a
+# neighbour (e.g. 8000+offset is taken by a zombie backend, so it picks +1) while
+# a stale, still-responding frontend keeps the OLD backend port baked into its
+# Vite/dev proxy (the proxy target is fixed at frontend startup and can never
+# re-point). The result: the browser loads but every /api call is proxied to a
+# dead port, so the UI renders empty. Reclaiming the canonical ports guarantees a
+# freshly-started, mutually-aligned frontend+backend pair every run.
+# Only safe for standalone runs that own these ports; the pipeline (run-phase.sh)
+# must NOT call this mid-run. No-op when CHAIN_*_PORT are already pinned by caller.
+reclaim_canonical_phase_ports() {
+  [[ -n "${CHAIN_BACKEND_PORT:-}" || -n "${CHAIN_FRONTEND_PORT:-}" ]] && return 0
+  local offset
+  offset=$(_project_port_offset)
+  for port in $((8000 + offset)) $((3000 + offset)); do
+    fuser -k -9 "$port/tcp" 2>/dev/null || true
+  done
+  sleep 1
+  return 0
+}
+
 # Return a project-scoped /tmp log path to avoid cross-project log clobbering
 # when multiple projects share this subtree (each project has a unique port
 # offset, so using the port as a discriminator gives a stable per-project path).
