@@ -159,6 +159,29 @@ check_gh_auth() {
   command -v gh &>/dev/null && gh auth status &>/dev/null
 }
 
+# Check that a non-interactive push to 'origin' would authenticate.
+# Returns 0 if origin is reachable + authorized; 2 if there is no 'origin'
+# remote; non-zero (typically 1/128/124) on an auth or network failure.
+#
+# This tests git's REAL credential path (the one `git push` uses) rather than
+# `gh auth status`, so it catches an expired HTTPS session that would otherwise
+# block `git push` on a username/password prompt. GIT_TERMINAL_PROMPT=0 and ssh
+# BatchMode make git fail fast instead of prompting — so this can never hang.
+# `ls-remote` is a read-only call that exercises the same auth as push.
+#
+# Callers MUST capture the code without tripping `set -e`, e.g.:
+#     rc=0; check_git_push_access "$REPO_ROOT" || rc=$?
+check_git_push_access() {
+  local repo="${1:-$REPO_ROOT}"
+  git -C "$repo" remote get-url origin >/dev/null 2>&1 || return 2
+  # Optional `timeout` prefix (intentional word-split; portable to old bash).
+  local runner=""
+  command -v timeout >/dev/null 2>&1 && runner="timeout 20"
+  # shellcheck disable=SC2086
+  GIT_TERMINAL_PROMPT=0 GIT_SSH_COMMAND="ssh -oBatchMode=yes -oStrictHostKeyChecking=accept-new" \
+    $runner git -C "$repo" ls-remote --heads origin >/dev/null 2>&1
+}
+
 # Return path to phase spec file (searches docs/phases/)
 phase_spec_path() {
   local phase="$1"

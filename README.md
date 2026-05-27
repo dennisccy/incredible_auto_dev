@@ -80,7 +80,9 @@ Optional flags: `--max-iter N` (cap, default 30), `--stall-window N` (default 3)
 
 After baseline, the loop **pauses once** (`AWAITING_BLUEPRINT_APPROVAL`) for you to review the drafted coherence blueprint at `runs/goal-session-my-app/state/blueprint.md` (~3 min: sane navigation? every shared value has one source?). Edit it if needed and `--resume` (resuming counts as approval), or pass `--auto-approve-blueprint` to skip the pause entirely. From then on the run is unattended again, and a `coherence-auditor` enforces the blueprint every iteration.
 
-**4. Inspect** `runs/goal-session-my-app/summary.md` when the loop halts. Halt verdicts: `GOAL_ACHIEVED` (success), `BUDGET_EXHAUSTED`, `STALLED`, `REGRESSION_HALT`, `ABORTED`, `AWAITING_BLUEPRINT_APPROVAL` (resumable pause for blueprint review).
+**4. Inspect** `runs/goal-session-my-app/summary.md` when the loop halts. Halt verdicts: `GOAL_ACHIEVED` (success), `BUDGET_EXHAUSTED`, `STALLED`, `REGRESSION_HALT`, `ABORTED`, `AWAITING_BLUEPRINT_APPROVAL` (resumable pause for blueprint review), `AWAITING_GITHUB_AUTH` (resumable pause — push-per-iter is on but `origin` won't authenticate; the run offers `gh auth login` when interactive, else `gh auth login && gh auth setup-git` then `--resume`).
+
+Because per-iter push is on by default, goal mode checks at startup that a push to `origin` would authenticate, so an expired GitHub session can't stall a mid-run push on a credential prompt. Pushes are also run with `GIT_TERMINAL_PROMPT=0` so they fail fast (non-fatally) instead of hanging. Skip the startup check with `CHAIN_SKIP_GITHUB_PREFLIGHT=true`.
 
 Quota exhaustion is NOT a halt — the loop pauses and auto-resumes when the quota resets.
 

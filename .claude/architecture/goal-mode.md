@@ -87,6 +87,8 @@ After the evaluator runs, the verdict directly drives the loop:
 
 **Blueprint approval pause.** At the top of the loop, before the first building iteration (and again only when the decomposer flags a *structural* blueprint change via `state/blueprint.reapproval-requested`), the loop sets `session.json.status = AWAITING_BLUEPRINT_APPROVAL` and exits 0 so the human can review `state/blueprint.md`. `--resume` continues (resuming counts as approval and creates `state/blueprint.approved`); `--auto-approve-blueprint` skips the pause. This is the one human checkpoint in an otherwise unattended run. The gate sits at the top of the loop precisely so the baseline-drafted blueprint is never re-drafted out from under the human.
 
+**GitHub auth preflight (`AWAITING_GITHUB_AUTH`).** Once before the loop (on both fresh-start and `--resume`), if the session will push (`push_per_iter` or `--auto-release`), `run-goal.sh` calls `check_git_push_access` (`lib/common.sh`) — a `GIT_TERMINAL_PROMPT=0` + ssh-BatchMode `git ls-remote origin` that tests git's real credential path without ever prompting. On failure: in an interactive terminal it runs `gh auth login` + `gh auth setup-git`, re-verifies, and continues; otherwise it sets `session.json.status = AWAITING_GITHUB_AUTH` and exits 0 (resumable, like the blueprint pause). This converts the old failure mode — a per-iter `git push` blocking forever on a username/password prompt when the GitHub HTTPS session expired — into a fail-fast preflight. The per-iter push itself is also wrapped in `GIT_TERMINAL_PROMPT=0`, so a session that expires mid-run fails that push fast and non-fatally rather than hanging. Bypass with `CHAIN_SKIP_GITHUB_PREFLIGHT=true`.
+
 **Coherence veto.** The `coherence-auditor` runs after dispatch and writes `iter-<N>/coherence.md` with `COHERENCE-PASS | COHERENCE-WARN | COHERENCE-FAIL`. It hard-fails only on objective rules — a Data-Contract value recomputed/served via a new path, or a new feature with no nav path / a duplicate home. The goal-evaluator treats `COHERENCE-FAIL` as a structural veto: it will not emit `GOAL_ACHIEVED` while coherence is failing, and instead emits `CONTINUE` driving a consolidation iteration. Repeated coherence failures fall through to the existing `STALLED`/`ESCALATE` paths, so the gate cannot loop forever. An auditor that produces no output is treated as a non-blocking PASS.
 
 ## State
@@ -147,9 +149,9 @@ If the prior status is `REGRESSION_HALT`, resume requires `--acknowledge-regress
 
 | Verdict | Push action |
 |---|---|
-| `CONTINUE`, `ESCALATE`, `GOAL_ACHIEVED` | `git add -A`, commit with auto-generated message (verdict + journey deltas), `git push -u origin HEAD`. Skipped silently if working tree has no changes. |
+| `CONTINUE`, `ESCALATE`, `GOAL_ACHIEVED` | `git add -A`, commit with auto-generated message (verdict + journey deltas), `GIT_TERMINAL_PROMPT=0 git push -u origin HEAD`. Skipped silently if working tree has no changes. |
 | `REGRESSION`, `STALLED` | Skipped — the branch is left at the previous iter's HEAD so the user can inspect partial state without remote noise. |
-| Any failure (commit conflict, push rejected, network) | Logged as `[run-goal] push-per-iter: WARNING ...`, recorded as `iter_push` telemetry event with `success: false`. Does not halt the loop. |
+| Any failure (commit conflict, push rejected, network, **expired credentials**) | Logged as `[run-goal] push-per-iter: WARNING ...`, recorded as `iter_push` telemetry event with `success: false`. Does not halt the loop. `GIT_TERMINAL_PROMPT=0` guarantees an expired GitHub session fails fast here instead of blocking on a username/password prompt; the commit stays local and pushes once the user re-auths. |
 
 **PR creation:** unchanged. The branch accumulates commits; the existing `--auto-release` flow (or a manual `gh pr create`) opens the PR at the end. The `summary.md` written at session halt includes a ready-to-paste `gh pr create` command when `push_per_iter` is on.
 

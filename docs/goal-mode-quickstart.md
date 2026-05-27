@@ -97,6 +97,7 @@ Halt verdicts:
 - `STALLED` — no journey progress for `--stall-window` iterations; edit `goal.md` (clearer journeys, narrower scope) and `--resume`
 - `REGRESSION_HALT` — a previously-passing journey now fails; review, fix manually if needed, then resume with `--acknowledge-regression`
 - `AWAITING_BLUEPRINT_APPROVAL` — paused after baseline (or after a structural blueprint change) for you to review `state/blueprint.md`; `--resume` to continue (counts as approval), or pre-empt with `--auto-approve-blueprint`
+- `AWAITING_GITHUB_AUTH` — paused at startup because per-iter push is on but a push to `origin` wouldn't authenticate (expired GitHub session, or no remote); fix auth (the run will offer to launch `gh auth login` for you when interactive) and `--resume`
 
 ## Common workflows
 
@@ -122,6 +123,26 @@ The framework already handles both transparently — quota exhaustion sleeps unt
    ```bash
    ./scripts/automation/run-goal.sh --resume --session-id my-app --acknowledge-regression
    ```
+
+### Recover from `AWAITING_GITHUB_AUTH`
+
+Because per-iter push is on by default, goal mode checks once at startup that a push
+to `origin` would authenticate — so an expired GitHub session can't silently stall a
+mid-run push on a username/password prompt. If the check fails in an interactive
+terminal, the run offers to launch `gh auth login` for you, then continues. If it's
+running unattended (or `gh` isn't installed), it pauses as `AWAITING_GITHUB_AUTH`:
+
+```bash
+gh auth login        # refresh the GitHub session
+gh auth setup-git    # let git use the gh credential for HTTPS push
+./scripts/automation/run-goal.sh --resume --session-id my-app   # re-checks, then continues
+```
+
+Pushes are also hardened so they can never block on a credential prompt — if the
+session expires mid-run, that iteration's push fails fast and the loop continues
+(the commit stays local and pushes on the next iteration once you re-auth). Skip the
+startup check entirely with `export CHAIN_SKIP_GITHUB_PREFLIGHT=true` (for exotic
+credential setups), or run without pushing via `--no-push-per-iter`.
 
 ### Review and approve the blueprint (or skip it)
 

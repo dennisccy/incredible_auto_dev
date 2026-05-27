@@ -344,6 +344,69 @@ if not non_placeholder:
 PY
 }
 
+# ── GitHub push-access preflight ──────────────────────────────────────────
+# An autonomous loop that pushes every iteration must NOT stall mid-run waiting
+# for a username/password when the GitHub HTTPS session expires. This runs once,
+# before the loop, on both fresh-start and --resume. On failure it tries an
+# interactive `gh auth login` (TTY only) and, if it still can't push, pauses the
+# session as AWAITING_GITHUB_AUTH (resumable) — mirroring the blueprint gate.
+preflight_github_access() {
+  # Push access is only relevant if this session will push.
+  [[ "$PUSH_PER_ITER" == "true" || "$AUTO_RELEASE" == "true" ]] || return 0
+  if [[ "${CHAIN_SKIP_GITHUB_PREFLIGHT:-false}" == "true" ]]; then
+    echo "[run-goal] CHAIN_SKIP_GITHUB_PREFLIGHT=true — skipping GitHub access preflight."
+    return 0
+  fi
+
+  local rc=0
+  check_git_push_access "$REPO_ROOT" || rc=$?   # '|| rc=$?' keeps set -e happy
+  if [[ $rc -eq 0 ]]; then
+    echo "[run-goal] GitHub push access: OK"
+    return 0
+  fi
+
+  echo ""
+  echo "════════════════════════════════════════════════════════════════════"
+  echo "[run-goal] GitHub push access check FAILED (push-per-iter is on)."
+  echo "════════════════════════════════════════════════════════════════════"
+  if [[ $rc -eq 2 ]]; then
+    echo "Reason: no 'origin' remote is configured in this repo."
+  else
+    echo "Reason: 'origin' did not authenticate (expired or missing credentials)."
+  fi
+
+  # Auto-relogin: only when interactive, gh is installed, and a remote exists.
+  if [[ $rc -ne 2 && -t 0 && -t 1 ]] && command -v gh >/dev/null 2>&1; then
+    echo "[run-goal] Launching 'gh auth login' to refresh your GitHub session..."
+    if gh auth login && gh auth setup-git && check_git_push_access "$REPO_ROOT"; then
+      echo "[run-goal] GitHub push access restored. Continuing."
+      return 0
+    fi
+    echo "[run-goal] Still no push access after login." >&2
+  fi
+
+  # Could not auto-fix → pause gracefully (resumable), mirroring blueprint gate.
+  python3 - <<PY
+import json, datetime
+d = json.load(open("$SESSION_JSON"))
+d["status"] = "AWAITING_GITHUB_AUTH"
+d["updated_at"] = datetime.datetime.now(datetime.UTC).isoformat().replace('+00:00','Z')
+json.dump(d, open("$SESSION_JSON","w"), indent=2); open("$SESSION_JSON","a").write("\n")
+PY
+  record_telemetry_event "halt" '{"reason":"AWAITING_GITHUB_AUTH","detected_at_step":"preflight"}'
+  echo ""
+  echo "Fix it, then resume:"
+  echo "  gh auth login          # refresh the GitHub session"
+  echo "  gh auth setup-git      # let git use the gh credential for HTTPS push"
+  [[ $rc -eq 2 ]] && echo "  (or) git remote add origin <url>"
+  echo ""
+  echo "Resume:  ./scripts/automation/run-goal.sh --resume --session-id $SESSION_ID"
+  echo "Skip this check:  export CHAIN_SKIP_GITHUB_PREFLIGHT=true   (exotic credential setups)"
+  echo "Run without pushing:  add --no-push-per-iter"
+  echo "════════════════════════════════════════════════════════════════════"
+  exit 0
+}
+
 # ── Session init / load ───────────────────────────────────────────────────
 mkdir -p "$GOAL_SESSION_DIR_LOCAL/state"
 
@@ -687,6 +750,10 @@ on_abort() {
   exit 130
 }
 trap on_abort INT TERM
+
+# Verify we can push to GitHub before the loop starts (once; fresh + resume).
+# Fails fast / pauses here rather than stalling on a credential prompt mid-run.
+preflight_github_access
 
 # ── Main loop ─────────────────────────────────────────────────────────────
 while true; do
@@ -1082,12 +1149,14 @@ except Exception as e:
           if git -C "$REPO_ROOT" add -A 2>/dev/null; then
             if git -C "$REPO_ROOT" commit -m "$_push_msg" >/dev/null 2>&1; then
               _push_sha=$(git -C "$REPO_ROOT" rev-parse HEAD 2>/dev/null || echo "")
-              if git -C "$REPO_ROOT" push -u origin HEAD >/dev/null 2>&1; then
+              # GIT_TERMINAL_PROMPT=0 → if the GitHub session expired mid-run,
+              # the push fails fast instead of hanging on a username/pw prompt.
+              if GIT_TERMINAL_PROMPT=0 git -C "$REPO_ROOT" push -u origin HEAD >/dev/null 2>&1; then
                 _push_ok=true
                 echo "[run-goal] push-per-iter: pushed iter $CURRENT_ITER (${_push_sha:0:8}) to '$PUSH_BRANCH'"
               else
                 _push_err="push failed"
-                echo "[run-goal] push-per-iter: WARNING — commit ${_push_sha:0:8} was created but 'git push origin HEAD' failed; commit is local only. Continuing." >&2
+                echo "[run-goal] push-per-iter: WARNING — commit ${_push_sha:0:8} was created but 'git push origin HEAD' failed; commit is local only. Run 'gh auth login' to restore push — local commits push next iteration. Continuing." >&2
               fi
             else
               _push_err="commit failed"
