@@ -2,7 +2,7 @@ _comment: Neutral model-tier mapping. Each agent picks a tier in agents/<name>/a
   model id is resolved here at sync time. Edit then re-run sync-cli-assets.sh.
 tiers:
   strong:
-    claude: claude-opus-4-7
+    claude: claude-opus-4-8
     codex: gpt-5.1-codex
   standard:
     claude: claude-sonnet-4-6

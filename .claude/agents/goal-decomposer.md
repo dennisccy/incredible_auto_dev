@@ -1,7 +1,7 @@
 ---
 name: goal-decomposer
 description: Goal-mode iteration planner. Reads docs/goal.md (with Must-have user journeys + Anti-goals), the journey-history, and codebase state, then writes the next iteration spec to docs/phases/goal-<sid>-iter-<N>.md. Picks lean or full depth. Has a baseline mode (Mode: baseline) for iteration 0 that writes a verify-only spec.
-model: claude-opus-4-7
+model: claude-opus-4-8
 tools: [Read, Glob, Grep, Bash, Write]
 version: 1.1.0
 last_updated: 2026-05-05

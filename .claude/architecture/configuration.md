@@ -29,7 +29,7 @@ Maps each of the 14 agents to a model tier (12 phase-mode + 2 goal-mode).
 
 ```yaml
 tiers:
-  strong:   claude-opus-4-7
+  strong:   claude-opus-4-8
   standard: claude-sonnet-4-6
   light:    claude-haiku-4-5
 

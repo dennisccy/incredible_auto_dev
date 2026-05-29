@@ -25,7 +25,7 @@ OPTIONAL_FIELDS = {
 }
 KNOWN_MODELS = {
     # strong
-    "claude-opus-4-7", "claude-opus-4-6", "claude-opus-4-5",
+    "claude-opus-4-8", "claude-opus-4-7", "claude-opus-4-6", "claude-opus-4-5",
     # standard
     "claude-sonnet-4-6", "claude-sonnet-4-5", "claude-sonnet-4-7",
     # light
