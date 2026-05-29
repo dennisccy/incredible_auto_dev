@@ -453,6 +453,33 @@ ensure_services_running() {
   [[ "$started_any" == "yes" ]] && return 0 || return 0
 }
 
+# Re-probe a URL across a cold-start budget rather than deciding once. A dev
+# frontend (Vite/Next) can take >10s to compile its first request, and
+# ensure_services_running returns silently on timeout — so a single curl right
+# after it can race a still-booting / recompiling app and wrongly conclude it is
+# unreachable. Retries every 3s up to max_wait before giving up.
+# Usage: _wait_for_url <url> <name> [max_wait_seconds] [log_tag]
+# Returns 0 once the URL answers 2xx/3xx, 1 on timeout.
+_wait_for_url() {
+  local url="$1" name="$2" max_wait="${3:-60}" tag="${4:-wait}"
+  local waited=0
+  echo "[$tag] Waiting for $name at $url (max ${max_wait}s)..."
+  while true; do
+    local code
+    code=$(curl -s -o /dev/null -w "%{http_code}" "$url" 2>/dev/null || true)
+    if [[ "$code" =~ ^[23] ]]; then
+      echo "[$tag] $name is ready (${waited}s)."
+      return 0
+    fi
+    sleep 3
+    waited=$((waited + 3))
+    if [[ $waited -ge $max_wait ]]; then
+      echo "[$tag] Warning: $name did not become ready within ${max_wait}s (last status: $code)." >&2
+      return 1
+    fi
+  done
+}
+
 # Clear any stale Next.js dev server that would block a fresh start.
 # Next.js 16+ writes .next/dev/lock with its own PID and refuses to start a
 # second dev server from the same directory — even on a different port. Just

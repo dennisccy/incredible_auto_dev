@@ -189,11 +189,16 @@ if [[ "${CHAIN_SHARED_SERVICES:-false}" != "true" ]]; then
   ensure_services_running
 fi
 
-FRONTEND_RUNNING_STATUS=$(curl -s -o /dev/null -w "%{http_code}" "$FRONTEND_URL" 2>/dev/null || true)
-if [[ ! "$FRONTEND_RUNNING_STATUS" =~ ^[23] ]]; then
-  echo "[demo] Frontend at $FRONTEND_URL did not respond — recording SKIPPED and exiting." >&2
+# Re-probe across a cold-start budget instead of a single curl. A dev frontend
+# can still be compiling its first request (or recompiling a route) right after
+# ensure_services_running, and a one-shot probe would race it and wrongly record
+# SKIPPED — the same trap browser-qa-phase.sh already guards against with the
+# matching 90s budget. In the warm-app common case the first probe succeeds at
+# 0s, so this adds no latency.
+if ! _wait_for_url "$FRONTEND_URL" "frontend" 90 "demo"; then
+  echo "[demo] Frontend at $FRONTEND_URL did not respond after 90s — recording SKIPPED and exiting." >&2
   if [[ "$MODE" == "record" ]]; then
-    _write_demo_skipped_stub "Frontend at $FRONTEND_URL did not respond. No browser walkthrough was performed."
+    _write_demo_skipped_stub "Frontend at $FRONTEND_URL did not respond after 90s of retries. No browser walkthrough was performed."
   fi
   exit 0
 fi

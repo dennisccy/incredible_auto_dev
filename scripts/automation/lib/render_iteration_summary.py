@@ -92,6 +92,10 @@ class IterationData:
     demo_verdict: str = ""  # RECORDED | RECORDED_WITH_NOTES | SKIPPED | NOT_YET
     demo_steps: list[dict] = field(default_factory=list)
     demo_notes: list[str] = field(default_factory=list)
+    # Recorded **Reason:** line from demo-results.md (set when the demo was
+    # SKIPPED). Surfaced verbatim so a skip says *which* case it was —
+    # backend-only vs app-unreachable — instead of an ambiguous either/or.
+    demo_reason: str = ""
 
 
 @dataclass
@@ -354,6 +358,8 @@ def load_iteration(phase_id: str, repo_root: Path) -> IterationData:
     demo_results = _read_text(repo_root / "reports" / f"phase-{phase_id}-demo-results.md")
     if demo_results:
         data.demo_verdict, data.demo_steps, data.demo_notes = _parse_demo_results(demo_results)
+        _reason_m = _DEMO_REASON_RE.search(demo_results)
+        data.demo_reason = _reason_m.group(1).strip() if _reason_m else ""
         demo_script = _read_text(repo_root / "reports" / f"phase-{phase_id}-demo-script.md")
         narrations = _parse_demo_script_narrations(demo_script or "")
         for step in data.demo_steps:
@@ -383,6 +389,7 @@ def _parse_journey_history(data: dict) -> list[dict]:
 
 _DEMO_VERDICTS = {"RECORDED", "RECORDED_WITH_NOTES", "SKIPPED", "NOT_YET"}
 _DEMO_VERDICT_RE = re.compile(r"^\*\*Demo Verdict:\*\*\s+([A-Z_]+)\s*$", re.MULTILINE)
+_DEMO_REASON_RE = re.compile(r"^\*\*Reason:\*\*\s+(.+?)\s*$", re.MULTILINE)
 
 
 _JOURNEY_TAG_RE = re.compile(r"\bJ-\d+\b")
@@ -1237,9 +1244,12 @@ def _render_watch_it_work(data: IterationData) -> str:
     cards = [_render_demo_step_card(step) for step in data.demo_steps]
 
     # Verdict-only states (SKIPPED / NOT_YET / no captured steps) get a friendly
-    # one-liner instead of an empty grid.
+    # one-liner instead of an empty grid. When the demo step recorded a specific
+    # **Reason:** (e.g. "Backend-only iteration..." vs "Frontend ... did not
+    # respond after 90s of retries...") surface it verbatim so the skip says
+    # *which* case it was; fall back to the generic map for older artifacts.
     if not cards:
-        explainer = {
+        explainer = data.demo_reason or {
             "SKIPPED": "No browser walkthrough this iteration — backend-only work or the app wasn't reachable.",
             "NOT_YET": "Just getting started — nothing for users to try yet.",
             "RECORDED": "Recorded, but no steps were captured.",
@@ -2380,6 +2390,49 @@ def _cmd_self_test(_argv: list[str]) -> int:
         failures.append(f"_parse_demo_results: NEW flags wrong: {dsteps}")
     if len(dnotes) != 1:
         failures.append(f"_parse_demo_results: notes {len(dnotes)}")
+
+    # The recorded **Reason:** line is parsed for SKIPPED-state messaging.
+    _rm = _DEMO_REASON_RE.search(
+        "**Demo Verdict:** SKIPPED\n\n"
+        "**Reason:** Backend-only iteration (Frontend Present: no). "
+        "No browser walkthrough was performed.\n"
+    )
+    _expected_reason = (
+        "Backend-only iteration (Frontend Present: no). "
+        "No browser walkthrough was performed."
+    )
+    if not _rm or _rm.group(1) != _expected_reason:
+        failures.append(f"_DEMO_REASON_RE: parse failed: {_rm and _rm.group(1)!r}")
+
+    # A SKIPPED demo must surface its recorded **Reason:** verbatim in the
+    # "Watch it work" section — not the ambiguous "backend-only work or the app
+    # wasn't reachable" either/or line that hid which case actually happened.
+    _skip_reason = "Frontend at http://localhost:3691 did not respond after 90s of retries."
+    _skipped_iter = IterationData(phase_id="phase-1", repo_root=Path("."))
+    _skipped_iter.demo_verdict = "SKIPPED"
+    _skipped_iter.demo_reason = _skip_reason
+    _wiw_html = _render_watch_it_work(_skipped_iter)
+    if _skip_reason not in _wiw_html:
+        failures.append("_render_watch_it_work: SKIPPED reason not surfaced")
+    if "backend-only work or the app" in _wiw_html:
+        failures.append("_render_watch_it_work: still shows ambiguous either/or line")
+
+    # End-to-end: a real SKIPPED demo-results.md Reason flows through
+    # load_iteration into the rendered section — the exact path that produced
+    # the ambiguous skip message a user reported.
+    with tempfile.TemporaryDirectory() as _raw_skip:
+        _rt = Path(_raw_skip)
+        (_rt / "reports").mkdir(parents=True)
+        _full_reason = f"{_skip_reason} No browser walkthrough was performed."
+        (_rt / "reports" / "phase-skip-x-demo-results.md").write_text(
+            "# Demo Results — skip-x\n\n**Demo Verdict:** SKIPPED\n\n"
+            f"**Reason:** {_full_reason}\n"
+        )
+        _sd = load_iteration("skip-x", _rt)
+        if _sd.demo_reason != _full_reason:
+            failures.append(f"load_iteration: demo_reason not parsed: {_sd.demo_reason!r}")
+        if _skip_reason not in _render_watch_it_work(_sd):
+            failures.append("load_iteration->render: SKIPPED reason not surfaced end-to-end")
 
     # Parse narrations from a demo-script.md body.
     _demo_script = (

@@ -51,25 +51,8 @@ fi
 # ── Service bootstrapping (same pattern as qa-phase.sh) ───────────────────
 QA_STARTED_PIDS=()
 
-_wait_for_url() {
-  local url="$1" name="$2" max_wait="${3:-60}"
-  local waited=0
-  echo "[browser-qa] Waiting for $name at $url (max ${max_wait}s)..."
-  while true; do
-    local code
-    code=$(curl -s -o /dev/null -w "%{http_code}" "$url" 2>/dev/null || true)
-    if [[ "$code" =~ ^[23] ]]; then
-      echo "[browser-qa] $name is ready (${waited}s)."
-      return 0
-    fi
-    sleep 3
-    waited=$((waited + 3))
-    if [[ $waited -ge $max_wait ]]; then
-      echo "[browser-qa] Warning: $name did not become ready within ${max_wait}s (last status: $code)." >&2
-      return 1
-    fi
-  done
-}
+# _wait_for_url lives in lib/common.sh (sourced above) — shared with qa-phase.sh
+# and demo-phase.sh.
 
 _stop_pid_tree() {
   local pid=$1
@@ -205,7 +188,7 @@ fi
 # curl right after ensure_services_running can race a still-booting FE and wrongly
 # mark every test SKIPPED. _wait_for_url retries every 3s up to the budget before
 # giving up — a slow boot is no longer misread as "frontend not available."
-if _wait_for_url "$FRONTEND_URL" "frontend" 90; then
+if _wait_for_url "$FRONTEND_URL" "frontend" 90 "browser-qa"; then
   FRONTEND_AVAILABLE="yes"
 else
   FRONTEND_AVAILABLE="no"

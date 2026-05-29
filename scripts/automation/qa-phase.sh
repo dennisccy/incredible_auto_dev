@@ -37,26 +37,8 @@ echo "[qa-phase] Running QA for: $PHASE (frontend: $FRONTEND_PRESENT)"
 # ── Service bootstrapping ─────────────────────────────────────────────────
 QA_STARTED_PIDS=()
 
-# Wait until a URL responds with a 2xx/3xx status code, or timeout.
-_wait_for_url() {
-  local url="$1" name="$2" max_wait="${3:-60}"
-  local waited=0
-  echo "[qa-phase] Waiting for $name at $url (max ${max_wait}s)..."
-  while true; do
-    local code
-    code=$(curl -s -o /dev/null -w "%{http_code}" "$url" 2>/dev/null || true)
-    if [[ "$code" =~ ^[23] ]]; then
-      echo "[qa-phase] $name is ready (${waited}s)."
-      return 0
-    fi
-    sleep 3
-    waited=$((waited + 3))
-    if [[ $waited -ge $max_wait ]]; then
-      echo "[qa-phase] Warning: $name did not become ready within ${max_wait}s (last status: $code)." >&2
-      return 1
-    fi
-  done
-}
+# _wait_for_url (shared, in lib/common.sh) is available if this script needs to
+# poll a URL; it is not currently called here.
 
 # Recursively kill a process and all its descendants (depth-first, leaves first).
 _stop_pid_tree() {
