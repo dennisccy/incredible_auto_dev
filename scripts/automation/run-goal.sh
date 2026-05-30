@@ -630,6 +630,12 @@ if [[ "$PUSH_PER_ITER" == "true" ]]; then
   fi
 fi
 
+# Reclaim this project's canonical offset ports before assigning them. An
+# orphaned dev server from a previous iteration squatting 3000+off / 8000+off
+# would otherwise push _find_free_port onto a neighbour port — the whole session
+# then drifts (e.g. the demo polls 3836 while the live app is on 3835) and the
+# walkthrough is wrongly SKIPPED. No-op when CHAIN_*_PORT are already pinned.
+reclaim_canonical_phase_ports
 ensure_phase_ports
 
 # ── Telemetry: session_start ──────────────────────────────────────────────

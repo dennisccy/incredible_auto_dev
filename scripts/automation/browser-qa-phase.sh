@@ -190,9 +190,19 @@ fi
 # giving up — a slow boot is no longer misread as "frontend not available."
 if _wait_for_url "$FRONTEND_URL" "frontend" 90 "browser-qa"; then
   FRONTEND_AVAILABLE="yes"
+  FRONTEND_SKIP_REASON=""
 else
   FRONTEND_AVAILABLE="no"
   echo "[browser-qa] Frontend not available after re-probe — browser tests will be marked SKIPPED."
+  # Build an actionable reason (dependency hint) instead of a bare "not running",
+  # and echo the real start-up log tail (captured by ensure_services_running) to
+  # the operator console so the cause is visible, not just the symptom.
+  FRONTEND_SKIP_REASON="frontend not running"
+  _fe_hint="$(_qa_dep_hint frontend)"
+  [[ -n "$_fe_hint" ]] && FRONTEND_SKIP_REASON+=" — likely cause: $_fe_hint"
+  _fe_tail="${QA_FRONTEND_LOG_TAIL:-}"
+  [[ -z "$_fe_tail" && -n "${QA_FRONTEND_LOG:-}" && -f "${QA_FRONTEND_LOG:-}" ]] && _fe_tail="$(tail -n 15 "$QA_FRONTEND_LOG" 2>/dev/null || true)"
+  [[ -n "$_fe_tail" ]] && { echo "[browser-qa] Frontend start log tail (${QA_FRONTEND_LOG:-?}):" >&2; echo "$_fe_tail" >&2; }
 fi
 
 SERVICES_NOTE="Note: browser-qa-phase.sh manages backend (${BACKEND_HEALTH_URL}, log: ${QA_BACKEND_LOG}) and frontend (${FRONTEND_URL}, log: ${QA_FRONTEND_LOG}). Services are restarted automatically if they die during quota-retry sleeps."
@@ -225,7 +235,7 @@ $SERVICES_NOTE
 $(if [[ "$FRONTEND_AVAILABLE" == "yes" ]]; then
   echo "Chrome MCP browser checks ARE required. Use mcp__plugin_superpowers-chrome_chrome__use_browser for each test case."
 else
-  echo "Frontend is NOT available. Mark all tests as SKIPPED with reason: frontend not running."
+  echo "Frontend is NOT available. Mark all tests as SKIPPED with reason: ${FRONTEND_SKIP_REASON:-frontend not running}."
   echo "Do NOT attempt to run browser tests."
 fi)
 

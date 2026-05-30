@@ -192,12 +192,22 @@ export QA_FRONTEND_REQUIRED="yes"
 
 ensure_services_running
 
-FRONTEND_RUNNING_STATUS=$(curl -s -o /dev/null -w "%{http_code}" "$FRONTEND_URL" 2>/dev/null || true)
-if [[ "$FRONTEND_RUNNING_STATUS" =~ ^[23] ]]; then
+# Trust the retrying ensure_services_running verdict first (QA_FRONTEND_UP), then
+# a short re-probe so a frontend that is merely mid-recompile isn't misread as
+# down — avoids a false SKIP right after a successful-but-still-compiling boot.
+if [[ "${QA_FRONTEND_UP:-unknown}" == "yes" ]] || _wait_for_url "$FRONTEND_URL" "frontend" 30 "goal-iter-lean"; then
   FRONTEND_AVAILABLE="yes"
+  FRONTEND_SKIP_REASON=""
 else
   FRONTEND_AVAILABLE="no"
   echo "[goal-iter-lean] Frontend not available — browser tests will be SKIPPED."
+  # Surface the real cause (dep hint + log tail) instead of a bare "not running".
+  FRONTEND_SKIP_REASON="frontend not running"
+  _fe_hint="$(_qa_dep_hint frontend)"
+  [[ -n "$_fe_hint" ]] && FRONTEND_SKIP_REASON+=" — likely cause: $_fe_hint"
+  _fe_tail="${QA_FRONTEND_LOG_TAIL:-}"
+  [[ -z "$_fe_tail" && -n "${QA_FRONTEND_LOG:-}" && -f "${QA_FRONTEND_LOG:-}" ]] && _fe_tail="$(tail -n 15 "$QA_FRONTEND_LOG" 2>/dev/null || true)"
+  [[ -n "$_fe_tail" ]] && { echo "[goal-iter-lean] Frontend start log tail (${QA_FRONTEND_LOG:-?}):" >&2; echo "$_fe_tail" >&2; }
 fi
 
 export CHAIN_CLAUDE_PRE_RETRY_HOOK="ensure_services_running"
@@ -229,7 +239,7 @@ Frontend available: $FRONTEND_AVAILABLE
 $(if [[ "$FRONTEND_AVAILABLE" == "yes" ]]; then
   echo "Chrome MCP browser checks ARE required. Use mcp__plugin_superpowers-chrome_chrome__use_browser."
 else
-  echo "Frontend is NOT available. Mark all tests as SKIPPED with reason: frontend not running."
+  echo "Frontend is NOT available. Mark all tests as SKIPPED with reason: ${FRONTEND_SKIP_REASON:-frontend not running}."
   echo "Do NOT attempt to run browser tests."
 fi)
 

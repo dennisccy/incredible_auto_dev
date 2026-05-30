@@ -66,6 +66,9 @@ ensure_cli_assets_synced "$CHAIN_CLI"
 
 # ── Auto-assign deterministic per-project ports ──────────────────────────────
 # Helpers live in lib/common.sh (already sourced). Explicit CHAIN_*_PORT wins.
+# Reclaim canonical ports first so an orphaned server from a prior run can't push
+# the assignment onto a neighbour port (port drift). No-op when CHAIN_*_PORT set.
+reclaim_canonical_phase_ports
 ensure_phase_ports
 
 SPEC=$(phase_spec_path "$PHASE")

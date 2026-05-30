@@ -109,6 +109,16 @@ Note: The QA runner manages backend (${BACKEND_HEALTH_URL}, log: ${QA_BACKEND_LO
 Services are restarted automatically if they die during quota-retry sleeps.
 You do NOT need to start or stop them yourself."
 
+# If the backend never came up, hand the QA agent the real reason (dependency
+# hint + captured start-up log tail set by ensure_services_running) so it records
+# an actionable failure instead of a generic "backend unreachable".
+if [[ "${QA_BACKEND_UP:-}" == "no" ]]; then
+  _be_hint="$(_qa_dep_hint backend)"
+  SERVICES_NOTE+=$'\n\nWARNING: the backend did NOT become healthy after retries.'
+  [[ -n "$_be_hint" ]] && SERVICES_NOTE+=" Likely cause: $_be_hint"
+  [[ -n "${QA_BACKEND_LOG_TAIL:-}" ]] && SERVICES_NOTE+=$'\nBackend start log tail:\n'"${QA_BACKEND_LOG_TAIL}"
+fi
+
 # Pre-retry hook — revive any services that died during a long quota sleep
 # before claude attempts the next call. Hook runs in this shell (via eval),
 # so it can reference ensure_services_running and the QA_* env vars set above.

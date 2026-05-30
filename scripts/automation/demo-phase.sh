@@ -198,7 +198,28 @@ fi
 if ! _wait_for_url "$FRONTEND_URL" "frontend" 90 "demo"; then
   echo "[demo] Frontend at $FRONTEND_URL did not respond after 90s — recording SKIPPED and exiting." >&2
   if [[ "$MODE" == "record" ]]; then
-    _write_demo_skipped_stub "Frontend at $FRONTEND_URL did not respond after 90s of retries. No browser walkthrough was performed."
+    # Surface the REAL reason, not just the timeout: a missing-dependency hint
+    # plus the tail of the captured start-up log (set by ensure_services_running
+    # in QA_FRONTEND_LOG_TAIL / QA_BACKEND_LOG_TAIL), so the operator can see the
+    # actual crash / port clash instead of an opaque "did not respond".
+    _skip_reason="Frontend at $FRONTEND_URL did not respond after 90s of retries. No browser walkthrough was performed."
+
+    _fe_hint="$(_qa_dep_hint frontend)"
+    [[ -n "$_fe_hint" ]] && _skip_reason+=$'\n\nLikely cause: '"$_fe_hint"
+
+    _fe_tail="${QA_FRONTEND_LOG_TAIL:-}"
+    [[ -z "$_fe_tail" && -n "${QA_FRONTEND_LOG:-}" && -f "${QA_FRONTEND_LOG:-}" ]] && _fe_tail="$(tail -n 20 "$QA_FRONTEND_LOG" 2>/dev/null || true)"
+    [[ -n "$_fe_tail" ]] && _skip_reason+=$'\n\nFrontend log tail ('"${QA_FRONTEND_LOG:-?}"$'):\n```\n'"$_fe_tail"$'\n```'
+
+    if [[ "${QA_BACKEND_UP:-}" == "no" ]]; then
+      _be_hint="$(_qa_dep_hint backend)"
+      [[ -n "$_be_hint" ]] && _skip_reason+=$'\n\nBackend also failed to start. Likely cause: '"$_be_hint"
+      _be_tail="${QA_BACKEND_LOG_TAIL:-}"
+      [[ -z "$_be_tail" && -n "${QA_BACKEND_LOG:-}" && -f "${QA_BACKEND_LOG:-}" ]] && _be_tail="$(tail -n 20 "$QA_BACKEND_LOG" 2>/dev/null || true)"
+      [[ -n "$_be_tail" ]] && _skip_reason+=$'\n\nBackend log tail ('"${QA_BACKEND_LOG:-?}"$'):\n```\n'"$_be_tail"$'\n```'
+    fi
+
+    _write_demo_skipped_stub "$_skip_reason"
   fi
   exit 0
 fi

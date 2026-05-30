@@ -389,6 +389,123 @@ _qa_log_path() {
   echo "/tmp/${role}-${port}.log"
 }
 
+# Parse the TCP port out of a localhost URL (http://localhost:3836/… -> 3836).
+# Echoes empty when the URL carries no explicit port. set -e safe.
+_url_port() {
+  printf '%s' "$1" | sed -n 's#^[a-zA-Z][a-zA-Z0-9+.-]*://[^/:]*:\([0-9][0-9]*\).*#\1#p'
+}
+
+# Kill a process and all its descendants (TERM, brief grace, then KILL).
+# Best-effort and set -e safe; no-op on empty/dead PID.
+_kill_pid_tree() {
+  local pid="$1"
+  [[ -z "$pid" ]] && return 0
+  local child
+  for child in $(pgrep -P "$pid" 2>/dev/null || true); do
+    _kill_pid_tree "$child"
+  done
+  kill -TERM "$pid" 2>/dev/null || true
+  return 0
+}
+
+# Echo a human-readable hint when an obvious prerequisite for a role is missing,
+# so a SKIPPED reason can say "deps not installed" instead of a bare timeout.
+# Empty output when nothing obvious is wrong. Always safe to call.
+_qa_dep_hint() {
+  local role="$1"
+  case "$role" in
+    *frontend*)
+      local fe_dir="${CHAIN_FRONTEND_DIR:-$REPO_ROOT/apps/frontend}"
+      [[ -d "$fe_dir/node_modules" ]] || \
+        echo "frontend dependencies are not installed (missing $fe_dir/node_modules) — run 'npm install' there" ;;
+    *backend*)
+      [[ -d "$REPO_ROOT/apps/backend/.venv" ]] || \
+        echo "backend virtualenv is missing ($REPO_ROOT/apps/backend/.venv) — create it and install requirements" ;;
+  esac
+  return 0
+}
+
+# Start a service with health-gated retries. Unlike a bare URL re-probe this
+# re-SPAWNS the start command up to <max_attempts> times, escalating cleanup
+# between attempts so half-started servers never stack on the port, and on final
+# failure captures the tail of its log into the caller-named <tail_var> so the
+# operator sees the REAL reason (a crash / missing dep / port clash) rather than
+# a generic timeout.
+#
+# Usage: _start_service_with_retries <role> <health_url> <start_cmd> <log_path> \
+#            <per_attempt_timeout> <max_attempts> <tail_var> [pre_start_hook]
+# Returns 0 as soon as the URL answers 2xx/3xx; 1 if every attempt fails.
+# Idempotent: an already-healthy service returns 0 immediately with NO spawn,
+# which keeps it cheap and safe as the quota-retry pre-hook (called repeatedly).
+_start_service_with_retries() {
+  local role="$1" health_url="$2" start_cmd="$3" log_path="$4"
+  local per_attempt="$5" max_attempts="$6" tail_var="$7" pre_hook="${8:-}"
+
+  # Nothing to start with — leave it to upstream handling (callers tolerate this).
+  [[ -z "$start_cmd" || -z "$health_url" ]] && return 0
+
+  local code
+  code=$(curl -s -o /dev/null -w "%{http_code}" "$health_url" 2>/dev/null || true)
+  if [[ "$code" =~ ^[23] ]]; then
+    return 0   # already healthy — idempotent fast path, no spawn
+  fi
+
+  local target_port
+  target_port=$(_url_port "$health_url")
+
+  local attempt=1 pid waited
+  while [[ $attempt -le $max_attempts ]]; do
+    echo "[ensure_services_running] $role not healthy (status: ${code:-none}) — start attempt ${attempt}/${max_attempts}..." >&2
+
+    # Clear anything squatting this role's port / single-instance lock first.
+    # pre_hook (kill_stale_next_dev_server / kill_stale_backend_server) is
+    # cwd-scoped so it also reclaims a DRIFTED orphan on a neighbour port.
+    if [[ -n "$pre_hook" ]]; then eval "$pre_hook" >&2 2>&1 || true; fi
+    [[ -n "$target_port" ]] && { fuser -k -9 "${target_port}/tcp" 2>/dev/null || true; }
+
+    : >"$log_path" 2>/dev/null || true   # fresh log so the failure tail is THIS attempt's
+    $start_cmd >"$log_path" 2>&1 &
+    pid=$!
+    # QA_STARTED_PIDS is declared by qa-phase.sh / browser-qa-phase.sh but NOT by
+    # demo-phase.sh — guard so the append is safe whether or not it pre-exists.
+    if declare -p QA_STARTED_PIDS >/dev/null 2>&1; then
+      QA_STARTED_PIDS+=("$pid")
+    else
+      QA_STARTED_PIDS=("$pid")
+    fi
+
+    waited=0
+    while [[ $waited -lt $per_attempt ]]; do
+      code=$(curl -s -o /dev/null -w "%{http_code}" "$health_url" 2>/dev/null || true)
+      if [[ "$code" =~ ^[23] ]]; then
+        echo "[ensure_services_running] $role is ready (attempt ${attempt}, ${waited}s)." >&2
+        return 0
+      fi
+      # If the process died on boot there is no point waiting out the budget —
+      # the next attempt (or the captured log) is the way forward.
+      if ! kill -0 "$pid" 2>/dev/null; then
+        echo "[ensure_services_running] $role process (pid $pid) exited during boot — see $log_path." >&2
+        break
+      fi
+      sleep 3
+      waited=$((waited + 3))
+    done
+
+    # Alive-but-not-serving (or dead): tear down before the next attempt so we
+    # never leave a half-started server holding the port.
+    _kill_pid_tree "$pid"
+    [[ -n "$target_port" ]] && { fuser -k -9 "${target_port}/tcp" 2>/dev/null || true; }
+    attempt=$((attempt + 1))
+    [[ $attempt -le $max_attempts ]] && sleep 1
+  done
+
+  local tail_txt=""
+  [[ -f "$log_path" ]] && tail_txt="$(tail -n 20 "$log_path" 2>/dev/null || true)"
+  printf -v "$tail_var" '%s' "$tail_txt"
+  echo "[ensure_services_running] $role failed to become healthy after ${max_attempts} attempt(s) (log: $log_path)." >&2
+  return 1
+}
+
 # ── Idempotent service bootstrap (shared by qa-phase.sh and browser-qa-phase.sh) ──
 #
 # Starts the backend (and optionally frontend) if they are not already running.
@@ -408,49 +525,43 @@ _qa_log_path() {
 # The function is a no-op for services that are already healthy. It does not
 # error if start commands are missing — callers handle that case upstream.
 ensure_services_running() {
-  local started_any="no"
+  # Exported so callers (demo-phase.sh, browser-qa-phase.sh, qa-phase.sh,
+  # goal-iter-lean.sh) can put the REAL reason — not a bare timeout — into their
+  # SKIPPED artifacts. Reset every call so a later healthy boot clears a stale
+  # tail and the quota-retry pre-hook never carries forward an old failure.
+  export QA_BACKEND_UP="unknown"
+  export QA_FRONTEND_UP="unknown"
+  export QA_BACKEND_LOG_TAIL=""
+  export QA_FRONTEND_LOG_TAIL=""
 
-  # Backend
+  # Backend: 2 attempts × 45s = the same 90s ceiling as the previous single shot,
+  # but now re-SPAWNS on failure and reclaims a stale/drifted uvicorn by cwd.
   if [[ -n "${QA_BACKEND_HEALTH_URL:-}" && -n "${QA_BACKEND_START_CMD:-}" ]]; then
-    local backend_code
-    backend_code=$(curl -s -o /dev/null -w "%{http_code}" "$QA_BACKEND_HEALTH_URL" 2>/dev/null || true)
-    if [[ ! "$backend_code" =~ ^[23] ]]; then
-      echo "[ensure_services_running] Backend not responding at $QA_BACKEND_HEALTH_URL (status: $backend_code) — starting..." >&2
-      $QA_BACKEND_START_CMD >"${QA_BACKEND_LOG:-/dev/null}" 2>&1 &
-      QA_STARTED_PIDS+=($!)
-      started_any="yes"
-      # Wait up to 90s for backend to come up
-      local waited=0
-      while [[ $waited -lt 90 ]]; do
-        backend_code=$(curl -s -o /dev/null -w "%{http_code}" "$QA_BACKEND_HEALTH_URL" 2>/dev/null || true)
-        [[ "$backend_code" =~ ^[23] ]] && { echo "[ensure_services_running] Backend is ready (${waited}s)." >&2; break; }
-        sleep 3
-        waited=$((waited + 3))
-      done
+    if _start_service_with_retries "backend" \
+         "$QA_BACKEND_HEALTH_URL" "$QA_BACKEND_START_CMD" "${QA_BACKEND_LOG:-/dev/null}" \
+         45 2 QA_BACKEND_LOG_TAIL "kill_stale_backend_server"; then
+      export QA_BACKEND_UP="yes"
+    else
+      export QA_BACKEND_UP="no"
     fi
   fi
 
-  # Frontend (only when required)
+  # Frontend (only when required): 2 attempts × 60s = the same 120s ceiling as
+  # before. kill_stale_next_dev_server clears Next's single-instance lock so a
+  # retry can actually bind.
   if [[ "${QA_FRONTEND_REQUIRED:-no}" == "yes" && -n "${QA_FRONTEND_URL:-}" && -n "${QA_FRONTEND_START_CMD:-}" ]]; then
-    local frontend_code
-    frontend_code=$(curl -s -o /dev/null -w "%{http_code}" "$QA_FRONTEND_URL" 2>/dev/null || true)
-    if [[ ! "$frontend_code" =~ ^[23] ]]; then
-      echo "[ensure_services_running] Frontend not responding at $QA_FRONTEND_URL (status: $frontend_code) — starting..." >&2
-      kill_stale_next_dev_server
-      $QA_FRONTEND_START_CMD >"${QA_FRONTEND_LOG:-/dev/null}" 2>&1 &
-      QA_STARTED_PIDS+=($!)
-      started_any="yes"
-      local waited=0
-      while [[ $waited -lt 120 ]]; do
-        frontend_code=$(curl -s -o /dev/null -w "%{http_code}" "$QA_FRONTEND_URL" 2>/dev/null || true)
-        [[ "$frontend_code" =~ ^[23] ]] && { echo "[ensure_services_running] Frontend is ready (${waited}s)." >&2; break; }
-        sleep 3
-        waited=$((waited + 3))
-      done
+    if _start_service_with_retries "frontend" \
+         "$QA_FRONTEND_URL" "$QA_FRONTEND_START_CMD" "${QA_FRONTEND_LOG:-/dev/null}" \
+         60 2 QA_FRONTEND_LOG_TAIL "kill_stale_next_dev_server"; then
+      export QA_FRONTEND_UP="yes"
+    else
+      export QA_FRONTEND_UP="no"
     fi
   fi
 
-  [[ "$started_any" == "yes" ]] && return 0 || return 0
+  # ALWAYS 0: the five bare call sites run under `set -e`. Failure is surfaced
+  # via QA_*_UP / QA_*_LOG_TAIL, never a non-zero return.
+  return 0
 }
 
 # Re-probe a URL across a cold-start budget rather than deciding once. A dev
@@ -528,6 +639,29 @@ except Exception:
     # Give the OS a moment to release resources before next start
     sleep 1
   fi
+  return 0
+}
+
+# Clear any stale backend (uvicorn) server whose working directory is this
+# project's backend dir, so a fresh start can bind the port. The backend twin of
+# kill_stale_next_dev_server. cwd-scoped (matches /proc/<pid>/cwd against
+# $REPO_ROOT/apps/backend) so it reclaims a DRIFTED orphan on a neighbour port
+# yet never touches a sibling project's backend on a shared machine.
+# Usage: kill_stale_backend_server [backend_dir]
+kill_stale_backend_server() {
+  local be_dir="${1:-$REPO_ROOT/apps/backend}"
+  local killed_any=0
+  local pid cwd
+  for pid in $(pgrep -f "uvicorn" 2>/dev/null); do
+    cwd=$(readlink "/proc/$pid/cwd" 2>/dev/null || echo "")
+    if [[ -n "$cwd" && "$cwd" == "$be_dir"* ]]; then
+      _kill_pid_tree "$pid"   # uvicorn + its reloader/worker children
+      sleep 1
+      kill -KILL "$pid" 2>/dev/null || true
+      killed_any=1
+    fi
+  done
+  [[ $killed_any -eq 1 ]] && sleep 1
   return 0
 }
 
