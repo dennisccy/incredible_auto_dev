@@ -65,7 +65,7 @@ output path. Shape:
 }
 ```
 
-### Action types — emit ONLY these three (+ optional `expect`)
+### Action types — emit ONLY these three (+ recommended `expect`)
 
 The runner handles all waiting, highlighting, screenshots, and selector
 fallback itself. Keep each action atomic — one click/type/navigate.
@@ -73,7 +73,7 @@ fallback itself. Keep each action atomic — one click/type/navigate.
 - `{"type": "goto", "url": "/relative/path"}` — **URL must be a relative path** (e.g. `/dashboard`, `/items/new`). Never hardcode `http://localhost:3000` — the runner joins the real base URL, which has an offset dev-port. (If a QA artifact shows an absolute localhost URL, strip it to just the path.)
 - `{"type": "click", "target": { … }}`
 - `{"type": "fill", "target": { … }, "text": "<value>"}`
-- Optional per-step `"expect": {"text": "<exact text that should appear>"}` — emit this for verified steps so the runner's verdict reflects real misses instead of trivially passing.
+- Per-step `"expect": {"text": "<exact text that should appear>"}` — **strongly recommended on every `highlights`/`goto` step.** The runner now *waits for this before it takes the screenshot*, so it doubles as the "content has loaded" gate that keeps a spinner / empty skeleton out of the gallery. **Pick a post-load content marker** — a real data value, table row, or result heading that appears ONLY after the page's data finishes loading — NOT static chrome (nav labels, the page `<title>`) that is already on screen while the page is still loading. A `{"target": { … }}` form is also accepted. Without an `expect` the runner falls back to a generic settle (network-idle + spinner-gone + fonts), which works but is less reliable than naming the content you expect.
 
 ### `target` — one locator hint, mapped from the QA wording
 

@@ -468,7 +468,7 @@ def _do_action(page, action: dict, base_url: str, timeout_ms: int) -> None:
         page.goto(normalize_url(base_url, action.get("url", "/")),
                   wait_until="domcontentloaded", timeout=timeout_ms)
         try:
-            page.wait_for_load_state("networkidle", timeout=min(timeout_ms, 3000))
+            page.wait_for_load_state("networkidle", timeout=min(timeout_ms, 12000))
         except Exception:
             pass  # SPA may never go idle — best-effort
         return
@@ -521,6 +521,44 @@ def _caption(page, text: str) -> None:
                   +'padding:12px 18px;text-align:center;';
                 document.body.appendChild(b); }
               b.textContent = t; }""", text)
+    except Exception:
+        pass
+
+
+# Loading indicators that, while present, mean the page is mid-render — capturing
+# now would screenshot an empty skeleton. Best-effort union; absent on most pages.
+_LOADING_SELECTOR = (
+    '[aria-busy="true"], [role="progressbar"], [data-loading="true"], '
+    '.loading, .spinner, .skeleton, [class*="skeleton"], [class*="Skeleton"]'
+)
+
+
+def _settle_for_capture(page, budget_ms: int) -> None:
+    """Best-effort wait for the page to finish loading before a screenshot, so the
+    gallery never captures a spinner / empty skeleton. NEVER raises — the demo is a
+    showcase, not a gate.
+
+    Three guards, each bounded by the budget: (1) network goes idle so client-side
+    fetches land; (2) any visible loading indicator disappears; (3) web fonts are
+    ready, plus a short paint settle. An SPA that long-polls may never reach idle,
+    which is exactly why every step is best-effort and falls through on timeout."""
+    budget_ms = max(1000, min(int(budget_ms), 12000))
+    try:
+        page.wait_for_load_state("networkidle", timeout=budget_ms)
+    except Exception:
+        pass  # SPA may never go idle — best-effort
+    try:
+        loc = page.locator(_LOADING_SELECTOR)
+        if loc.count() > 0:
+            loc.first.wait_for(state="hidden", timeout=min(budget_ms, 8000))
+    except Exception:
+        pass  # no indicator, or it never resolved — best-effort
+    try:
+        page.evaluate("() => (document.fonts ? document.fonts.ready : null)")
+    except Exception:
+        pass
+    try:
+        page.wait_for_timeout(400)  # final paint settle
     except Exception:
         pass
 
@@ -583,11 +621,17 @@ def run_record(script: dict, opts, base_url: str) -> int:
                     f"{step['action'].get('type')} ({str(exc).splitlines()[0][:120]}); "
                     "captured the page anyway.")
             exp = step.get("expect")
-            if acted and exp and not _check_expect(page, exp, min(tmo, 3000)):
+            # The expect is the strongest "content has loaded" signal — wait for it
+            # with the FULL step budget (not a 3s cap) so a slow-but-real render is not
+            # captured mid-skeleton. Still only a soft note if it never appears.
+            if acted and exp and not _check_expect(page, exp, tmo):
                 soft_notes.append(
                     f"Step {n:02d} — expected {_expect_desc(exp)} did not appear; recorded anyway.")
             shot_rel = ""
             if section != "full_tour":
+                # Settle (network idle + loading indicators gone + paint) so the
+                # gallery never captures a spinner / empty skeleton.
+                _settle_for_capture(page, tmo)
                 shot_abs = out_dir / f"step-{n:02d}.png"
                 try:
                     page.screenshot(path=str(shot_abs))
@@ -666,6 +710,7 @@ def run_live(script: dict, opts, base_url: str) -> int:
                 pass
             try:
                 _do_action(page, action, base_url, tmo)
+                _settle_for_capture(page, tmo)  # let content load before the human looks
                 if step.get("point_out"):
                     print(f"   ↳ Notice: {step['point_out']}")
             except Exception as exc:  # noqa: BLE001

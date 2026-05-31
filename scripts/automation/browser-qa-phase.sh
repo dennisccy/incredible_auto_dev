@@ -152,15 +152,23 @@ echo "[browser-qa] Resolved ports: frontend=${FRONTEND_URL} backend=${BACKEND_HE
 # refuses to start a second dev server in the same directory even on a different
 # port, using .next/dev/lock as the signal. Also handle the case where a stale
 # frontend may be bound with a different backend URL baked in.
-echo "[browser-qa] Clearing any stale Next.js dev server for this project..."
-kill_stale_next_dev_server
-FRONTEND_STATUS=$(curl -s -o /dev/null -w "%{http_code}" "$FRONTEND_URL" 2>/dev/null || true)
-if [[ "$FRONTEND_STATUS" =~ ^[23] ]]; then
-  STALE_PIDS=$(lsof -ti "tcp:${_FRONTEND_PORT}" 2>/dev/null || true)
-  if [[ -n "$STALE_PIDS" ]]; then
-    echo "[browser-qa] Killing stale frontend on port ${_FRONTEND_PORT} to ensure correct API URL..."
-    kill -TERM $STALE_PIDS 2>/dev/null || true
-    sleep 2
+#
+# Skip entirely in the post-dev fanout: there the caller (run-phase.sh
+# _boot_shared_services) owns the frontend and already cleared stale locks at boot.
+# Killing it here would leave the demo — which runs after this script in the SAME
+# branch against the SAME shared services — with no frontend to probe, the cause of
+# spurious demo SKIPs. Only reclaim stale servers when this script owns them.
+if [[ "${CHAIN_SHARED_SERVICES:-false}" != "true" ]]; then
+  echo "[browser-qa] Clearing any stale Next.js dev server for this project..."
+  kill_stale_next_dev_server
+  FRONTEND_STATUS=$(curl -s -o /dev/null -w "%{http_code}" "$FRONTEND_URL" 2>/dev/null || true)
+  if [[ "$FRONTEND_STATUS" =~ ^[23] ]]; then
+    STALE_PIDS=$(lsof -ti "tcp:${_FRONTEND_PORT}" 2>/dev/null || true)
+    if [[ -n "$STALE_PIDS" ]]; then
+      echo "[browser-qa] Killing stale frontend on port ${_FRONTEND_PORT} to ensure correct API URL..."
+      kill -TERM $STALE_PIDS 2>/dev/null || true
+      sleep 2
+    fi
   fi
 fi
 

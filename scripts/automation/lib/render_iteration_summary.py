@@ -389,7 +389,14 @@ def _parse_journey_history(data: dict) -> list[dict]:
 
 _DEMO_VERDICTS = {"RECORDED", "RECORDED_WITH_NOTES", "SKIPPED", "NOT_YET"}
 _DEMO_VERDICT_RE = re.compile(r"^\*\*Demo Verdict:\*\*\s+([A-Z_]+)\s*$", re.MULTILINE)
-_DEMO_REASON_RE = re.compile(r"^\*\*Reason:\*\*\s+(.+?)\s*$", re.MULTILINE)
+# Capture the FULL multi-line **Reason:** block, not just its first line. The
+# SKIPPED stub written by demo-phase.sh appends a "Likely cause:" hint and fenced
+# frontend/backend log tails after the first sentence — that is the real diagnosis.
+# Reason is always the last field in the stub, so bound on the next markdown heading
+# ("## ") or the trailing whitespace before EOF. The `\s*\Z` arm also trims the
+# trailing newline, so a single-line reason is captured exactly as before.
+_DEMO_REASON_RE = re.compile(
+    r"^\*\*Reason:\*\*[ \t]+(.+?)(?=\n##\s|\s*\Z)", re.MULTILINE | re.DOTALL)
 
 
 _JOURNEY_TAG_RE = re.compile(r"\bJ-\d+\b")
@@ -927,6 +934,7 @@ ol.steps > li::before {
 }
 .demo-empty {
   margin: 8px 0 0; color: #57606a; font-style: italic;
+  white-space: pre-wrap; overflow-wrap: anywhere;
 }
 .demo-notes-wrap { margin-top: 14px; }
 .demo-notes-wrap summary {
@@ -2403,6 +2411,30 @@ def _cmd_self_test(_argv: list[str]) -> int:
     )
     if not _rm or _rm.group(1) != _expected_reason:
         failures.append(f"_DEMO_REASON_RE: parse failed: {_rm and _rm.group(1)!r}")
+
+    # The multi-line **Reason:** block (the likely-cause hint + fenced log tails
+    # that demo-phase.sh appends) must be captured in FULL — the regression that hid
+    # the real /api/health 404 diagnosis behind a bare one-line timeout. Mirror the
+    # exact stub shape demo-phase.sh writes.
+    _ml_reason = (
+        "Frontend at http://localhost:3835 did not respond after 90s of retries. "
+        "No browser walkthrough was performed.\n\n"
+        "Likely cause: frontend dev server crashed on boot.\n\n"
+        "Frontend log tail (/tmp/fanout-frontend-8835.log):\n"
+        "```\n GET / 200 in 2894ms\n```"
+    )
+    _mlm = _DEMO_REASON_RE.search(
+        "# Demo Results — x\n\n**Demo Verdict:** SKIPPED\n\n"
+        f"**Reason:** {_ml_reason}\n"
+    )
+    if not _mlm or _mlm.group(1).strip() != _ml_reason:
+        failures.append(f"_DEMO_REASON_RE: multi-line capture failed: {_mlm and _mlm.group(1)!r}")
+    _ml_iter = IterationData(phase_id="phase-1", repo_root=Path("."))
+    _ml_iter.demo_verdict = "SKIPPED"
+    _ml_iter.demo_reason = _ml_reason
+    _ml_html = _render_watch_it_work(_ml_iter)
+    if "Likely cause" not in _ml_html or "fanout-frontend-8835.log" not in _ml_html:
+        failures.append("_render_watch_it_work: multi-line reason (hint/log tail) not surfaced")
 
     # A SKIPPED demo must surface its recorded **Reason:** verbatim in the
     # "Watch it work" section — not the ambiguous "backend-only work or the app

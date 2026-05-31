@@ -433,20 +433,28 @@ _qa_dep_hint() {
 # a generic timeout.
 #
 # Usage: _start_service_with_retries <role> <health_url> <start_cmd> <log_path> \
-#            <per_attempt_timeout> <max_attempts> <tail_var> [pre_start_hook]
-# Returns 0 as soon as the URL answers 2xx/3xx; 1 if every attempt fails.
+#            <per_attempt_timeout> <max_attempts> <tail_var> [pre_start_hook] [ready_re]
+# Returns 0 as soon as the URL answers a status matching <ready_re> (default
+# ^[23] = 2xx/3xx); 1 if every attempt fails. Callers that only need "the server
+# is reachable" (not "/health returns 200") pass a permissive ready_re such as
+# '^[1-5][0-9][0-9]$' so a 404/405 still counts as up.
 # Idempotent: an already-healthy service returns 0 immediately with NO spawn,
 # which keeps it cheap and safe as the quota-retry pre-hook (called repeatedly).
 _start_service_with_retries() {
   local role="$1" health_url="$2" start_cmd="$3" log_path="$4"
   local per_attempt="$5" max_attempts="$6" tail_var="$7" pre_hook="${8:-}"
+  # Codes that count as "ready". Default = 2xx/3xx. A permissive regex like
+  # '^[1-5][0-9][0-9]$' (any real HTTP status, but NOT curl's 000 = connection
+  # failure) lets a 404 on /health read as "server up" for projects that don't
+  # serve a health route at the root.
+  local ready_re="${9:-^[23]}"
 
   # Nothing to start with — leave it to upstream handling (callers tolerate this).
   [[ -z "$start_cmd" || -z "$health_url" ]] && return 0
 
   local code
   code=$(curl -s -o /dev/null -w "%{http_code}" "$health_url" 2>/dev/null || true)
-  if [[ "$code" =~ ^[23] ]]; then
+  if [[ "$code" =~ $ready_re ]]; then
     return 0   # already healthy — idempotent fast path, no spawn
   fi
 
@@ -477,7 +485,7 @@ _start_service_with_retries() {
     waited=0
     while [[ $waited -lt $per_attempt ]]; do
       code=$(curl -s -o /dev/null -w "%{http_code}" "$health_url" 2>/dev/null || true)
-      if [[ "$code" =~ ^[23] ]]; then
+      if [[ "$code" =~ $ready_re ]]; then
         echo "[ensure_services_running] $role is ready (attempt ${attempt}, ${waited}s)." >&2
         return 0
       fi
@@ -537,9 +545,13 @@ ensure_services_running() {
   # Backend: 2 attempts × 45s = the same 90s ceiling as the previous single shot,
   # but now re-SPAWNS on failure and reclaims a stale/drifted uvicorn by cwd.
   if [[ -n "${QA_BACKEND_HEALTH_URL:-}" && -n "${QA_BACKEND_START_CMD:-}" ]]; then
+    # Backend ready_re is permissive: a 404/405 on /health still proves uvicorn is
+    # listening and routing. Projects that namespace routes (e.g. /api/health) would
+    # otherwise be wrongly judged DOWN and torn down on every attempt. QA_BACKEND_UP
+    # is advisory only (no verdict gates on it), so "reachable" is the right bar.
     if _start_service_with_retries "backend" \
          "$QA_BACKEND_HEALTH_URL" "$QA_BACKEND_START_CMD" "${QA_BACKEND_LOG:-/dev/null}" \
-         45 2 QA_BACKEND_LOG_TAIL "kill_stale_backend_server"; then
+         45 2 QA_BACKEND_LOG_TAIL "kill_stale_backend_server" '^[1-5][0-9][0-9]$'; then
       export QA_BACKEND_UP="yes"
     else
       export QA_BACKEND_UP="no"
