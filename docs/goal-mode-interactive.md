@@ -50,7 +50,8 @@ then writes the result back. The pump protocol lives in
 |---|---|
 | `/goal [session-id] [flags]` | Start (or create) a session and run **until the goal is achieved, blocked, halted, or paused by the existing rules**. No new caps — inherits the engine's `--max-iter 30` safety cap (override with e.g. `/goal my-app --max-iter 50`). |
 | `/goal-status [session-id]` | Read-only: current iteration, last verdict, pause/halt state, and whether a dispatch is in flight. Never launches the engine, never writes. |
-| `/goal-resume [session-id] [flags]` | Resume a paused/halted session (blueprint approval, GitHub auth, quota reset, or a closed session). Resuming a blueprint pause counts as approval; a `REGRESSION_HALT` needs `--acknowledge-regression`. |
+| `/goal-resume [session-id] [flags]` | Resume a paused/halted session (blueprint approval, GitHub auth, quota reset, or a closed session). Resuming a blueprint pause counts as approval; a `REGRESSION_HALT` needs `--acknowledge-regression`. Cleanly stops a still-running prior engine first (no double-engine). |
+| `/goal-pause [session-id]` | Cleanly stop a running session's (detached) engine, leaving a resumable `ABORTED` checkpoint. Use after Ctrl+C to make changes, then `/goal-resume`. |
 | `/goal-step [session-id]` | Run exactly **one** more iteration, then stop. Reuses the engine's `--max-iter` cap (adds no new stop rule). |
 
 ### Worked example
@@ -83,6 +84,20 @@ programmatic path with an API key** (`run-goal.sh` without `--interactive`).
 - **Keep the session open.** The pump runs in your live session; closing it
   **pauses** the run. Resume with `/goal-resume`. Long runs rely on Claude
   Code's context auto-compaction.
+- **Pausing to make a change (Ctrl+C).** Ctrl+C stops the *pump*, but in
+  interactive mode the engine is a detached background process that the Ctrl+C
+  does not reach — so to pause promptly, after Ctrl+C run `/goal-pause <sid>`
+  (sends the engine a clean SIGTERM → it writes an `ABORTED` checkpoint in ~1s).
+  Make your changes (including edits to `docs/goal.md` or the code), then
+  `/goal-resume <sid>` — it re-runs the in-flight iteration, so your edits take
+  effect. Three outcomes are all resumable: a clean `/goal-pause`; a hard kill
+  (only the summary is skipped — `current_iter` is intact); and an untouched
+  orphan, which self-aborts within `CHAIN_PUMP_HEARTBEAT_TIMEOUT` (~30 min).
+- **Watch progress in the engine log.** The engine tees its full, timestamped,
+  headless-style log to `runs/goal-session-<sid>/engine.log` — `tail -f` it for
+  the real chain narrative (iteration banners, verdicts). The pump itself stays
+  quiet on purpose; it surfaces only launch/pause/final-status lines so its own
+  chatter does not bury the work or burn tokens.
 - **Quota is a pause, not auto-resume.** If you hit your interactive usage limit
   the run pauses; continue after it resets. (The headless path's
   sleep-until-reset does **not** apply in interactive mode.)
@@ -98,8 +113,9 @@ programmatic path with an API key** (`run-goal.sh` without `--interactive`).
   Per-agent tool/permission isolation and per-agent model **are** preserved (via
   the agent frontmatter).
 - **Resume is iteration-level.** A session that stops mid-iteration re-runs that
-  iteration's remaining agents on resume (the engine skips already-completed
-  steps where it can).
+  iteration from the decomposer on resume. `/goal-resume` first SIGTERMs any
+  still-running prior engine for the session (via `runs/goal-session-<sid>/engine.pid`)
+  so two engines never race.
 - **Claude Code only.** The interactive backend is Claude-only; Codex always uses
   the programmatic path.
 - **`--interactive` needs the pump.** Running `run-goal.sh --interactive` directly
@@ -117,10 +133,16 @@ programmatic path with an API key** (`run-goal.sh` without `--interactive`).
 - **`/goal` not found** — the commands are not on disk. Run
   `./scripts/automation/sync-cli-assets.sh --cli claude` and commit
   `.claude/commands/`, then restart the session.
-- **The run seems stuck** — run `/goal-status`. If it shows
-  `AWAITING_BLUEPRINT_APPROVAL` or `AWAITING_GITHUB_AUTH`, do the named step and
-  `/goal-resume`. If a `dispatch/.awaiting-pump` marker is present, the pump
-  stopped — `/goal-resume`.
+- **The run seems stuck** — run `/goal-status`. It now also checks the engine's
+  liveness (via `engine.pid` + `kill -0`): a **dead PID with `status: in_progress`**
+  means the engine was orphaned (e.g. a Ctrl+C that never reached it) — `/goal-resume`.
+  If it shows `AWAITING_BLUEPRINT_APPROVAL` or `AWAITING_GITHUB_AUTH`, do the named
+  step and `/goal-resume`. If a `dispatch/.awaiting-pump` marker is present, the
+  pump stopped — `/goal-resume`.
+- **I pressed Ctrl+C and the run kept going / I want to pause** — Ctrl+C stops the
+  pump but not the detached engine. Run `/goal-pause <sid>` to stop it cleanly,
+  make changes, then `/goal-resume <sid>`. (Prefer `/goal-pause` over killing the
+  background task from the UI, which may SIGKILL and skip the clean checkpoint.)
 - **Billing went to the Agent SDK credit, not the interactive allowance** — you
   likely launched the headless engine (`run-goal.sh` without `--interactive`), or
   `ANTHROPIC_API_KEY` / `CLAUDE_CODE_SUBAGENT_MODEL` is set. Use `/goal`, and
@@ -138,8 +160,13 @@ programmatic path with an API key** (`run-goal.sh` without `--interactive`).
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `CHAIN_PUMP_HEARTBEAT_TIMEOUT` | `1800` | Seconds before a blocked dispatch concludes the pump died. Raise if single agent calls legitimately run longer. |
+| `CHAIN_PUMP_HEARTBEAT_TIMEOUT` | `1800` | Seconds before a blocked dispatch concludes the pump died (also how long an untouched orphan engine waits before self-aborting). Raise if single agent calls legitimately run longer. |
 | `CHAIN_DISPATCH_POLL_SECONDS` | `1` | Channel poll interval. |
+
+The pump awaits work with a **single foreground** `goal-await-dispatch.sh
+--max-wait 500` call per cycle (no background job to poll), which is what keeps
+the session from "updating very frequently" while idle. The engine's full,
+timestamped chain log is always at `runs/goal-session-<sid>/engine.log`.
 
 > **Optional interactive tier-map (future-friendly):** if your plan lacks a
 > tier's model, cap it (for example strong→Sonnet) rather than letting dispatch

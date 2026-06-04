@@ -17,6 +17,8 @@ the engine halts itself with `BUDGET_EXHAUSTED`. Follow
    - existing session: `./scripts/automation/run-goal.sh --session-id <sid> --resume --interactive --max-iter <current_iter+1>`
    - brand-new session: same without `--resume` (this runs the baseline iteration,
      which then pauses for blueprint approval).
-4. **Run the pump loop** until `ENGINE_DONE`.
+4. **Run the pump loop** until `ENGINE_DONE`. Run it **QUIETLY** per the skill —
+   tool calls only, no narration; the full timestamped chain log is at
+   `runs/goal-session-<sid>/engine.log` (tell the user to `tail -f` it).
 5. Report the iteration's verdict and how to continue (`/goal` to run to the goal,
    or `/goal-step` again for one more iteration).

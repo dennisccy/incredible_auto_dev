@@ -70,6 +70,7 @@ Specialist subagent definitions live in `.claude/agents/`:
 | `coherence-auditor` | `.claude/agents/coherence-auditor.md` | Goal mode: audits each iteration's diff against the session blueprint (information architecture + data contract); hard-fails only on objective drift (a contract value recomputed/served via a new path, or a feature with no nav path / duplicate home). Runs after dispatch, before the goal-evaluator |
 | `iteration-summarizer` | `.claude/agents/iteration-summarizer.md` | Post-iteration synthesis: writes the plain-language + technical iteration summary and maintains the cumulative `project-story.md` in goal mode; emits the one-time `delivered.md` wrap on GOAL_ACHIEVED |
 | `demo-narrator` | `.claude/agents/demo-narrator.md` | Per-iteration product demonstrator: authors a machine-executable demo-script (steps + narration) from the iteration's verified flows — it does NOT drive a browser. The deterministic Playwright runner (`scripts/automation/lib/demo_runner.py`) executes that script for the recorded gallery (record) and the live, press-Enter-to-advance walkthrough (live / session). Showcase, not QA — never halts the pipeline |
+| `readme-maintainer` | `.claude/agents/readme-maintainer.md` | Goal mode: after each iteration, refreshes the project-root `README.md` so it reflects current capabilities + a "How to run" section. Edits only marker-delimited AUTO blocks (preserves hand-written prose); grounds run commands in `.claude/project-template.md`. Non-blocking |
 
 ---
 
@@ -89,6 +90,7 @@ Reusable instruction files that agents read during their workflow. Located in `.
 | `what-to-click-writer.md` | ui-test-designer | Write fast operator verification guides |
 | `architecture-doc-updater.md` | update-docs.sh | Update framework or project architecture docs on drift |
 | `coherence-audit.md` | coherence-auditor | Audit an iteration's diff for information-architecture + data-contract drift against the blueprint (goal mode) |
+| `readme-maintenance.md` | readme-maintainer | Marker-scoped method for refreshing a project's `README.md` (current capabilities + How-to-run) without clobbering human-written content |
 
 ---
 
@@ -109,7 +111,8 @@ Reusable instruction files that agents read during their workflow. Located in `.
 # Goal mode from INSIDE an interactive Claude Code session — run `claude`, then type one of:
 #   /goal [session-id]          # run until goal/halt, as interactive subagents (see docs/goal-mode-interactive.md)
 #   /goal-status [session-id]   # read-only status
-#   /goal-resume [session-id]   # resume a paused/halted session
+#   /goal-resume [session-id]   # resume a paused/halted session (stops a stale engine first)
+#   /goal-pause [session-id]    # after Ctrl+C, cleanly stop the engine (resumable); then edit + /goal-resume
 #   /goal-step [session-id]     # run exactly one iteration, then stop
 
 # Sync per-CLI asset trees (.claude/ and .codex/) from neutral source — runs

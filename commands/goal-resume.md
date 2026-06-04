@@ -15,9 +15,14 @@ Resume an existing goal-mode session as the **pump**. Follow
 3. **Launch the engine** in the background with `--resume` and capture its PID:
    `./scripts/automation/run-goal.sh --session-id <sid> --resume --interactive <passthrough flags>`
    (run-goal.sh clears stale dispatch files on start; resuming from a blueprint
-   pause counts as approval of `state/blueprint.md`.)
+   pause counts as approval of `state/blueprint.md`. If a prior engine for this
+   session is still running — e.g. you Ctrl+C'd the pump but the detached engine
+   kept going — run-goal.sh stops it cleanly first, so it is safe to just resume.)
 4. **Run the pump loop** until `ENGINE_DONE`, then read
-   `runs/goal-session-<sid>/session.json` and report the final `status`.
+   `runs/goal-session-<sid>/session.json` and report the final `status`. Run the
+   loop **QUIETLY** per the skill — tool calls only, no narration; the full
+   timestamped chain log is at `runs/goal-session-<sid>/engine.log` (tell the user
+   to `tail -f` it).
 
 Like `/goal`, this runs the work as interactive subagents in this session. Keep
 the session open while it runs.

@@ -16,10 +16,16 @@ First read `.claude/skills/goal-interactive-dispatch.md` and follow it exactly.
    capture its PID:
    `./scripts/automation/run-goal.sh --session-id <sid> --interactive <passthrough flags>`
 3. **Run the pump loop** from the skill: await requests with
-   `scripts/automation/goal-await-dispatch.sh`, dispatch each returned request as
-   a subagent (`subagent_type` = the request's `agent`, `prompt` passed verbatim,
-   **no model override**), write each result file, and repeat until `ENGINE_DONE`.
-   Dispatch concurrently-ready requests together in one message.
+   `scripts/automation/goal-await-dispatch.sh` (foreground, `--max-wait 500`),
+   dispatch each returned request as a subagent (`subagent_type` = the request's
+   `agent`, `prompt` passed verbatim, **no model override**), write each result
+   file, and repeat until `ENGINE_DONE`. Dispatch concurrently-ready requests
+   together in one message. Run the loop **QUIETLY**: reply with tool calls only —
+   no narration of await/dispatch/result steps and no echoing of prompts or
+   subagent text. Surface prose only at launch (the engine-log pointer), at
+   pauses, and in the final status block. The full chain narrative is in the
+   timestamped `runs/goal-session-<sid>/engine.log` (tell the user to `tail -f`
+   it); you do not read it.
 4. **On exit**, read `runs/goal-session-<sid>/session.json` and report the final
    `status` and the next step.
 

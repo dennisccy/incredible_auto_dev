@@ -45,6 +45,12 @@ if [[ "${1:-}" == "--self-test" ]]; then
   out=$("$0" --dispatch-dir "$t" --engine-pid "$deadpid" --poll 1 2>/dev/null || true)
   if [[ "$out" == "ENGINE_DONE" ]]; then echo "  PASS await: skips already-answered request"; else echo "  FAIL await: skips answered (got '$out')"; fails=1; fi
 
+  # Scenario 4: live engine, no UNANSWERED request (the one from scenario 2 now
+  # has a .res), and --max-wait elapses → WAITING. Also proves --max-wait is a
+  # recognized arg (not "Unknown argument").
+  out=$("$0" --dispatch-dir "$t" --engine-pid "$$" --poll 1 --max-wait 1 2>/dev/null || true)
+  if [[ "$out" == "WAITING" ]]; then echo "  PASS await: --max-wait elapsed → WAITING"; else echo "  FAIL await: max-wait (got '$out')"; fails=1; fi
+
   # Heartbeat file is created.
   if [[ -f "$t/.pump-alive" ]]; then echo "  PASS await: touches pump heartbeat"; else echo "  FAIL await: no heartbeat"; fails=1; fi
 
@@ -54,12 +60,13 @@ if [[ "${1:-}" == "--self-test" ]]; then
 fi
 
 # ── Normal mode ───────────────────────────────────────────────────────────────
-DIR=""; PID=""; POLL=1
+DIR=""; PID=""; POLL=1; MAXWAIT=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --dispatch-dir) DIR="$2"; shift 2 ;;
     --engine-pid)   PID="$2"; shift 2 ;;
     --poll)         POLL="$2"; shift 2 ;;
+    --max-wait)     MAXWAIT="$2"; shift 2 ;;
     *) echo "Unknown argument: $1" >&2; exit 2 ;;
   esac
 done
@@ -75,6 +82,10 @@ _list_pending() {
   done
 }
 
+# Branch priority inside the loop: pending > ENGINE_DONE > WAITING > sleep, so a
+# request that appears at the last moment is always returned, never masked by the
+# bounded-wait sentinel.
+START_EPOCH=$(date +%s)
 while true; do
   touch "$DIR/.pump-alive" 2>/dev/null || true
   pending="$(_list_pending)"
@@ -87,6 +98,14 @@ while true; do
     pending="$(_list_pending)"
     if [[ -n "$pending" ]]; then printf '%s\n' "$pending"; exit 0; fi
     echo "ENGINE_DONE"
+    exit 0
+  fi
+  # Bounded foreground wait: when --max-wait is set and elapses with the engine
+  # still alive and nothing pending, hand control back to the pump so it can
+  # re-call deterministically (no background job for the pump to poll). 0 = block
+  # forever (the original behavior).
+  if [[ "$MAXWAIT" -gt 0 ]] && (( $(date +%s) - START_EPOCH >= MAXWAIT )); then
+    echo "WAITING"
     exit 0
   fi
   sleep "$POLL"

@@ -1,0 +1,17 @@
+name: readme-maintainer
+description: Project README maintainer (goal mode). After each iteration, refreshes the project-root README.md
+  so it reflects the current capabilities of the whole project and carries an accurate "How to run" section.
+  Edits only marker-delimited AUTO blocks so hand-written prose is preserved, and grounds every install/run/test
+  command in .claude/project-template.md. Non-blocking showcase/maintenance step — never gates the pipeline.
+model_tier: standard
+tools_allowed:
+- Read
+- Write
+- Edit
+- Glob
+- Grep
+version: 1.0.0
+last_updated: '2026-06-04'
+body: body.md
+claude:
+  model_override: claude-sonnet-4-6

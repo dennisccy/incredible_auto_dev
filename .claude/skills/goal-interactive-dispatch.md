@@ -14,6 +14,23 @@ You are the pump when a `/goal*` command launched `run-goal.sh --interactive`.
 You stay in the loop below until the engine process exits. Keep the session open
 for the whole run; if it closes, the run pauses and `/goal-resume` continues it.
 
+## Pump output discipline (run quietly)
+
+You are plumbing, not a narrator. During the loop, reply with **tool calls only** —
+do NOT emit chat for: awaiting requests, which agent you are dispatching, prompt
+contents, a subagent's returned text, or writing `.res` files. Dispatch silently
+and write results silently.
+
+Emit prose ONLY at these moments:
+- once at launch: the engine-log pointer line (see Launch step 4),
+- when the engine exits: the final status block (see "When the engine exits"),
+- at a pause that needs the user (blueprint approval, GitHub auth, regression).
+
+Never echo or summarize a subagent's returned message — its real output is already
+in the artifact files, and the full chain narrative is in the timestamped engine
+log. Repeating it just burns the user's tokens. On a `WAITING` result, silently
+re-call the await helper.
+
 ## Launch
 
 1. Resolve the session id from the command argument, or generate one and state it.
@@ -21,16 +38,29 @@ for the whole run; if it closes, the run pauses and `/goal-resume` continues it.
    its process id:
    `./scripts/automation/run-goal.sh --session-id <sid> --interactive <passthrough flags>`
    The engine creates and exports `CHAIN_DISPATCH_DIR=runs/goal-session-<sid>/dispatch`.
+   The engine also tees its full, timestamped, headless-style log to
+   `runs/goal-session-<sid>/engine.log` — you never read it; it is for the user.
 3. Record the dispatch dir path and the engine pid for the loop.
+4. Print exactly one pointer line for the user, then go quiet:
+   `Engine running. Full chain log (headless-style, timestamped): tail -f runs/goal-session-<sid>/engine.log`
 
 ## The pump loop
 
-Repeat until the engine exits:
+Repeat until the engine exits. Run it QUIETLY per "Pump output discipline" — tool
+calls only, no narration.
 
-1. Run `scripts/automation/goal-await-dispatch.sh --dispatch-dir <dir> --engine-pid <pid>`
-   (in the background). It blocks until one or more unanswered requests are ready
-   and prints their file paths, or prints `ENGINE_DONE` once the engine has
-   exited. It refreshes the pump heartbeat on each poll.
+1. Run, in the **foreground** (one blocking Bash call, NOT a background job; set a
+   Bash command timeout of ~540000 ms):
+   `scripts/automation/goal-await-dispatch.sh --dispatch-dir <dir> --engine-pid <pid> --max-wait 500`
+   It blocks until there is work, then prints exactly one of:
+   - one or more request file paths → go to step 2;
+   - `WAITING` → no work yet, engine still alive → silently re-run this same call
+     (do not narrate, do not poll anything else);
+   - `ENGINE_DONE` → the engine exited → leave the loop.
+   It refreshes the pump heartbeat every second while it blocks, so a ≤500 s wait
+   never trips `CHAIN_PUMP_HEARTBEAT_TIMEOUT`. `--max-wait` hands control back
+   periodically so you make ONE clean blocking call per cycle instead of polling a
+   background job (which is what caused the "updates very frequently" churn).
 2. For each returned request path, read the request file. It is JSON with the
    fields `agent`, `prompt`, `cwd`, and `res_path`.
 3. Dispatch every returned request together: issue one Agent tool call per
@@ -40,16 +70,16 @@ Repeat until the engine exits:
 4. After each subagent returns, write its exit code (0 on success, a non-zero
    number if it clearly failed) to that request's `res_path`, which equals the
    request path with `.ready` replaced by `.res`.
-5. Loop again. When `goal-await-dispatch.sh` prints `ENGINE_DONE`, leave the loop.
+5. Loop back to step 1, silently. When step 1 prints `ENGINE_DONE`, leave the loop.
 
 ## Mapping a request to a subagent
 
 The `agent` field is one of the goal-mode agent names, which match the
 `.claude/agents/<name>.md` filenames exactly: developer, reviewer, qa,
 browser-qa-agent, goal-decomposer, coherence-auditor, goal-evaluator,
-iteration-summarizer, orchestrator, auditor, ui-impact-analyst, ui-test-designer,
-ux-regression-reviewer, phase-closure-auditor, demo-narrator, release-manager,
-product-manager. Use that name as `subagent_type`.
+iteration-summarizer, readme-maintainer, orchestrator, auditor, ui-impact-analyst,
+ui-test-designer, ux-regression-reviewer, phase-closure-auditor, demo-narrator,
+release-manager, product-manager. Use that name as `subagent_type`.
 
 Fallback: if `agent` is `unattributed` or has no matching agent file, read the
 prompt — it names its own instructions file as `.claude/agents/<name>.md`; use

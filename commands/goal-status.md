@@ -1,7 +1,7 @@
 ---
 description: Show the status of a goal-mode session (current iteration, last verdict, pause/halt state, dispatch activity) — read-only, never launches the engine.
 argument-hint: "[session-id]"
-allowed-tools: Bash(jq:*), Bash(cat:*), Bash(ls:*), Bash(find:*), Read
+allowed-tools: Bash(jq:*), Bash(cat:*), Bash(ls:*), Bash(find:*), Bash(kill:*), Read
 ---
 Report the status of a goal-mode session. This is **read-only**: do NOT launch
 the engine, dispatch agents, or write anything.
@@ -15,6 +15,12 @@ the engine, dispatch agents, or write anything.
 4. If `runs/goal-session-<sid>/dispatch/` exists, note whether a dispatch is in
    flight (a `req.*.ready` with no matching `.res`), which agent it is for, and
    whether an `.awaiting-pump` marker is present.
-5. Summarize plainly whether the session is **running**, **paused** (and exactly
-   how to resume — e.g. review the blueprint then `/goal-resume`), or **finished**
-   (and the final verdict).
+5. **Engine liveness:** if `runs/goal-session-<sid>/engine.pid` exists, read the
+   PID and test it with `kill -0 <pid>`. A live PID means the engine is genuinely
+   running; a dead PID with `status: in_progress` means the engine was
+   interrupted/orphaned (e.g. a Ctrl+C that never reached the detached engine) —
+   say so and point to `/goal-resume <sid>`. Also point the user at the full
+   timestamped log: `tail -f runs/goal-session-<sid>/engine.log`.
+6. Summarize plainly whether the session is **running**, **paused** (and exactly
+   how to resume — e.g. review the blueprint then `/goal-resume`), **orphaned**
+   (dead engine PID — `/goal-resume`), or **finished** (and the final verdict).

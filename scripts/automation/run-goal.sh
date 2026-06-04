@@ -123,6 +123,7 @@ fi
 
 GOAL_SESSION_DIR_LOCAL="$REPO_ROOT/runs/goal-session-${SESSION_ID}"
 SESSION_JSON="$GOAL_SESSION_DIR_LOCAL/session.json"
+ENGINE_PID_FILE="$GOAL_SESSION_DIR_LOCAL/engine.pid"
 
 # Resume: pin CHAIN_CLI from session.json unless the user explicitly overrode it.
 # A mismatch errors out unless --force-cli is given.
@@ -143,6 +144,27 @@ if [[ "$RESUME" == "true" && -f "$SESSION_JSON" ]]; then
   fi
 fi
 
+# Resume self-heal: if a previous engine for this session is still running (e.g.
+# the user pressed Ctrl+C in the interactive pump, which never reaches the
+# detached engine), stop it cleanly before starting a new one — otherwise two
+# engines would race on the same session. SIGTERM fires the old engine's on_abort
+# (clean ABORTED checkpoint); SIGKILL only if it ignores us. The /proc cmdline
+# check guards against a stale pidfile whose PID was reused by another process.
+if [[ "$RESUME" == "true" && -f "$ENGINE_PID_FILE" ]]; then
+  _prev_pid="$(cat "$ENGINE_PID_FILE" 2>/dev/null || echo "")"
+  if [[ -n "$_prev_pid" ]] && kill -0 "$_prev_pid" 2>/dev/null \
+     && grep -qa "run-goal" "/proc/$_prev_pid/cmdline" 2>/dev/null; then
+    echo "[run-goal] Resume: a prior engine (pid $_prev_pid) is still running — stopping it cleanly first." >&2
+    kill -TERM "$_prev_pid" 2>/dev/null || true
+    for _ in $(seq 1 20); do kill -0 "$_prev_pid" 2>/dev/null || break; sleep 0.5; done
+    if kill -0 "$_prev_pid" 2>/dev/null; then
+      echo "[run-goal] Prior engine ignored SIGTERM; sending SIGKILL." >&2
+      kill -KILL "$_prev_pid" 2>/dev/null || true
+    fi
+  fi
+  rm -f "$ENGINE_PID_FILE" 2>/dev/null || true
+fi
+
 # ── Resolve the agent dispatch backend (interactive vs headless) ───────────
 # Pinned per-session like --cli: on resume, adopt the persisted backend unless
 # --interactive is re-asserted on the command line.
@@ -156,6 +178,20 @@ if [[ "$INTERACTIVE" == "true" ]]; then
   AGENT_BACKEND="interactive"
 else
   AGENT_BACKEND="headless"
+fi
+
+# Interactive: tee the engine's full (headless-style) stdout+stderr to a session
+# log, timestamped per line, so the user can watch the real chain narrative
+# (`tail -f runs/goal-session-<sid>/engine.log`) without it costing pump-context
+# tokens — the pump never reads this file. Headless's live terminal stream is
+# left untouched. python3 is already a hard dependency; -u keeps it line-flushed.
+if [[ "$INTERACTIVE" == "true" ]]; then
+  ENGINE_LOG="$GOAL_SESSION_DIR_LOCAL/engine.log"
+  mkdir -p "$GOAL_SESSION_DIR_LOCAL"
+  exec > >(python3 -u -c 'import sys, datetime
+for ln in sys.stdin:
+    sys.stdout.write(datetime.datetime.now().strftime("%H:%M:%S ") + ln)' \
+          | tee -a "$ENGINE_LOG") 2>&1
 fi
 
 require_cli
@@ -227,6 +263,44 @@ ESCALATE, REGRESSION, STALLED, PASS, FAIL, IN-PROGRESS.
 
 When finished, STOP." \
     || echo "[run-goal] Warning: iteration-summarizer call failed (non-blocking)"
+}
+
+# Maintain the PROJECT's README.md so it always reflects current capabilities and
+# carries a How-to-run section. Non-blocking — failures only log. Runs every
+# iteration in goal mode (headless or interactive). The agent edits only
+# marker-delimited AUTO blocks so any hand-written prose is preserved, and grounds
+# all run/install/test commands in .claude/project-template.md.
+_run_readme_maintainer() {
+  local iter_name="$1"
+  local agent_file="$REPO_ROOT/.claude/agents/readme-maintainer.md"
+  [[ -f "$agent_file" ]] || { echo "[run-goal] Warning: readme-maintainer agent missing, skipping README update"; return 0; }
+
+  cd "$REPO_ROOT"
+  export CHAIN_CURRENT_AGENT=readme-maintainer
+  claude_with_quota_retry -p "You are the readme-maintainer agent.
+
+Phase id: $iter_name
+Target file: README.md (the project-root README of THIS repository)
+Agent instructions: .claude/agents/readme-maintainer.md  <-- read this first
+Skill: .claude/skills/readme-maintenance.md  <-- the marker-scoped editing method
+Run-command source of truth: .claude/project-template.md  <-- Stack, Test commands, Service start commands, URLs
+README skeleton (use only if README.md is absent): templates/project-readme.md
+Capabilities inputs (read what exists, silently skip what doesn't):
+- reports/phase-${iter_name}-user-visible-changes.md
+- reports/phase-${iter_name}-implementation-summary.md
+- reports/phase-${iter_name}-iteration-summary.md
+(CLAUDE.md is already in your system prompt -- do not Read it again.)
+
+Apply the TOKEN AND QUESTIONING POLICY from .claude/core.md strictly.
+
+Refresh README.md so it reflects the CURRENT project and includes a 'How to run'
+section. Edit ONLY the marker-delimited AUTO blocks described in your skill;
+never delete human-written prose outside them. Ground every install/run/test
+command in .claude/project-template.md — if a needed field is still a template
+placeholder (<e.g., ...>), write a 'TODO:' line rather than inventing a command.
+
+When finished, STOP." \
+    || echo "[run-goal] Warning: readme-maintainer call failed (non-blocking)"
 }
 
 # Generate the one-time "delivered" wrap when goal-evaluator returns
@@ -786,6 +860,13 @@ EOF
   [[ -f "$_idx_html" ]] && echo "[run-goal] Session HTML: file://$_idx_html"
 }
 
+# Record this engine's PID so /goal-pause and a resuming run can find and stop it
+# across separate command invocations (the interactive pump's in-memory PID is
+# not available to a later /goal-pause). Cleaned up on any exit, including the
+# on_abort path below (which exits 130 → the EXIT trap fires).
+echo "$$" > "$ENGINE_PID_FILE" 2>/dev/null || true
+trap 'rm -f "$ENGINE_PID_FILE" 2>/dev/null || true' EXIT
+
 # Trap: on SIGINT/SIGTERM, write ABORTED summary
 on_abort() {
   echo "[run-goal] Aborted by user signal. Writing summary." >&2
@@ -1123,6 +1204,8 @@ STOP." || _eval_rc=$?
   # Non-blocking; the session index is also refreshed below so the
   # feature-organized user-manual view stays current mid-session.
   _run_iteration_summarizer "$ITER_NAME"
+  # Keep the project README current with what now exists + how to run it.
+  _run_readme_maintainer "$ITER_NAME"
   _render_iter_html "$ITER_NAME"
   _render_session_index_html
   _iter_md="$REPO_ROOT/reports/phase-${ITER_NAME}-iteration-summary.md"
