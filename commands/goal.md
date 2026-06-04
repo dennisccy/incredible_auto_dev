@@ -1,0 +1,30 @@
+---
+description: Run Goal Mode until the goal is achieved or an existing rule halts/pauses it, inside this Claude Code session (interactive dispatch — bills to your interactive plan allowance).
+argument-hint: "[session-id] [extra run-goal.sh flags]"
+allowed-tools: Bash(./scripts/automation/run-goal.sh:*), Bash(scripts/automation/goal-await-dispatch.sh:*), Bash(jq:*), Bash(cat:*), Bash(ls:*), Read, Task
+---
+You are the **pump** for goal mode. Run the EXISTING goal-mode engine until the
+goal is achieved, blocked, halted, or paused by its existing rules. Do NOT add
+new stop conditions or iteration limits — "until goal" is the intended default.
+
+First read `.claude/skills/goal-interactive-dispatch.md` and follow it exactly.
+
+1. **Session id:** parse `$ARGUMENTS`. The first token is the session id; if there
+   is no first token, generate one like `interactive-<YYYY-MM-DD>-<short>` and
+   tell the user what you chose. Any remaining tokens are passthrough flags.
+2. **Launch the engine** in the background (Bash with run_in_background) and
+   capture its PID:
+   `./scripts/automation/run-goal.sh --session-id <sid> --interactive <passthrough flags>`
+3. **Run the pump loop** from the skill: await requests with
+   `scripts/automation/goal-await-dispatch.sh`, dispatch each returned request as
+   a subagent (`subagent_type` = the request's `agent`, `prompt` passed verbatim,
+   **no model override**), write each result file, and repeat until `ENGINE_DONE`.
+   Dispatch concurrently-ready requests together in one message.
+4. **On exit**, read `runs/goal-session-<sid>/session.json` and report the final
+   `status` and the next step.
+
+This runs the work as interactive subagents in THIS session (billed to your
+interactive plan allowance), not as headless `claude -p`. Keep the session open
+while it runs; if it stops, use `/goal-resume`. Intended for individual
+development use — shared/team production automation should use the programmatic
+path (`run-goal.sh` without `--interactive`) with an API key.

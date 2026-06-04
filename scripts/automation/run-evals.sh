@@ -78,6 +78,18 @@ else
   _fail "self-test: telemetry.sh test"
 fi
 
+# Interactive dispatch backend: pump helper + channel round-trip self-tests.
+if bash scripts/automation/goal-await-dispatch.sh --self-test >/dev/null 2>&1; then
+  _pass "self-test: goal-await-dispatch.sh"
+else
+  _fail "self-test: goal-await-dispatch.sh"
+fi
+if bash scripts/automation/lib/interactive-dispatch.sh --self-test >/dev/null 2>&1; then
+  _pass "self-test: interactive-dispatch.sh"
+else
+  _fail "self-test: interactive-dispatch.sh"
+fi
+
 # ── 3. Agent frontmatter validation ──────────────────────────────────────────
 _log "3. agent frontmatter validation"
 if python3 scripts/automation/lib/validate_agents.py >/dev/null 2>&1; then

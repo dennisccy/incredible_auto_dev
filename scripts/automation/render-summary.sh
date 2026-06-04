@@ -105,6 +105,7 @@ ESCALATE, REGRESSION, STALLED, PASS, FAIL, IN-PROGRESS.
 
 When finished, STOP. Do not print the summary to chat."
 
+  export CHAIN_CURRENT_AGENT=iteration-summarizer   # interactive dispatch backend maps this call to a subagent
   claude_with_quota_retry -p "$PROMPT" \
     || echo "[render-summary] Warning: iteration-summarizer call failed (non-blocking; HTML will still render)."
 

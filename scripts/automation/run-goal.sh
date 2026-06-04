@@ -76,6 +76,11 @@ ACK_REGRESSION=false
 # Skip the one-time blueprint-approval pause (and any structural re-approval
 # pause). Per-run flag; pass it on each invocation/resume if you want it.
 AUTO_APPROVE_BLUEPRINT=false
+# Interactive dispatch backend: run each agent as a subagent in the foreground
+# Claude Code session (the "pump") via a file channel instead of headless
+# `claude -p`, so the work bills to the interactive plan allowance. Pinned
+# per-session (like --cli). Off by default (headless / Agent SDK path).
+INTERACTIVE=false
 # Per-iter push is ON by default for new sessions. Pass --no-push-per-iter to
 # opt out. On resume, the persisted session.json value wins unless overridden
 # by an explicit CLI flag (--push-per-iter or --no-push-per-iter).
@@ -99,6 +104,7 @@ while [[ $# -gt 0 ]]; do
     --auto-release)            AUTO_RELEASE=true; shift ;;
     --acknowledge-regression)  ACK_REGRESSION=true; shift ;;
     --auto-approve-blueprint)  AUTO_APPROVE_BLUEPRINT=true; shift ;;
+    --interactive)             INTERACTIVE=true; shift ;;
     --push-per-iter)           PUSH_PER_ITER=true;  PUSH_FLAG_USER="yes"; shift ;;
     --no-push-per-iter)        PUSH_PER_ITER=false; PUSH_FLAG_USER="no";  shift ;;
     --push-branch)             PUSH_BRANCH="$2"; shift 2 ;;
@@ -135,6 +141,21 @@ if [[ "$RESUME" == "true" && -f "$SESSION_JSON" ]]; then
       export CHAIN_CLI="$PERSISTED_CLI"
     fi
   fi
+fi
+
+# ── Resolve the agent dispatch backend (interactive vs headless) ───────────
+# Pinned per-session like --cli: on resume, adopt the persisted backend unless
+# --interactive is re-asserted on the command line.
+if [[ "$RESUME" == "true" && -f "$SESSION_JSON" && "$INTERACTIVE" != "true" ]]; then
+  PERSISTED_BACKEND=$(python3 -c "import json;print(json.load(open('$SESSION_JSON')).get('agent_backend',''))" 2>/dev/null || echo "")
+  if [[ "$PERSISTED_BACKEND" == "interactive" ]]; then
+    INTERACTIVE=true
+  fi
+fi
+if [[ "$INTERACTIVE" == "true" ]]; then
+  AGENT_BACKEND="interactive"
+else
+  AGENT_BACKEND="headless"
 fi
 
 require_cli
@@ -488,6 +509,7 @@ data = {
   "started_at": datetime.datetime.now(datetime.UTC).isoformat().replace('+00:00', 'Z'),
   "current_iter": 0,
   "cli": "${CHAIN_CLI:-claude}",
+  "agent_backend": "$AGENT_BACKEND",
   "halt_config": {
     "max_iterations": $MAX_ITER,
     "stall_window": $STALL_WINDOW,
@@ -533,6 +555,7 @@ if $( [[ "$AUTO_RELEASE" == "true" ]] && echo "True" || echo "False" ):
   d["auto_release"] = True
 d["push_per_iter"] = $( [[ "$PUSH_PER_ITER" == "true" ]] && echo "True" || echo "False" )
 d["push_branch"] = "$PUSH_BRANCH"
+d["agent_backend"] = "$AGENT_BACKEND"
 if "$RUN_MODE" == "resume" and d.get("status") in ("REGRESSION_HALT", "AWAITING_BLUEPRINT_APPROVAL"):
   d["status"] = "in_progress"
 json.dump(d, open("$SESSION_JSON","w"), indent=2); open("$SESSION_JSON","a").write("\n")
@@ -550,6 +573,20 @@ fi
 # ── Export shared env for invoked agents ──────────────────────────────────
 export GOAL_SESSION_ID="$SESSION_ID"
 export GOAL_SESSION_DIR="$GOAL_SESSION_DIR_LOCAL"
+
+# Interactive dispatch backend: export the backend selector + the file-channel
+# directory so every nested script (run-phase.sh, goal-iter-lean.sh, *-phase.sh)
+# routes its agent calls through _interactive_invoke (see lib/quota-retry.sh and
+# lib/interactive-dispatch.sh). Clear any stale channel files from a prior,
+# interrupted run so the pump and engine start from a clean channel.
+if [[ "$INTERACTIVE" == "true" ]]; then
+  export CHAIN_AGENT_BACKEND="interactive"
+  export CHAIN_DISPATCH_DIR="$GOAL_SESSION_DIR_LOCAL/dispatch"
+  mkdir -p "$CHAIN_DISPATCH_DIR"
+  rm -f "$CHAIN_DISPATCH_DIR"/req.* "$CHAIN_DISPATCH_DIR"/*.res "$CHAIN_DISPATCH_DIR/.awaiting-pump" 2>/dev/null || true
+  echo "[run-goal] Interactive dispatch backend ON — agents run as subagents in the foreground session (the pump)."
+  echo "[run-goal]   Dispatch channel: $CHAIN_DISPATCH_DIR"
+fi
 
 # Auto-enable replay/time-travel trace capture unless the user opts out.
 # Each successful claude invocation appends a record to <session>/trace/trace.jsonl

@@ -170,6 +170,12 @@ Iter spec: docs/phases/goal-<sid>-iter-<N>.md
 Iter eval: runs/goal-session-<sid>/iter-<N>/eval.md
 ```
 
+## Interactive dispatch backend
+
+By default each agent runs as a headless `claude -p` subprocess (the Agent SDK path). Passing `--interactive` to `run-goal.sh` (or `CHAIN_AGENT_BACKEND=interactive`) selects a third dispatch backend at the single seam in `lib/quota-retry.sh`: instead of spawning `claude -p`, `_interactive_invoke` (`lib/interactive-dispatch.sh`) writes the agent prompt to `runs/goal-session-<sid>/dispatch/req.*.ready` and blocks; a foreground Claude Code session — the "pump", driven by the `/goal` slash command plus `scripts/automation/goal-await-dispatch.sh` — dispatches that agent as a subagent (`subagent_type` = the agent name, prompt verbatim) and writes `req.*.res` back, which unblocks the engine. Request files are unique (`mktemp`), so the post-dev fanout's concurrent calls don't collide.
+
+The loop, halt conditions, resume, and state above are **unchanged** — only the leaf invocation differs — so both lean and full iterations work without per-pipeline changes. Per-agent **model** and **tool/permission isolation** are preserved because subagents read them from `.claude/agents/<name>.md` frontmatter (the model tier, and the now-materialized `disallowed_tools` deny list). A pump heartbeat (`.pump-alive`, timeout `CHAIN_PUMP_HEARTBEAT_TIMEOUT`) lets a blocked dispatch stop cleanly (leaving an `.awaiting-pump` marker) if the pump/session dies, rather than hang. The motivation is billing: subagents draw on the interactive plan allowance rather than the Agent SDK credit. Quota in this mode is a pause (the headless sleep-until-reset does not apply). User guide: [`../../docs/goal-mode-interactive.md`](../../docs/goal-mode-interactive.md); pump protocol: [`../skills/goal-interactive-dispatch.md`](../skills/goal-interactive-dispatch.md).
+
 ## Backward compatibility
 
 Phase mode is unchanged. The only modification to phase-mode code is the additive `--no-finalize` flag on `run-phase.sh` — when not passed (the default), every existing phase-mode invocation behaves identically.

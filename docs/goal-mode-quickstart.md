@@ -71,6 +71,8 @@ This will:
 
 You can leave it running unattended. The framework's existing quota auto-resume (`claude_with_quota_retry`) handles API limits transparently — when the quota resets, the iteration resumes from where it paused.
 
+**Run it interactively instead?** From a `claude` session, `/goal my-app` drives this same engine as interactive subagents — billed to your interactive plan allowance rather than the Agent SDK credit — with `/goal-status`, `/goal-resume`, and `/goal-step` alongside. Trade-offs (keep the session open; quota becomes a pause) and setup are in [`goal-mode-interactive.md`](goal-mode-interactive.md).
+
 ### 4. Inspect the result
 
 When the loop halts, read:

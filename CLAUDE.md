@@ -104,6 +104,13 @@ Reusable instruction files that agents read during their workflow. Located in `.
 ./scripts/automation/run-goal.sh --session-id my-app --cli codex
 ./scripts/automation/run-goal.sh --resume --session-id my-app   # resume (CLI pinned in session.json) — also how you approve the blueprint after the baseline pause
 ./scripts/automation/run-goal.sh --session-id my-app --auto-approve-blueprint   # skip the one-time blueprint review pause (fully hands-off)
+./scripts/automation/run-goal.sh --session-id my-app --interactive   # dispatch agents as subagents in an interactive Claude Code session (the "pump"), billed to the interactive plan allowance
+
+# Goal mode from INSIDE an interactive Claude Code session — run `claude`, then type one of:
+#   /goal [session-id]          # run until goal/halt, as interactive subagents (see docs/goal-mode-interactive.md)
+#   /goal-status [session-id]   # read-only status
+#   /goal-resume [session-id]   # resume a paused/halted session
+#   /goal-step [session-id]     # run exactly one iteration, then stop
 
 # Sync per-CLI asset trees (.claude/ and .codex/) from neutral source — runs
 # automatically on first phase/goal invocation; manual call only needed after editing

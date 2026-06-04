@@ -117,6 +117,14 @@ QUOTA_EXHAUSTED_EXIT_CODE=75
 _QUOTA_SENTINEL="/tmp/claude-quota-exhausted"
 _CODEX_QUOTA_SENTINEL="/tmp/codex-quota-exhausted"
 
+# Interactive dispatch backend (CHAIN_AGENT_BACKEND=interactive): instead of
+# spawning `claude -p`, hand each agent prompt to a foreground Claude Code
+# session ("the pump") over a file channel so the work runs as interactive
+# subagents. Sourced here so every caller of agent_with_quota_retry gets
+# _interactive_invoke. No-op for the claude/codex backends.
+_INTERACTIVE_DISPATCH_LIB="$(dirname "${BASH_SOURCE[0]}")/interactive-dispatch.sh"
+[[ -f "$_INTERACTIVE_DISPATCH_LIB" ]] && source "$_INTERACTIVE_DISPATCH_LIB"
+
 # Append a trace record to $CHAIN_TRACE_DIR/trace.jsonl and copy stdout into
 # $CHAIN_TRACE_DIR/<NNNN>-<agent>.log. No-op if CHAIN_TRACE_DIR is unset, the
 # directory does not exist, or is not writable. Always best-effort: failures
@@ -919,11 +927,15 @@ _codex_invoke() {
 
 agent_with_quota_retry() {
   local cli="${CHAIN_CLI:-claude}"
-  case "$cli" in
-    claude) _claude_invoke "$@" ;;
-    codex)  _codex_invoke  "$@" ;;
+  # CHAIN_AGENT_BACKEND overrides the CLI for dispatch only (assets/personas
+  # still come from CHAIN_CLI). Defaults to the CLI, so absence = today's behaviour.
+  local backend="${CHAIN_AGENT_BACKEND:-$cli}"
+  case "$backend" in
+    interactive) _interactive_invoke "$@" ;;
+    claude)      _claude_invoke "$@" ;;
+    codex)       _codex_invoke  "$@" ;;
     *)
-      echo "[quota-retry] Unknown CHAIN_CLI: '$cli' (expected: claude or codex)" >&2
+      echo "[quota-retry] Unknown agent backend: '$backend' (expected: interactive, claude, or codex; from CHAIN_AGENT_BACKEND or CHAIN_CLI)" >&2
       return 2
       ;;
   esac

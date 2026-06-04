@@ -88,6 +88,16 @@ Quota exhaustion is NOT a halt — the loop pauses and auto-resumes when the quo
 
 See [`docs/goal-mode-quickstart.md`](docs/goal-mode-quickstart.md) for the full guide.
 
+### Run Goal Mode inside Claude Code (interactive)
+
+Prefer to run it from an interactive Claude Code session, with the work billed to your **interactive plan allowance** instead of the headless Agent SDK credit? Start `claude`, then:
+
+```text
+/goal my-app
+```
+
+`/goal` runs the **same** engine until the goal is achieved or an existing rule halts/pauses it — same stop rules, resume, and quota handling — but dispatches each agent as a subagent in your live session. Companion commands: `/goal-status`, `/goal-resume`, `/goal-step`. It is for individual development use; shared/team production automation should use the programmatic `run-goal.sh` path with an API key. Full guide: [`docs/goal-mode-interactive.md`](docs/goal-mode-interactive.md).
+
 ## Pipeline (11 Steps)
 
 ```

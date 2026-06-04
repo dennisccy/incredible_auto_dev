@@ -6,6 +6,7 @@ Generates:
   .claude/settings.json        (permissions + hooks + passthrough plugins)
   .claude/skills/<name>.md     (mirrored from skills/)
   .claude/hooks/<name>.sh      (mirrored from hooks/)
+  .claude/commands/<name>.md   (slash commands, mirrored from commands/)
 
 Leaves alone:
   .claude/core.md, workflow.md, anti-patterns.md, project-template.md
@@ -25,10 +26,22 @@ sys.path.insert(0, str(_HERE.parents[2]))
 
 from adapters.lib import translate as T  # noqa: E402
 
+# Load the per-agent permission policy (the single source of truth for tool
+# denials) so we can MATERIALIZE each agent's disallowed_tools into frontmatter.
+# Headless `claude -p` applies these via --disallowedTools at runtime; subagent
+# dispatch (the interactive backend) instead reads them from the agent's
+# frontmatter, so writing them here keeps the two execution paths equivalent.
+import importlib.util as _ilu  # noqa: E402
+_AP_PATH = T.REPO / "scripts" / "automation" / "lib" / "agent_permissions.py"
+_ap_spec = _ilu.spec_from_file_location("agent_permissions", _AP_PATH)
+_agent_permissions = _ilu.module_from_spec(_ap_spec)
+_ap_spec.loader.exec_module(_agent_permissions)
+
 CLAUDE_DIR = T.REPO / ".claude"
 CLAUDE_AGENTS = CLAUDE_DIR / "agents"
 CLAUDE_SKILLS = CLAUDE_DIR / "skills"
 CLAUDE_HOOKS = CLAUDE_DIR / "hooks"
+CLAUDE_COMMANDS = CLAUDE_DIR / "commands"
 CLAUDE_SETTINGS = CLAUDE_DIR / "settings.json"
 
 
@@ -51,6 +64,21 @@ def _yaml_inline_list(items: list[str]) -> str:
     return "[" + ", ".join(rendered) + "]"
 
 
+def _disallowed_tools_for(spec: T.AgentSpec) -> list[str]:
+    """Full deny list for an agent: hard defaults (all agents) + the non-release
+    git/merge denials (unless this is the release agent) + any agent.yaml extras.
+    Mirrors agent_permissions.disallowed_for but reads the already-loaded spec
+    (no filesystem access) so sync stays deterministic and CWD-independent."""
+    ap = _agent_permissions
+    denials: list[str] = list(ap.HARD_DEFAULT_DENIALS_ALL)
+    if spec.name != ap.RELEASE_AGENT_NAME:
+        denials.extend(ap.HARD_DEFAULT_DENIALS_NON_RELEASE)
+    for x in (spec.tools_disallowed or []):
+        if isinstance(x, str) and x and x not in denials:
+            denials.append(x)
+    return denials
+
+
 def render_agent_md(spec: T.AgentSpec, tiers: dict) -> str:
     model = spec.claude_overrides.get("model_override") or T.resolve_model(
         spec.model_tier, "claude", tiers
@@ -64,8 +92,9 @@ def render_agent_md(spec: T.AgentSpec, tiers: dict) -> str:
         # Map neutral tool names → Claude vocabulary; pass-through if unknown.
         mapped = T.map_tools(spec.tools_allowed, "claude")
         fields["tools"] = _yaml_inline_list(mapped)
-    if spec.tools_disallowed:
-        fields["disallowed_tools"] = _yaml_inline_list(spec.tools_disallowed)
+    _denials = _disallowed_tools_for(spec)
+    if _denials:
+        fields["disallowed_tools"] = _yaml_inline_list(_denials)
     if spec.max_budget_usd is not None:
         fields["max_budget_usd"] = f"{spec.max_budget_usd:g}"
     if spec.version:
@@ -124,6 +153,12 @@ def sync_hooks(*, dry_run: bool = False) -> int:
     # Hooks are invoked as `bash <path>` from settings.json, so the executable
     # bit doesn't matter. Don't touch mode — keeps git-status quiet.
     return T.mirror_directory(T.NEUTRAL_HOOKS, CLAUDE_HOOKS, dry_run=dry_run)
+
+
+def sync_commands(*, dry_run: bool = False) -> int:
+    # Slash commands are a Claude Code concept: project `.claude/commands/*.md`
+    # are auto-discovered as `/<filename>`. Mirrored verbatim from neutral source.
+    return T.mirror_directory(T.NEUTRAL_COMMANDS, CLAUDE_COMMANDS, dry_run=dry_run)
 
 
 # ── settings.json ─────────────────────────────────────────────────────────────
@@ -220,6 +255,7 @@ def sync_all(*, dry_run: bool = False) -> dict[str, int]:
         "settings": sync_settings(dry_run=dry_run),
         "skills": sync_skills(dry_run=dry_run),
         "hooks": sync_hooks(dry_run=dry_run),
+        "commands": sync_commands(dry_run=dry_run),
     }
 
 

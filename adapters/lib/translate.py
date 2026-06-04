@@ -22,6 +22,7 @@ REPO = Path(__file__).resolve().parents[2]
 
 NEUTRAL_AGENTS = REPO / "agents"
 NEUTRAL_SKILLS = REPO / "skills"
+NEUTRAL_COMMANDS = REPO / "commands"
 NEUTRAL_HOOKS = REPO / "hooks"
 NEUTRAL_POLICY = REPO / "policy"
 NEUTRAL_CONFIG = REPO / "config"

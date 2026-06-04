@@ -2,6 +2,7 @@
 name: developer
 description: Implementation agent. Reads the execution plan from runs/<phase>/plan.md, implements changes following TDD. Handles both backend and frontend work. On retry, reads existing review/QA reports and fixes only the listed issues. Writes dev handoff when complete.
 model: claude-opus-4-8
+disallowed_tools: ["Bash(rm -rf /*)", "Bash(rm -rf /)", "Bash(git push --force origin main)", "Bash(git push --force origin master)", "Bash(git push -f origin main)", "Bash(git push -f origin master)", "Bash(git push *)", "Bash(git push)", "Bash(git push --force *)", "Bash(gh pr merge *)", "Bash(gh pr close *)", "Bash(gh release *)", "Bash(git tag *)"]
 version: 1.0.0
 last_updated: 2026-05-04
 ---

@@ -190,6 +190,120 @@ else
   assert "CHAIN_DISABLE_AUTO_WAIT returns exit code 75 (got $rc)" "fail"
 fi
 
+# ── Tests: interactive dispatch backend ──────────────────────────────────────
+
+echo ""
+echo "=== interactive dispatch backend tests ==="
+echo ""
+
+# Round-trip: with CHAIN_AGENT_BACKEND=interactive, a call publishes a request
+# file (carrying agent + prompt) and BLOCKS until a "pump" writes the matching
+# .res file, then returns that exit code. A mock `claude` on PATH guarantees that
+# if the interactive backend is NOT wired up, the call falls through to
+# _claude_invoke and fails fast (no real CLI call, no network).
+IDISPATCH=$(mktemp -d)
+mkdir -p "$IDISPATCH/bin"
+cat > "$IDISPATCH/bin/claude" <<'EOF'
+#!/usr/bin/env bash
+echo "out of extra usage. resets 9am (UTC)"
+exit 1
+EOF
+chmod +x "$IDISPATCH/bin/claude"
+
+(
+  export PATH="$IDISPATCH/bin:$PATH"
+  export CHAIN_AGENT_BACKEND="interactive"
+  export CHAIN_DISPATCH_DIR="$IDISPATCH"
+  export CHAIN_CURRENT_AGENT="developer"
+  export CHAIN_DISABLE_AUTO_WAIT="true"   # fail fast if wrongly routed to claude
+  rc=0
+  claude_with_quota_retry -p "ping" || rc=$?
+  echo "$rc" > "$IDISPATCH/rc.out"
+) &
+roundtrip_pid=$!
+
+# Wait up to ~5s for a published request
+ireq=""
+for _ in $(seq 1 50); do
+  ireq=$(ls "$IDISPATCH"/req.*.ready 2>/dev/null | head -1 || true)
+  [[ -n "$ireq" ]] && break
+  sleep 0.1
+done
+
+[[ -n "$ireq" ]] && assert "interactive: publishes a request file" "pass" || assert "interactive: publishes a request file" "fail"
+
+if [[ -n "$ireq" ]] && grep -q '"developer"' "$ireq" && grep -q '"ping"' "$ireq"; then
+  assert "interactive: request carries agent + prompt" "pass"
+else
+  assert "interactive: request carries agent + prompt" "fail"
+fi
+
+# Act as the pump: answer with exit code 0
+if [[ -n "$ireq" ]]; then
+  echo 0 > "${ireq%.ready}.res"
+fi
+wait "$roundtrip_pid" 2>/dev/null || true
+iroundtrip_rc=$(cat "$IDISPATCH/rc.out" 2>/dev/null || echo missing)
+[[ "$iroundtrip_rc" == "0" ]] && assert "interactive: returns pump-supplied exit code" "pass" || assert "interactive: returns pump-supplied exit code (got $iroundtrip_rc)" "fail"
+
+rm -rf "$IDISPATCH"
+
+# Heartbeat: if the pump's heartbeat is stale (pump/session died), a blocked
+# call must give up — non-fatally and never with exit 75 — and leave an
+# .awaiting-pump marker, instead of hanging forever waiting for a result.
+IHB=$(mktemp -d)
+touch -d '1000 seconds ago' "$IHB/.pump-alive" 2>/dev/null || touch -t 202001010000 "$IHB/.pump-alive"
+(
+  export CHAIN_DISPATCH_DIR="$IHB"
+  export CHAIN_AGENT_BACKEND="interactive"
+  export CHAIN_CURRENT_AGENT="developer"
+  export CHAIN_PUMP_HEARTBEAT_TIMEOUT="2"
+  export CHAIN_DISPATCH_POLL_SECONDS="1"
+  rc=0
+  claude_with_quota_retry -p "ping" || rc=$?
+  echo "$rc" > "$IHB/rc.out"
+) &
+hb_pid=$!
+hb_rc="timeout"
+for _ in $(seq 1 60); do
+  [[ -f "$IHB/rc.out" ]] && { hb_rc=$(cat "$IHB/rc.out"); break; }
+  sleep 0.2
+done
+kill "$hb_pid" 2>/dev/null || true
+wait "$hb_pid" 2>/dev/null || true
+
+if [[ "$hb_rc" != "timeout" && "$hb_rc" != "0" && "$hb_rc" != "75" ]]; then
+  assert "interactive: stale heartbeat → non-fatal non-75 return (got $hb_rc)" "pass"
+else
+  assert "interactive: stale heartbeat → non-fatal non-75 return (got $hb_rc)" "fail"
+fi
+[[ -f "$IHB/.awaiting-pump" ]] && assert "interactive: stale heartbeat writes .awaiting-pump marker" "pass" || assert "interactive: stale heartbeat writes .awaiting-pump marker" "fail"
+rm -rf "$IHB"
+
+# Concurrency guard: two simultaneous calls (as in run-phase's post-dev fanout)
+# must create two DISTINCT request files — no collision (relies on mktemp).
+ICC=$(mktemp -d)
+cc_pids=()
+for n in 1 2; do
+  (
+    export CHAIN_DISPATCH_DIR="$ICC"
+    export CHAIN_AGENT_BACKEND="interactive"
+    export CHAIN_CURRENT_AGENT="agent$n"
+    claude_with_quota_retry -p "p$n" >/dev/null 2>&1
+  ) &
+  cc_pids+=("$!")
+done
+ncc=0
+for _ in $(seq 1 50); do
+  ncc=$(find "$ICC" -maxdepth 1 -name 'req.*.ready' 2>/dev/null | wc -l | tr -d ' ')
+  [[ "$ncc" -ge 2 ]] && break
+  sleep 0.1
+done
+[[ "$ncc" -eq 2 ]] && assert "interactive: concurrent calls create distinct request files" "pass" || assert "interactive: concurrent calls create distinct request files (got $ncc)" "fail"
+for f in "$ICC"/req.*.ready; do [[ -e "$f" ]] && echo 0 > "${f%.ready}.res"; done
+for p in "${cc_pids[@]}"; do wait "$p" 2>/dev/null || true; done
+rm -rf "$ICC"
+
 # ── Results ───────────────────────────────────────────────────────────────────
 
 echo ""
