@@ -416,13 +416,27 @@ _qa_dep_hint() {
   case "$role" in
     *frontend*)
       local fe_dir="${CHAIN_FRONTEND_DIR:-$REPO_ROOT/apps/frontend}"
-      [[ -d "$fe_dir/node_modules" ]] || \
-        echo "frontend dependencies are not installed (missing $fe_dir/node_modules) — run 'npm install' there" ;;
+      if [[ ! -d "$fe_dir/node_modules" ]]; then
+        echo "frontend dependencies are not installed (missing $fe_dir/node_modules) — run 'npm install' there"
+      elif _next_build_is_corrupt "${QA_FRONTEND_LOG:-/dev/null}"; then
+        echo "a stale/corrupt .next build (a 'next build' likely ran against the live 'next dev' .next). The harness auto-clears .next and retries; if it persists, isolate builds with NEXT_DIST_DIR (e.g. NEXT_DIST_DIR=.next-qa for build/QA commands)."
+      fi ;;
     *backend*)
       [[ -d "$REPO_ROOT/apps/backend/.venv" ]] || \
         echo "backend virtualenv is missing ($REPO_ROOT/apps/backend/.venv) — create it and install requirements" ;;
   esac
   return 0
+}
+
+# True (0) if a frontend log shows a stale/corrupt Next.js `.next` build: a
+# prebuilt webpack chunk went missing — typically a `next build` (production)
+# clobbered a running `next dev`'s `.next`, so the dev server now answers every
+# request with HTTP 500 (MODULE_NOT_FOUND) and will keep doing so until `.next`
+# is removed. The fix is deterministic: `rm -rf .next` then let `next dev`
+# rebuild on the next request.
+_next_build_is_corrupt() {
+  local log="$1"
+  [[ -f "$log" ]] && grep -qiE "MODULE_NOT_FOUND|Cannot find module" "$log" 2>/dev/null
 }
 
 # Start a service with health-gated retries. Unlike a bare URL re-probe this
@@ -448,6 +462,11 @@ _start_service_with_retries() {
   # failure) lets a 404 on /health read as "server up" for projects that don't
   # serve a health route at the root.
   local ready_re="${9:-^[23]}"
+
+  # Frontend only: where a corrupt `.next` lives, so we can self-heal a stale
+  # build (see _next_build_is_corrupt) between attempts. Empty for the backend.
+  local fe_dir=""
+  [[ "$role" == *frontend* ]] && fe_dir="${CHAIN_FRONTEND_DIR:-$REPO_ROOT/apps/frontend}"
 
   # Nothing to start with — leave it to upstream handling (callers tolerate this).
   [[ -z "$start_cmd" || -z "$health_url" ]] && return 0
@@ -489,6 +508,13 @@ _start_service_with_retries() {
         echo "[ensure_services_running] $role is ready (attempt ${attempt}, ${waited}s)." >&2
         return 0
       fi
+      # A frontend dev server that is UP but serving 5xx from a corrupt `.next`
+      # will never recover on its own — stop waiting out the budget; the retry
+      # clears `.next` (below) and rebuilds clean.
+      if [[ -n "$fe_dir" && "$code" =~ ^5 ]] && _next_build_is_corrupt "$log_path"; then
+        echo "[ensure_services_running] $role up but $code with a stale/corrupt .next — see $log_path." >&2
+        break
+      fi
       # If the process died on boot there is no point waiting out the budget —
       # the next attempt (or the captured log) is the way forward.
       if ! kill -0 "$pid" 2>/dev/null; then
@@ -503,6 +529,18 @@ _start_service_with_retries() {
     # never leave a half-started server holding the port.
     _kill_pid_tree "$pid"
     [[ -n "$target_port" ]] && { fuser -k -9 "${target_port}/tcp" 2>/dev/null || true; }
+
+    # Frontend self-heal: if this attempt left a stale/corrupt `.next` (a dev
+    # server that stayed up on 5xx, typically a `next build` that clobbered the
+    # running `next dev`), remove it so the NEXT attempt's `next dev` rebuilds
+    # clean. Guarded so the rm only ever touches an existing `.next` under the
+    # resolved frontend dir. Skipped on the final attempt (no retry follows).
+    if [[ -n "$fe_dir" && $attempt -lt $max_attempts && -d "$fe_dir/.next" ]] \
+       && { _next_build_is_corrupt "$log_path" || [[ "$code" =~ ^5 ]]; }; then
+      echo "[ensure_services_running] clearing stale/corrupt $fe_dir/.next before retry." >&2
+      rm -rf "$fe_dir/.next"
+    fi
+
     attempt=$((attempt + 1))
     [[ $attempt -le $max_attempts ]] && sleep 1
   done
