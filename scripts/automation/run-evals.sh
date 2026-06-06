@@ -89,6 +89,15 @@ if bash scripts/automation/lib/interactive-dispatch.sh --self-test >/dev/null 2>
 else
   _fail "self-test: interactive-dispatch.sh"
 fi
+# Service bootstrap: kill-tree escalation, corrupt-.next detector, and the
+# frontend self-heal recovery (clears a stale .next + cold-rebuilds instead of
+# SKIPPING the demo/browser-QA). Guards the fix for the iter-6 corrupt-.next SKIP.
+if bash scripts/automation/lib/common.sh self-test >/dev/null 2>&1; then
+  _pass "self-test: common.sh (kill-tree / self-heal)"
+else
+  bash scripts/automation/lib/common.sh self-test || true
+  _fail "self-test: common.sh (kill-tree / self-heal)"
+fi
 
 # ── 3. Agent frontmatter validation ──────────────────────────────────────────
 _log "3. agent frontmatter validation"

@@ -194,9 +194,11 @@ fi
 # Re-probe the frontend across a cold-start budget rather than deciding once.
 # A dev frontend (Vite/Next) can take >10s to compile its first request; a single
 # curl right after ensure_services_running can race a still-booting FE and wrongly
-# mark every test SKIPPED. _wait_for_url retries every 3s up to the budget before
-# giving up — a slow boot is no longer misread as "frontend not available."
-if _wait_for_url "$FRONTEND_URL" "frontend" 90 "browser-qa"; then
+# mark every test SKIPPED. _wait_for_frontend_ready retries every 3s up to the
+# budget before giving up — a slow boot is no longer misread as "frontend not
+# available" — and, on the standalone (non-shared) path, heals a corrupt `.next`
+# once (rm -rf .next + restart) instead of waiting out the budget against a 500.
+if _wait_for_frontend_ready "$FRONTEND_URL" "frontend" 90 "browser-qa"; then
   FRONTEND_AVAILABLE="yes"
   FRONTEND_SKIP_REASON=""
 else

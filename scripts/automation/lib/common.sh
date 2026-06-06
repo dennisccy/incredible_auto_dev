@@ -395,16 +395,49 @@ _url_port() {
   printf '%s' "$1" | sed -n 's#^[a-zA-Z][a-zA-Z0-9+.-]*://[^/:]*:\([0-9][0-9]*\).*#\1#p'
 }
 
-# Kill a process and all its descendants (TERM, brief grace, then KILL).
-# Best-effort and set -e safe; no-op on empty/dead PID.
-_kill_pid_tree() {
-  local pid="$1"
-  [[ -z "$pid" ]] && return 0
-  local child
-  for child in $(pgrep -P "$pid" 2>/dev/null || true); do
-    _kill_pid_tree "$child"
+# Echo a pid and all its descendants, children before their parent. Best-effort
+# and set -e/-u safe; echoes nothing for an empty/dead pid.
+_pid_tree() {
+  local p="${1:-}"
+  [[ -z "$p" ]] && return 0
+  local c
+  for c in $(pgrep -P "$p" 2>/dev/null || true); do
+    _pid_tree "$c"
   done
-  kill -TERM "$pid" 2>/dev/null || true
+  printf '%s\n' "$p"
+}
+
+# Kill a process and all its descendants: TERM, a brief grace, then KILL any
+# survivors. `next dev`'s turbopack/swc worker tree (and other children) often
+# ignore a bare TERM and would otherwise keep squatting the port / Next's
+# single-instance lock and can re-touch `.next` after a heal — so a TERM-only
+# teardown silently defeats the frontend self-heal. Grace is
+# CHAIN_KILL_GRACE_SECONDS (default 2s). The whole tree is snapshotted BEFORE
+# signalling so reparented grandchildren stay reachable for the KILL sweep.
+# Best-effort and set -e/-u safe; no-op on empty/dead PID. Benefits every caller.
+_kill_pid_tree() {
+  local pid="${1:-}"
+  [[ -z "$pid" ]] && return 0
+
+  local -a tree=()
+  local p
+  while IFS= read -r p; do [[ -n "$p" ]] && tree+=("$p"); done < <(_pid_tree "$pid")
+
+  # Phase 1: TERM everything (children first, then the root).
+  for p in ${tree[@]+"${tree[@]}"}; do
+    kill -TERM "$p" 2>/dev/null || true
+  done
+
+  # Phase 2: brief grace so well-behaved processes exit on their own.
+  local grace="${CHAIN_KILL_GRACE_SECONDS:-2}"
+  [[ "$grace" =~ ^[0-9]+$ ]] || grace=2
+  [[ "$grace" -gt 0 ]] && sleep "$grace"
+
+  # Phase 3: KILL any survivor in the original tree (best-effort). Use `if` so a
+  # dead-pid `kill -0` (non-zero) never trips the caller's `set -e` mid-loop.
+  for p in ${tree[@]+"${tree[@]}"}; do
+    if kill -0 "$p" 2>/dev/null; then kill -KILL "$p" 2>/dev/null || true; fi
+  done
   return 0
 }
 
@@ -480,8 +513,28 @@ _start_service_with_retries() {
   local target_port
   target_port=$(_url_port "$health_url")
 
+  # Frontend self-heal bookkeeping. `healed` ensures we clear `.next` AT MOST
+  # once and grant exactly ONE guaranteed-cold rebuild attempt — so a heal is
+  # never wasted by landing on the final attempt, yet can never loop forever.
+  # `heal_timeout` is the longer per-attempt budget used ONLY for that cold
+  # rebuild (a real app's from-scratch `next dev` compile of "/" routinely
+  # exceeds the normal warm-start window). `attempt_timeout` is the budget for
+  # the CURRENT attempt (normally per_attempt; raised once for the post-heal one).
+  local healed=0
+  local heal_timeout="${CHAIN_FRONTEND_HEAL_TIMEOUT:-180}"
+  [[ "$heal_timeout" =~ ^[0-9]+$ ]] || heal_timeout=180
+  local attempt_timeout
+
   local attempt=1 pid waited
   while [[ $attempt -le $max_attempts ]]; do
+    # The attempt immediately AFTER a heal is the guaranteed-cold rebuild — give
+    # it the longer budget. (healed flips to 1 in the heal block below, and
+    # max_attempts was bumped there if needed so this attempt actually runs.)
+    if [[ -n "$fe_dir" && $healed -eq 1 ]]; then
+      attempt_timeout="$heal_timeout"
+    else
+      attempt_timeout="$per_attempt"
+    fi
     echo "[ensure_services_running] $role not healthy (status: ${code:-none}) — start attempt ${attempt}/${max_attempts}..." >&2
 
     # Clear anything squatting this role's port / single-instance lock first.
@@ -502,7 +555,7 @@ _start_service_with_retries() {
     fi
 
     waited=0
-    while [[ $waited -lt $per_attempt ]]; do
+    while [[ $waited -lt $attempt_timeout ]]; do
       code=$(curl -s -o /dev/null -w "%{http_code}" "$health_url" 2>/dev/null || true)
       if [[ "$code" =~ $ready_re ]]; then
         echo "[ensure_services_running] $role is ready (attempt ${attempt}, ${waited}s)." >&2
@@ -525,20 +578,47 @@ _start_service_with_retries() {
       waited=$((waited + 3))
     done
 
-    # Alive-but-not-serving (or dead): tear down before the next attempt so we
-    # never leave a half-started server holding the port.
+    # Classify BEFORE teardown (teardown does not change the log/code). A corrupt
+    # frontend is one whose log shows the missing-chunk signature, OR (defensively)
+    # one that stayed UP on 5xx.
+    local corrupt_now=0
+    if [[ -n "$fe_dir" ]] \
+       && { _next_build_is_corrupt "$log_path" || [[ "$code" =~ ^5 ]]; }; then
+      corrupt_now=1
+    fi
+
+    # Don't kill a slow cold compile: on what is CURRENTLY the final attempt, if
+    # the frontend process is still ALIVE and NOT corrupt, it is most likely just
+    # still compiling its first request (code 000/transient, not 5xx-corrupt).
+    # Killing it here is exactly what forced the downstream 90s-on-a-dead-port
+    # SKIP. Leave it running so the readiness gate can catch the finishing compile,
+    # and signal "started but slow" (return 2) so callers re-probe rather than
+    # trust UP. Capture the log tail first, mirroring the final-failure path.
+    if [[ -n "$fe_dir" && $attempt -eq $max_attempts && $corrupt_now -eq 0 ]] \
+       && kill -0 "$pid" 2>/dev/null; then
+      echo "[ensure_services_running] $role still alive and not corrupt on final attempt (status: ${code:-none}) — likely a slow cold compile; leaving it running for the readiness gate." >&2
+      printf -v "$tail_var" '%s' "$( [[ -f "$log_path" ]] && tail -n 20 "$log_path" 2>/dev/null || true )"
+      return 2
+    fi
+
+    # Alive-but-not-serving, dead, or corrupt: tear down before the next attempt
+    # so we never leave a half-started/wedged server holding the port.
     _kill_pid_tree "$pid"
     [[ -n "$target_port" ]] && { fuser -k -9 "${target_port}/tcp" 2>/dev/null || true; }
 
-    # Frontend self-heal: if this attempt left a stale/corrupt `.next` (a dev
-    # server that stayed up on 5xx, typically a `next build` that clobbered the
-    # running `next dev`), remove it so the NEXT attempt's `next dev` rebuilds
-    # clean. Guarded so the rm only ever touches an existing `.next` under the
-    # resolved frontend dir. Skipped on the final attempt (no retry follows).
-    if [[ -n "$fe_dir" && $attempt -lt $max_attempts && -d "$fe_dir/.next" ]] \
-       && { _next_build_is_corrupt "$log_path" || [[ "$code" =~ ^5 ]]; }; then
-      echo "[ensure_services_running] clearing stale/corrupt $fe_dir/.next before retry." >&2
+    # Frontend self-heal: a corrupt `.next` (typically a `next build` that
+    # clobbered the running `next dev`) never recovers on its own. Clear it so the
+    # NEXT attempt's `next dev` rebuilds clean. Heal AT MOST ONCE, and bump
+    # max_attempts ONLY when the heal lands on what is currently the final attempt
+    # — this guarantees EXACTLY ONE cold-rebuild attempt follows a heal, and that
+    # attempt is ALWAYS the final one (so it is eligible for the leave-running
+    # path above). The `healed` guard blocks a second bump, so the loop always
+    # terminates. The rm only ever touches an existing `.next` under $fe_dir.
+    if [[ $healed -eq 0 && $corrupt_now -eq 1 && -n "$fe_dir" && -d "$fe_dir/.next" ]]; then
+      echo "[ensure_services_running] clearing stale/corrupt $fe_dir/.next, then one cold-rebuild attempt (up to ${heal_timeout}s)." >&2
       rm -rf "$fe_dir/.next"
+      healed=1
+      [[ $attempt -ge $max_attempts ]] && max_attempts=$((max_attempts + 1))
     fi
 
     attempt=$((attempt + 1))
@@ -596,17 +676,22 @@ ensure_services_running() {
     fi
   fi
 
-  # Frontend (only when required): 2 attempts × 60s = the same 120s ceiling as
-  # before. kill_stale_next_dev_server clears Next's single-instance lock so a
-  # retry can actually bind.
+  # Frontend (only when required). Base budget 2 attempts × 60s; on a detected
+  # corrupt `.next`, _start_service_with_retries heals once and grants ONE extra
+  # cold-rebuild attempt with the longer CHAIN_FRONTEND_HEAL_TIMEOUT budget
+  # (default 180s). It returns 0=ready, 2=started-but-slow (left running; the
+  # downstream readiness gate re-probes), or 1=failed. kill_stale_next_dev_server
+  # clears Next's single-instance lock so a retry can actually bind.
   if [[ "${QA_FRONTEND_REQUIRED:-no}" == "yes" && -n "${QA_FRONTEND_URL:-}" && -n "${QA_FRONTEND_START_CMD:-}" ]]; then
-    if _start_service_with_retries "frontend" \
-         "$QA_FRONTEND_URL" "$QA_FRONTEND_START_CMD" "${QA_FRONTEND_LOG:-/dev/null}" \
-         60 2 QA_FRONTEND_LOG_TAIL "kill_stale_next_dev_server"; then
-      export QA_FRONTEND_UP="yes"
-    else
-      export QA_FRONTEND_UP="no"
-    fi
+    local _fe_rc=0
+    _start_service_with_retries "frontend" \
+      "$QA_FRONTEND_URL" "$QA_FRONTEND_START_CMD" "${QA_FRONTEND_LOG:-/dev/null}" \
+      60 2 QA_FRONTEND_LOG_TAIL "kill_stale_next_dev_server" || _fe_rc=$?
+    case "$_fe_rc" in
+      0) export QA_FRONTEND_UP="yes" ;;
+      2) export QA_FRONTEND_UP="slow" ;;   # alive, still compiling — gate re-probes
+      *) export QA_FRONTEND_UP="no" ;;
+    esac
   fi
 
   # ALWAYS 0: the five bare call sites run under `set -e`. Failure is surfaced
@@ -632,6 +717,78 @@ _wait_for_url() {
       echo "[$tag] $name is ready (${waited}s)."
       return 0
     fi
+    sleep 3
+    waited=$((waited + 3))
+    if [[ $waited -ge $max_wait ]]; then
+      echo "[$tag] Warning: $name did not become ready within ${max_wait}s (last status: $code)." >&2
+      return 1
+    fi
+  done
+}
+
+# Corruption-aware readiness gate for the FRONTEND. A drop-in superset of
+# _wait_for_url (same signature, same 0=ready/1=timeout contract): it waits for
+# 2xx/3xx, but if it sees a PERSISTENT corrupt `.next` (the log shows the
+# missing-chunk signature AND the port answers 5xx, or is dead at 000) it heals
+# ONCE — kill the stale dev server, `rm -rf .next`, restart, and wait through the
+# resulting cold rebuild. This is the last line of defence for the standalone
+# demo / browser-qa / goal-iter-lean paths whose only readiness check used to be
+# a heal-less _wait_for_url against a server the boot may have already given up on.
+#
+# CRITICAL SAFETY: under CHAIN_SHARED_SERVICES=true the frontend is shared across
+# parallel fanout branches (demo + browser-qa). Restarting it from one branch
+# would yank it out from under the other (and demo does not even export
+# QA_FRONTEND_START_CMD in that mode). So the heal-restart is GUARDED to the
+# non-shared path; under shared services this degrades to a plain re-probe, with
+# recovery owned by the shared boot's in-loop self-heal (_start_service_with_retries),
+# which now leaves a compiling server running for this gate to catch. Also gated
+# by CHAIN_FRONTEND_GATE_HEAL (default on; set 0 to disable the gate heal).
+#
+# Usage: _wait_for_frontend_ready <url> <name> [max_wait_seconds] [log_tag]
+# Returns 0 once the URL answers 2xx/3xx, 1 on timeout.
+_wait_for_frontend_ready() {
+  local url="$1" name="${2:-frontend}" max_wait="${3:-90}" tag="${4:-wait}"
+  local fe_dir="${CHAIN_FRONTEND_DIR:-$REPO_ROOT/apps/frontend}"
+  local log_path="${QA_FRONTEND_LOG:-/dev/null}"
+  local healed=0 waited=0 code
+  echo "[$tag] Waiting for $name at $url (max ${max_wait}s, corruption-aware)..."
+  while true; do
+    code=$(curl -s -o /dev/null -w "%{http_code}" "$url" 2>/dev/null || true)
+    if [[ "$code" =~ ^[23] ]]; then
+      echo "[$tag] $name is ready (${waited}s)."
+      return 0
+    fi
+
+    # One-shot heal-restart: only when safe (non-shared) and enabled, only when
+    # we can actually see a corrupt-.next signature, and only when we own the
+    # lifecycle (start cmd exported, .next present).
+    if [[ $healed -eq 0 \
+          && "${CHAIN_FRONTEND_GATE_HEAL:-1}" != "0" \
+          && "${CHAIN_SHARED_SERVICES:-false}" != "true" \
+          && -n "${QA_FRONTEND_START_CMD:-}" \
+          && -d "$fe_dir/.next" ]] \
+       && _next_build_is_corrupt "$log_path" \
+       && [[ "$code" =~ ^5 || "$code" == "000" ]]; then
+      echo "[$tag] $name persistently $code with a corrupt .next — healing once: rm -rf $fe_dir/.next + restart." >&2
+      healed=1
+      kill_stale_next_dev_server "$fe_dir" >/dev/null 2>&1 || true
+      rm -rf "$fe_dir/.next"
+      : >"$log_path" 2>/dev/null || true
+      # Same unquoted word-split form _start_service_with_retries uses (line ~527).
+      ${QA_FRONTEND_START_CMD} >"$log_path" 2>&1 &
+      local _gpid=$!
+      if declare -p QA_STARTED_PIDS >/dev/null 2>&1; then
+        QA_STARTED_PIDS+=("$_gpid")
+      else
+        QA_STARTED_PIDS=("$_gpid")
+      fi
+      # Give the guaranteed-cold rebuild its own budget.
+      local heal_budget="${CHAIN_FRONTEND_HEAL_TIMEOUT:-180}"
+      [[ "$heal_budget" =~ ^[0-9]+$ ]] || heal_budget=180
+      if [[ $max_wait -lt $heal_budget ]]; then max_wait="$heal_budget"; fi
+      waited=0
+    fi
+
     sleep 3
     waited=$((waited + 3))
     if [[ $waited -ge $max_wait ]]; then
@@ -987,3 +1144,120 @@ write_failed_artifact_stub() {
 
   echo "[write_failed_artifact_stub] Wrote SKIPPED stub: $out_file"
 }
+
+# ── Self-test (only when invoked directly: `bash common.sh self-test`) ───────
+# Hermetic and fast (<10s): no real Next.js, no model, no network. Stubs `curl`
+# and uses a fake start script whose log shows the corrupt-.next signature while
+# `$fe_dir/.next` exists and "serves" 200 once it is gone — so the whole self-heal
+# path (detect → kill → rm -rf .next → cold rebuild → ready) is exercised end to
+# end. Wired into run-evals.sh. The `BASH_SOURCE == $0` guard means sourcing this
+# library never triggers the block.
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+  case "${1:-}" in
+    self-test)
+      _t_pass=0; _t_fail=0
+      _t_ok()  { _t_pass=$((_t_pass+1)); echo "  OK: $*"; }
+      _t_bad() { _t_fail=$((_t_fail+1)); echo "  FAIL: $*" >&2; }
+
+      echo "[common.sh self-test] _kill_pid_tree TERM->grace->KILL"
+      # A child that ignores TERM must still be KILLed after the grace. `wait`
+      # reaps the killed child so the follow-up `kill -0` doesn't see a zombie
+      # (a zombie PID still "exists" for kill -0 until its parent reaps it).
+      ( trap '' TERM; sleep 20 ) &
+      _kp=$!
+      CHAIN_KILL_GRACE_SECONDS=1 _kill_pid_tree "$_kp"
+      wait "$_kp" 2>/dev/null || true
+      if kill -0 "$_kp" 2>/dev/null; then
+        _t_bad "_kill_pid_tree left a TERM-ignoring process alive"; kill -KILL "$_kp" 2>/dev/null || true
+      else
+        _t_ok "_kill_pid_tree escalated TERM->KILL"
+      fi
+      # set -e/-u safe on empty and dead pids (the production callers run set -e).
+      if ( set -eu; _kill_pid_tree "" ; _kill_pid_tree 999999999 ); then
+        _t_ok "_kill_pid_tree set -eu safe on empty/dead pid"
+      else
+        _t_bad "_kill_pid_tree tripped set -eu on empty/dead pid"
+      fi
+
+      echo "[common.sh self-test] _next_build_is_corrupt detector"
+      _tlog=$(mktemp)
+      printf 'Error: Cannot find module ./webpack-runtime.js\n' >"$_tlog"
+      if _next_build_is_corrupt "$_tlog"; then _t_ok "detector: positive (Cannot find module)"; else _t_bad "detector: missed signature"; fi
+      printf '✓ Compiled / in 1200ms\n' >"$_tlog"
+      if _next_build_is_corrupt "$_tlog"; then _t_bad "detector: false positive on a clean log"; else _t_ok "detector: negative on a clean log"; fi
+      if _next_build_is_corrupt "/nonexistent-$$-xyz"; then _t_bad "detector: claimed missing file is corrupt"; else _t_ok "detector: missing-file safe"; fi
+      rm -f "$_tlog"
+
+      echo "[common.sh self-test] _start_service_with_retries self-heal recovery"
+      _ROOT=$(mktemp -d)
+      mkdir -p "$_ROOT/fe/.next"
+      export CHAIN_FRONTEND_DIR="$_ROOT/fe"
+      export CHAIN_FRONTEND_HEAL_TIMEOUT=2
+      export CHAIN_KILL_GRACE_SECONDS=0
+      _SPAWNS="$_ROOT/spawns"; : >"$_SPAWNS"
+      _FELOG="$_ROOT/fe.log"
+      # Stub curl: 500 while .next exists (corrupt), 200 once it is gone. Ignores args.
+      curl() { if [[ -d "$CHAIN_FRONTEND_DIR/.next" ]]; then echo 500; else echo 200; fi; }
+      # Fake start command: record a spawn, write the corrupt signature to its log
+      # ONLY while .next is present, then stay alive so `kill -0` sees a live pid.
+      _STARTSH="$_ROOT/start.sh"
+      cat >"$_STARTSH" <<EOF
+#!/usr/bin/env bash
+echo x >> "$_SPAWNS"
+if [[ -d "$CHAIN_FRONTEND_DIR/.next" ]]; then echo "Error: Cannot find module './webpack-runtime.js'"; fi
+exec sleep 6
+EOF
+      chmod +x "$_STARTSH"
+      # Run under `set -e` in a subshell to prove the function is set -e safe AND
+      # recovers. Portless health URL => target_port empty => fuser is skipped.
+      _tail=""; _rc=0
+      ( set -e; _start_service_with_retries "frontend" "http://stub" "bash $_STARTSH" "$_FELOG" 2 2 _tail "" ) >/dev/null 2>&1 || _rc=$?
+      _nspawn=$(wc -l <"$_SPAWNS" 2>/dev/null | tr -d ' ')
+      if [[ "$_rc" -eq 0 ]]; then _t_ok "self-heal: recovered (rc=0) under set -e"; else _t_bad "self-heal: rc=$_rc (expected 0)"; fi
+      if [[ ! -d "$CHAIN_FRONTEND_DIR/.next" ]]; then _t_ok "self-heal: corrupt .next was removed"; else _t_bad "self-heal: .next still present (heal did not run)"; fi
+      if [[ "${_nspawn:-0}" -ge 2 && "${_nspawn:-0}" -le 3 ]]; then _t_ok "self-heal: spawned ${_nspawn}x (healed once)"; else _t_bad "self-heal: spawned ${_nspawn:-?}x (expected 2-3)"; fi
+      # The cold-rebuild fake server is intentionally left running by the new code;
+      # the fake `sleep 6` self-terminates shortly after the test, so no reap needed.
+
+      echo "[common.sh self-test] slow cold compile is left running, not killed (return 2)"
+      # After the heal, the cold rebuild is ALIVE but not yet ready and not corrupt
+      # (curl 000 = still binding/compiling). The new code must leave it running and
+      # return 2 (=slow) so the readiness gate can catch it — instead of killing it
+      # and forcing the downstream 90s-on-a-dead-port SKIP this whole change fixes.
+      mkdir -p "$_ROOT/fe3/.next"
+      export CHAIN_FRONTEND_DIR="$_ROOT/fe3"
+      _SPAWNS3="$_ROOT/spawns3"; : >"$_SPAWNS3"
+      curl() { if [[ -d "$CHAIN_FRONTEND_DIR/.next" ]]; then echo 500; else echo 000; fi; }
+      _STARTSH3="$_ROOT/start3.sh"
+      cat >"$_STARTSH3" <<EOF
+#!/usr/bin/env bash
+echo x >> "$_SPAWNS3"
+if [[ -d "$CHAIN_FRONTEND_DIR/.next" ]]; then echo "Error: Cannot find module './webpack-runtime.js'"; fi
+exec sleep 8
+EOF
+      chmod +x "$_STARTSH3"
+      _rc=0
+      ( set -e; _start_service_with_retries "frontend" "http://stub" "bash $_STARTSH3" "$_ROOT/fe3.log" 2 2 _tail "" ) >/dev/null 2>&1 || _rc=$?
+      if [[ "$_rc" -eq 2 ]]; then _t_ok "slow-compile: left running, returned 2 (gate re-probes)"; else _t_bad "slow-compile: rc=$_rc (expected 2)"; fi
+      if [[ ! -d "$CHAIN_FRONTEND_DIR/.next" ]]; then _t_ok "slow-compile: corrupt .next cleared before the cold rebuild"; else _t_bad "slow-compile: .next not cleared"; fi
+
+      echo "[common.sh self-test] healthy fast-path guard (no .next, never heals)"
+      mkdir -p "$_ROOT/fe2"   # deliberately NO .next
+      export CHAIN_FRONTEND_DIR="$_ROOT/fe2"
+      curl() { echo 200; }   # healthy immediately
+      _rc=0
+      ( set -e; _start_service_with_retries "frontend" "http://stub" "bash $_STARTSH" "$_ROOT/fe2.log" 2 2 _tail "" ) >/dev/null 2>&1 || _rc=$?
+      if [[ "$_rc" -eq 0 && ! -d "$_ROOT/fe2/.next" ]]; then _t_ok "guard: healthy fast-path, no spawn, no .next created"; else _t_bad "guard: rc=$_rc or .next appeared"; fi
+
+      unset -f curl 2>/dev/null || true
+      unset CHAIN_FRONTEND_DIR CHAIN_FRONTEND_HEAL_TIMEOUT CHAIN_KILL_GRACE_SECONDS 2>/dev/null || true
+      rm -rf "$_ROOT"
+      echo "[common.sh self-test] ${_t_pass} pass, ${_t_fail} fail"
+      [[ "$_t_fail" -eq 0 ]] || exit 1
+      ;;
+    *)
+      echo "Usage: $0 self-test" >&2
+      exit 2
+      ;;
+  esac
+fi

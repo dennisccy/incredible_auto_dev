@@ -193,9 +193,13 @@ export QA_FRONTEND_REQUIRED="yes"
 ensure_services_running
 
 # Trust the retrying ensure_services_running verdict first (QA_FRONTEND_UP), then
-# a short re-probe so a frontend that is merely mid-recompile isn't misread as
-# down — avoids a false SKIP right after a successful-but-still-compiling boot.
-if [[ "${QA_FRONTEND_UP:-unknown}" == "yes" ]] || _wait_for_url "$FRONTEND_URL" "frontend" 30 "goal-iter-lean"; then
+# a re-probe so a frontend that is merely mid-recompile isn't misread as down —
+# avoids a false SKIP right after a successful-but-still-compiling boot. The gate
+# is corruption-aware: this is the standalone (non-shared) path, so on a persistent
+# corrupt `.next` it heals once (rm -rf .next + restart). Budget is 120s (not 30s)
+# so a guaranteed-cold rebuild — including the QA_FRONTEND_UP=slow case where the
+# boot left a still-compiling server running — has room to finish.
+if [[ "${QA_FRONTEND_UP:-unknown}" == "yes" ]] || _wait_for_frontend_ready "$FRONTEND_URL" "frontend" 120 "goal-iter-lean"; then
   FRONTEND_AVAILABLE="yes"
   FRONTEND_SKIP_REASON=""
 else
