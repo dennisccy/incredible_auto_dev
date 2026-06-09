@@ -24,6 +24,20 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/lib/common.sh"
 source "$SCRIPT_DIR/lib/telemetry.sh"
 
+# A transport/dispatch-unavailable exit (70) from the interactive backend means
+# the pump/session went away — a transport failure, not an agent-quality failure.
+# Pause cleanly and resumably (run-goal.sh turns this 70 into an AWAITING_PUMP
+# pause) instead of finishing the iteration with partial work. No-op otherwise.
+# (lib/quota-retry.sh defines DISPATCH_UNAVAILABLE_EXIT_CODE; default 70.)
+_pause_if_transport() {
+  local rc="$1" label="${2:-step}"
+  if [[ "$rc" -eq "${DISPATCH_UNAVAILABLE_EXIT_CODE:-70}" ]]; then
+    echo "[goal-iter-lean] $label: interactive pump/dispatch unavailable (exit $rc) — pausing." >&2
+    echo "[goal-iter-lean] The interactive session/pump went away. Resume with /goal-resume after re-opening it." >&2
+    exit "${DISPATCH_UNAVAILABLE_EXIT_CODE:-70}"
+  fi
+}
+
 ITER_NAME="${1:-}"
 if [[ -z "$ITER_NAME" ]]; then
   echo "Usage: $0 <iter-name>" >&2
@@ -134,22 +148,34 @@ The report MUST start with a line matching exactly:
   return $_rc
 }
 
-# Round 1: build
-run_developer "INITIAL BUILD" ""
+# Round 1: build. A transport failure (70) pauses cleanly; any other non-zero
+# aborts the iteration as before (set -e semantics, now with the code preserved).
+_dev_rc=0
+run_developer "INITIAL BUILD" "" || _dev_rc=$?
+_pause_if_transport "$_dev_rc" "developer (initial build)"
+if [[ "$_dev_rc" -ne 0 ]]; then exit "$_dev_rc"; fi
 
-# Round 1: review
-run_reviewer || true
+# Round 1: review. A transport failure pauses; any other review failure is
+# tolerated (the retry below / evaluator handles it), as the prior `|| true` did.
+_rev_rc=0
+run_reviewer || _rev_rc=$?
+_pause_if_transport "$_rev_rc" "reviewer"
 
 # Retry once if reviewer FAILed
 if [[ -f "$REVIEW_REPORT" ]] && ! verdict_passes "$REVIEW_REPORT"; then
   echo "[goal-iter-lean] Review FAIL — running developer in fix mode (1 retry allowed)..."
+  _dev_rc=0
   run_developer "FIX MODE (review failed)" "
 The review report below contains FAIL issues that must be fixed.
 Do NOT rebuild from scratch -- fix only what is listed.
 
 Review report path: $REVIEW_REPORT
-"
-  run_reviewer || true
+" || _dev_rc=$?
+  _pause_if_transport "$_dev_rc" "developer (fix-mode)"
+  if [[ "$_dev_rc" -ne 0 ]]; then exit "$_dev_rc"; fi
+  _rev_rc=0
+  run_reviewer || _rev_rc=$?
+  _pause_if_transport "$_rev_rc" "reviewer (fix-mode)"
 fi
 
 if [[ -f "$REVIEW_REPORT" ]] && ! verdict_passes "$REVIEW_REPORT"; then
@@ -267,6 +293,9 @@ The report MUST contain a line at the top:
 Then STOP." || _bqa_rc=$?
 
 record_agent_invocation_end "browser-qa-agent" "$_bqa_start" "$_bqa_rc"
+
+# A transport failure pauses cleanly — do NOT record a misleading SKIPPED stub.
+_pause_if_transport "$_bqa_rc" "browser-qa-agent"
 
 if [[ $_bqa_rc -ne 0 && $_bqa_rc -ne ${QUOTA_EXHAUSTED_EXIT_CODE:-75} ]]; then
   if [[ ! -f "$UI_TEST_RESULTS" ]]; then

@@ -47,6 +47,8 @@
 #   AWAITING_BLUEPRINT_APPROVAL - paused after baseline (or after a structural blueprint change) for
 #                                 the human to review/edit state/blueprint.md; resume with --resume
 #                                 (resuming counts as approval) or pre-empt with --auto-approve-blueprint
+#   AWAITING_PUMP    - interactive pump/dispatch was unavailable mid-iteration (the foreground
+#                      session/pump went away); resumable — /goal-resume re-runs the same iteration
 #
 # Quota exhaustion is NOT a halt: claude_with_quota_retry transparently sleeps
 # until the quota resets and resumes.
@@ -630,7 +632,7 @@ if $( [[ "$AUTO_RELEASE" == "true" ]] && echo "True" || echo "False" ):
 d["push_per_iter"] = $( [[ "$PUSH_PER_ITER" == "true" ]] && echo "True" || echo "False" )
 d["push_branch"] = "$PUSH_BRANCH"
 d["agent_backend"] = "$AGENT_BACKEND"
-if "$RUN_MODE" == "resume" and d.get("status") in ("REGRESSION_HALT", "AWAITING_BLUEPRINT_APPROVAL"):
+if "$RUN_MODE" == "resume" and d.get("status") in ("REGRESSION_HALT", "AWAITING_BLUEPRINT_APPROVAL", "AWAITING_PUMP"):
   d["status"] = "in_progress"
 json.dump(d, open("$SESSION_JSON","w"), indent=2); open("$SESSION_JSON","a").write("\n")
 PY
@@ -657,7 +659,7 @@ if [[ "$INTERACTIVE" == "true" ]]; then
   export CHAIN_AGENT_BACKEND="interactive"
   export CHAIN_DISPATCH_DIR="$GOAL_SESSION_DIR_LOCAL/dispatch"
   mkdir -p "$CHAIN_DISPATCH_DIR"
-  rm -f "$CHAIN_DISPATCH_DIR"/req.* "$CHAIN_DISPATCH_DIR"/*.res "$CHAIN_DISPATCH_DIR/.awaiting-pump" 2>/dev/null || true
+  rm -f "$CHAIN_DISPATCH_DIR"/req.* "$CHAIN_DISPATCH_DIR"/*.res "$CHAIN_DISPATCH_DIR"/*.started "$CHAIN_DISPATCH_DIR/.awaiting-pump" 2>/dev/null || true
   echo "[run-goal] Interactive dispatch backend ON — agents run as subagents in the foreground session (the pump)."
   echo "[run-goal]   Dispatch channel: $CHAIN_DISPATCH_DIR"
 fi
@@ -1066,7 +1068,11 @@ Do NOT write code or implement anything. The iteration spec and any blueprint ed
   echo "[run-goal] Target journeys: ${TARGET_JOURNEYS:-(none parsed)}"
   record_telemetry_event "iter_dispatch" "$(jq -cn --arg d "$DEPTH" --arg tj "$TARGET_JOURNEYS" '{depth:$d, target_journeys:$tj}' 2>/dev/null || printf '{"depth":"%s"}' "$DEPTH")"
 
-  # 3. Dispatch
+  # 3. Dispatch. Reset the per-iteration exit code first: _exec_rc is a plain
+  # shell var, so a stale 70 from a prior iteration would otherwise survive into
+  # this one (the `:-0` default only fills an UNSET var) and mis-fire the
+  # transport-pause check below.
+  _exec_rc=0
   if [[ "$DEPTH" == "full" ]]; then
     _full_extra_args=(--no-finalize)
     echo "[run-goal] Dispatching FULL pipeline via run-phase.sh ${_full_extra_args[*]} ..."
@@ -1080,7 +1086,24 @@ Do NOT write code or implement anything. The iteration spec and any blueprint ed
     echo "[run-goal] Dispatching LEAN pipeline via goal-iter-lean.sh ..."
     bash "$SCRIPT_DIR/goal-iter-lean.sh" "$ITER_NAME" || _exec_rc=$?
   fi
-  _exec_rc=${_exec_rc:-0}
+
+  # Transport/dispatch-unavailable (exit 70) from the interactive backend: the
+  # pump/session went away mid-iteration. This is infrastructure, not agent
+  # quality — pause cleanly and resumably instead of running the coherence-auditor
+  # and goal-evaluator (which would also fail to dispatch) on an empty iteration.
+  # current_iter is NOT advanced (it only moves after the evaluator), so
+  # /goal-resume re-runs this same iteration from the decomposer.
+  if [[ "$_exec_rc" -eq "${DISPATCH_UNAVAILABLE_EXIT_CODE:-70}" ]]; then
+    echo "[run-goal] Interactive pump/dispatch unavailable during iteration $CURRENT_ITER — pausing." >&2
+    if [[ -n "${CHAIN_DISPATCH_DIR:-}" && -f "${CHAIN_DISPATCH_DIR}/.awaiting-pump" ]]; then
+      echo "[run-goal]   $(cat "${CHAIN_DISPATCH_DIR}/.awaiting-pump" 2>/dev/null)" >&2
+    fi
+    echo "[run-goal]   Resume after re-opening the pump session:  /goal-resume $SESSION_ID" >&2
+    echo "[run-goal]   (or: ./scripts/automation/run-goal.sh --resume --session-id $SESSION_ID --interactive)" >&2
+    record_telemetry_event "halt" '{"reason":"AWAITING_PUMP","detected_at_step":"executor"}'
+    write_session_summary "AWAITING_PUMP" "$CURRENT_ITER"
+    exit 0
+  fi
 
   # 3b. Coherence auditor — information-architecture + data-contract drift gate.
   # Goal-mode only; one integration point covering both lean and full dispatch.

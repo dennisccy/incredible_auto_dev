@@ -92,7 +92,9 @@ programmatic path with an API key** (`run-goal.sh` without `--interactive`).
   `/goal-resume <sid>` — it re-runs the in-flight iteration, so your edits take
   effect. Three outcomes are all resumable: a clean `/goal-pause`; a hard kill
   (only the summary is skipped — `current_iter` is intact); and an untouched
-  orphan, which self-aborts within `CHAIN_PUMP_HEARTBEAT_TIMEOUT` (~30 min).
+  orphan, which self-aborts and records `AWAITING_PUMP` once dispatch can no longer
+  reach the pump — within `CHAIN_PUMP_HEARTBEAT_TIMEOUT` (~30 min) if no agent had
+  been picked up, or within `CHAIN_DISPATCH_INFLIGHT_TIMEOUT` if one was mid-flight.
 - **Watch progress in the engine log.** The engine tees its full, timestamped,
   headless-style log to `runs/goal-session-<sid>/engine.log` — `tail -f` it for
   the real chain narrative (iteration banners, verdicts). The pump itself stays
@@ -107,11 +109,12 @@ programmatic path with an API key** (`run-goal.sh` without `--interactive`).
   Opus access (Max has it; Pro is limited). If a tier's model is unavailable,
   set an interactive tier override (see Troubleshooting). Do **not** set
   `CLAUDE_CODE_SUBAGENT_MODEL` — it overrides every subagent and flattens the tiers.
-- **Fidelity gaps vs headless.** The per-agent `--effort` downgrade, the
-  token-usage telemetry sidecar, and the per-call hard timeout
-  (`CHAIN_CLAUDE_MAX_RUNTIME_SECONDS`) are **not** carried into interactive mode.
-  Per-agent tool/permission isolation and per-agent model **are** preserved (via
-  the agent frontmatter).
+- **Fidelity gaps vs headless.** The per-agent `--effort` downgrade and the
+  token-usage telemetry sidecar are **not** carried into interactive mode. The
+  per-call hard timeout now *does* have an interactive equivalent —
+  `CHAIN_DISPATCH_INFLIGHT_TIMEOUT` bounds a single claimed subagent (defaulting to
+  `CHAIN_CLAUDE_MAX_RUNTIME_SECONDS`). Per-agent tool/permission isolation and
+  per-agent model **are** preserved (via the agent frontmatter).
 - **Resume is iteration-level.** A session that stops mid-iteration re-runs that
   iteration from the decomposer on resume. `/goal-resume` first SIGTERMs any
   still-running prior engine for the session (via `runs/goal-session-<sid>/engine.pid`)
@@ -137,8 +140,9 @@ programmatic path with an API key** (`run-goal.sh` without `--interactive`).
   liveness (via `engine.pid` + `kill -0`): a **dead PID with `status: in_progress`**
   means the engine was orphaned (e.g. a Ctrl+C that never reached it) — `/goal-resume`.
   If it shows `AWAITING_BLUEPRINT_APPROVAL` or `AWAITING_GITHUB_AUTH`, do the named
-  step and `/goal-resume`. If a `dispatch/.awaiting-pump` marker is present, the
-  pump stopped — `/goal-resume`.
+  step and `/goal-resume`. If it shows `AWAITING_PUMP` (or a `dispatch/.awaiting-pump`
+  marker is present), the pump/session went away mid-iteration — re-open the session
+  and `/goal-resume` to re-run that iteration cleanly.
 - **I pressed Ctrl+C and the run kept going / I want to pause** — Ctrl+C stops the
   pump but not the detached engine. Run `/goal-pause <sid>` to stop it cleanly,
   make changes, then `/goal-resume <sid>`. (Prefer `/goal-pause` over killing the
@@ -160,7 +164,8 @@ programmatic path with an API key** (`run-goal.sh` without `--interactive`).
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `CHAIN_PUMP_HEARTBEAT_TIMEOUT` | `1800` | Seconds before a blocked dispatch concludes the pump died (also how long an untouched orphan engine waits before self-aborting). Raise if single agent calls legitimately run longer. |
+| `CHAIN_PUMP_HEARTBEAT_TIMEOUT` | `1800` | PICKUP window only: seconds a *not-yet-claimed* request waits for the pump to take it before concluding the pump died. An alive idle pump refreshes the heartbeat every poll, so this no longer needs to cover a long agent's runtime — a claimed agent is governed by the inflight cap below. (Also how long an untouched orphan engine waits before self-aborting.) |
+| `CHAIN_DISPATCH_INFLIGHT_TIMEOUT` | `7200` (= `CHAIN_CLAUDE_MAX_RUNTIME_SECONDS`) | Hard cap on a single **claimed**, in-flight subagent, measured from when the pump took the request (`dispatch/req.*.started`). This is what lets a legitimately long agent — e.g. the developer's INITIAL BUILD, routinely > 30 min — run without being mistaken for a dead pump. `0` = unlimited. |
 | `CHAIN_DISPATCH_POLL_SECONDS` | `1` | Channel poll interval. |
 
 The pump awaits work with a **single foreground** `goal-await-dispatch.sh
@@ -184,8 +189,6 @@ timestamped chain log is always at `runs/goal-session-<sid>/engine.log`.
 - **`SubagentStop` hook binding** — the advisory `on-stop-check-artifacts` hook
   fires on main-session stop but not on subagent completion; bind it to
   `SubagentStop` for parity if the reminder is wanted.
-- **Pump-side per-dispatch timeout** — an optional replacement for the headless
-  `CHAIN_CLAUDE_MAX_RUNTIME_SECONDS` so a hung subagent can be bounded.
 - **Richer in-session telemetry** — the stream-json usage sidecar is absent in
   interactive mode, so per-agent token/cost capture is reduced; a pump-side
   accounting could restore it.

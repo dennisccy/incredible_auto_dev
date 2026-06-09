@@ -93,12 +93,23 @@ one `goal-await-dispatch.sh` call together (multiple Agent calls in one message)
 then write all of their `.res` files. Request file names are unique, so two
 concurrent requests never collide.
 
-## Heartbeat
+## Heartbeat & in-flight claims
 
-`goal-await-dispatch.sh` refreshes `<dir>/.pump-alive` while it waits. If you
-stop pumping, the engine's blocked dispatches notice the stale heartbeat after
-`CHAIN_PUMP_HEARTBEAT_TIMEOUT` seconds and stop cleanly, leaving an
-`.awaiting-pump` marker, so the session can be resumed instead of hanging.
+`goal-await-dispatch.sh` refreshes `<dir>/.pump-alive` while it waits, and — the
+moment it hands a request to you — marks that request claimed by touching
+`<req>.started`. The engine then uses two tiers, so a legitimately long agent is
+never mistaken for a dead pump:
+
+- **Not yet claimed** (no `.started`): if `.pump-alive` goes stale beyond
+  `CHAIN_PUMP_HEARTBEAT_TIMEOUT`, the pump never picked the request up — the engine
+  stops cleanly, leaving an `.awaiting-pump` marker.
+- **Claimed** (`.started` present): the subagent is running; it is bounded only by
+  `CHAIN_DISPATCH_INFLIGHT_TIMEOUT` (default 2h), NOT the idle heartbeat — so a
+  30+ minute INITIAL BUILD does not trip a false "pump stale" abort.
+
+Either way, a genuine pump loss pauses the session as `AWAITING_PUMP` (resumable)
+rather than hanging. You do not manage these markers — `goal-await-dispatch.sh`
+and the engine do.
 
 ## When the engine exits
 
@@ -108,6 +119,7 @@ is authoritative:
 - `GOAL_ACHIEVED` — the goal is done; point to the session summary and the delivered wrap.
 - `AWAITING_BLUEPRINT_APPROVAL` — ask the user to review `state/blueprint.md`, then `/goal-resume`.
 - `AWAITING_GITHUB_AUTH` — ask the user to run `gh auth login`, then `/goal-resume`.
+- `AWAITING_PUMP` — the pump/session went away mid-iteration; re-open it and `/goal-resume` (it re-runs that iteration).
 - `REGRESSION_HALT` — report the regression; resuming requires `--acknowledge-regression`.
 - `STALLED` or `BUDGET_EXHAUSTED` — report it and suggest editing `docs/goal.md` or raising `--max-iter`.
 - `ABORTED` — the run was interrupted; `/goal-resume` continues from the last iteration.

@@ -29,10 +29,19 @@
 #   CHAIN_DISPATCH_POLL_SECONDS   Poll interval while waiting for a result (default 1).
 
 : "${CHAIN_DISPATCH_POLL_SECONDS:=1}"
-# Generous default: the pump only refreshes the heartbeat while it is *waiting*
-# for the next request (goal-await-dispatch.sh), not while a dispatched subagent
-# is running, so this must comfortably exceed the longest single agent call.
+# CHAIN_PUMP_HEARTBEAT_TIMEOUT governs the PICKUP window only: how long a brand-new,
+# not-yet-claimed request may wait for the pump to take it. An alive idle pump
+# refreshes the heartbeat (.pump-alive) every ~1s while waiting in
+# goal-await-dispatch.sh, so staleness here genuinely means the pump never picked
+# the request up (it stopped/closed). It no longer needs to cover a long agent's
+# runtime — that is the inflight cap below.
 : "${CHAIN_PUMP_HEARTBEAT_TIMEOUT:=1800}"
+# CHAIN_DISPATCH_INFLIGHT_TIMEOUT bounds a single CLAIMED, in-flight subagent
+# (measured from the pump's .started claim marker), so a legitimately long agent
+# call (e.g. the developer's INITIAL BUILD, which routinely exceeds 30 min) is
+# never mistaken for a dead pump. 0 = unlimited. Defaults to the headless per-call
+# runtime cap so the interactive backend is symmetric with `claude -p`.
+: "${CHAIN_DISPATCH_INFLIGHT_TIMEOUT:=${CHAIN_CLAUDE_MAX_RUNTIME_SECONDS:-7200}}"
 
 # Echo the value following -p / --print in the args (the agent prompt). Empty if absent.
 _interactive_extract_prompt() {
@@ -78,23 +87,56 @@ _interactive_invoke() {
   # Publish atomically: the pump only picks up *.ready files.
   mv "$req" "$req.ready"
 
-  # Block until the pump writes the result. While waiting, watch the pump's
-  # heartbeat: if it exists but has gone stale, the pump/session has died, so
-  # give up non-fatally (never the quota code 75) and leave an .awaiting-pump
-  # marker — instead of blocking forever. An absent heartbeat means "keep
-  # waiting" (the pump may not have beaten yet).
+  # Block until the pump writes the result. Two tiers of liveness while waiting
+  # (give up non-fatally — never the quota code 75 — and leave an .awaiting-pump
+  # marker instead of blocking forever):
+  #
+  #   Tier A — PICKUP (this request not yet claimed: no .started marker).
+  #     An alive idle pump refreshes .pump-alive every ~1s while it waits in
+  #     goal-await-dispatch.sh, so a heartbeat older than CHAIN_PUMP_HEARTBEAT_TIMEOUT
+  #     means the pump never picked this request up (it stopped/closed) → abort.
+  #     An absent heartbeat means "keep waiting" (the pump may not have beaten yet).
+  #     If ANY req.*.started exists in the channel the pump is demonstrably alive and
+  #     busy on another request, so this unclaimed request falls back to the inflight
+  #     cap rather than the short pickup timeout (avoids a false abort mid-dispatch).
+  #
+  #   Tier B — INFLIGHT (this request claimed: goal-await-dispatch.sh touched
+  #     <req>.started when it handed the request to the pump). The pump is actively
+  #     running the subagent, so bound it ONLY by CHAIN_DISPATCH_INFLIGHT_TIMEOUT
+  #     (from the .started mtime; 0 = unlimited). This is what stops a legitimately
+  #     long agent — e.g. the developer's INITIAL BUILD, routinely > 30 min — from
+  #     being mistaken for a dead pump.
   local hb="$dir/.pump-alive"
+  local started="$req.started"
+  local _now _ref _age _busy _s
   while [[ ! -f "$res" ]]; do
-    if [[ -f "$hb" ]]; then
-      local _now _hbm _age
-      _now="$(date +%s)"
-      _hbm="$(stat -c %Y "$hb" 2>/dev/null || stat -f %m "$hb" 2>/dev/null || echo "$_now")"
-      _age=$(( _now - _hbm ))
-      if [[ "$_age" -gt "$CHAIN_PUMP_HEARTBEAT_TIMEOUT" ]]; then
-        echo "[interactive-dispatch] pump heartbeat stale (${_age}s > ${CHAIN_PUMP_HEARTBEAT_TIMEOUT}s) — assuming the pump/session stopped; aborting this dispatch." >&2
-        printf 'pump heartbeat stale: %ss since last beat (agent=%s)\n' "$_age" "$agent" > "$dir/.awaiting-pump"
-        rm -f "$req.ready" 2>/dev/null || true
-        return 70
+    _now="$(date +%s)"
+    if [[ -f "$started" ]]; then
+      # Tier B: claimed → inflight cap measured from the claim time.
+      if [[ "${CHAIN_DISPATCH_INFLIGHT_TIMEOUT:-7200}" -gt 0 ]]; then
+        _ref="$(stat -c %Y "$started" 2>/dev/null || stat -f %m "$started" 2>/dev/null || echo "$_now")"
+        _age=$(( _now - _ref ))
+        if [[ "$_age" -gt "${CHAIN_DISPATCH_INFLIGHT_TIMEOUT:-7200}" ]]; then
+          echo "[interactive-dispatch] claimed agent '$agent' exceeded inflight timeout (${_age}s > ${CHAIN_DISPATCH_INFLIGHT_TIMEOUT}s) — aborting this dispatch." >&2
+          printf 'inflight timeout: %ss since claim (agent=%s)\n' "$_age" "$agent" > "$dir/.awaiting-pump"
+          rm -f "$req.ready" "$started" 2>/dev/null || true
+          return "${DISPATCH_UNAVAILABLE_EXIT_CODE:-70}"
+        fi
+      fi
+    elif [[ -f "$hb" ]]; then
+      # Tier A: not yet claimed → pickup timeout against the heartbeat, UNLESS the
+      # pump is demonstrably alive and busy on another request (a sibling .started).
+      _busy=""
+      for _s in "$dir"/req.*.started; do [[ -e "$_s" ]] && { _busy=1; break; }; done
+      if [[ -z "$_busy" ]]; then
+        _ref="$(stat -c %Y "$hb" 2>/dev/null || stat -f %m "$hb" 2>/dev/null || echo "$_now")"
+        _age=$(( _now - _ref ))
+        if [[ "$_age" -gt "$CHAIN_PUMP_HEARTBEAT_TIMEOUT" ]]; then
+          echo "[interactive-dispatch] pump heartbeat stale (${_age}s > ${CHAIN_PUMP_HEARTBEAT_TIMEOUT}s) and request not picked up — assuming the pump/session stopped; aborting this dispatch." >&2
+          printf 'pump heartbeat stale: %ss since last beat (agent=%s)\n' "$_age" "$agent" > "$dir/.awaiting-pump"
+          rm -f "$req.ready" 2>/dev/null || true
+          return "${DISPATCH_UNAVAILABLE_EXIT_CODE:-70}"
+        fi
       fi
     fi
     sleep "$CHAIN_DISPATCH_POLL_SECONDS"
@@ -102,20 +144,22 @@ _interactive_invoke() {
 
   local rc
   rc="$(cat "$res" 2>/dev/null || echo 1)"
-  rm -f "$res" "$req.ready" 2>/dev/null || true
+  rm -f "$res" "$req.ready" "$started" 2>/dev/null || true
   [[ "$rc" =~ ^[0-9]+$ ]] || rc=1
   return "$rc"
 }
 
 # ── Self-test (run directly: `bash interactive-dispatch.sh --self-test`) ──────
-# Forks a tiny "pump" that answers one request, then drives a real round-trip
-# through _interactive_invoke. Fast (<1s); does NOT exercise the heartbeat-stale
-# path. No-op when the file is merely sourced (the BASH_SOURCE guard below).
+# Drives real round-trips through _interactive_invoke against tiny forked "pumps",
+# covering the round-trip AND both timeout tiers. Fast (a few seconds). No-op when
+# the file is merely sourced (the BASH_SOURCE guard below). `touch -d` is used to
+# back-date markers so aborts fire on the first poll (Linux/GNU coreutils).
 _interactive_dispatch_self_test() {
-  local d fails=0 rc=0 pump r
-  d="$(mktemp -d)"
-  export CHAIN_DISPATCH_DIR="$d"
+  local fails=0 d rc pump r
   export CHAIN_CURRENT_AGENT="developer"
+
+  # Test 1 — round-trip returns the pump's exit code.
+  d="$(mktemp -d)"; export CHAIN_DISPATCH_DIR="$d"; rc=0
   ( for _ in $(seq 1 50); do
       r="$(find "$d" -maxdepth 1 -name 'req.*.ready' 2>/dev/null | head -1)"
       if [[ -n "$r" ]]; then echo 0 > "${r%.ready}.res"; break; fi
@@ -126,6 +170,52 @@ _interactive_dispatch_self_test() {
   wait "$pump" 2>/dev/null || true
   if [[ "$rc" -eq 0 ]]; then echo "  PASS interactive-dispatch: round-trip returns pump exit code"; else echo "  FAIL interactive-dispatch: round-trip (rc=$rc)"; fails=1; fi
   rm -rf "$d"
+
+  # Test 2 — a CLAIMED agent survives a stale heartbeat (THE core fix). With a
+  # .started claim marker present, a stale .pump-alive must NOT abort: Tier B's
+  # inflight cap governs, not the short pickup timeout. Under the old code this
+  # round-trip would have aborted with 70.
+  d="$(mktemp -d)"; export CHAIN_DISPATCH_DIR="$d"; rc=0
+  CHAIN_PUMP_HEARTBEAT_TIMEOUT=1; CHAIN_DISPATCH_INFLIGHT_TIMEOUT=3600; CHAIN_DISPATCH_POLL_SECONDS=0.2
+  ( for _ in $(seq 1 60); do
+      r="$(find "$d" -maxdepth 1 -name 'req.*.ready' 2>/dev/null | head -1)"
+      if [[ -n "$r" ]]; then
+        touch "${r%.ready}.started"                                    # pump claims it
+        touch -d '120 seconds ago' "$d/.pump-alive" 2>/dev/null || true # heartbeat already stale
+        sleep 0.6                                                       # long agent, no heartbeat refresh
+        echo 0 > "${r%.ready}.res"
+        break
+      fi
+      sleep 0.1
+    done ) &
+  pump=$!
+  _interactive_invoke -p "long claimed agent" || rc=$?
+  wait "$pump" 2>/dev/null || true
+  if [[ "$rc" -eq 0 ]]; then echo "  PASS interactive-dispatch: claimed agent survives stale heartbeat (Tier B)"; else echo "  FAIL interactive-dispatch: claimed agent wrongly aborted (rc=$rc)"; fails=1; fi
+  rm -rf "$d"
+
+  # Test 3 — UNCLAIMED request + stale heartbeat → 70 (Tier A pickup abort).
+  d="$(mktemp -d)"; export CHAIN_DISPATCH_DIR="$d"; rc=0
+  CHAIN_PUMP_HEARTBEAT_TIMEOUT=1; CHAIN_DISPATCH_INFLIGHT_TIMEOUT=3600; CHAIN_DISPATCH_POLL_SECONDS=0.2
+  touch -d '120 seconds ago' "$d/.pump-alive" 2>/dev/null || true       # pump never picks up
+  _interactive_invoke -p "unclaimed stale" || rc=$?
+  if [[ "$rc" -eq "${DISPATCH_UNAVAILABLE_EXIT_CODE:-70}" ]]; then echo "  PASS interactive-dispatch: unclaimed + stale heartbeat → 70 (Tier A)"; else echo "  FAIL interactive-dispatch: pickup-timeout abort (rc=$rc)"; fails=1; fi
+  rm -rf "$d"
+
+  # Test 4 — CLAIMED request that exceeds the inflight cap → 70 (Tier B abort).
+  d="$(mktemp -d)"; export CHAIN_DISPATCH_DIR="$d"; rc=0
+  CHAIN_PUMP_HEARTBEAT_TIMEOUT=3600; CHAIN_DISPATCH_INFLIGHT_TIMEOUT=1; CHAIN_DISPATCH_POLL_SECONDS=0.2
+  ( for _ in $(seq 1 60); do
+      r="$(find "$d" -maxdepth 1 -name 'req.*.ready' 2>/dev/null | head -1)"
+      if [[ -n "$r" ]]; then touch -d '120 seconds ago' "${r%.ready}.started" 2>/dev/null || true; break; fi
+      sleep 0.1
+    done ) &
+  pump=$!
+  _interactive_invoke -p "stuck claimed agent" || rc=$?
+  wait "$pump" 2>/dev/null || true
+  if [[ "$rc" -eq "${DISPATCH_UNAVAILABLE_EXIT_CODE:-70}" ]]; then echo "  PASS interactive-dispatch: claimed + exceeds inflight → 70 (Tier B)"; else echo "  FAIL interactive-dispatch: inflight-timeout abort (rc=$rc)"; fails=1; fi
+  rm -rf "$d"
+
   if [[ "$fails" -eq 0 ]]; then echo "interactive-dispatch self-test: OK"; else echo "interactive-dispatch self-test: FAILED"; fi
   return "$fails"
 }
