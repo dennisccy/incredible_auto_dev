@@ -30,6 +30,8 @@ KNOWN_MODELS = {
     "claude-sonnet-4-6", "claude-sonnet-4-5", "claude-sonnet-4-7",
     # light
     "claude-haiku-4-5", "claude-haiku-4-6",
+    # flagship
+    "claude-fable-5",
     # generic aliases sometimes used
     "opus", "sonnet", "haiku",
 }

@@ -10,11 +10,13 @@ The framework defines 14 agents in `.claude/agents/`. Each agent has a model tie
 | standard | claude-sonnet-4-6 | Solid tasks: code review, UI analysis, test design |
 | light | claude-haiku-4-5 | Routine workflow: QA execution, git operations |
 
+> **Flagship override:** the four high-leverage decision gates — `orchestrator`, `auditor`, `goal-decomposer`, and `goal-evaluator` — keep `model_tier: strong` but carry a Claude-only `model_override: claude-fable-5` (a stronger, faster model). A wrong call by one of these wastes a whole iteration of the chain, so the higher token cost is worth it there; bulk generators like `developer` stay on Opus. The override lives in each agent's `agents/<name>/agent.yaml`; Codex still resolves these via the `strong` tier. Disable at dispatch with `CHAIN_DISABLE_MODEL_OVERRIDE=true`.
+
 ## Core Pipeline Agents (7)
 
 ### orchestrator
 - **File:** `.claude/agents/orchestrator.md`
-- **Model:** strong (claude-opus-4-8)
+- **Model:** flagship — claude-fable-5 (strong tier, Claude override)
 - **Pipeline step:** 1 (Plan)
 - **Inputs:** CLAUDE.md, project-template.md, phase spec, docs/goal.md, prior handoffs
 - **Output:** `runs/<phase>/plan.md`
@@ -48,7 +50,7 @@ The framework defines 14 agents in `.claude/agents/`. Each agent has a model tie
 
 ### auditor
 - **File:** `.claude/agents/auditor.md`
-- **Model:** strong (claude-opus-4-8)
+- **Model:** flagship — claude-fable-5 (strong tier, Claude override)
 - **Pipeline step:** 9 (Audit)
 - **Inputs:** phase spec, plan, dev handoff, review report, QA report, test plan, actual source files
 - **Output:** `docs/handoffs/<phase>-audit.md`
@@ -123,7 +125,7 @@ These agents are invoked only by the goal-mode pipeline (`run-goal.sh` and `goal
 
 ### goal-decomposer
 - **File:** `.claude/agents/goal-decomposer.md`
-- **Model:** strong (claude-opus-4-8)
+- **Model:** flagship — claude-fable-5 (strong tier, Claude override)
 - **Pipeline step:** Goal-mode iteration step 1 (planning)
 - **Inputs:** CLAUDE.md, project-template.md, `docs/goal.md` (especially Must-have user journeys + Anti-goals), `runs/goal-session-<sid>/state/journey-history.json`, last 3 entries of `runs/goal-session-<sid>/state/evaluator-log.md`, prior iteration's `eval.md`, codebase state via Glob/Grep/Read
 - **Output:** `docs/phases/goal-<sid>-iter-<N>.md` — a phase-spec-shaped iter spec with Goal Mode Metadata (Mode: baseline|next, Depth: lean|full, Target journeys, Required-still-passing journeys, Anti-goal reminders)
@@ -133,7 +135,7 @@ These agents are invoked only by the goal-mode pipeline (`run-goal.sh` and `goal
 
 ### goal-evaluator
 - **File:** `.claude/agents/goal-evaluator.md`
-- **Model:** strong (claude-opus-4-8)
+- **Model:** flagship — claude-fable-5 (strong tier, Claude override)
 - **Pipeline step:** Goal-mode iteration step 3 (judgment)
 - **Inputs:** `docs/goal.md`, the iter spec, all iteration artifacts (dev handoff, review report, QA report, audit handoff for full mode), browser-qa results, evidence screenshots, prior `journey-history.json`, prior evaluator-log entries
 - **Output:** `runs/goal-session-<sid>/iter-<N>/eval.md` (verdict + recommendation), updated `journey-history.json` (full atomic write), appended `evaluator-log.md` entry
