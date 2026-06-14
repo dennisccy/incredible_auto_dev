@@ -503,27 +503,6 @@ _claude_invoke() {
       fi
     fi
 
-    # Per-agent model resolution.
-    #
-    # The interactive/subagent dispatch path inherits an agent's model from its
-    # .claude/agents/<name>.md frontmatter automatically; a top-level `claude -p`
-    # does NOT — without this it would silently run on the CLI default model,
-    # ignoring per-agent tier/override assignments. So mirror the --effort
-    # overlay: when CHAIN_CURRENT_AGENT is set and CHAIN_DISABLE_MODEL_OVERRIDE
-    # != "true", look up the agent's model via agent_permissions.py and pass
-    # --model. The lookup is non-fatal — any error leaves the CLI default.
-    if [[ "$CHAIN_DISABLE_MODEL_OVERRIDE" != "true" && -n "${CHAIN_CURRENT_AGENT:-}" ]]; then
-      local _perms_script_for_model
-      _perms_script_for_model="$(dirname "${BASH_SOURCE[0]}")/agent_permissions.py"
-      if [[ -f "$_perms_script_for_model" ]]; then
-        local _model_lookup
-        _model_lookup=$(python3 "$_perms_script_for_model" model "$CHAIN_CURRENT_AGENT" 2>/dev/null) || _model_lookup=""
-        if [[ -n "$_model_lookup" ]]; then
-          _claude_extra_args+=(--model "$_model_lookup")
-        fi
-      fi
-    fi
-
     # NOTE on `--foreground`: GNU timeout's default places the child in a new
     # process group via setpgid(2). With that default, terminal Ctrl-C delivers
     # SIGINT to the parent shell's pgrp only — claude never receives it, keeps

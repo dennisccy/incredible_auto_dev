@@ -21,8 +21,6 @@ Optional frontmatter fields recognized:
 CLI:
     python3 agent_permissions.py disallowed <agent>   # space-joined list to stdout
     python3 agent_permissions.py budget <agent>       # USD value or empty
-    python3 agent_permissions.py effort <agent>       # --effort value (max|medium)
-    python3 agent_permissions.py model <agent>        # model id or empty (CLI default)
     python3 agent_permissions.py self-test
 """
 from __future__ import annotations
@@ -263,40 +261,6 @@ def budget_for(agent: str, agents_dir: Path = DEFAULT_AGENTS_DIR) -> float | Non
         return None
 
 
-def model_for(agent: str, agents_dir: Path = DEFAULT_AGENTS_DIR) -> str | None:
-    """Return the concrete model id the named agent should run on, or None to
-    fall back to the CLI default.
-
-    The interactive/subagent dispatch path inherits the model from the generated
-    `.claude/agents/<name>.md` frontmatter automatically; a top-level `claude -p`
-    does not. This lets the headless wrapper pass the SAME model via --model, so
-    both backends honor per-agent tiers consistently.
-
-    Source of truth is the generated `.claude/agents/<name>.md` `model:` field.
-    Falls back to the neutral `agents/<name>/agent.yaml` `claude.model_override`
-    if the generated file is absent (e.g. before a sync).
-    """
-    # Generated agent file (post-sync) — exactly what subagent dispatch uses.
-    f = _agent_file(agent, agents_dir)
-    if f is not None:
-        try:
-            fm = _parse_frontmatter(f.read_text(encoding="utf-8")) or {}
-        except OSError:
-            fm = {}
-        m = fm.get("model")
-        if isinstance(m, str) and m.strip():
-            return m.strip()
-    # Neutral fallback: agents/<name>/agent.yaml -> claude.model_override
-    n = _neutral_agent_yaml(agent)
-    if n is not None:
-        claude_cfg = _neutral_yaml_field(n, "claude")
-        if isinstance(claude_cfg, dict):
-            mo = claude_cfg.get("model_override")
-            if isinstance(mo, str) and mo.strip():
-                return mo.strip()
-    return None
-
-
 # ── CLI ──────────────────────────────────────────────────────────────────────
 
 def _cmd_disallowed(args: list[str]) -> int:
@@ -329,15 +293,6 @@ def _cmd_effort(args: list[str]) -> int:
         print("Usage: agent_permissions.py effort <agent>", file=sys.stderr)
         return 2
     print(effort_for(args[0]))
-    return 0
-
-
-def _cmd_model(args: list[str]) -> int:
-    """Print the model id for the named agent, or empty for the CLI default."""
-    if not args:
-        print("Usage: agent_permissions.py model <agent>", file=sys.stderr)
-        return 2
-    print(model_for(args[0]) or "")
     return 0
 
 
@@ -394,11 +349,6 @@ def _self_test() -> int:
         assert effort_for("qa") == "medium", "qa must drop to medium for both modes"
         assert effort_for("some-unknown-agent") == "max", "default must be max"
 
-        # Model resolution — reads the generated .md frontmatter `model:` field.
-        assert model_for("developer", agents_dir=d) == "claude-opus-4-7"
-        assert model_for("plain", agents_dir=d) == "claude-sonnet-4-6"
-        assert model_for("nonexistent-agent", agents_dir=d) is None
-
     print("self-test passed")
     return 0
 
@@ -407,7 +357,6 @@ _COMMANDS = {
     "disallowed": _cmd_disallowed,
     "budget": _cmd_budget,
     "effort": _cmd_effort,
-    "model": _cmd_model,
     "self-test": lambda _args: _self_test(),
 }
 

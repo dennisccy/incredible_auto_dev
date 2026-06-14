@@ -55,8 +55,6 @@ agents:
 
 After editing, run `./scripts/automation/sync-agent-models.sh` to propagate changes to agent `.md` files.
 
-> **Note (flagship override):** the modern source of truth is `agents/<name>/agent.yaml` (`model_tier` + a Claude-only `claude.model_override`), resolved per-CLI via `config/model-tiers.yaml` and materialized by `sync-cli-assets.sh`. The four decision gates — `orchestrator`, `auditor`, `goal-decomposer`, `goal-evaluator` — keep `model_tier: strong` but override the Claude model to `claude-fable-5`. The headless wrapper passes this through `--model` (see `CHAIN_DISABLE_MODEL_OVERRIDE` below); the interactive subagent path inherits it from frontmatter.
-
 All agent invocations (phase mode and goal mode) go through `lib/quota-retry.sh::claude_with_quota_retry`, which passes `--effort max` and handles quota exhaustion by sleeping until reset and resuming. This is automatic — no per-agent flag is needed.
 
 ## config/install-security-policy.json
@@ -101,7 +99,6 @@ The `allow` list should be customized per project (e.g., add `Bash(alembic *)` f
 | `CHAIN_TRACE_DIR` | (auto-set by entry scripts) | Directory where each successful claude invocation appends a record to `trace.jsonl` and copies its stdout to `<NNNN>-<agent>.log`. Phase mode auto-sets to `runs/<phase>/trace/`; goal mode auto-sets to `runs/goal-session-<sid>/trace/`. Inspect with `python3 scripts/automation/lib/replay_trace.py list <dir>`. |
 | `CHAIN_DISABLE_TRACE` | `false` | When `true`, the entry scripts skip auto-setting `CHAIN_TRACE_DIR` so no trace records are written. |
 | `CHAIN_DISABLE_PERMISSION_ISOLATION` | `false` | When `true`, skip the per-agent permission overlay applied by `lib/quota-retry.sh`. The overlay reads `lib/agent_permissions.py` and passes `--disallowedTools` to claude based on `CHAIN_CURRENT_AGENT` — by default, only `release-manager` can `git push`, `gh pr merge`, `gh release`, `git tag`, etc. |
-| `CHAIN_DISABLE_MODEL_OVERRIDE` | `false` | When `true`, skip the per-agent `--model` resolution in `lib/quota-retry.sh` and let the headless `claude -p` use the CLI default model. By default the wrapper reads each agent's model from its generated `.claude/agents/<name>.md` frontmatter (`agent_permissions.py model`) and passes `--model`, so headless dispatch honors the same per-agent models as the interactive subagent path. |
 | `GOAL_SESSION_DIR` | (set by run-goal.sh) | Goal-mode session directory; consumed by `lib/telemetry.sh` for JSONL writes. No-op when unset (phase mode is unaffected). |
 | `GOAL_SESSION_ID` | (set by run-goal.sh) | Session id; included in every telemetry event |
 | `GOAL_ITER_INDEX` | (set by run-goal.sh) | Current iteration index; included in every telemetry event |
