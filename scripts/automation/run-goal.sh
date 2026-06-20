@@ -991,7 +991,8 @@ PY
   EVALUATOR_LOG_TAIL=$(_tail_or_placeholder "$EVALUATOR_LOG" 200 "(no entries yet — first iteration)")
   LESSONS_TAIL=$(_tail_or_placeholder "$LESSONS_FILE" 200 "(no lessons recorded yet)")
   cd "$REPO_ROOT"
-  _decomp_start=$(record_agent_invocation_start "goal-decomposer")
+  record_agent_invocation_start "goal-decomposer"   # bare call: must NOT be $(...) or the CHAIN_CURRENT_AGENT export is lost to a subshell
+  _decomp_start=$CHAIN_AGENT_START_EPOCH
   _decomp_rc=0
   claude_with_quota_retry -p "You are the goal-decomposer agent for goal-mode iteration planning.
 
@@ -1116,7 +1117,8 @@ Do NOT write code or implement anything. The iteration spec and any blueprint ed
     echo "[run-goal] Step 2b: coherence-auditor"
     _snapshot_sha="$(cat "$ITER_DIR/snapshot-sha" 2>/dev/null || echo "")"
     cd "$REPO_ROOT"
-    _coh_start=$(record_agent_invocation_start "coherence-auditor")
+    record_agent_invocation_start "coherence-auditor"   # bare call: must NOT be $(...) or the CHAIN_CURRENT_AGENT export is lost to a subshell
+    _coh_start=$CHAIN_AGENT_START_EPOCH
     _coh_rc=0
     claude_with_quota_retry -p "You are the coherence-auditor agent for goal-mode coherence enforcement.
 
@@ -1156,7 +1158,8 @@ The verdict line MUST appear first and start exactly with:
   # Pre-trim — evaluator spec asks for "last 5 entries"; 300 lines covers it.
   EVALUATOR_LOG_TAIL_5=$(_tail_or_placeholder "$EVALUATOR_LOG" 300 "(no entries yet — first evaluation)")
   cd "$REPO_ROOT"
-  _eval_start=$(record_agent_invocation_start "goal-evaluator")
+  record_agent_invocation_start "goal-evaluator"   # bare call: must NOT be $(...) or the CHAIN_CURRENT_AGENT export is lost to a subshell
+  _eval_start=$CHAIN_AGENT_START_EPOCH
   _eval_rc=0
   claude_with_quota_retry -p "You are the goal-evaluator agent for goal-mode iteration evaluation.
 

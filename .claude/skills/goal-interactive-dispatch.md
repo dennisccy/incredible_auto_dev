@@ -81,9 +81,16 @@ iteration-summarizer, readme-maintainer, orchestrator, auditor, ui-impact-analys
 ui-test-designer, ux-regression-reviewer, phase-closure-auditor, demo-narrator,
 release-manager, product-manager. Use that name as `subagent_type`.
 
+The prompt body always names its own instructions file as
+`.claude/agents/<name>.md` (e.g. "Agent instructions: .claude/agents/goal-decomposer.md").
+That line is the source of truth: if the `agent` field disagrees with the agent
+the body identifies — even when `agent` is itself a valid name — dispatch as the
+agent named in the body, not the `agent` field. (This should be rare; it means the
+engine mislabeled the request, but the body is what actually defines the work.)
+
 Fallback: if `agent` is `unattributed` or has no matching agent file, read the
-prompt — it names its own instructions file as `.claude/agents/<name>.md`; use
-that name. If none can be found, dispatch with the `general-purpose` subagent.
+prompt for that `.claude/agents/<name>.md` line and use that name. If none can be
+found, dispatch with the `general-purpose` subagent.
 
 ## Concurrency
 

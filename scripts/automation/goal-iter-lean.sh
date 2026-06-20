@@ -90,7 +90,8 @@ run_developer() {
   local fix_context="$2"
   cd "$REPO_ROOT"
   local _start
-  _start=$(record_agent_invocation_start "developer")
+  record_agent_invocation_start "developer"   # bare call: $(...) would lose the CHAIN_CURRENT_AGENT export to a subshell
+  _start=$CHAIN_AGENT_START_EPOCH
   local _rc=0
   claude_with_quota_retry -p "You are the developer agent for goal-mode lean iteration.
 
@@ -120,7 +121,8 @@ When complete:
 run_reviewer() {
   cd "$REPO_ROOT"
   local _start
-  _start=$(record_agent_invocation_start "reviewer")
+  record_agent_invocation_start "reviewer"   # bare call: $(...) would lose the CHAIN_CURRENT_AGENT export to a subshell
+  _start=$CHAIN_AGENT_START_EPOCH
   local _rc=0
   claude_with_quota_retry -p "You are the reviewer agent for goal-mode lean iteration.
 
@@ -243,7 +245,8 @@ fi
 export CHAIN_CLAUDE_PRE_RETRY_HOOK="ensure_services_running"
 
 cd "$REPO_ROOT"
-_bqa_start=$(record_agent_invocation_start "browser-qa-agent")
+record_agent_invocation_start "browser-qa-agent"   # bare call: $(...) would lose the CHAIN_CURRENT_AGENT export to a subshell
+_bqa_start=$CHAIN_AGENT_START_EPOCH
 _bqa_rc=0
 claude_with_quota_retry -p "You are the browser-qa-agent for goal-mode lean iteration.
 
