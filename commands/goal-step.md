@@ -15,8 +15,8 @@ the engine halts itself with `BUDGET_EXHAUSTED`. Follow
 3. **Launch the engine** in the background, capping iterations one beyond current,
    and capture its PID:
    - existing session: `./scripts/automation/run-goal.sh --session-id <sid> --resume --interactive --max-iter <current_iter+1>`
-   - brand-new session: same without `--resume` (this runs the baseline iteration,
-     which then pauses for blueprint approval).
+   - brand-new session: same without `--resume` (this runs the baseline iteration;
+     the blueprint is auto-approved by default, so the one-beyond cap stops it).
 4. **Run the pump loop** until `ENGINE_DONE`. Run it **QUIETLY** per the skill —
    tool calls only, no narration; the full timestamped chain log is at
    `runs/goal-session-<sid>/engine.log` (tell the user to `tail -f` it).

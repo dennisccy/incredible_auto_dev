@@ -25,7 +25,7 @@ Written by `run-goal.sh` when a session starts (or resumes).
 | Field | Type | Description |
 |---|---|---|
 | `mode` | string | `new` or `resume` |
-| `max_iterations` | number | Configured cap |
+| `max_iterations` | number | Configured cap (`0` = unlimited / no cap, the default) |
 | `stall_window` | number | Configured stall window |
 | `auto_release` | boolean | Whether `--auto-release` was passed |
 

@@ -69,7 +69,7 @@ The synthetic phase name `goal-<sid>-iter-<N>` (where `<sid>` is the session id 
 
 The outer loop checks halts in this order, each iteration, before invoking the decomposer:
 
-1. **`BUDGET_EXHAUSTED`** — `current_iter >= max_iterations` (default 30, override with `--max-iter`)
+1. **`BUDGET_EXHAUSTED`** — `current_iter >= max_iterations`; fires **only when a positive `--max-iter` is set**. No iteration cap by default (`max_iterations` defaults to `0` = unlimited).
 2. **`STALLED`** — last `stall_window` (default 3) journey-history hashes are identical, meaning no journey newly passed/failed/regressed
 3. **`REGRESSION_HALT`** — prior iteration's evaluator emitted `REGRESSION` and the user has not passed `--acknowledge-regression`
 
@@ -85,7 +85,7 @@ After the evaluator runs, the verdict directly drives the loop:
 
 **Quota exhaustion is NOT a halt.** The wrapped `claude_with_quota_retry` library transparently sleeps until the quota resets, then resumes the same agent invocation. Telemetry records the quota pause for observability.
 
-**Blueprint approval pause.** At the top of the loop, before the first building iteration (and again only when the decomposer flags a *structural* blueprint change via `state/blueprint.reapproval-requested`), the loop sets `session.json.status = AWAITING_BLUEPRINT_APPROVAL` and exits 0 so the human can review `state/blueprint.md`. `--resume` continues (resuming counts as approval and creates `state/blueprint.approved`); `--auto-approve-blueprint` skips the pause. This is the one human checkpoint in an otherwise unattended run. The gate sits at the top of the loop precisely so the baseline-drafted blueprint is never re-drafted out from under the human.
+**Blueprint approval pause (opt-in).** By default the blueprint is **auto-approved** (`AUTO_APPROVE_BLUEPRINT=true`): the gate touches `state/blueprint.approved`, clears any `state/blueprint.reapproval-requested` marker, and the run stays unattended. Pass `--require-blueprint-approval` to enable the checkpoint: then at the top of the loop, before the first building iteration (and again only when the decomposer flags a *structural* blueprint change), the loop sets `session.json.status = AWAITING_BLUEPRINT_APPROVAL` and exits 0 so the human can review `state/blueprint.md`; `--resume` continues (resuming counts as approval and creates `state/blueprint.approved`). The gate sits at the top of the loop precisely so the baseline-drafted blueprint is never re-drafted out from under the human.
 
 **GitHub auth preflight (`AWAITING_GITHUB_AUTH`).** Once before the loop (on both fresh-start and `--resume`), if the session will push (`push_per_iter` or `--auto-release`), `run-goal.sh` calls `check_git_push_access` (`lib/common.sh`) — a `GIT_TERMINAL_PROMPT=0` + ssh-BatchMode `git ls-remote origin` that tests git's real credential path without ever prompting. On failure: in an interactive terminal it runs `gh auth login` + `gh auth setup-git`, re-verifies, and continues; otherwise it sets `session.json.status = AWAITING_GITHUB_AUTH` and exits 0 (resumable, like the blueprint pause). This converts the old failure mode — a per-iter `git push` blocking forever on a username/password prompt when the GitHub HTTPS session expired — into a fail-fast preflight. The per-iter push itself is also wrapped in `GIT_TERMINAL_PROMPT=0`, so a session that expires mid-run fails that push fast and non-fatally rather than hanging. Bypass with `CHAIN_SKIP_GITHUB_PREFLIGHT=true`.
 
@@ -101,8 +101,8 @@ runs/goal-session-<sid>/
 │   ├── journey-history.json    # per-journey status, anti-goal violations, timestamps
 │   ├── evaluator-log.md        # append-only chronicle of evaluator decisions
 │   ├── lessons.md              # append-only ledger of non-obvious takeaways; goal-decomposer reads before planning
-│   ├── blueprint.md            # coherence contract: information architecture + data contract (drafted at baseline, human-approved, enforced each iter)
-│   ├── blueprint.approved      # marker: human approved the blueprint (created on first --resume, or by --auto-approve-blueprint)
+│   ├── blueprint.md            # coherence contract: information architecture + data contract (drafted at baseline, auto-approved by default, enforced each iter)
+│   ├── blueprint.approved      # marker: blueprint approved (auto-created by default; or on first --resume when --require-blueprint-approval was set)
 │   └── blueprint.reapproval-requested  # transient: decomposer flagged a structural change → triggers a re-approval pause
 ├── iter-0/eval.md              # baseline evaluation (no coherence.md — no code yet)
 ├── iter-1/eval.md + coherence.md   # first dev iteration: evaluation + coherence audit

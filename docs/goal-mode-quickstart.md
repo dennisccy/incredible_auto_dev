@@ -48,7 +48,7 @@ Each journey needs a unique ID (`J-NN`), numbered click/type/assert steps that t
 
 If either section is missing or empty, `run-goal.sh` aborts with a clear error message (this is anti-pattern #18).
 
-**Optional but high-leverage — `## Product Shape`.** You can also sketch the app's navigation / information architecture and list the *canonical values* (metrics or entities that must read the same everywhere they appear). The goal-decomposer drafts a coherence **blueprint** from this at baseline; if you leave it blank, it proposes one from your journeys. Naming canonical values here is the single best defense against the "the same number shows different values on different pages" problem. You review and approve the blueprint once (see step 3).
+**Optional but high-leverage — `## Product Shape`.** You can also sketch the app's navigation / information architecture and list the *canonical values* (metrics or entities that must read the same everywhere they appear). The goal-decomposer drafts a coherence **blueprint** from this at baseline; if you leave it blank, it proposes one from your journeys. Naming canonical values here is the single best defense against the "the same number shows different values on different pages" problem. By default the blueprint is auto-approved and the run proceeds unattended; pass `--require-blueprint-approval` to review it once first (see step 3).
 
 ### 2. Configure `.claude/project-template.md`
 
@@ -64,10 +64,10 @@ This will:
 1. Validate `docs/goal.md`
 2. Initialize `runs/goal-session-my-app/`
 3. Run iteration 0 (baseline): the goal-decomposer writes a verify-only spec **and drafts the coherence blueprint** (`state/blueprint.md`), then browser-qa runs every Must-have journey against the current codebase to figure out what already passes (handy for existing projects) and what needs work
-4. **Pause once for blueprint approval.** After baseline, the loop stops (`AWAITING_BLUEPRINT_APPROVAL`) so you can review the drafted blueprint (~3 min — see below). Edit it if needed; your edits are the approval. Then `--resume`. Skip this entirely with `--auto-approve-blueprint`.
+4. **Auto-approve the blueprint and keep going (default).** The AI-drafted blueprint is accepted as-is and the loop proceeds straight into feature iterations — no pause. If you'd rather review it first, start with `--require-blueprint-approval`: the loop stops once (`AWAITING_BLUEPRINT_APPROVAL`) so you can edit the drafted blueprint (~3 min — see below; your edits are the approval), then `--resume`.
 5. Loop iterations 1, 2, 3 … each iteration: decomposer picks the next chunk of failing journeys → lean or full pipeline executes → **coherence-auditor checks the change against the blueprint** → evaluator scores → loop or halt
 
-**Reviewing the blueprint (the one-time pause):** open `runs/goal-session-my-app/state/blueprint.md` and check two things — (1) **Information Architecture**: are the nav sections sensible and does every feature have an obvious home? (2) **Data Contract**: is every "same-number-everywhere" value listed with exactly one source? Add any the AI missed; fix wrong sources. Edit the file directly, then `--resume` (resuming counts as approval).
+**Reviewing the blueprint (only if you passed `--require-blueprint-approval`):** open `runs/goal-session-my-app/state/blueprint.md` and check two things — (1) **Information Architecture**: are the nav sections sensible and does every feature have an obvious home? (2) **Data Contract**: is every "same-number-everywhere" value listed with exactly one source? Add any the AI missed; fix wrong sources. Edit the file directly, then `--resume` (resuming counts as approval).
 
 You can leave it running unattended. The framework's existing quota auto-resume (`claude_with_quota_retry`) handles API limits transparently — when the quota resets, the iteration resumes from where it paused.
 
@@ -95,10 +95,10 @@ expect and prerequisites (it needs a display; works over SSH X11 forwarding).
 
 Halt verdicts:
 - `GOAL_ACHIEVED` — every Must-have journey passes, no anti-goal violations
-- `BUDGET_EXHAUSTED` — hit `--max-iter` cap; resume with a higher cap to continue
+- `BUDGET_EXHAUSTED` — hit the `--max-iter` cap you set (there is no cap by default); resume with a higher cap to continue
 - `STALLED` — no journey progress for `--stall-window` iterations; edit `goal.md` (clearer journeys, narrower scope) and `--resume`
 - `REGRESSION_HALT` — a previously-passing journey now fails; review, fix manually if needed, then resume with `--acknowledge-regression`
-- `AWAITING_BLUEPRINT_APPROVAL` — paused after baseline (or after a structural blueprint change) for you to review `state/blueprint.md`; `--resume` to continue (counts as approval), or pre-empt with `--auto-approve-blueprint`
+- `AWAITING_BLUEPRINT_APPROVAL` — only when you ran with `--require-blueprint-approval`: paused after baseline (or after a structural blueprint change) for you to review `state/blueprint.md`; `--resume` to continue (counts as approval)
 - `AWAITING_GITHUB_AUTH` — paused at startup because per-iter push is on but a push to `origin` wouldn't authenticate (expired GitHub session, or no remote); fix auth (the run will offer to launch `gh auth login` for you when interactive) and `--resume`
 
 ## Common workflows
@@ -146,22 +146,18 @@ session expires mid-run, that iteration's push fails fast and the loop continues
 startup check entirely with `export CHAIN_SKIP_GITHUB_PREFLIGHT=true` (for exotic
 credential setups), or run without pushing via `--no-push-per-iter`.
 
-### Review and approve the blueprint (or skip it)
+### Review the blueprint (opt-in)
 
-After baseline, the loop pauses with `AWAITING_BLUEPRINT_APPROVAL`. Review the drafted blueprint, edit if needed, and resume:
+By default the blueprint is **auto-approved** and the run is fully hands-off — no pause. If you want to review the AI's draft first, start the session with `--require-blueprint-approval`: after baseline the loop pauses with `AWAITING_BLUEPRINT_APPROVAL` so you can edit it and resume:
 
 ```bash
+./scripts/automation/run-goal.sh --session-id my-app --require-blueprint-approval
+# ... loop pauses after baseline ...
 $EDITOR runs/goal-session-my-app/state/blueprint.md   # check IA + Data Contract
 ./scripts/automation/run-goal.sh --resume --session-id my-app   # resuming = approval
 ```
 
-To skip the pause entirely and use the AI's draft as-is (fully hands-off):
-
-```bash
-./scripts/automation/run-goal.sh --session-id my-app --auto-approve-blueprint
-```
-
-`--auto-approve-blueprint` is a per-run flag — pass it on each invocation/resume to keep it on. It also auto-accepts any later structural blueprint change.
+`--require-blueprint-approval` is a per-run flag — pass it on each invocation/resume to keep the review pause on (it also pauses on any later structural blueprint change). `--auto-approve-blueprint` is still accepted but is now the default.
 
 ### Start over
 
@@ -271,10 +267,10 @@ A developer demoing this framework's goal mode.
 Then:
 
 ```bash
-./scripts/automation/run-goal.sh --session-id tiny-clock --max-iter 5 --auto-approve-blueprint
+./scripts/automation/run-goal.sh --session-id tiny-clock --max-iter 5
 ```
 
-(`--auto-approve-blueprint` skips the one-time blueprint review so this demo runs unattended; drop it if you want to review the drafted IA + Data Contract first.) A typical run for this goal completes in 2-3 iterations (baseline finds nothing exists → iter 1 builds the page → iter 2 verifies). The total wall time is dominated by build/test execution, not Claude calls.
+(The blueprint is auto-approved by default, so this demo runs unattended; add `--require-blueprint-approval` if you want to review the drafted IA + Data Contract first. `--max-iter 5` is an optional safety budget — omit it to run uncapped.) A typical run for this goal completes in 2-3 iterations (baseline finds nothing exists → iter 1 builds the page → iter 2 verifies). The total wall time is dominated by build/test execution, not Claude calls.
 
 ## See also
 

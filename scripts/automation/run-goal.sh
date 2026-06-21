@@ -3,29 +3,30 @@
 #
 # Reads docs/goal.md (which must include Must-have user journeys + Anti-goals)
 # and iterates `decompose -> execute -> evaluate` adaptively until either the
-# goal-evaluator declares GOAL_ACHIEVED or a hard halt fires (max iterations,
-# stall, regression).
+# goal-evaluator declares GOAL_ACHIEVED or a hard halt fires (stall, regression,
+# or an optional --max-iter budget — there is no iteration cap by default).
 #
 # Usage:
 #   ./scripts/automation/run-goal.sh [--session-id <id>] [--max-iter N]
 #                                    [--stall-window N] [--resume] [--reset]
 #                                    [--auto-release]
 #                                    [--acknowledge-regression]
-#                                    [--auto-approve-blueprint]
+#                                    [--require-blueprint-approval]
 #                                    [--no-push-per-iter] [--push-per-iter]
 #                                    [--push-branch <name>]
 #
 # Flags:
 #   --session-id <id>            Session identifier (auto-generated if omitted)
-#   --max-iter N                 Hard cap on iterations (default: 30)
+#   --max-iter N                 Optional hard cap on iterations (default: unlimited; 0 = no cap)
 #   --stall-window N             Halt if last N iterations show no journey progress (default: 3)
 #   --resume                     Resume an existing session
 #   --reset                      Discard the named session and start fresh
 #   --auto-release               On GOAL_ACHIEVED, run release-manager once for the whole session
 #   --acknowledge-regression     Continue past a prior REGRESSION_HALT
-#   --auto-approve-blueprint     Skip the one-time blueprint-review pause after baseline (and any
-#                                structural re-approval pause); use the AI-drafted blueprint as-is.
-#                                Per-run flag — pass it on each invocation/resume to keep it on.
+#   --require-blueprint-approval Pause after baseline for the human to review/edit state/blueprint.md
+#                                (and on structural nav-skeleton changes). OFF by default — goal mode
+#                                auto-approves the AI-drafted blueprint and runs hands-off.
+#                                (--auto-approve-blueprint is still accepted but is now the default.)
 #   --push-per-iter              [Default ON for new sessions.] Commit + push each successful
 #                                iteration (CONTINUE / ESCALATE / GOAL_ACHIEVED) to a per-session
 #                                branch. No model invocation, no PR per iter — the branch is
@@ -40,13 +41,13 @@
 #
 # Halt verdicts written to runs/goal-session-<sid>/session.json.status:
 #   GOAL_ACHIEVED   - goal-evaluator declared done
-#   BUDGET_EXHAUSTED - max iterations reached
+#   BUDGET_EXHAUSTED - max iterations reached (only when --max-iter > 0 is set)
 #   STALLED          - journey-history hash unchanged for stall_window iterations
 #   REGRESSION_HALT  - goal-evaluator emitted REGRESSION verdict
 #   ABORTED          - user interrupted (SIGINT/SIGTERM)
-#   AWAITING_BLUEPRINT_APPROVAL - paused after baseline (or after a structural blueprint change) for
-#                                 the human to review/edit state/blueprint.md; resume with --resume
-#                                 (resuming counts as approval) or pre-empt with --auto-approve-blueprint
+#   AWAITING_BLUEPRINT_APPROVAL - only with --require-blueprint-approval: paused after baseline (or a
+#                                 structural blueprint change) for the human to review/edit
+#                                 state/blueprint.md; resume with --resume (resuming counts as approval)
 #   AWAITING_PUMP    - interactive pump/dispatch was unavailable mid-iteration (the foreground
 #                      session/pump went away); resumable — /goal-resume re-runs the same iteration
 #
@@ -69,15 +70,17 @@ fi
 
 # ── Defaults ──────────────────────────────────────────────────────────────
 SESSION_ID=""
-MAX_ITER=30
+MAX_ITER=0          # 0 = unlimited (no iteration cap); a positive --max-iter restores a hard budget
 STALL_WINDOW=3
 RESUME=false
 RESET=false
 AUTO_RELEASE=false
 ACK_REGRESSION=false
-# Skip the one-time blueprint-approval pause (and any structural re-approval
-# pause). Per-run flag; pass it on each invocation/resume if you want it.
-AUTO_APPROVE_BLUEPRINT=false
+# Blueprint review pause. Auto-approved by DEFAULT (goal mode is hands-off): the
+# AI-drafted blueprint is accepted as-is and any structural re-approval marker is
+# cleared, so the loop never pauses for it. Pass --require-blueprint-approval to
+# restore the one-time baseline review pause (and structural re-approval pauses).
+AUTO_APPROVE_BLUEPRINT=true
 # Interactive dispatch backend: run each agent as a subagent in the foreground
 # Claude Code session (the "pump") via a file channel instead of headless
 # `claude -p`, so the work bills to the interactive plan allowance. Pinned
@@ -105,7 +108,8 @@ while [[ $# -gt 0 ]]; do
     --reset)                   RESET=true; shift ;;
     --auto-release)            AUTO_RELEASE=true; shift ;;
     --acknowledge-regression)  ACK_REGRESSION=true; shift ;;
-    --auto-approve-blueprint)  AUTO_APPROVE_BLUEPRINT=true; shift ;;
+    --auto-approve-blueprint)  AUTO_APPROVE_BLUEPRINT=true; shift ;;   # now the default; kept for back-compat
+    --require-blueprint-approval) AUTO_APPROVE_BLUEPRINT=false; shift ;;
     --interactive)             INTERACTIVE=true; shift ;;
     --push-per-iter)           PUSH_PER_ITER=true;  PUSH_FLAG_USER="yes"; shift ;;
     --no-push-per-iter)        PUSH_PER_ITER=false; PUSH_FLAG_USER="no";  shift ;;
@@ -884,7 +888,7 @@ preflight_github_access
 # ── Main loop ─────────────────────────────────────────────────────────────
 while true; do
   # 1. Halt checks (always first)
-  if [[ $CURRENT_ITER -ge $MAX_ITER ]]; then
+  if [[ "$MAX_ITER" -gt 0 && $CURRENT_ITER -ge $MAX_ITER ]]; then
     echo "[run-goal] BUDGET_EXHAUSTED — reached max-iter cap of $MAX_ITER."
     record_telemetry_event "halt" '{"reason":"BUDGET_EXHAUSTED","detected_at_step":"pre_decomposer"}'
     write_session_summary "BUDGET_EXHAUSTED" "$CURRENT_ITER"
@@ -1023,7 +1027,7 @@ $( [[ $CURRENT_ITER -gt 0 && -f "$GOAL_SESSION_DIR_LOCAL/iter-$((CURRENT_ITER-1)
 Apply the TOKEN AND QUESTIONING POLICY from .claude/core.md strictly.
 
 Write the iteration spec to: docs/phases/${ITER_NAME}.md
-$( if [[ "$DECOMPOSER_MODE" == "baseline" ]]; then echo "BASELINE also: draft the coherence blueprint to $BLUEPRINT_FILE per your agent instructions (Information Architecture + Data Contract, ~one screen, from docs/goal.md's Product Shape + Must-have journeys + Key Capabilities). The loop pauses for human approval of this file after baseline."; else echo "Also keep $BLUEPRINT_FILE current per your agent instructions: register any new displayed value in the Data Contract and place new pages under an existing Information-Architecture home (additive edits only). For a nav-skeleton change, make the edit AND write a one-line reason to $BLUEPRINT_REAPPROVAL."; fi )
+$( if [[ "$DECOMPOSER_MODE" == "baseline" ]]; then echo "BASELINE also: draft the coherence blueprint to $BLUEPRINT_FILE per your agent instructions (Information Architecture + Data Contract, ~one screen, from docs/goal.md's Product Shape + Must-have journeys + Key Capabilities). The blueprint is auto-approved by default and the loop proceeds; pass --require-blueprint-approval to pause for human review after baseline."; else echo "Also keep $BLUEPRINT_FILE current per your agent instructions: register any new displayed value in the Data Contract and place new pages under an existing Information-Architecture home (additive edits only). For a nav-skeleton change, make the edit AND write a one-line reason to $BLUEPRINT_REAPPROVAL."; fi )
 
 The spec MUST include a 'Goal Mode Metadata' section with at minimum:
   - Mode: $DECOMPOSER_MODE

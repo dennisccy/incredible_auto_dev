@@ -48,7 +48,7 @@ then writes the result back. The pump protocol lives in
 
 | Command | What it does |
 |---|---|
-| `/goal [session-id] [flags]` | Start (or create) a session and run **until the goal is achieved, blocked, halted, or paused by the existing rules**. No new caps — inherits the engine's `--max-iter 30` safety cap (override with e.g. `/goal my-app --max-iter 50`). |
+| `/goal [session-id] [flags]` | Start (or create) a session and run **until the goal is achieved, blocked, halted, or paused by the existing rules**. No iteration cap by default — set an optional budget with e.g. `/goal my-app --max-iter 50`. |
 | `/goal-status [session-id]` | Read-only: current iteration, last verdict, pause/halt state, and whether a dispatch is in flight. Never launches the engine, never writes. |
 | `/goal-resume [session-id] [flags]` | Resume a paused/halted session (blueprint approval, GitHub auth, quota reset, or a closed session). Resuming a blueprint pause counts as approval; a `REGRESSION_HALT` needs `--acknowledge-regression`. Cleanly stops a still-running prior engine first (no double-engine). |
 | `/goal-pause [session-id]` | Cleanly stop a running session's (detached) engine, leaving a resumable `ABORTED` checkpoint. Use after Ctrl+C to make changes, then `/goal-resume`. |
@@ -66,8 +66,9 @@ then:
 Claude launches the engine in the background and becomes the pump, dispatching
 each goal-mode agent (developer, reviewer, browser-qa, …) as a subagent and
 streaming progress. Check in any time with `/goal-status todo-app`. If it pauses
-(for example, for the one-time blueprint approval), it tells you what to do, and
-you continue with `/goal-resume todo-app`.
+(for example, for GitHub auth, or for blueprint review when you started with
+`--require-blueprint-approval`), it tells you what to do, and you continue with
+`/goal-resume todo-app`.
 
 ### What "interactive" means here
 

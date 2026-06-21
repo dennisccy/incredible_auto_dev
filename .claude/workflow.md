@@ -299,7 +299,7 @@ Per-iteration code/test artifacts use the standard phase-mode paths (`runs/<iter
 
 | Halt | Detected by | User recovery |
 |---|---|---|
-| `BUDGET_EXHAUSTED` | `current_iter >= max_iterations` (default 30) | `run-goal.sh --resume --max-iter N` (raised cap) |
+| `BUDGET_EXHAUSTED` | `current_iter >= max_iterations` (only when `--max-iter N` is set; **no cap by default**) | `run-goal.sh --resume --max-iter N` (raised cap) |
 | `STALLED` (hash) | Last `stall_window` (default 3) journey-history hashes are identical | Edit `goal.md`, then `--resume` |
 | `REGRESSION_HALT` | Evaluator emitted `REGRESSION` | `run-goal.sh --resume --acknowledge-regression` |
 | `ABORTED` | SIGINT/SIGTERM | `run-goal.sh --resume --session-id <id>` |

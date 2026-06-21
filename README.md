@@ -76,11 +76,11 @@ Goal mode skips per-phase authoring. You write a single `docs/goal.md` with extr
 ./scripts/automation/run-goal.sh --session-id my-app
 ```
 
-Optional flags: `--max-iter N` (cap, default 30), `--stall-window N` (default 3), `--auto-release` (opens PR from `goal/<sid>` branch on `GOAL_ACHIEVED`), `--push-per-iter` / `--no-push-per-iter` (per-iter commits land on a single per-session branch; default ON), `--push-branch <name>` (override the default `goal/<sid>` name), `--auto-approve-blueprint` (skip the one-time blueprint review), `--resume`, `--reset`, `--acknowledge-regression`.
+Optional flags: `--max-iter N` (optional hard cap on iterations; **unlimited by default**), `--stall-window N` (default 3), `--auto-release` (opens PR from `goal/<sid>` branch on `GOAL_ACHIEVED`), `--push-per-iter` / `--no-push-per-iter` (per-iter commits land on a single per-session branch; default ON), `--push-branch <name>` (override the default `goal/<sid>` name), `--require-blueprint-approval` (pause after baseline to review the drafted blueprint; **off by default — the blueprint is auto-approved**), `--resume`, `--reset`, `--acknowledge-regression`.
 
-After baseline, the loop **pauses once** (`AWAITING_BLUEPRINT_APPROVAL`) for you to review the drafted coherence blueprint at `runs/goal-session-my-app/state/blueprint.md` (~3 min: sane navigation? every shared value has one source?). Edit it if needed and `--resume` (resuming counts as approval), or pass `--auto-approve-blueprint` to skip the pause entirely. From then on the run is unattended again, and a `coherence-auditor` enforces the blueprint every iteration.
+After baseline the decomposer drafts a coherence blueprint at `runs/goal-session-my-app/state/blueprint.md` and, **by default, auto-approves it and keeps running unattended** — a `coherence-auditor` then enforces the blueprint every iteration. If you'd rather review it first (~3 min: sane navigation? every shared value has one source?), start with `--require-blueprint-approval`: the loop pauses once (`AWAITING_BLUEPRINT_APPROVAL`), and you edit the file if needed then `--resume` (resuming counts as approval).
 
-**4. Inspect** `runs/goal-session-my-app/summary.md` when the loop halts. Halt verdicts: `GOAL_ACHIEVED` (success), `BUDGET_EXHAUSTED`, `STALLED`, `REGRESSION_HALT`, `ABORTED`, `AWAITING_BLUEPRINT_APPROVAL` (resumable pause for blueprint review), `AWAITING_GITHUB_AUTH` (resumable pause — push-per-iter is on but `origin` won't authenticate; the run offers `gh auth login` when interactive, else `gh auth login && gh auth setup-git` then `--resume`).
+**4. Inspect** `runs/goal-session-my-app/summary.md` when the loop halts. Halt verdicts: `GOAL_ACHIEVED` (success), `BUDGET_EXHAUSTED`, `STALLED`, `REGRESSION_HALT`, `ABORTED`, `AWAITING_BLUEPRINT_APPROVAL` (resumable pause for blueprint review — only with `--require-blueprint-approval`), `AWAITING_GITHUB_AUTH` (resumable pause — push-per-iter is on but `origin` won't authenticate; the run offers `gh auth login` when interactive, else `gh auth login && gh auth setup-git` then `--resume`).
 
 Because per-iter push is on by default, goal mode checks at startup that a push to `origin` would authenticate, so an expired GitHub session can't stall a mid-run push on a credential prompt. Pushes are also run with `GIT_TERMINAL_PROMPT=0` so they fail fast (non-fatally) instead of hanging. Skip the startup check with `CHAIN_SKIP_GITHUB_PREFLIGHT=true`.
 
@@ -388,11 +388,11 @@ bash scripts/automation/render-summary.sh --session-index <sid>        # re-rend
 ./scripts/automation/run-goal.sh --session-id my-app                    # full goal-mode loop
 ./scripts/automation/run-goal.sh --session-id my-app --resume           # resume an in-flight session
 ./scripts/automation/run-goal.sh --session-id my-app --reset            # discard session and restart
-./scripts/automation/run-goal.sh --session-id my-app --max-iter 50      # raise iteration cap
+./scripts/automation/run-goal.sh --session-id my-app --max-iter 50      # set an optional iteration budget (no cap by default)
 ./scripts/automation/run-goal.sh --session-id my-app --stall-window 5   # widen stall window
 ./scripts/automation/run-goal.sh --session-id my-app --auto-release     # release-manager runs once on GOAL_ACHIEVED
 ./scripts/automation/run-goal.sh --session-id my-app --acknowledge-regression  # continue past REGRESSION_HALT
-./scripts/automation/run-goal.sh --session-id my-app --auto-approve-blueprint  # skip the one-time blueprint review pause
+./scripts/automation/run-goal.sh --session-id my-app --require-blueprint-approval  # pause after baseline to review the blueprint (off by default)
 ./scripts/automation/goal-iter-lean.sh <iter-name>                      # single lean iteration (advanced)
 ```
 
