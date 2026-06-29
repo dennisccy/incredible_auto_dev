@@ -127,6 +127,19 @@ repo install gate).
 | `CHAIN_DEMO_VIDEO=true` | record mode also saves a `.webm` video (ffmpeg from the Playwright cache) |
 | `CHAIN_DEMO_CAPTION=true` | live mode overlays the current narration as an on-page banner |
 | `CHAIN_DEMO_LIVE_FALLBACK_RECORD=true` | live mode with no display auto-falls back to record instead of erroring |
+| `CHAIN_FRONTEND_HEAL_TIMEOUT=180` | seconds the frontend self-heal gives a guaranteed-cold `next dev` rebuild after clearing a corrupt `.next` (lower on constrained CI) |
+| `CHAIN_FRONTEND_GATE_HEAL=1` | set `0` to disable the readiness-gate's one-shot `.next` heal-restart (standalone paths only) |
+| `CHAIN_KILL_GRACE_SECONDS=2` | grace between SIGTERM and SIGKILL when tearing down a service tree (e.g. a `next dev` worker that ignores TERM) |
+
+### Why a demo can no longer get stuck on a corrupt `.next`
+
+If a production `next build` clobbers the live `next dev`'s `.next`, the dev server
+serves HTTP 500 (`MODULE_NOT_FOUND`) on every request. The shared service starter
+(`ensure_services_running` / `_start_service_with_retries` in
+`scripts/automation/lib/common.sh`) now detects this, clears `.next`, and grants one
+guaranteed-cold rebuild (up to `CHAIN_FRONTEND_HEAL_TIMEOUT`) instead of killing a
+still-compiling server — so the demo/browser-QA recover and run the walkthrough
+rather than recording `SKIPPED — did not respond after 90s`. See anti-pattern #20.
 
 ## Tests
 

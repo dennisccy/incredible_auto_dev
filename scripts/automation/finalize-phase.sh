@@ -138,6 +138,7 @@ else
 fi
 
 cd "$REPO_ROOT"
+export CHAIN_CURRENT_AGENT=release-manager   # needed for the interactive dispatch backend to map this call to a subagent
 claude_with_quota_retry -p "You are the release-manager agent for phased development.
 
 Phase to finalize: $PHASE

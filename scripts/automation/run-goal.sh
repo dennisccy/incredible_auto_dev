@@ -3,29 +3,30 @@
 #
 # Reads docs/goal.md (which must include Must-have user journeys + Anti-goals)
 # and iterates `decompose -> execute -> evaluate` adaptively until either the
-# goal-evaluator declares GOAL_ACHIEVED or a hard halt fires (max iterations,
-# stall, regression).
+# goal-evaluator declares GOAL_ACHIEVED or a hard halt fires (stall, regression,
+# or an optional --max-iter budget — there is no iteration cap by default).
 #
 # Usage:
 #   ./scripts/automation/run-goal.sh [--session-id <id>] [--max-iter N]
 #                                    [--stall-window N] [--resume] [--reset]
 #                                    [--auto-release]
 #                                    [--acknowledge-regression]
-#                                    [--auto-approve-blueprint]
+#                                    [--require-blueprint-approval]
 #                                    [--no-push-per-iter] [--push-per-iter]
 #                                    [--push-branch <name>]
 #
 # Flags:
 #   --session-id <id>            Session identifier (auto-generated if omitted)
-#   --max-iter N                 Hard cap on iterations (default: 30)
+#   --max-iter N                 Optional hard cap on iterations (default: unlimited; 0 = no cap)
 #   --stall-window N             Halt if last N iterations show no journey progress (default: 3)
 #   --resume                     Resume an existing session
 #   --reset                      Discard the named session and start fresh
 #   --auto-release               On GOAL_ACHIEVED, run release-manager once for the whole session
 #   --acknowledge-regression     Continue past a prior REGRESSION_HALT
-#   --auto-approve-blueprint     Skip the one-time blueprint-review pause after baseline (and any
-#                                structural re-approval pause); use the AI-drafted blueprint as-is.
-#                                Per-run flag — pass it on each invocation/resume to keep it on.
+#   --require-blueprint-approval Pause after baseline for the human to review/edit state/blueprint.md
+#                                (and on structural nav-skeleton changes). OFF by default — goal mode
+#                                auto-approves the AI-drafted blueprint and runs hands-off.
+#                                (--auto-approve-blueprint is still accepted but is now the default.)
 #   --push-per-iter              [Default ON for new sessions.] Commit + push each successful
 #                                iteration (CONTINUE / ESCALATE / GOAL_ACHIEVED) to a per-session
 #                                branch. No model invocation, no PR per iter — the branch is
@@ -40,13 +41,15 @@
 #
 # Halt verdicts written to runs/goal-session-<sid>/session.json.status:
 #   GOAL_ACHIEVED   - goal-evaluator declared done
-#   BUDGET_EXHAUSTED - max iterations reached
+#   BUDGET_EXHAUSTED - max iterations reached (only when --max-iter > 0 is set)
 #   STALLED          - journey-history hash unchanged for stall_window iterations
 #   REGRESSION_HALT  - goal-evaluator emitted REGRESSION verdict
 #   ABORTED          - user interrupted (SIGINT/SIGTERM)
-#   AWAITING_BLUEPRINT_APPROVAL - paused after baseline (or after a structural blueprint change) for
-#                                 the human to review/edit state/blueprint.md; resume with --resume
-#                                 (resuming counts as approval) or pre-empt with --auto-approve-blueprint
+#   AWAITING_BLUEPRINT_APPROVAL - only with --require-blueprint-approval: paused after baseline (or a
+#                                 structural blueprint change) for the human to review/edit
+#                                 state/blueprint.md; resume with --resume (resuming counts as approval)
+#   AWAITING_PUMP    - interactive pump/dispatch was unavailable mid-iteration (the foreground
+#                      session/pump went away); resumable — /goal-resume re-runs the same iteration
 #
 # Quota exhaustion is NOT a halt: claude_with_quota_retry transparently sleeps
 # until the quota resets and resumes.
@@ -67,15 +70,22 @@ fi
 
 # ── Defaults ──────────────────────────────────────────────────────────────
 SESSION_ID=""
-MAX_ITER=30
+MAX_ITER=0          # 0 = unlimited (no iteration cap); a positive --max-iter restores a hard budget
 STALL_WINDOW=3
 RESUME=false
 RESET=false
 AUTO_RELEASE=false
 ACK_REGRESSION=false
-# Skip the one-time blueprint-approval pause (and any structural re-approval
-# pause). Per-run flag; pass it on each invocation/resume if you want it.
-AUTO_APPROVE_BLUEPRINT=false
+# Blueprint review pause. Auto-approved by DEFAULT (goal mode is hands-off): the
+# AI-drafted blueprint is accepted as-is and any structural re-approval marker is
+# cleared, so the loop never pauses for it. Pass --require-blueprint-approval to
+# restore the one-time baseline review pause (and structural re-approval pauses).
+AUTO_APPROVE_BLUEPRINT=true
+# Interactive dispatch backend: run each agent as a subagent in the foreground
+# Claude Code session (the "pump") via a file channel instead of headless
+# `claude -p`, so the work bills to the interactive plan allowance. Pinned
+# per-session (like --cli). Off by default (headless / Agent SDK path).
+INTERACTIVE=false
 # Per-iter push is ON by default for new sessions. Pass --no-push-per-iter to
 # opt out. On resume, the persisted session.json value wins unless overridden
 # by an explicit CLI flag (--push-per-iter or --no-push-per-iter).
@@ -98,7 +108,9 @@ while [[ $# -gt 0 ]]; do
     --reset)                   RESET=true; shift ;;
     --auto-release)            AUTO_RELEASE=true; shift ;;
     --acknowledge-regression)  ACK_REGRESSION=true; shift ;;
-    --auto-approve-blueprint)  AUTO_APPROVE_BLUEPRINT=true; shift ;;
+    --auto-approve-blueprint)  AUTO_APPROVE_BLUEPRINT=true; shift ;;   # now the default; kept for back-compat
+    --require-blueprint-approval) AUTO_APPROVE_BLUEPRINT=false; shift ;;
+    --interactive)             INTERACTIVE=true; shift ;;
     --push-per-iter)           PUSH_PER_ITER=true;  PUSH_FLAG_USER="yes"; shift ;;
     --no-push-per-iter)        PUSH_PER_ITER=false; PUSH_FLAG_USER="no";  shift ;;
     --push-branch)             PUSH_BRANCH="$2"; shift 2 ;;
@@ -117,6 +129,7 @@ fi
 
 GOAL_SESSION_DIR_LOCAL="$REPO_ROOT/runs/goal-session-${SESSION_ID}"
 SESSION_JSON="$GOAL_SESSION_DIR_LOCAL/session.json"
+ENGINE_PID_FILE="$GOAL_SESSION_DIR_LOCAL/engine.pid"
 
 # Resume: pin CHAIN_CLI from session.json unless the user explicitly overrode it.
 # A mismatch errors out unless --force-cli is given.
@@ -135,6 +148,56 @@ if [[ "$RESUME" == "true" && -f "$SESSION_JSON" ]]; then
       export CHAIN_CLI="$PERSISTED_CLI"
     fi
   fi
+fi
+
+# Resume self-heal: if a previous engine for this session is still running (e.g.
+# the user pressed Ctrl+C in the interactive pump, which never reaches the
+# detached engine), stop it cleanly before starting a new one — otherwise two
+# engines would race on the same session. SIGTERM fires the old engine's on_abort
+# (clean ABORTED checkpoint); SIGKILL only if it ignores us. The /proc cmdline
+# check guards against a stale pidfile whose PID was reused by another process.
+if [[ "$RESUME" == "true" && -f "$ENGINE_PID_FILE" ]]; then
+  _prev_pid="$(cat "$ENGINE_PID_FILE" 2>/dev/null || echo "")"
+  if [[ -n "$_prev_pid" ]] && kill -0 "$_prev_pid" 2>/dev/null \
+     && grep -qa "run-goal" "/proc/$_prev_pid/cmdline" 2>/dev/null; then
+    echo "[run-goal] Resume: a prior engine (pid $_prev_pid) is still running — stopping it cleanly first." >&2
+    kill -TERM "$_prev_pid" 2>/dev/null || true
+    for _ in $(seq 1 20); do kill -0 "$_prev_pid" 2>/dev/null || break; sleep 0.5; done
+    if kill -0 "$_prev_pid" 2>/dev/null; then
+      echo "[run-goal] Prior engine ignored SIGTERM; sending SIGKILL." >&2
+      kill -KILL "$_prev_pid" 2>/dev/null || true
+    fi
+  fi
+  rm -f "$ENGINE_PID_FILE" 2>/dev/null || true
+fi
+
+# ── Resolve the agent dispatch backend (interactive vs headless) ───────────
+# Pinned per-session like --cli: on resume, adopt the persisted backend unless
+# --interactive is re-asserted on the command line.
+if [[ "$RESUME" == "true" && -f "$SESSION_JSON" && "$INTERACTIVE" != "true" ]]; then
+  PERSISTED_BACKEND=$(python3 -c "import json;print(json.load(open('$SESSION_JSON')).get('agent_backend',''))" 2>/dev/null || echo "")
+  if [[ "$PERSISTED_BACKEND" == "interactive" ]]; then
+    INTERACTIVE=true
+  fi
+fi
+if [[ "$INTERACTIVE" == "true" ]]; then
+  AGENT_BACKEND="interactive"
+else
+  AGENT_BACKEND="headless"
+fi
+
+# Interactive: tee the engine's full (headless-style) stdout+stderr to a session
+# log, timestamped per line, so the user can watch the real chain narrative
+# (`tail -f runs/goal-session-<sid>/engine.log`) without it costing pump-context
+# tokens — the pump never reads this file. Headless's live terminal stream is
+# left untouched. python3 is already a hard dependency; -u keeps it line-flushed.
+if [[ "$INTERACTIVE" == "true" ]]; then
+  ENGINE_LOG="$GOAL_SESSION_DIR_LOCAL/engine.log"
+  mkdir -p "$GOAL_SESSION_DIR_LOCAL"
+  exec > >(python3 -u -c 'import sys, datetime
+for ln in sys.stdin:
+    sys.stdout.write(datetime.datetime.now().strftime("%H:%M:%S ") + ln)' \
+          | tee -a "$ENGINE_LOG") 2>&1
 fi
 
 require_cli
@@ -206,6 +269,44 @@ ESCALATE, REGRESSION, STALLED, PASS, FAIL, IN-PROGRESS.
 
 When finished, STOP." \
     || echo "[run-goal] Warning: iteration-summarizer call failed (non-blocking)"
+}
+
+# Maintain the PROJECT's README.md so it always reflects current capabilities and
+# carries a How-to-run section. Non-blocking — failures only log. Runs every
+# iteration in goal mode (headless or interactive). The agent edits only
+# marker-delimited AUTO blocks so any hand-written prose is preserved, and grounds
+# all run/install/test commands in .claude/project-template.md.
+_run_readme_maintainer() {
+  local iter_name="$1"
+  local agent_file="$REPO_ROOT/.claude/agents/readme-maintainer.md"
+  [[ -f "$agent_file" ]] || { echo "[run-goal] Warning: readme-maintainer agent missing, skipping README update"; return 0; }
+
+  cd "$REPO_ROOT"
+  export CHAIN_CURRENT_AGENT=readme-maintainer
+  claude_with_quota_retry -p "You are the readme-maintainer agent.
+
+Phase id: $iter_name
+Target file: README.md (the project-root README of THIS repository)
+Agent instructions: .claude/agents/readme-maintainer.md  <-- read this first
+Skill: .claude/skills/readme-maintenance.md  <-- the marker-scoped editing method
+Run-command source of truth: .claude/project-template.md  <-- Stack, Test commands, Service start commands, URLs
+README skeleton (use only if README.md is absent): templates/project-readme.md
+Capabilities inputs (read what exists, silently skip what doesn't):
+- reports/phase-${iter_name}-user-visible-changes.md
+- reports/phase-${iter_name}-implementation-summary.md
+- reports/phase-${iter_name}-iteration-summary.md
+(CLAUDE.md is already in your system prompt -- do not Read it again.)
+
+Apply the TOKEN AND QUESTIONING POLICY from .claude/core.md strictly.
+
+Refresh README.md so it reflects the CURRENT project and includes a 'How to run'
+section. Edit ONLY the marker-delimited AUTO blocks described in your skill;
+never delete human-written prose outside them. Ground every install/run/test
+command in .claude/project-template.md — if a needed field is still a template
+placeholder (<e.g., ...>), write a 'TODO:' line rather than inventing a command.
+
+When finished, STOP." \
+    || echo "[run-goal] Warning: readme-maintainer call failed (non-blocking)"
 }
 
 # Generate the one-time "delivered" wrap when goal-evaluator returns
@@ -488,6 +589,7 @@ data = {
   "started_at": datetime.datetime.now(datetime.UTC).isoformat().replace('+00:00', 'Z'),
   "current_iter": 0,
   "cli": "${CHAIN_CLI:-claude}",
+  "agent_backend": "$AGENT_BACKEND",
   "halt_config": {
     "max_iterations": $MAX_ITER,
     "stall_window": $STALL_WINDOW,
@@ -533,7 +635,8 @@ if $( [[ "$AUTO_RELEASE" == "true" ]] && echo "True" || echo "False" ):
   d["auto_release"] = True
 d["push_per_iter"] = $( [[ "$PUSH_PER_ITER" == "true" ]] && echo "True" || echo "False" )
 d["push_branch"] = "$PUSH_BRANCH"
-if "$RUN_MODE" == "resume" and d.get("status") in ("REGRESSION_HALT", "AWAITING_BLUEPRINT_APPROVAL"):
+d["agent_backend"] = "$AGENT_BACKEND"
+if "$RUN_MODE" == "resume" and d.get("status") in ("REGRESSION_HALT", "AWAITING_BLUEPRINT_APPROVAL", "AWAITING_PUMP"):
   d["status"] = "in_progress"
 json.dump(d, open("$SESSION_JSON","w"), indent=2); open("$SESSION_JSON","a").write("\n")
 PY
@@ -550,6 +653,20 @@ fi
 # ── Export shared env for invoked agents ──────────────────────────────────
 export GOAL_SESSION_ID="$SESSION_ID"
 export GOAL_SESSION_DIR="$GOAL_SESSION_DIR_LOCAL"
+
+# Interactive dispatch backend: export the backend selector + the file-channel
+# directory so every nested script (run-phase.sh, goal-iter-lean.sh, *-phase.sh)
+# routes its agent calls through _interactive_invoke (see lib/quota-retry.sh and
+# lib/interactive-dispatch.sh). Clear any stale channel files from a prior,
+# interrupted run so the pump and engine start from a clean channel.
+if [[ "$INTERACTIVE" == "true" ]]; then
+  export CHAIN_AGENT_BACKEND="interactive"
+  export CHAIN_DISPATCH_DIR="$GOAL_SESSION_DIR_LOCAL/dispatch"
+  mkdir -p "$CHAIN_DISPATCH_DIR"
+  rm -f "$CHAIN_DISPATCH_DIR"/req.* "$CHAIN_DISPATCH_DIR"/*.res "$CHAIN_DISPATCH_DIR"/*.started "$CHAIN_DISPATCH_DIR/.awaiting-pump" 2>/dev/null || true
+  echo "[run-goal] Interactive dispatch backend ON — agents run as subagents in the foreground session (the pump)."
+  echo "[run-goal]   Dispatch channel: $CHAIN_DISPATCH_DIR"
+fi
 
 # Auto-enable replay/time-travel trace capture unless the user opts out.
 # Each successful claude invocation appends a record to <session>/trace/trace.jsonl
@@ -749,6 +866,13 @@ EOF
   [[ -f "$_idx_html" ]] && echo "[run-goal] Session HTML: file://$_idx_html"
 }
 
+# Record this engine's PID so /goal-pause and a resuming run can find and stop it
+# across separate command invocations (the interactive pump's in-memory PID is
+# not available to a later /goal-pause). Cleaned up on any exit, including the
+# on_abort path below (which exits 130 → the EXIT trap fires).
+echo "$$" > "$ENGINE_PID_FILE" 2>/dev/null || true
+trap 'rm -f "$ENGINE_PID_FILE" 2>/dev/null || true' EXIT
+
 # Trap: on SIGINT/SIGTERM, write ABORTED summary
 on_abort() {
   echo "[run-goal] Aborted by user signal. Writing summary." >&2
@@ -764,7 +888,7 @@ preflight_github_access
 # ── Main loop ─────────────────────────────────────────────────────────────
 while true; do
   # 1. Halt checks (always first)
-  if [[ $CURRENT_ITER -ge $MAX_ITER ]]; then
+  if [[ "$MAX_ITER" -gt 0 && $CURRENT_ITER -ge $MAX_ITER ]]; then
     echo "[run-goal] BUDGET_EXHAUSTED — reached max-iter cap of $MAX_ITER."
     record_telemetry_event "halt" '{"reason":"BUDGET_EXHAUSTED","detected_at_step":"pre_decomposer"}'
     write_session_summary "BUDGET_EXHAUSTED" "$CURRENT_ITER"
@@ -871,7 +995,8 @@ PY
   EVALUATOR_LOG_TAIL=$(_tail_or_placeholder "$EVALUATOR_LOG" 200 "(no entries yet — first iteration)")
   LESSONS_TAIL=$(_tail_or_placeholder "$LESSONS_FILE" 200 "(no lessons recorded yet)")
   cd "$REPO_ROOT"
-  _decomp_start=$(record_agent_invocation_start "goal-decomposer")
+  record_agent_invocation_start "goal-decomposer"   # bare call: must NOT be $(...) or the CHAIN_CURRENT_AGENT export is lost to a subshell
+  _decomp_start=$CHAIN_AGENT_START_EPOCH
   _decomp_rc=0
   claude_with_quota_retry -p "You are the goal-decomposer agent for goal-mode iteration planning.
 
@@ -902,7 +1027,7 @@ $( [[ $CURRENT_ITER -gt 0 && -f "$GOAL_SESSION_DIR_LOCAL/iter-$((CURRENT_ITER-1)
 Apply the TOKEN AND QUESTIONING POLICY from .claude/core.md strictly.
 
 Write the iteration spec to: docs/phases/${ITER_NAME}.md
-$( if [[ "$DECOMPOSER_MODE" == "baseline" ]]; then echo "BASELINE also: draft the coherence blueprint to $BLUEPRINT_FILE per your agent instructions (Information Architecture + Data Contract, ~one screen, from docs/goal.md's Product Shape + Must-have journeys + Key Capabilities). The loop pauses for human approval of this file after baseline."; else echo "Also keep $BLUEPRINT_FILE current per your agent instructions: register any new displayed value in the Data Contract and place new pages under an existing Information-Architecture home (additive edits only). For a nav-skeleton change, make the edit AND write a one-line reason to $BLUEPRINT_REAPPROVAL."; fi )
+$( if [[ "$DECOMPOSER_MODE" == "baseline" ]]; then echo "BASELINE also: draft the coherence blueprint to $BLUEPRINT_FILE per your agent instructions (Information Architecture + Data Contract, ~one screen, from docs/goal.md's Product Shape + Must-have journeys + Key Capabilities). The blueprint is auto-approved by default and the loop proceeds; pass --require-blueprint-approval to pause for human review after baseline."; else echo "Also keep $BLUEPRINT_FILE current per your agent instructions: register any new displayed value in the Data Contract and place new pages under an existing Information-Architecture home (additive edits only). For a nav-skeleton change, make the edit AND write a one-line reason to $BLUEPRINT_REAPPROVAL."; fi )
 
 The spec MUST include a 'Goal Mode Metadata' section with at minimum:
   - Mode: $DECOMPOSER_MODE
@@ -948,7 +1073,11 @@ Do NOT write code or implement anything. The iteration spec and any blueprint ed
   echo "[run-goal] Target journeys: ${TARGET_JOURNEYS:-(none parsed)}"
   record_telemetry_event "iter_dispatch" "$(jq -cn --arg d "$DEPTH" --arg tj "$TARGET_JOURNEYS" '{depth:$d, target_journeys:$tj}' 2>/dev/null || printf '{"depth":"%s"}' "$DEPTH")"
 
-  # 3. Dispatch
+  # 3. Dispatch. Reset the per-iteration exit code first: _exec_rc is a plain
+  # shell var, so a stale 70 from a prior iteration would otherwise survive into
+  # this one (the `:-0` default only fills an UNSET var) and mis-fire the
+  # transport-pause check below.
+  _exec_rc=0
   if [[ "$DEPTH" == "full" ]]; then
     _full_extra_args=(--no-finalize)
     echo "[run-goal] Dispatching FULL pipeline via run-phase.sh ${_full_extra_args[*]} ..."
@@ -962,7 +1091,24 @@ Do NOT write code or implement anything. The iteration spec and any blueprint ed
     echo "[run-goal] Dispatching LEAN pipeline via goal-iter-lean.sh ..."
     bash "$SCRIPT_DIR/goal-iter-lean.sh" "$ITER_NAME" || _exec_rc=$?
   fi
-  _exec_rc=${_exec_rc:-0}
+
+  # Transport/dispatch-unavailable (exit 70) from the interactive backend: the
+  # pump/session went away mid-iteration. This is infrastructure, not agent
+  # quality — pause cleanly and resumably instead of running the coherence-auditor
+  # and goal-evaluator (which would also fail to dispatch) on an empty iteration.
+  # current_iter is NOT advanced (it only moves after the evaluator), so
+  # /goal-resume re-runs this same iteration from the decomposer.
+  if [[ "$_exec_rc" -eq "${DISPATCH_UNAVAILABLE_EXIT_CODE:-70}" ]]; then
+    echo "[run-goal] Interactive pump/dispatch unavailable during iteration $CURRENT_ITER — pausing." >&2
+    if [[ -n "${CHAIN_DISPATCH_DIR:-}" && -f "${CHAIN_DISPATCH_DIR}/.awaiting-pump" ]]; then
+      echo "[run-goal]   $(cat "${CHAIN_DISPATCH_DIR}/.awaiting-pump" 2>/dev/null)" >&2
+    fi
+    echo "[run-goal]   Resume after re-opening the pump session:  /goal-resume $SESSION_ID" >&2
+    echo "[run-goal]   (or: ./scripts/automation/run-goal.sh --resume --session-id $SESSION_ID --interactive)" >&2
+    record_telemetry_event "halt" '{"reason":"AWAITING_PUMP","detected_at_step":"executor"}'
+    write_session_summary "AWAITING_PUMP" "$CURRENT_ITER"
+    exit 0
+  fi
 
   # 3b. Coherence auditor — information-architecture + data-contract drift gate.
   # Goal-mode only; one integration point covering both lean and full dispatch.
@@ -975,7 +1121,8 @@ Do NOT write code or implement anything. The iteration spec and any blueprint ed
     echo "[run-goal] Step 2b: coherence-auditor"
     _snapshot_sha="$(cat "$ITER_DIR/snapshot-sha" 2>/dev/null || echo "")"
     cd "$REPO_ROOT"
-    _coh_start=$(record_agent_invocation_start "coherence-auditor")
+    record_agent_invocation_start "coherence-auditor"   # bare call: must NOT be $(...) or the CHAIN_CURRENT_AGENT export is lost to a subshell
+    _coh_start=$CHAIN_AGENT_START_EPOCH
     _coh_rc=0
     claude_with_quota_retry -p "You are the coherence-auditor agent for goal-mode coherence enforcement.
 
@@ -1015,7 +1162,8 @@ The verdict line MUST appear first and start exactly with:
   # Pre-trim — evaluator spec asks for "last 5 entries"; 300 lines covers it.
   EVALUATOR_LOG_TAIL_5=$(_tail_or_placeholder "$EVALUATOR_LOG" 300 "(no entries yet — first evaluation)")
   cd "$REPO_ROOT"
-  _eval_start=$(record_agent_invocation_start "goal-evaluator")
+  record_agent_invocation_start "goal-evaluator"   # bare call: must NOT be $(...) or the CHAIN_CURRENT_AGENT export is lost to a subshell
+  _eval_start=$CHAIN_AGENT_START_EPOCH
   _eval_rc=0
   claude_with_quota_retry -p "You are the goal-evaluator agent for goal-mode iteration evaluation.
 
@@ -1086,6 +1234,8 @@ STOP." || _eval_rc=$?
   # Non-blocking; the session index is also refreshed below so the
   # feature-organized user-manual view stays current mid-session.
   _run_iteration_summarizer "$ITER_NAME"
+  # Keep the project README current with what now exists + how to run it.
+  _run_readme_maintainer "$ITER_NAME"
   _render_iter_html "$ITER_NAME"
   _render_session_index_html
   _iter_md="$REPO_ROOT/reports/phase-${ITER_NAME}-iteration-summary.md"

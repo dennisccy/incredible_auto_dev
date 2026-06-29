@@ -69,7 +69,7 @@ The synthetic phase name `goal-<sid>-iter-<N>` (where `<sid>` is the session id 
 
 The outer loop checks halts in this order, each iteration, before invoking the decomposer:
 
-1. **`BUDGET_EXHAUSTED`** — `current_iter >= max_iterations` (default 30, override with `--max-iter`)
+1. **`BUDGET_EXHAUSTED`** — `current_iter >= max_iterations`; fires **only when a positive `--max-iter` is set**. No iteration cap by default (`max_iterations` defaults to `0` = unlimited).
 2. **`STALLED`** — last `stall_window` (default 3) journey-history hashes are identical, meaning no journey newly passed/failed/regressed
 3. **`REGRESSION_HALT`** — prior iteration's evaluator emitted `REGRESSION` and the user has not passed `--acknowledge-regression`
 
@@ -85,7 +85,7 @@ After the evaluator runs, the verdict directly drives the loop:
 
 **Quota exhaustion is NOT a halt.** The wrapped `claude_with_quota_retry` library transparently sleeps until the quota resets, then resumes the same agent invocation. Telemetry records the quota pause for observability.
 
-**Blueprint approval pause.** At the top of the loop, before the first building iteration (and again only when the decomposer flags a *structural* blueprint change via `state/blueprint.reapproval-requested`), the loop sets `session.json.status = AWAITING_BLUEPRINT_APPROVAL` and exits 0 so the human can review `state/blueprint.md`. `--resume` continues (resuming counts as approval and creates `state/blueprint.approved`); `--auto-approve-blueprint` skips the pause. This is the one human checkpoint in an otherwise unattended run. The gate sits at the top of the loop precisely so the baseline-drafted blueprint is never re-drafted out from under the human.
+**Blueprint approval pause (opt-in).** By default the blueprint is **auto-approved** (`AUTO_APPROVE_BLUEPRINT=true`): the gate touches `state/blueprint.approved`, clears any `state/blueprint.reapproval-requested` marker, and the run stays unattended. Pass `--require-blueprint-approval` to enable the checkpoint: then at the top of the loop, before the first building iteration (and again only when the decomposer flags a *structural* blueprint change), the loop sets `session.json.status = AWAITING_BLUEPRINT_APPROVAL` and exits 0 so the human can review `state/blueprint.md`; `--resume` continues (resuming counts as approval and creates `state/blueprint.approved`). The gate sits at the top of the loop precisely so the baseline-drafted blueprint is never re-drafted out from under the human.
 
 **GitHub auth preflight (`AWAITING_GITHUB_AUTH`).** Once before the loop (on both fresh-start and `--resume`), if the session will push (`push_per_iter` or `--auto-release`), `run-goal.sh` calls `check_git_push_access` (`lib/common.sh`) — a `GIT_TERMINAL_PROMPT=0` + ssh-BatchMode `git ls-remote origin` that tests git's real credential path without ever prompting. On failure: in an interactive terminal it runs `gh auth login` + `gh auth setup-git`, re-verifies, and continues; otherwise it sets `session.json.status = AWAITING_GITHUB_AUTH` and exits 0 (resumable, like the blueprint pause). This converts the old failure mode — a per-iter `git push` blocking forever on a username/password prompt when the GitHub HTTPS session expired — into a fail-fast preflight. The per-iter push itself is also wrapped in `GIT_TERMINAL_PROMPT=0`, so a session that expires mid-run fails that push fast and non-fatally rather than hanging. Bypass with `CHAIN_SKIP_GITHUB_PREFLIGHT=true`.
 
@@ -101,8 +101,8 @@ runs/goal-session-<sid>/
 │   ├── journey-history.json    # per-journey status, anti-goal violations, timestamps
 │   ├── evaluator-log.md        # append-only chronicle of evaluator decisions
 │   ├── lessons.md              # append-only ledger of non-obvious takeaways; goal-decomposer reads before planning
-│   ├── blueprint.md            # coherence contract: information architecture + data contract (drafted at baseline, human-approved, enforced each iter)
-│   ├── blueprint.approved      # marker: human approved the blueprint (created on first --resume, or by --auto-approve-blueprint)
+│   ├── blueprint.md            # coherence contract: information architecture + data contract (drafted at baseline, auto-approved by default, enforced each iter)
+│   ├── blueprint.approved      # marker: blueprint approved (auto-created by default; or on first --resume when --require-blueprint-approval was set)
 │   └── blueprint.reapproval-requested  # transient: decomposer flagged a structural change → triggers a re-approval pause
 ├── iter-0/eval.md              # baseline evaluation (no coherence.md — no code yet)
 ├── iter-1/eval.md + coherence.md   # first dev iteration: evaluation + coherence audit
@@ -169,6 +169,12 @@ Anti-goal violations: W
 Iter spec: docs/phases/goal-<sid>-iter-<N>.md
 Iter eval: runs/goal-session-<sid>/iter-<N>/eval.md
 ```
+
+## Interactive dispatch backend
+
+By default each agent runs as a headless `claude -p` subprocess (the Agent SDK path). Passing `--interactive` to `run-goal.sh` (or `CHAIN_AGENT_BACKEND=interactive`) selects a third dispatch backend at the single seam in `lib/quota-retry.sh`: instead of spawning `claude -p`, `_interactive_invoke` (`lib/interactive-dispatch.sh`) writes the agent prompt to `runs/goal-session-<sid>/dispatch/req.*.ready` and blocks; a foreground Claude Code session — the "pump", driven by the `/goal` slash command plus `scripts/automation/goal-await-dispatch.sh` — dispatches that agent as a subagent (`subagent_type` = the agent name, prompt verbatim) and writes `req.*.res` back, which unblocks the engine. Request files are unique (`mktemp`), so the post-dev fanout's concurrent calls don't collide.
+
+The loop, halt conditions, resume, and state above are **unchanged** — only the leaf invocation differs — so both lean and full iterations work without per-pipeline changes. Per-agent **model** and **tool/permission isolation** are preserved because subagents read them from `.claude/agents/<name>.md` frontmatter (the model tier, and the now-materialized `disallowed_tools` deny list). Dispatch liveness is two-tier: the pump heartbeat (`.pump-alive`, timeout `CHAIN_PUMP_HEARTBEAT_TIMEOUT`) bounds only the *pickup* of a not-yet-claimed request, while a claimed in-flight subagent (marked `req.*.started` by `goal-await-dispatch.sh` the moment the pump takes it) is bounded by `CHAIN_DISPATCH_INFLIGHT_TIMEOUT` instead — so a legitimately long agent (e.g. the developer's INITIAL BUILD, > 30 min) is never mistaken for a dead pump. A genuine pump loss stops the blocked dispatch cleanly (leaving an `.awaiting-pump` marker) and pauses the session as `AWAITING_PUMP` (resumable — the iteration re-runs on `/goal-resume`), rather than hanging or cascading into a false review failure. The motivation is billing: subagents draw on the interactive plan allowance rather than the Agent SDK credit. Quota in this mode is a pause (the headless sleep-until-reset does not apply). User guide: [`../../docs/goal-mode-interactive.md`](../../docs/goal-mode-interactive.md); pump protocol: [`../skills/goal-interactive-dispatch.md`](../skills/goal-interactive-dispatch.md).
 
 ## Backward compatibility
 

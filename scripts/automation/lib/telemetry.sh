@@ -79,12 +79,17 @@ record_telemetry_event() {
   fi
 }
 
-# Convenience: record an agent invocation start. Returns the start time
-# (epoch seconds) on stdout — capture it and pass to record_agent_invocation_end.
+# Convenience: record an agent invocation start.
 #
-# Side effect: sets CHAIN_CURRENT_AGENT so subsequent claude_usage telemetry
-# events (recorded inside claude_with_quota_retry) can be attributed to this
-# agent in analyzers.
+# Call this as a BARE STATEMENT — never via command substitution $(...).
+# Both side effects must land in the CALLER's shell:
+#   - exports CHAIN_CURRENT_AGENT, used both to attribute subsequent claude_usage
+#     telemetry to this agent AND (critically) for the interactive dispatch
+#     backend to label the request with the right subagent. A $(...) capture runs
+#     this in a subshell, so the export is silently dropped and the next dispatch
+#     carries a stale/empty agent name (a mislabel the pump then has to reconcile).
+#   - sets CHAIN_AGENT_START_EPOCH (epoch seconds) — read it into a local right
+#     after the call and pass it to record_agent_invocation_end.
 record_agent_invocation_start() {
   local agent="$1"
   local extra="${2:-}"
@@ -97,7 +102,7 @@ record_agent_invocation_start() {
   fi
   export CHAIN_CURRENT_AGENT="$agent"
   record_telemetry_event "agent_invocation_start" "$payload"
-  date +%s
+  CHAIN_AGENT_START_EPOCH="$(date +%s)"
 }
 
 # Convenience: record an agent invocation end with duration and status.
@@ -163,7 +168,8 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" && "${1:-}" == "test" ]]; then
   export GOAL_ITER_INDEX=2
 
   record_telemetry_event "iter_start" '{"depth":"lean"}'
-  start=$(record_agent_invocation_start "developer")
+  record_agent_invocation_start "developer"
+  start=$CHAIN_AGENT_START_EPOCH
   sleep 1
   record_agent_invocation_end "developer" "$start" 0 1
   record_telemetry_event "iter_end" '{"verdict":"CONTINUE","journey_deltas":2}'

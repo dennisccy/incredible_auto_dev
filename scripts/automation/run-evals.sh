@@ -70,12 +70,34 @@ _run_self_test scripts/automation/lib/replay_trace.py self-test
 _run_self_test scripts/automation/lib/agent_permissions.py self-test
 _run_self_test scripts/automation/lib/render_iteration_summary.py self-test
 _run_self_test scripts/automation/lib/demo_runner.py self-test
+_run_self_test scripts/automation/lib/merge_ui_test_results.py self-test
 
 # Telemetry has its own test mode (sourced + invoked with "test" arg)
 if bash scripts/automation/lib/telemetry.sh test >/dev/null 2>&1; then
   _pass "self-test: telemetry.sh test"
 else
   _fail "self-test: telemetry.sh test"
+fi
+
+# Interactive dispatch backend: pump helper + channel round-trip self-tests.
+if bash scripts/automation/goal-await-dispatch.sh --self-test >/dev/null 2>&1; then
+  _pass "self-test: goal-await-dispatch.sh"
+else
+  _fail "self-test: goal-await-dispatch.sh"
+fi
+if bash scripts/automation/lib/interactive-dispatch.sh --self-test >/dev/null 2>&1; then
+  _pass "self-test: interactive-dispatch.sh"
+else
+  _fail "self-test: interactive-dispatch.sh"
+fi
+# Service bootstrap: kill-tree escalation, corrupt-.next detector, and the
+# frontend self-heal recovery (clears a stale .next + cold-rebuilds instead of
+# SKIPPING the demo/browser-QA). Guards the fix for the iter-6 corrupt-.next SKIP.
+if bash scripts/automation/lib/common.sh self-test >/dev/null 2>&1; then
+  _pass "self-test: common.sh (kill-tree / self-heal)"
+else
+  bash scripts/automation/lib/common.sh self-test || true
+  _fail "self-test: common.sh (kill-tree / self-heal)"
 fi
 
 # ── 3. Agent frontmatter validation ──────────────────────────────────────────

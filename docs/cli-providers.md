@@ -116,6 +116,14 @@ The adapter for that CLI splices these into its generated config; the other CLI 
 
 ---
 
+## Interactive dispatch backend (Claude only)
+
+Goal mode adds a third **dispatch backend** alongside `claude` and `codex`, selected with `--interactive` on `run-goal.sh` (or `CHAIN_AGENT_BACKEND=interactive`). It keeps the Claude assets and agent personas, but instead of spawning headless `claude -p`, it hands each agent prompt to a foreground Claude Code session — the "pump", driven by the `/goal` slash command — over a file channel under `runs/goal-session-<sid>/dispatch/`, so the work runs as interactive subagents (billed to the interactive plan allowance, not the Agent SDK credit). `CHAIN_CLI` still selects assets; `CHAIN_AGENT_BACKEND` only changes the leaf invocation, defaulting to `$CHAIN_CLI`, so omitting it is exactly today's behaviour.
+
+The slash commands are a **Claude-only neutral asset**: edit `commands/*.md`, and `adapters/claude/sync.py` mirrors them to `.claude/commands/` (Codex commands are out of scope for v1). User guide: [`goal-mode-interactive.md`](goal-mode-interactive.md). Internals: [`../.claude/architecture/goal-mode.md`](../.claude/architecture/goal-mode.md).
+
+---
+
 ## State and telemetry
 
 Every persistent artifact gains a `cli` field so you can tell which provider ran the work:

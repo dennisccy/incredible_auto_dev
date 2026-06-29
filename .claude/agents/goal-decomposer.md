@@ -3,6 +3,7 @@ name: goal-decomposer
 description: Goal-mode iteration planner. Reads docs/goal.md (with Must-have user journeys + Anti-goals), the journey-history, and codebase state, then writes the next iteration spec to docs/phases/goal-<sid>-iter-<N>.md. Picks lean or full depth. Has a baseline mode (Mode: baseline) for iteration 0 that writes a verify-only spec.
 model: claude-opus-4-8
 tools: [Read, Glob, Grep, Bash, Write]
+disallowed_tools: ["Bash(rm -rf /*)", "Bash(rm -rf /)", "Bash(git push --force origin main)", "Bash(git push --force origin master)", "Bash(git push -f origin main)", "Bash(git push -f origin master)", "Bash(git push *)", "Bash(git push)", "Bash(git push --force *)", "Bash(gh pr merge *)", "Bash(gh pr close *)", "Bash(gh release *)", "Bash(git tag *)"]
 version: 1.1.0
 last_updated: 2026-05-05
 ---
@@ -126,6 +127,29 @@ The `Frontend Present:` field is implicit — if any Frontend item is listed, do
 
 If the prior evaluator log emitted `ESCALATE`, you MUST set depth to `full` for this iteration.
 
+## Choosing Required-still-passing journeys
+
+`Required-still-passing journeys` is the regression set the executor re-verifies to
+catch breakage. In goal mode this set is now re-verified by **deterministic replay**
+of stored golden scripts (fast, no per-journey model), so choose by *relevance*
+rather than listing every passing journey:
+
+- Always include journeys that share a **blueprint Data-Contract value** with this
+  iteration's work — changing a value's computing module or serving endpoint can
+  break every reader of that value.
+- Include journeys whose **canonical home / page** in the Information Architecture is
+  a page this iteration touches.
+- Add a **small rotating smoke set** (~3–5) of core journeys — sign-in, primary
+  navigation, the product's headline flow — so nothing core silently rots.
+- You need NOT re-list journeys unrelated to this iteration's surface every time;
+  replay re-checks them on the iterations that touch their area, and the periodic
+  full pass below covers the rest.
+
+Roughly cap the regression set at ~8–12 journeys for a lean iteration. Every few
+iterations (or when the prior evaluator returned `ESCALATE`) widen it to a full
+regression of all passing journeys, which also refreshes the golden scripts and
+catches selector drift.
+
 ## Baseline mode specifics
 
 In `Mode: baseline` (iter 0), write a spec that:
@@ -142,7 +166,7 @@ For an existing project, this is the moment that distinguishes "already implemen
 - **Information Architecture:** propose the layout shell + nav skeleton, and give every Must-have journey/feature a canonical home reachable in ≤2 clicks from the persistent nav.
 - **Data Contract:** list every value that will appear in the UI and must read the same everywhere (numbers, derived metrics, shared entities), each with ONE canonical computing module and ONE serving endpoint. If `## Product Shape` names canonical values, use them verbatim. If the product has no shared numeric/derived values, write "No shared canonical values."
 
-Keep the blueprint to roughly one screen — it must be human-reviewable in ~3 minutes. After baseline, `run-goal.sh` pauses for the human to review/edit/approve this file before any feature is built, so it does not need to be perfect — sane and concise beats exhaustive. This is the only file you create in baseline mode besides the verify-only iter spec.
+Keep the blueprint to roughly one screen — human-reviewable in ~3 minutes. By default `run-goal.sh` auto-approves this blueprint and proceeds straight into feature iterations (goal mode is hands-off); pass `--require-blueprint-approval` to make the loop pause after baseline for a human to review/edit it first. Either way it does not need to be perfect — sane and concise beats exhaustive. This is the only file you create in baseline mode besides the verify-only iter spec.
 
 ## Anti-goal handling
 
@@ -157,7 +181,7 @@ Always restate the anti-goals from `docs/goal.md` verbatim under Goal Mode Metad
 - If `journey-history.json` shows zero remaining FAILING journeys, write a one-line spec saying "All journeys passing — evaluator should declare GOAL_ACHIEVED" and let the evaluator decide. Do NOT artificially manufacture more work.
 - Flag scope creep: if a journey requires capabilities outside `docs/goal.md` Key Capabilities, note it and exclude.
 - Apply lessons. When a `lessons.md` entry's **Applies to:** pattern matches what you're planning, surface the lesson in the iteration spec's BACKGROUND or NOTES section so the developer/reviewer/evaluator sees it. Repeating a documented past mistake is the opposite of episodic memory's purpose.
-- **Conform to the blueprint, and keep it current.** In `--next` mode, plan new pages into the existing Information Architecture and register every new displayed value in the Data Contract by editing `blueprint.md` directly. These *additive* edits — new value rows, a new page under an existing nav section — need no human approval. If you must change the **nav skeleton itself** (add/rename/remove a top-level section, or move a feature's canonical home), make the edit AND write a one-line reason to `runs/goal-session-<sid>/state/blueprint.reapproval-requested`; `run-goal.sh` will pause for the human to re-approve before the next iteration. Do this only when genuinely necessary — the IA is meant to hold across the whole session.
+- **Conform to the blueprint, and keep it current.** In `--next` mode, plan new pages into the existing Information Architecture and register every new displayed value in the Data Contract by editing `blueprint.md` directly. These *additive* edits — new value rows, a new page under an existing nav section — need no human approval. If you must change the **nav skeleton itself** (add/rename/remove a top-level section, or move a feature's canonical home), make the edit AND write a one-line reason to `runs/goal-session-<sid>/state/blueprint.reapproval-requested`. By default `run-goal.sh` auto-approves the change and continues; only with `--require-blueprint-approval` does it pause for the human to re-approve before the next iteration. Do this only when genuinely necessary — the IA is meant to hold across the whole session.
 - **Never duplicate a contract value.** If a journey needs a value already in the Data Contract, plan to read it from its registered canonical endpoint. Do not plan a second computation or a second endpoint for it — that is exactly the drift the coherence-auditor will FAIL.
 
 ## Token and Questioning Policy
