@@ -302,6 +302,7 @@ PYEOF
 # Source quota-retry helpers (defines claude_with_quota_retry)
 # shellcheck source=quota-retry.sh
 source "$(dirname "${BASH_SOURCE[0]}")/quota-retry.sh"
+source "$(dirname "${BASH_SOURCE[0]}")/project-gates.sh"
 
 # Deterministic port offset (0..999) derived from the project directory so that
 # multiple projects sharing this subtree each land in their own port range.

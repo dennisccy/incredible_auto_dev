@@ -71,6 +71,14 @@ _run_self_test scripts/automation/lib/agent_permissions.py self-test
 _run_self_test scripts/automation/lib/render_iteration_summary.py self-test
 _run_self_test scripts/automation/lib/demo_runner.py self-test
 _run_self_test scripts/automation/lib/merge_ui_test_results.py self-test
+_run_self_test scripts/automation/lib/mcp_sync_selftest.py self-test
+
+# Bash-level self-test for the generic project-gate mechanism (M2).
+if bash scripts/automation/lib/project-gates.sh self-test >/dev/null 2>&1; then
+  _pass "self-test: project-gates.sh"
+else
+  _fail "self-test: project-gates.sh (run: bash scripts/automation/lib/project-gates.sh self-test)"
+fi
 
 # Telemetry has its own test mode (sourced + invoked with "test" arg)
 if bash scripts/automation/lib/telemetry.sh test >/dev/null 2>&1; then

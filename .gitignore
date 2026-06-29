@@ -3,6 +3,10 @@
 .codex/
 AGENTS.md
 
+# Per-project Claude local settings (incl. the project MCP trust/allow the adapters
+# emit). A local build product — never commit, never push upstream.
+.claude/settings.local.json
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]

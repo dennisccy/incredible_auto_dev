@@ -151,10 +151,26 @@ def sync_agents(*, dry_run: bool = False) -> int:
 # ── config.toml ───────────────────────────────────────────────────────────────
 
 
+def _render_codex_mcp_server(name: str, cfg: dict) -> str:
+    """Emit a [mcp_servers.<name>] section (+ nested env table) for Codex,
+    dropping Claude-only keys (type/timeout/headers) the Codex format rejects."""
+    fields: dict[str, Any] = {}
+    for k in ("command", "url"):
+        if k in cfg:
+            fields[k] = cfg[k]
+    if "args" in cfg:
+        fields["args"] = list(cfg["args"])
+    out = [_toml_section(f"mcp_servers.{name}", fields)]
+    env = cfg.get("env")
+    if isinstance(env, dict) and env:
+        out.append(_toml_section(f"mcp_servers.{name}.env", env))
+    return "\n".join(out)
+
+
 def render_config_toml() -> str:
     perms = T.load_permissions()
     bindings = T.load_hook_bindings()
-    mcp = T.load_mcp_servers()
+    mcp = T.merged_mcp_servers()
     tiers = T.load_model_tiers()
 
     parts: list[str] = []
@@ -180,11 +196,11 @@ def render_config_toml() -> str:
     if hooks_text:
         parts.append("\n".join(hooks_text).rstrip())
 
-    # MCP servers
+    # MCP servers (project overlay + neutral policy; empty ⇒ nothing emitted)
     for name, cfg in mcp.items():
         if not isinstance(cfg, dict):
             continue
-        parts.append(_toml_section(f"mcp_servers.{name}", cfg))
+        parts.append(_render_codex_mcp_server(name, cfg))
 
     # Trust project root so Codex respects .codex/config.toml
     parts.append(_toml_section("project", {"path": str(T.REPO), "trusted": True}))

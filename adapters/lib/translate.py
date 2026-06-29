@@ -32,6 +32,29 @@ VALID_TIERS = ("strong", "standard", "light")
 SUPPORTED_CLIS = ("claude", "codex")
 
 
+def _detect_project_root() -> Path:
+    """The directory where the CLI actually launches (and where project-local
+    files like .mcp.json / project-extensions/ live).
+
+    Standalone: the framework repo IS the project, so this is REPO. Vendored as a
+    git subtree under <project>/incredible_auto_dev/, the outer project symlinks
+    <project>/.claude → REPO/.claude; detect that and return the outer root.
+    Other vendored projects resolve to their own root and, lacking a
+    project-extensions/ overlay, stay completely inert.
+    """
+    parent = REPO.parent
+    link = parent / ".claude"
+    try:
+        if link.is_symlink() and link.resolve() == (REPO / ".claude").resolve():
+            return parent
+    except OSError:
+        pass
+    return REPO
+
+
+PROJECT_ROOT = _detect_project_root()
+
+
 # ── Data classes ──────────────────────────────────────────────────────────────
 
 
@@ -115,6 +138,25 @@ def load_hook_bindings() -> dict[str, dict[str, list[str]]]:
 def load_mcp_servers() -> dict[str, Any]:
     doc = load_yaml(NEUTRAL_POLICY / "mcp-servers.yaml") or {}
     return doc.get("servers", {}) or {}
+
+
+def load_project_mcp_overlay() -> dict[str, Any]:
+    """Optional per-project MCP servers, layered on top of the shared neutral
+    policy. Lives OUTSIDE the framework subtree (project-extensions/ at the
+    project root) so it never travels upstream with the subtree. Absent ⇒ {}."""
+    p = PROJECT_ROOT / "project-extensions" / "mcp-servers.yaml"
+    if not p.exists():
+        return {}
+    doc = load_yaml(p) or {}
+    return doc.get("servers", {}) or {}
+
+
+def merged_mcp_servers() -> dict[str, Any]:
+    """Shared neutral servers + the project overlay (overlay wins by name). Empty
+    for every project that hasn't opted in, which keeps MCP emission inert."""
+    merged = dict(load_mcp_servers())
+    merged.update(load_project_mcp_overlay())
+    return merged
 
 
 def load_passthrough(cli: str) -> dict[str, Any]:

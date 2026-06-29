@@ -1052,6 +1052,36 @@ Do NOT write code or implement anything. The iteration spec and any blueprint ed
     exit 1
   fi
 
+  # ── Post-decompose gate (generic, project-local, default-off) ───────────────
+  # Extension point M2: if the project provides project-extensions/gates/
+  # post-decompose.sh, run it with the iteration context BEFORE any build work.
+  # A non-zero exit BLOCKS the iteration (e.g. an evidence-derived proposal whose
+  # statistical referee did not certify it). Absent script ⇒ skipped entirely, so
+  # other projects sharing this framework behave exactly as before.
+  if [[ -f "$REPO_ROOT/project-extensions/gates/post-decompose.sh" ]]; then
+    echo "[run-goal] Post-decompose gate: project-extensions/gates/post-decompose.sh ..."
+    mkdir -p "$ITER_DIR"
+    _gate_rc=0
+    (
+      export SESSION_ID ITER_NAME REPO_ROOT
+      export ITER="$CURRENT_ITER" \
+             SPEC_PATH="$ITER_SPEC_PATH" \
+             SESSION_DIR="$GOAL_SESSION_DIR_LOCAL" \
+             LEDGER_PATH="$GOAL_SESSION_DIR_LOCAL/state/certified-claims.jsonl" \
+             GATE_VERDICT_PATH="$ITER_DIR/gate-post-decompose.json"
+      run_project_gate post-decompose
+    ) || _gate_rc=$?
+    if [[ "$_gate_rc" -ne 0 ]]; then
+      echo "[run-goal] Post-decompose gate BLOCKED iteration $CURRENT_ITER (exit $_gate_rc)." >&2
+      if [[ -f "$ITER_DIR/gate-post-decompose.json" ]]; then
+        echo "[run-goal]   verdict: $ITER_DIR/gate-post-decompose.json" >&2
+      fi
+      record_telemetry_event "halt" '{"reason":"GATE_BLOCKED_POST_DECOMPOSE","detected_at_step":"post_decomposer"}'
+      write_session_summary "GATE_BLOCKED" "$CURRENT_ITER"
+      exit 0
+    fi
+  fi
+
   # Parse depth
   DEPTH=$(grep -m1 -E '^[[:space:]]*-?[[:space:]]*\*\*Depth:\*\*' "$ITER_SPEC_PATH" \
             | sed -E 's/.*\*\*Depth:\*\*[[:space:]]*//; s/[[:space:]]+$//' \
