@@ -23,6 +23,26 @@ run_project_gate() {
   bash "$gate"
 }
 
+# run_project_hook <hook-name>
+#   A generic opt-in pipeline HOOK (sibling to run_project_gate, framework mechanism "M3"). Where a
+#   GATE's non-zero exit means "block", a HOOK's exit code is an ACTION SIGNAL the caller interprets:
+#     absent hook            → return 0   (no-op; caller proceeds exactly as before — backward compatible)
+#     present hook, exit 0   → "nothing to do" (caller continues its normal path, e.g. halt as usual)
+#     present hook, exit 10  → "continue"      (PROJECT_HOOK_CONTINUE — the caller should keep looping)
+#     any other non-zero     → propagated as an error
+#   Hooks live at <project-root>/project-extensions/hooks/<hook-name>.sh, OUTSIDE the framework subtree,
+#   so projects that have not opted in behave exactly as before and the mechanism never travels upstream.
+#   The caller exports the iteration/session context the hook needs (SESSION_ID, SESSION_DIR, REPO_ROOT,
+#   LEDGER_PATH, GOAL_MD, …) just as the gate caller does.
+PROJECT_HOOK_CONTINUE=10
+run_project_hook() {
+  local hook_name="$1"
+  local root="${PROJECT_GATES_ROOT:-${REPO_ROOT:-.}}"
+  local hook="$root/project-extensions/hooks/${hook_name}.sh"
+  [[ -f "$hook" ]] || return 0
+  bash "$hook"
+}
+
 # ── Self-test (run-evals.sh): bash scripts/automation/lib/project-gates.sh self-test
 if [[ "${BASH_SOURCE[0]}" == "${0}" && "${1:-}" == "self-test" ]]; then
   set -euo pipefail
@@ -45,6 +65,25 @@ GATE
   # 3. Present gate that exits non-zero ⇒ block (code propagates).
   printf '#!/usr/bin/env bash\nexit 7\n' > "$_t/project-extensions/gates/post-decompose.sh"
   if run_project_gate post-decompose; then echo "FAIL: blocking gate must return non-zero"; exit 1; fi
+
+  # 4. Absent HOOK ⇒ no-op (return 0) — a project that has not opted in is unaffected.
+  run_project_hook post-goal || { echo "FAIL: absent hook must be a no-op (return 0)"; exit 1; }
+
+  # 5. Present hook, exit 0 ⇒ "nothing to do" (return 0), and it sees the context env.
+  mkdir -p "$_t/project-extensions/hooks"
+  cat > "$_t/project-extensions/hooks/post-goal.sh" <<'HOOK'
+#!/usr/bin/env bash
+[[ -n "$SESSION_ID" ]] || exit 2
+exit 0
+HOOK
+  SESSION_ID=demo run_project_hook post-goal \
+    || { echo "FAIL: exit-0 hook must return 0 and see context env"; exit 1; }
+
+  # 6. Present hook, exit 10 ⇒ "continue" (PROJECT_HOOK_CONTINUE propagates verbatim).
+  printf '#!/usr/bin/env bash\nexit 10\n' > "$_t/project-extensions/hooks/post-goal.sh"
+  set +e; SESSION_ID=demo run_project_hook post-goal; _rc=$?; set -e
+  [[ "$_rc" == "$PROJECT_HOOK_CONTINUE" ]] \
+    || { echo "FAIL: continue hook must return $PROJECT_HOOK_CONTINUE (got $_rc)"; exit 1; }
 
   echo "project-gates self-test: OK"
 fi

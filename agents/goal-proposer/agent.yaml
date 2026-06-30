@@ -1,0 +1,20 @@
+name: goal-proposer
+description: 'Goal-mode continuous-improvement proposer (opt-in, default-off). After every Must-have
+  journey passes, surveys the whole product via the project read/MCP tools + project-extensions/proposer-guidance.md,
+  ranks improvements by the project usefulness lens, keeps only hold-out survivors, writes an
+  enhancement-proposals backlog, and surgically appends the best as new Must-have journeys into
+  docs/goal.md AUTO:journeys so goal mode keeps improving. Writes proposer-result.json (the honest
+  dry/extended stop signal). Dispatched ONLY when the project provides proposer-guidance.md.'
+model_tier: strong
+tools_allowed:
+- Read
+- Glob
+- Grep
+- Bash
+- Write
+- Edit
+version: 1.0.0
+last_updated: '2026-06-30'
+body: body.md
+claude:
+  model_override: claude-opus-4-8

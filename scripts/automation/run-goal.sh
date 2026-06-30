@@ -1375,6 +1375,66 @@ except Exception as e:
   # 5. Halt-on-verdict
   case "$VERDICT" in
     GOAL_ACHIEVED)
+      # ── Continuous-improvement opt-in (framework mechanism "M3") ────────────────
+      # DEFAULT-OFF: fires ONLY when the project provides BOTH
+      #   project-extensions/hooks/post-goal.sh   AND
+      #   project-extensions/proposer-guidance.md
+      # (both OUTSIDE the framework subtree). Absent either ⇒ this block is skipped
+      # and the session finalizes exactly as before, so other projects sharing this
+      # framework are unaffected. When opted in: run the project's deterministic prep
+      # hook, then dispatch the generic goal-proposer agent (it surveys the product,
+      # keeps only hold-out survivors, writes the proposals backlog, and surgically
+      # appends new Must-have journeys into the goal file's <!-- AUTO:journeys -->
+      # block). CONTINUE the loop iff it extended the goal — the unmodified decomposer
+      # then builds the new (not-yet-passing) journey next iteration. If the proposer
+      # is dry (nothing survived), fall through to the normal terminal halt below.
+      if [[ -f "$REPO_ROOT/project-extensions/hooks/post-goal.sh" \
+            && -f "$REPO_ROOT/project-extensions/proposer-guidance.md" ]]; then
+        echo "[run-goal] Continuous improvement: all journeys passing — post-goal hook + goal-proposer ..."
+        _state_dir="$GOAL_SESSION_DIR_LOCAL/state"
+        mkdir -p "$_state_dir"
+        rm -f "$_state_dir/proposer-result.json"
+        # 1. deterministic project prep (non-fatal): e.g. refresh the triad scan snapshot.
+        (
+          export SESSION_ID REPO_ROOT GOAL_FILE \
+                 SESSION_DIR="$GOAL_SESSION_DIR_LOCAL" \
+                 LEDGER_PATH="$GOAL_SESSION_DIR_LOCAL/state/certified-claims.jsonl"
+          run_project_hook post-goal
+        ) || echo "[run-goal] post-goal hook returned non-zero (non-fatal) — continuing." >&2
+        # 2. dispatch the generic goal-proposer agent (works headless AND interactive pump).
+        cd "$REPO_ROOT"
+        export CHAIN_CURRENT_AGENT=goal-proposer
+        record_agent_invocation_start "goal-proposer"
+        _prop_start=$CHAIN_AGENT_START_EPOCH
+        _prop_rc=0
+        claude_with_quota_retry -p "You are the goal-proposer agent for goal-mode continuous improvement.
+
+Session ID: $SESSION_ID
+Session state dir: $GOAL_SESSION_DIR_LOCAL/state
+Goal file: $GOAL_FILE  <-- extend ONLY the <!-- AUTO:journeys --> block
+Project guidance: project-extensions/proposer-guidance.md  <-- read this FIRST; it governs everything
+Agent instructions: .claude/agents/goal-proposer.md  <-- read this first
+(CLAUDE.md is already in your system prompt — do not Read it again.)
+
+Every Must-have journey is passing. Survey the whole product per the guidance, keep only hold-out
+survivors, write the proposals backlog, and promote the best 1-2 into new Must-have journeys in the
+goal file's AUTO:journeys block (follow the goal-self-extension skill; bake the consistency + walkthrough
+requirements into each journey's Acceptance). If nothing new survives, leave the goal file UNTOUCHED.
+Then write $GOAL_SESSION_DIR_LOCAL/state/proposer-result.json with keys extended, n_new_journeys,
+n_proposals, dry.
+
+Apply the TOKEN AND QUESTIONING POLICY from .claude/core.md strictly. Do NOT write product code or start services." || _prop_rc=$?
+        record_agent_invocation_end "goal-proposer" "$_prop_start" "$_prop_rc"
+        # 3. continue the loop iff the proposer extended the goal with new buildable journey(s).
+        _prop_extended=$(python3 -c "import json,sys; print('yes' if json.load(open('$_state_dir/proposer-result.json')).get('extended') else 'no')" 2>/dev/null || echo "no")
+        if [[ "$_prop_extended" == "yes" ]]; then
+          echo "[run-goal] Continuous improvement: goal extended with new journey(s) — continuing to build them."
+          record_telemetry_event "goal_extended" "$(jq -cn --arg s "$SESSION_ID" '{session:$s}' 2>/dev/null || echo '{}')"
+          CURRENT_ITER=$((CURRENT_ITER+1))
+          continue
+        fi
+        echo "[run-goal] Continuous improvement: proposer found nothing new (dry) — finalizing the session."
+      fi
       # Render the one-time delivered wrap BEFORE write_session_summary so the
       # session-index renderer (invoked inside write_session_summary) can find
       # delivered.html and surface a prominent link to it. Non-blocking.
