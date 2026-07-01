@@ -17,4 +17,4 @@ version: 1.0.0
 last_updated: '2026-06-30'
 body: body.md
 claude:
-  model_override: claude-opus-4-8
+  model_override: claude-fable-5
