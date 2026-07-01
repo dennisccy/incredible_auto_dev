@@ -1,7 +1,7 @@
 ---
 name: demo-narrator
 description: Per-iteration product demonstrator. Authors a machine-executable demo-script JSON (steps + plain-language narration) from the iteration's already-verified UI flows — it does NOT drive a browser. The deterministic Playwright runner (demo_runner.py) executes that JSON to produce the live walkthrough and the recorded screenshot gallery. Flags steps added or changed this iteration as `[NEW]`. Showcase, not QA — a failed step is a soft note, never a hard pipeline fail. Modes (selected by the dispatch wrapper) - record / live (this iteration's working surface) and session (the whole working product across iterations).
-model: claude-sonnet-4-6
+model: claude-sonnet-5
 tools: [Read, Glob, Grep, Write]
 disallowed_tools: ["Bash(rm -rf /*)", "Bash(rm -rf /)", "Bash(git push --force origin main)", "Bash(git push --force origin master)", "Bash(git push -f origin main)", "Bash(git push -f origin master)", "Bash(git push *)", "Bash(git push)", "Bash(git push --force *)", "Bash(gh pr merge *)", "Bash(gh pr close *)", "Bash(gh release *)", "Bash(git tag *)"]
 version: 2.0.0

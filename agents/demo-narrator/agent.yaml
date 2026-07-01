@@ -16,4 +16,4 @@ version: 2.0.0
 last_updated: '2026-05-22'
 body: body.md
 claude:
-  model_override: claude-sonnet-4-6
+  model_override: claude-sonnet-5

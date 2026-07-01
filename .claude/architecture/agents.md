@@ -7,7 +7,7 @@ The framework defines 14 agents in `.claude/agents/`. Each agent has a model tie
 | Tier | Model | Used for |
 |------|-------|----------|
 | strong | claude-opus-4-8 | Complex reasoning: planning, code generation, auditing |
-| standard | claude-sonnet-4-6 | Solid tasks: code review, UI analysis, test design |
+| standard | claude-sonnet-5 | Solid tasks: code review, UI analysis, test design |
 | light | claude-haiku-4-5 | Routine workflow: QA execution, git operations |
 
 ## Core Pipeline Agents (7)
@@ -30,7 +30,7 @@ The framework defines 14 agents in `.claude/agents/`. Each agent has a model tie
 
 ### reviewer
 - **File:** `.claude/agents/reviewer.md`
-- **Model:** standard (claude-sonnet-4-6)
+- **Model:** standard (claude-sonnet-5)
 - **Pipeline step:** 3 (Dev + Review loop)
 - **Inputs:** dev handoff, phase spec, changed files, git diff
 - **Output:** `reports/reviews/<phase>-review.md`
@@ -74,7 +74,7 @@ The framework defines 14 agents in `.claude/agents/`. Each agent has a model tie
 
 ### ui-impact-analyst
 - **File:** `.claude/agents/ui-impact-analyst.md`
-- **Model:** standard (claude-sonnet-4-6)
+- **Model:** standard (claude-sonnet-5)
 - **Pipeline step:** 4 (UI Impact Analysis)
 - **Inputs:** dev handoff, frontend handoff, plan, phase spec, changed files
 - **Skills used:** `diff-to-ui-impact`, `visible-change-summarizer`, `ui-workflow-inference`
@@ -83,7 +83,7 @@ The framework defines 14 agents in `.claude/agents/`. Each agent has a model tie
 
 ### ui-test-designer
 - **File:** `.claude/agents/ui-test-designer.md`
-- **Model:** standard (claude-sonnet-4-6)
+- **Model:** standard (claude-sonnet-5)
 - **Pipeline step:** 5 (UI Test Design)
 - **Inputs:** user-visible-changes, ui-surface-map, phase spec, functional test plan
 - **Skills used:** `manual-ui-test-plan-generator`, `what-to-click-writer`
@@ -92,7 +92,7 @@ The framework defines 14 agents in `.claude/agents/`. Each agent has a model tie
 
 ### browser-qa-agent
 - **File:** `.claude/agents/browser-qa-agent.md`
-- **Model:** standard (claude-sonnet-4-6)
+- **Model:** standard (claude-sonnet-5)
 - **Pipeline step:** 6 (Browser QA)
 - **Inputs:** ui-test-plan, ui-surface-map
 - **Skills used:** `browser-workflow-executor`
@@ -101,7 +101,7 @@ The framework defines 14 agents in `.claude/agents/`. Each agent has a model tie
 
 ### ux-regression-reviewer
 - **File:** `.claude/agents/ux-regression-reviewer.md`
-- **Model:** standard (claude-sonnet-4-6)
+- **Model:** standard (claude-sonnet-5)
 - **Pipeline step:** 8 (UX Regression Review)
 - **Inputs:** user-visible-changes, ui-surface-map, ui-test-results, prior phase handoffs
 - **Skills used:** `ui-regression-scout`
@@ -110,7 +110,7 @@ The framework defines 14 agents in `.claude/agents/`. Each agent has a model tie
 
 ### phase-closure-auditor
 - **File:** `.claude/agents/phase-closure-auditor.md`
-- **Model:** standard (claude-sonnet-4-6)
+- **Model:** standard (claude-sonnet-5)
 - **Pipeline step:** 10 (Phase Closure)
 - **Inputs:** all pipeline verdicts, all 6 UI visibility artifacts, phase spec, plan
 - **Skills used:** `phase-closure-gate`

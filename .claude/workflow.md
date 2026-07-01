@@ -240,7 +240,7 @@ The `Frontend Present:` line is machine-read by `qa-phase.sh` to decide whether 
 | Tier | Model | Used for |
 |------|-------|----------|
 | strong | claude-opus-4-8 | Complex reasoning: planning, code generation, auditing |
-| standard | claude-sonnet-4-6 | Solid tasks: code review, test plan generation |
+| standard | claude-sonnet-5 | Solid tasks: code review, test plan generation |
 | light | claude-haiku-4-5 | Routine workflow: QA execution, git/GitHub operations |
 
 Model assignments are in `config/agent-models.yaml`. Update models there and run `sync-agent-models.sh` to propagate.

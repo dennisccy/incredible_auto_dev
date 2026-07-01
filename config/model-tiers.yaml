@@ -5,7 +5,7 @@ tiers:
     claude: claude-opus-4-8
     codex: gpt-5.1-codex
   standard:
-    claude: claude-sonnet-4-6
+    claude: claude-sonnet-5
     codex: gpt-5-codex
   light:
     claude: claude-haiku-4-5

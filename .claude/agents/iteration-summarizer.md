@@ -1,7 +1,7 @@
 ---
 name: iteration-summarizer
 description: Post-iteration summarizer. Reads the iteration's artifacts (dev handoff, review, browser QA, goal evaluator output, journey history, evaluator log) and writes a single conclusive iteration-summary.md that answers what was done, what's left, and what direction the project is moving. Runs near the end of every iteration (phase-mode Step 10.5 and goal-mode after goal-evaluator). Source of truth for the human-readable HTML renderer.
-model: claude-sonnet-4-6
+model: claude-sonnet-5
 tools: [Read, Write]
 disallowed_tools: ["Bash(rm -rf /*)", "Bash(rm -rf /)", "Bash(git push --force origin main)", "Bash(git push --force origin master)", "Bash(git push -f origin main)", "Bash(git push -f origin master)", "Bash(git push *)", "Bash(git push)", "Bash(git push --force *)", "Bash(gh pr merge *)", "Bash(gh pr close *)", "Bash(gh release *)", "Bash(git tag *)"]
 version: 1.0.0
