@@ -105,10 +105,9 @@ programmatic path with an API key** (`run-goal.sh` without `--interactive`).
   the run pauses; continue after it resets. (The headless path's
   sleep-until-reset does **not** apply in interactive mode.)
 - **Model tiering becomes live.** Each agent runs on its `.claude/agents/<name>.md`
-  model tier (Fable 5 for strong agents, Sonnet for standard, Haiku for light), so
-  cost follows the tier. The **strong tier is Fable 5** — Anthropic's most capable
-  model (premium-priced, and available only under 30-day data retention, not ZDR).
-  It requires top-tier interactive access (Max); Pro is unlikely to grant it. If a
+  model tier (Opus for strong agents, Sonnet for standard, Haiku for light), so
+  cost follows the tier. The **strong tier is Opus 4.8** — Anthropic's most capable
+  Opus-tier model. It runs on Max; Pro may not grant it. If a
   tier's model is unavailable, set an interactive tier override (see Troubleshooting).
   Do **not** set
   `CLAUDE_CODE_SUBAGENT_MODEL` — it overrides every subagent and flattens the tiers.
@@ -161,7 +160,7 @@ programmatic path with an API key** (`run-goal.sh` without `--interactive`).
   subagent. Ensure the `superpowers-chrome` plugin is enabled for the session;
   the browser agents do not restrict `tools`, so they inherit the session's MCP.
 - **A strong-tier agent fails to start on Pro** — your plan may not grant
-  interactive Fable 5. Set an interactive tier override (see below).
+  interactive Opus. Set an interactive tier override (see below).
 
 ### Tuning
 
@@ -188,7 +187,7 @@ timestamped chain log is always at `runs/goal-session-<sid>/engine.log`.
 - **Codex interactive backend** — mirror the commands to `.codex/prompts/` and
   add a Codex dispatch path.
 - **Automatic interactive tier-map** — detect plan model availability and cap the
-  strong tier to an available model when interactive Fable 5 is not granted.
+  strong tier to an available model when interactive Opus is not granted.
 - **`SubagentStop` hook binding** — the advisory `on-stop-check-artifacts` hook
   fires on main-session stop but not on subagent completion; bind it to
   `SubagentStop` for parity if the reminder is wanted.
