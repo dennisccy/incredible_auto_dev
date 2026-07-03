@@ -94,6 +94,7 @@ class SessionSummary:
     paths: list[str] = field(default_factory=list)
     total: UsageRow = field(default_factory=UsageRow)
     by_agent: dict[str, UsageRow] = field(default_factory=lambda: defaultdict(UsageRow))
+    by_model: dict[str, UsageRow] = field(default_factory=lambda: defaultdict(UsageRow))
 
 
 def _iter_lines(path: str):
@@ -122,11 +123,13 @@ def aggregate(paths: list[str]) -> dict[str, SessionSummary]:
             sid = event.get("session_id") or "unknown"
             usage = event.get("usage") or {}
             agent = event.get("agent") or "unattributed"
+            model = event.get("model") or "unknown-model"
             summary = sessions.setdefault(sid, SessionSummary(session_id=sid))
             if path not in summary.paths:
                 summary.paths.append(path)
             summary.total.add(usage, event)
             summary.by_agent[agent].add(usage, event)
+            summary.by_model[model].add(usage, event)
     return sessions
 
 
@@ -150,11 +153,13 @@ def aggregate_traces(paths: list[str]) -> dict[str, SessionSummary]:
             # on); fall back to the trace dir name.
             sid = event.get("session_id") or Path(path).parent.name or "unknown"
             agent = event.get("agent") or "unattributed"
+            model = event.get("model") or "unknown-model"
             summary = sessions.setdefault(sid, SessionSummary(session_id=sid))
             if path not in summary.paths:
                 summary.paths.append(path)
             summary.total.add(usage, event)
             summary.by_agent[agent].add(usage, event)
+            summary.by_model[model].add(usage, event)
     return sessions
 
 
@@ -173,6 +178,11 @@ def render_text(sessions: dict[str, SessionSummary]) -> str:
         for agent, row in sorted(summary.by_agent.items()):
             out.append("   " + _format_row(agent, row, indent="     "))
         out.append("")
+        if summary.by_model:
+            out.append("   By model:")
+            for model, row in sorted(summary.by_model.items()):
+                out.append("   " + _format_row(model, row, indent="     "))
+            out.append("")
         # accumulate grand total
         gt = summary.total
         grand_total.invocations += gt.invocations
@@ -215,6 +225,7 @@ def render_json(sessions: dict[str, SessionSummary]) -> str:
             "sources": summary.paths,
             "total": summary.total.to_dict(),
             "by_agent": {a: r.to_dict() for a, r in summary.by_agent.items()},
+            "by_model": {m: r.to_dict() for m, r in summary.by_model.items()},
         }
     return json.dumps(out, indent=2, default=str)
 
@@ -233,6 +244,7 @@ _FIXTURE = [
         "event": "claude_usage",
         "session_id": "s-1",
         "agent": "developer",
+        "model": "claude-opus-4-8",
         "duration_ms": 12000,
         "duration_api_ms": 10000,
         "num_turns": 3,
@@ -249,6 +261,7 @@ _FIXTURE = [
         "event": "claude_usage",
         "session_id": "s-1",
         "agent": "reviewer",
+        "model": "claude-sonnet-5",
         "duration_ms": 4000,
         "duration_api_ms": 3500,
         "num_turns": 1,
@@ -301,6 +314,13 @@ def _self_test() -> int:
         agents = sorted(s.by_agent.keys())
         if agents != ["developer", "reviewer"]:
             print(f"FAIL: agent split: {agents}", file=sys.stderr)
+            return 1
+        models = sorted(s.by_model.keys())
+        if models != ["claude-opus-4-8", "claude-sonnet-5"]:
+            print(f"FAIL: model split: {models}", file=sys.stderr)
+            return 1
+        if s.by_model["claude-opus-4-8"].input_tokens != 1500:
+            print("FAIL: by_model token attribution off", file=sys.stderr)
             return 1
         # Render check
         text = render_text(sessions)

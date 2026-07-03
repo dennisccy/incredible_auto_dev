@@ -14,7 +14,7 @@ Update `.claude/architecture/*.md` to match the actual framework source files.
 - `.claude/hooks/*.sh` -- count and list of hooks
 - `scripts/automation/*.sh` -- count and list of scripts
 - `templates/*` -- count and list of templates
-- `config/agent-models.yaml` -- model tier assignments
+- `config/model-tiers.yaml` + `agents/*/agent.yaml` `model_tier` -- model tier assignments
 - `scripts/automation/run-phase.sh` -- pipeline step count and order
 - `scripts/automation/lib/common.sh` -- shared utilities
 - `.claude/workflow.md` -- pipeline stages and verdict formats
@@ -27,7 +27,7 @@ Update `.claude/architecture/*.md` to match the actual framework source files.
 4. Script count in `system-overview.md` matches `ls scripts/automation/*.sh | wc -l`
 5. Template count in `system-overview.md` matches `ls templates/* | wc -l`
 6. Pipeline step count in `pipeline.md` matches step comments in `run-phase.sh`
-7. Model assignments in `agents.md` match `config/agent-models.yaml`
+7. Model assignments in `agents.md` match `config/model-tiers.yaml` + each `agents/*/agent.yaml` `model_tier`
 8. All agents listed in `agents.md` have corresponding files in `.claude/agents/`
 
 ### Project mode (with phase argument)
@@ -63,6 +63,6 @@ Update `docs/architecture/*.md` to reflect what has been built. If no architectu
 A doc has drifted when any of these are true:
 - File count in doc does not match actual file count
 - A listed file no longer exists or a new file is not listed
-- Model tier assignment in doc does not match `agent-models.yaml`
+- Model tier assignment in doc does not match `model-tiers.yaml`/`agent.yaml`
 - Pipeline step count or order does not match `run-phase.sh`
 - An agent's described role does not match its `.md` file's description field

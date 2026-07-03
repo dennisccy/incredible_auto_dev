@@ -6,7 +6,10 @@
 
 ---
 
-**Verdict:** CLOSURE-PASS | CLOSURE-FAIL
+**Verdict:** CLOSURE-FAIL
+
+<!-- Replace the value above with exactly ONE of: CLOSURE-PASS or CLOSURE-FAIL.
+     Never leave both values on the verdict line — the gate greps this line. -->
 
 <!-- CLOSURE-PASS: All gates passed, phase is ready to finalize -->
 <!-- CLOSURE-FAIL: One or more blocking issues prevent completion -->

@@ -167,12 +167,14 @@ _pause_if_transport "$_rev_rc" "reviewer"
 if [[ -f "$REVIEW_REPORT" ]] && ! verdict_passes "$REVIEW_REPORT"; then
   echo "[goal-iter-lean] Review FAIL — running developer in fix mode (1 retry allowed)..."
   _dev_rc=0
+  escalate_model_on   # fix-mode retry runs on the strong tier (escalation ladder)
   run_developer "FIX MODE (review failed)" "
 The review report below contains FAIL issues that must be fixed.
 Do NOT rebuild from scratch -- fix only what is listed.
 
 Review report path: $REVIEW_REPORT
 " || _dev_rc=$?
+  escalate_model_off
   _pause_if_transport "$_dev_rc" "developer (fix-mode)"
   if [[ "$_dev_rc" -ne 0 ]]; then exit "$_dev_rc"; fi
   _rev_rc=0

@@ -62,14 +62,29 @@ calls only, no narration.
    periodically so you make ONE clean blocking call per cycle instead of polling a
    background job (which is what caused the "updates very frequently" churn).
 2. For each returned request path, read the request file. It is JSON with the
-   fields `agent`, `prompt`, `cwd`, and `res_path`.
+   fields `agent`, `prompt`, `cwd`, `res_path`, and `out`, plus an optional
+   `model`. (Older engines may omit `out`/`model` — both are optional.)
 3. Dispatch every returned request together: issue one Agent tool call per
    request in a single message, with `subagent_type` set to the request's
-   `agent` and the request's `prompt` passed verbatim. Do not pass a model
-   override — the subagent runs on its own `.claude/agents/<agent>.md` model tier.
-4. After each subagent returns, write its exit code (0 on success, a non-zero
-   number if it clearly failed) to that request's `res_path`, which equals the
-   request path with `.ready` replaced by `.res`.
+   `agent` and the request's `prompt` passed verbatim.
+   - **Model:** if the request has a non-empty `model` field, pass it as the
+     Agent tool's model parameter (the engine uses this for escalation retries
+     and confirm passes). Otherwise pass no model override — the subagent runs
+     on its own `.claude/agents/<agent>.md` model tier.
+   - **Large prompts:** if the prompt exceeds ~8 KB, do NOT inline it into the
+     Agent call (inlining giant prompts bloats your context and gets lost when
+     the session summarizes). Instead write the prompt verbatim to
+     `<dispatch-dir>/prompt-<request-basename>.md` with the Write tool, and
+     dispatch with this exact wrapper as the subagent prompt:
+     `Read <that path> IN FULL (paginate past any truncation if it is long) and follow its contents verbatim as your task instructions.`
+     Delete that prompt file after you write the request's `.res`.
+4. After each subagent returns: first write the subagent's final message
+   VERBATIM to the request's `out` path (Write tool; skip if the request has no
+   `out` field) — the engine captures it into the session trace for
+   measurement. THEN write its exit code (0 on success, a non-zero number if it
+   clearly failed) to that request's `res_path`, which equals the request path
+   with `.ready` replaced by `.res`. The `.res` write is the completion signal,
+   so it must come last.
 5. Loop back to step 1, silently. When step 1 prints `ENGINE_DONE`, leave the loop.
 
 ## Mapping a request to a subagent
@@ -77,7 +92,7 @@ calls only, no narration.
 The `agent` field is one of the goal-mode agent names, which match the
 `.claude/agents/<name>.md` filenames exactly: developer, reviewer, qa,
 browser-qa-agent, goal-decomposer, coherence-auditor, goal-evaluator,
-iteration-summarizer, readme-maintainer, orchestrator, auditor, ui-impact-analyst,
+iteration-summarizer, readme-maintainer, goal-proposer, orchestrator, auditor, ui-impact-analyst,
 ui-test-designer, ux-regression-reviewer, phase-closure-auditor, demo-narrator,
 release-manager, product-manager. Use that name as `subagent_type`.
 

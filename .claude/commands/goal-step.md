@@ -1,7 +1,7 @@
 ---
 description: Run exactly ONE more goal-mode iteration, then stop — reuses the engine's existing --max-iter cap (adds no new stop rule). Interactive dispatch.
 argument-hint: "[session-id]"
-allowed-tools: Bash(./scripts/automation/run-goal.sh:*), Bash(scripts/automation/goal-await-dispatch.sh:*), Bash(jq:*), Bash(cat:*), Bash(ls:*), Read, Task
+allowed-tools: Bash(./scripts/automation/run-goal.sh:*), Bash(scripts/automation/goal-await-dispatch.sh:*), Bash(jq:*), Bash(cat:*), Bash(ls:*), Read, Task, Write
 ---
 Run a **single** goal-mode iteration as the pump, then stop. This adds no new
 stop rule — it caps the existing budget at one beyond the current iteration, so

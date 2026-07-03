@@ -117,6 +117,18 @@ if [[ $_utd_rc -ne 0 && $_utd_rc -ne ${QUOTA_EXHAUSTED_EXIT_CODE:-75} ]]; then
   exit "$_utd_rc"
 fi
 
+# rc==0 post-condition (mirror of ui-impact-phase.sh): a rc==0 agent that wrote no
+# report must become a real failure + stub, not a phantom "Done." Placed AFTER the
+# signal-exit guard above (so signal semantics / anti-pattern #20 are preserved)
+# and the rc!=0 branch, so only a genuine rc==0-with-missing-file becomes a stub.
+if [[ ! -s "$UI_TEST_PLAN" || ! -s "$WHAT_TO_CLICK" ]]; then
+  _reason="ui-test-design-phase.sh: the ui-test-designer agent exited 0 but did not write a non-empty ui-test-plan and/or what-to-click report. Re-run \`./scripts/automation/ui-test-design-phase.sh $PHASE\`."
+  write_failed_artifact_stub "$PHASE" "ui-test-plan"  "$_reason"
+  write_failed_artifact_stub "$PHASE" "what-to-click" "$_reason"
+  echo "[ui-test-design] ERROR: agent returned success but expected report(s) are missing/empty — wrote SKIPPED stubs and failing." >&2
+  exit 1
+fi
+
 echo "[ui-test-design] Done. Reports:"
 echo "  UI test plan:  $UI_TEST_PLAN"
 echo "  What to click: $WHAT_TO_CLICK"

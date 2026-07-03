@@ -76,11 +76,11 @@ These are WARN only. Never FAIL on these.
 ### Step 4 — Write the verdict
 
 Write to the path given in the invocation prompt
-(`runs/goal-session-<sid>/iter-<N>/coherence.md`), using `.claude/templates/coherence-verdict.md` as
+(`runs/goal-session-<sid>/iter-<N>/coherence.md`), using `templates/coherence-verdict.md` as
 the structure. The verdict line MUST be first and machine-parseable:
 
 ```
-**Verdict:** COHERENCE-PASS | COHERENCE-WARN | COHERENCE-FAIL
+**Verdict:** <exactly one of: COHERENCE-PASS, COHERENCE-WARN, COHERENCE-FAIL>
 ```
 
 ## Verdicts

@@ -1,12 +1,12 @@
 # Agents
 
-The framework defines 14 agents in `.claude/agents/`. Each agent has a model tier assignment in `config/agent-models.yaml`. Twelve agents serve the phase pipeline; two are specific to goal mode.
+The framework defines 19 agents in `.claude/agents/` (rendered from `agents/<name>/`). Each agent has a `model_tier` in its `agent.yaml`, resolved via `config/model-tiers.yaml`. Twelve serve the phase pipeline; four are goal-mode agents (goal-decomposer, goal-evaluator, coherence-auditor, goal-proposer); three are showcase/maintenance agents (iteration-summarizer, demo-narrator, readme-maintainer).
 
 ## Model Tiers
 
 | Tier | Model | Used for |
 |------|-------|----------|
-| strong | claude-fable-5 | Complex reasoning: planning, code generation, auditing |
+| strong | claude-opus-4-8 | Judgment: goal evaluation/decomposition, skeptical audit, confirms |
 | standard | claude-sonnet-5 | Solid tasks: code review, UI analysis, test design |
 | light | claude-haiku-4-5 | Routine workflow: QA execution, git operations |
 
@@ -14,7 +14,7 @@ The framework defines 14 agents in `.claude/agents/`. Each agent has a model tie
 
 ### orchestrator
 - **File:** `.claude/agents/orchestrator.md`
-- **Model:** strong (claude-fable-5)
+- **Model:** standard (claude-sonnet-5)
 - **Pipeline step:** 1 (Plan)
 - **Inputs:** CLAUDE.md, project-template.md, phase spec, docs/goal.md, prior handoffs
 - **Output:** `runs/<phase>/plan.md`
@@ -22,7 +22,7 @@ The framework defines 14 agents in `.claude/agents/`. Each agent has a model tie
 
 ### developer
 - **File:** `.claude/agents/developer.md`
-- **Model:** strong (claude-fable-5)
+- **Model:** standard (claude-sonnet-5)
 - **Pipeline step:** 3 (Dev + Review loop)
 - **Inputs:** plan.md, phase spec, project-template.md, existing code, review/QA reports (fix mode)
 - **Outputs:** implementation code, `docs/handoffs/<phase>-dev.md`, `reports/phase-{N}-implementation-summary.md`
@@ -48,7 +48,7 @@ The framework defines 14 agents in `.claude/agents/`. Each agent has a model tie
 
 ### auditor
 - **File:** `.claude/agents/auditor.md`
-- **Model:** strong (claude-fable-5)
+- **Model:** strong (claude-opus-4-8)
 - **Pipeline step:** 9 (Audit)
 - **Inputs:** phase spec, plan, dev handoff, review report, QA report, test plan, actual source files
 - **Output:** `docs/handoffs/<phase>-audit.md`
@@ -64,7 +64,7 @@ The framework defines 14 agents in `.claude/agents/`. Each agent has a model tie
 
 ### product-manager
 - **File:** `.claude/agents/product-manager.md`
-- **Model:** strong (claude-fable-5)
+- **Model:** standard (claude-sonnet-5)
 - **Pipeline step:** Optional (before Step 1)
 - **Inputs:** phase spec, existing codebase, project-template.md
 - **Output:** `docs/plans/<date>-<phase>-plan.md`
@@ -117,13 +117,13 @@ The framework defines 14 agents in `.claude/agents/`. Each agent has a model tie
 - **Output:** `reports/phase-{N}-closure-verdict.md`
 - **Role:** Final gate before finalize. Validates all UI artifacts exist, are non-vague, and are consistent. Blocks false completion.
 
-## Goal Mode Agents (2)
+## Goal Mode Agents (4 — plus 3 showcase agents documented in CLAUDE.md and their agent files)
 
 These agents are invoked only by the goal-mode pipeline (`run-goal.sh` and `goal-iter-lean.sh`). Phase mode does not use them. See [`goal-mode.md`](goal-mode.md) for how they fit into the loop.
 
 ### goal-decomposer
 - **File:** `.claude/agents/goal-decomposer.md`
-- **Model:** strong (claude-fable-5)
+- **Model:** strong (claude-opus-4-8)
 - **Pipeline step:** Goal-mode iteration step 1 (planning)
 - **Inputs:** CLAUDE.md, project-template.md, `docs/goal.md` (especially Must-have user journeys + Anti-goals), `runs/goal-session-<sid>/state/journey-history.json`, last 3 entries of `runs/goal-session-<sid>/state/evaluator-log.md`, prior iteration's `eval.md`, codebase state via Glob/Grep/Read
 - **Output:** `docs/phases/goal-<sid>-iter-<N>.md` — a phase-spec-shaped iter spec with Goal Mode Metadata (Mode: baseline|next, Depth: lean|full, Target journeys, Required-still-passing journeys, Anti-goal reminders)
@@ -133,7 +133,7 @@ These agents are invoked only by the goal-mode pipeline (`run-goal.sh` and `goal
 
 ### goal-evaluator
 - **File:** `.claude/agents/goal-evaluator.md`
-- **Model:** strong (claude-fable-5)
+- **Model:** strong (claude-opus-4-8)
 - **Pipeline step:** Goal-mode iteration step 3 (judgment)
 - **Inputs:** `docs/goal.md`, the iter spec, all iteration artifacts (dev handoff, review report, QA report, audit handoff for full mode), browser-qa results, evidence screenshots, prior `journey-history.json`, prior evaluator-log entries
 - **Output:** `runs/goal-session-<sid>/iter-<N>/eval.md` (verdict + recommendation), updated `journey-history.json` (full atomic write), appended `evaluator-log.md` entry

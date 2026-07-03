@@ -27,19 +27,20 @@ The prompt gives you: the **session id**, the **session state dir** (`SESSION_DI
 4. `SESSION_DIR/blueprint.md` — the Data Contract (the single-source-of-truth registry you must respect
    when proposing a new view).
 5. `SESSION_DIR/enhancement-proposals.jsonl` (if present) — proposals already made (don't duplicate).
-6. `SESSION_DIR/triad-scan.json` (if present) — the deterministic, pre-screened scan snapshot the
-   post-goal hook wrote. Use it as your starting candidate list.
+6. Any pre-screen snapshot the project's post-goal hook wrote into `SESSION_DIR/` (e.g. a
+   `*-scan.json`, named in the guidance) — use it as your starting candidate list (if present).
 
 ## Procedure
 
 1. **Survey the whole product.** Following the guidance, read the project's read/MCP tools (start with
-   the pre-screened scan snapshot / scan tool, then drill with the factor/event-study/sample tools, and
-   look at the rest of the surface for UX/structure/missing-dimension gaps). Form a small shortlist of
-   *useful* candidates by the project's lens — not single-metric outliers.
-2. **Keep only what survives the hold-out screen.** A data-pattern candidate is proposable ONLY if the
-   project's screen marks it a survivor (its edge persisted out-of-sample). Tag each `robustness:
-   robust` (screened survivor) or `speculative` (a structural/UX idea not yet data-backed). Never
-   present a speculative pattern as proven.
+   the pre-screen snapshot / scan tool when one exists, then drill down with whatever analysis tools the
+   guidance names, and look at the rest of the surface for UX/structure/missing-dimension gaps). Form a
+   small shortlist of *useful* candidates by the project's lens — not single-metric outliers.
+2. **Keep only what survives the project's validation screen.** The guidance defines what counts as
+   validated (for data products this is typically an out-of-sample hold-out; other products may define
+   usage evidence or none). An evidence-backed candidate is proposable ONLY if the project's screen
+   marks it a survivor. Tag each `robustness: robust` (screened survivor) or `speculative` (a
+   structural/UX idea not yet evidence-backed). Never present a speculative candidate as proven.
 3. **De-duplicate.** Drop anything already in `enhancement-proposals.jsonl` or already a journey in
    `goal.md` (human or AUTO).
 4. **Write the backlog.** Append the survivors best-first to `SESSION_DIR/enhancement-proposals.jsonl`

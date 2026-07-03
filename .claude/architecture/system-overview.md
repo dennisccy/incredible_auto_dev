@@ -26,7 +26,7 @@ The framework consists of 6 component types:
 
 ### 1. Agents (14 total, in `.claude/agents/`)
 
-Markdown files that define each agent's role, inputs, outputs, and rules. Agents are invoked by automation scripts. Each agent has a model tier assignment (strong/standard/light) defined in `config/agent-models.yaml`.
+Markdown files that define each agent's role, inputs, outputs, and rules. Agents are invoked by automation scripts. Each agent has a model tier assignment (strong/standard/light) — `model_tier` in `agents/<name>/agent.yaml`, resolved via `config/model-tiers.yaml`.
 
 Twelve agents serve the phase pipeline (orchestrator, developer, reviewer, qa, auditor, release-manager, product-manager, ui-impact-analyst, ui-test-designer, browser-qa-agent, ux-regression-reviewer, phase-closure-auditor). Two agents are specific to goal mode (goal-decomposer, goal-evaluator). Goal mode reuses all twelve phase agents unchanged.
 
@@ -53,7 +53,7 @@ Markdown templates for all artifact types. Agents use these as format references
 ### 6. Configuration (4 files)
 
 - `.claude/project-template.md` -- project-specific stack, commands, principles
-- `config/agent-models.yaml` -- agent-to-model-tier mapping
+- `config/model-tiers.yaml` -- tier-to-model mapping (per-agent tier lives in `agents/*/agent.yaml`)
 - `config/install-security-policy.json` -- supply-chain security policy
 - `.claude/settings.json` -- Claude Code tool permissions
 
@@ -69,7 +69,7 @@ CLAUDE.md (constitution)
     |
     +-- .claude/agents/*.md (12 agent definitions)
     |       |
-    |       +-- read .claude/skills/*.md (9 skills)
+    |       +-- read .claude/skills/*.md (13 skills)
     |
     +-- .claude/hooks/*.sh (5 hooks, triggered by Claude Code)
     |
@@ -79,7 +79,7 @@ CLAUDE.md (constitution)
     |       +-- lib/quota-retry.sh (quota handling)
     |       +-- lib/verdicts.py (verdict parsing)
     |
-    +-- config/ (agent-models.yaml, install-security-policy.json)
+    +-- config/ (model-tiers.yaml, install-security-policy.json)
     +-- templates/ (13 artifact templates)
     +-- runs/<phase>/ (runtime artifacts: status.json, plan.md, summary.json)
 ```

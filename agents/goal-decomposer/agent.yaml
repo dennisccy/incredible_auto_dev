@@ -10,8 +10,6 @@ tools_allowed:
 - Grep
 - Bash
 - Write
-version: 1.1.0
-last_updated: '2026-05-05'
+version: 1.2.1
+last_updated: '2026-07-03'
 body: body.md
-claude:
-  model_override: claude-fable-5

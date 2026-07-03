@@ -86,9 +86,9 @@ The pipeline will:
 
 ### Model assignments
 
-Edit `config/agent-models.yaml` to change which models agents use, then run:
+Edit `config/model-tiers.yaml` (tier→model) and/or `agents/<name>/agent.yaml` (`model_tier`) to change which models agents use, then run:
 ```bash
-./scripts/automation/sync-agent-models.sh
+python3 scripts/automation/sync-cli-assets.py --cli claude
 ```
 
 ### Security policy
@@ -184,12 +184,12 @@ your-project/
     project-template.md              # Project config (you fill this in)
     anti-patterns.md                 # Failure modes
     agents/                          # 14 agent definitions (12 phase + 2 goal)
-    skills/                          # 9 skills
+    skills/                          # 13 skills
     hooks/                           # 5 hooks
     architecture/                    # Framework architecture docs (incl. goal-mode.md)
   scripts/automation/                # 18 automation scripts (incl. run-goal.sh, goal-iter-lean.sh)
     lib/                             # quota-retry.sh, common.sh, telemetry.sh
-  config/                            # agent-models.yaml, security policy
+  config/                            # model-tiers.yaml, security policy
   templates/                         # 15 artifact templates
   runs/<phase>/                      # Phase-mode runtime artifacts
   runs/goal-session-<sid>/           # Goal-mode session state (telemetry, journey-history, summary)

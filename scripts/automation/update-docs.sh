@@ -56,7 +56,7 @@ Source of truth files to read:
 - .claude/hooks/*.sh (all hook scripts — first 10 lines for purpose)
 - scripts/automation/*.sh (list for count)
 - templates/* (list for count)
-- config/agent-models.yaml (model tier assignments)
+- config/model-tiers.yaml + agents/*/agent.yaml model_tier (model tier assignments)
 - scripts/automation/run-phase.sh (pipeline steps — look for 'Step N/11' comments)
 - CLAUDE.md (constitution tables)
 

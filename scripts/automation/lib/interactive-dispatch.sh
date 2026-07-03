@@ -14,10 +14,14 @@
 # Requires CHAIN_DISPATCH_DIR (created + exported by run-goal.sh).
 #
 # Channel protocol (one request per agent call):
-#   _interactive_invoke writes   <dir>/req.XXXXXX.ready = {agent, prompt, cwd, res_path}
-#   the pump reads it, dispatches subagent_type=<agent>, then writes
+#   _interactive_invoke writes   <dir>/req.XXXXXX.ready = {agent, prompt, cwd, res_path,
+#                                out, model?}
+#   the pump reads it, dispatches subagent_type=<agent> (passing `model` as the
+#   Agent tool's model param when present), writes the subagent's final message
+#   verbatim to `out` (best-effort), then writes
 #                                <dir>/req.XXXXXX.res   = <exit-code>
-#   _interactive_invoke returns that exit code.
+#   _interactive_invoke returns that exit code. `out` and `model` are optional
+#   for older pumps — a pump that ignores them still works (no trace captured).
 #
 # Request filenames are unique (mktemp), so the concurrent calls produced by
 # run-phase.sh's post-dev fanout never collide. This backend never sleeps until
@@ -70,19 +74,32 @@ _interactive_invoke() {
   local prompt
   prompt="$(_interactive_extract_prompt "$@")"
 
-  local req res
+  local req res out
   req="$(mktemp "$dir/req.XXXXXX")"
   res="$req.res"
+  out="$req.out"
+
+  # Optional per-dispatch model override (escalation ladder / two-key confirm).
+  # Empty means "no override — the subagent's frontmatter tier applies".
+  local model_override="${CHAIN_MODEL_OVERRIDE:-}"
 
   # Build the request JSON. jq handles arbitrary prompt content (quotes,
   # newlines, large prompts) safely; python3 is the fallback.
   if command -v jq >/dev/null 2>&1; then
     jq -cn --arg a "$agent" --arg p "$prompt" --arg c "$PWD" --arg r "$res" \
-      '{agent:$a, prompt:$p, cwd:$c, res_path:$r}' > "$req"
+      --arg o "$out" --arg m "$model_override" \
+      '{agent:$a, prompt:$p, cwd:$c, res_path:$r, out:$o}
+       + (if $m != "" then {model:$m} else {} end)' > "$req"
   else
-    _ID_A="$agent" _ID_P="$prompt" _ID_C="$PWD" _ID_R="$res" python3 -c \
-      'import json,os; print(json.dumps({"agent":os.environ["_ID_A"],"prompt":os.environ["_ID_P"],"cwd":os.environ["_ID_C"],"res_path":os.environ["_ID_R"]}))' > "$req"
+    _ID_A="$agent" _ID_P="$prompt" _ID_C="$PWD" _ID_R="$res" _ID_O="$out" _ID_M="$model_override" python3 -c \
+      'import json,os; d={"agent":os.environ["_ID_A"],"prompt":os.environ["_ID_P"],"cwd":os.environ["_ID_C"],"res_path":os.environ["_ID_R"],"out":os.environ["_ID_O"]};
+m=os.environ.get("_ID_M","");
+d.update({"model":m} if m else {});
+print(json.dumps(d))' > "$req"
   fi
+
+  local _dispatch_start
+  _dispatch_start="$(date +%s)"
 
   # Publish atomically: the pump only picks up *.ready files.
   mv "$req" "$req.ready"
@@ -144,8 +161,31 @@ _interactive_invoke() {
 
   local rc
   rc="$(cat "$res" 2>/dev/null || echo 1)"
-  rm -f "$res" "$req.ready" "$started" 2>/dev/null || true
   [[ "$rc" =~ ^[0-9]+$ ]] || rc=1
+
+  # Trace capture (best-effort). The pump writes the subagent's final message
+  # to $out before $res; older pumps don't — record a stub so the invocation
+  # is still attributed. Model attribution: the explicit override if set, else
+  # the frontmatter model the subagent inherits.
+  if [[ -n "${CHAIN_TRACE_DIR:-}" ]] && declare -F _trace_record_invocation >/dev/null 2>&1; then
+    local _dur=$(( $(date +%s) - _dispatch_start ))
+    local _out_for_trace="$out"
+    if [[ ! -f "$out" ]]; then
+      _out_for_trace="$(mktemp)"
+      printf '[interactive] pump did not write an output transcript for this dispatch (agent=%s)\n' "$agent" > "$_out_for_trace"
+    fi
+    if [[ -n "$model_override" ]]; then
+      _CHAIN_TRACE_MODEL="$model_override"
+    else
+      _CHAIN_TRACE_MODEL="$(python3 "$(dirname "${BASH_SOURCE[0]}")/agent_permissions.py" model "$agent" 2>/dev/null || true)"
+    fi
+    _CHAIN_TRACE_EFFORT=""   # effort is not applied on the interactive path
+    _trace_record_invocation "$_out_for_trace" "" "$_dur" "$rc" "$@" || true
+    [[ "$_out_for_trace" != "$out" ]] && rm -f "$_out_for_trace" 2>/dev/null || true
+    _CHAIN_TRACE_MODEL=""
+  fi
+
+  rm -f "$res" "$req.ready" "$started" "$out" 2>/dev/null || true
   return "$rc"
 }
 
@@ -215,6 +255,42 @@ _interactive_dispatch_self_test() {
   wait "$pump" 2>/dev/null || true
   if [[ "$rc" -eq "${DISPATCH_UNAVAILABLE_EXIT_CODE:-70}" ]]; then echo "  PASS interactive-dispatch: claimed + exceeds inflight → 70 (Tier B)"; else echo "  FAIL interactive-dispatch: inflight-timeout abort (rc=$rc)"; fails=1; fi
   rm -rf "$d"
+
+  # Test 5 — request JSON carries `out` (+ `model` when CHAIN_MODEL_OVERRIDE is
+  # set); when the pump writes the out file, the invoke records a trace via
+  # _trace_record_invocation (stubbed here — the real recorder is exercised by
+  # tests/automation/test-quota-retry.sh).
+  d="$(mktemp -d)"; export CHAIN_DISPATCH_DIR="$d"; rc=0
+  local trace_d; trace_d="$(mktemp -d)"; export CHAIN_TRACE_DIR="$trace_d"
+  export CHAIN_MODEL_OVERRIDE="claude-test-override"
+  _trace_record_invocation() {  # stub: record what we were handed
+    printf '%s|%s|%s\n' "${CHAIN_CURRENT_AGENT:-}" "${_CHAIN_TRACE_MODEL:-}" "$(cat "$1" 2>/dev/null | head -1)" >> "$CHAIN_TRACE_DIR/stub-trace.log"
+  }
+  ( for _ in $(seq 1 50); do
+      r="$(find "$d" -maxdepth 1 -name 'req.*.ready' 2>/dev/null | head -1)"
+      if [[ -n "$r" ]]; then
+        if grep -q '"out"' "$r" && grep -q '"model":"claude-test-override"' "$r"; then
+          o="$(sed -n 's/.*"out":"\([^"]*\)".*/\1/p' "$r")"
+          [[ -n "$o" ]] && printf 'final message from subagent\n' > "$o"
+          echo 0 > "${r%.ready}.res"
+        else
+          echo 9 > "${r%.ready}.res"   # fields missing → fail the test via rc
+        fi
+        break
+      fi
+      sleep 0.1
+    done ) &
+  pump=$!
+  CHAIN_DISPATCH_POLL_SECONDS=0.2 CHAIN_PUMP_HEARTBEAT_TIMEOUT=3600 _interactive_invoke -p "trace capture test" || rc=$?
+  wait "$pump" 2>/dev/null || true
+  unset CHAIN_MODEL_OVERRIDE
+  unset -f _trace_record_invocation
+  if [[ "$rc" -eq 0 ]] && grep -q '^developer|claude-test-override|final message' "$trace_d/stub-trace.log" 2>/dev/null; then
+    echo "  PASS interactive-dispatch: out+model in request; trace recorded from pump output"
+  else
+    echo "  FAIL interactive-dispatch: trace capture (rc=$rc, stub=$(cat "$trace_d/stub-trace.log" 2>/dev/null || echo missing))"; fails=1
+  fi
+  rm -rf "$d" "$trace_d"; unset CHAIN_TRACE_DIR
 
   if [[ "$fails" -eq 0 ]]; then echo "interactive-dispatch self-test: OK"; else echo "interactive-dispatch self-test: FAILED"; fi
   return "$fails"

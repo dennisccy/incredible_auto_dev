@@ -5,8 +5,6 @@ description: Coherence auditor (goal mode). Audits each iteration's diff against
   with no navigation path / a duplicate home for an existing entity. Subjective issues are advisory.
   Runs after the iteration's dispatch and before the goal-evaluator.
 model_tier: standard
-version: 1.0.0
+version: 1.0.2
 last_updated: '2026-05-21'
 body: body.md
-claude:
-  model_override: claude-sonnet-5

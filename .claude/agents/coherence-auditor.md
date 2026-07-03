@@ -3,7 +3,7 @@ name: coherence-auditor
 description: Coherence auditor (goal mode). Audits each iteration's diff against the session blueprint (information architecture + data contract). Hard-fails only on objective rules — a contract value recomputed in a new code path, a contract value served from a non-canonical endpoint, or a new feature with no navigation path / a duplicate home for an existing entity. Subjective issues are advisory. Runs after the iteration's dispatch and before the goal-evaluator.
 model: claude-sonnet-5
 disallowed_tools: ["Bash(rm -rf /*)", "Bash(rm -rf /)", "Bash(git push --force origin main)", "Bash(git push --force origin master)", "Bash(git push -f origin main)", "Bash(git push -f origin master)", "Bash(git push *)", "Bash(git push)", "Bash(git push --force *)", "Bash(gh pr merge *)", "Bash(gh pr close *)", "Bash(gh release *)", "Bash(git tag *)"]
-version: 1.0.0
+version: 1.0.2
 last_updated: 2026-05-21
 ---
 
@@ -84,11 +84,11 @@ These are WARN only. Never FAIL on these.
 ### Step 4 — Write the verdict
 
 Write to the path given in the invocation prompt
-(`runs/goal-session-<sid>/iter-<N>/coherence.md`), using `.claude/templates/coherence-verdict.md` as
+(`runs/goal-session-<sid>/iter-<N>/coherence.md`), using `templates/coherence-verdict.md` as
 the structure. The verdict line MUST be first and machine-parseable:
 
 ```
-**Verdict:** COHERENCE-PASS | COHERENCE-WARN | COHERENCE-FAIL
+**Verdict:** <exactly one of: COHERENCE-PASS, COHERENCE-WARN, COHERENCE-FAIL>
 ```
 
 ## Verdicts

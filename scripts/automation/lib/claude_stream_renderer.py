@@ -45,6 +45,11 @@ _DOT_WRAP = 60
 # (e.g., text "Looking up file..." + 3 dots became "Looking up file......").
 _AT_LINE_START = True
 
+# Model id observed in the system/init event. The final `result` event does not
+# always carry the model, so we remember it here and stamp it into the usage
+# sidecar — telemetry and traces need per-model attribution.
+_SESSION_MODEL = ""
+
 
 def _flush_dots() -> None:
     """Write a newline if we have unflushed progress dots, then reset."""
@@ -111,7 +116,10 @@ def _handle_event(event: dict[str, Any]) -> None:
         # Initial session info — usually one-line
         sub = event.get("subtype", "")
         if sub == "init":
+            global _SESSION_MODEL
             model = event.get("model") or ""
+            if model:
+                _SESSION_MODEL = model
             sid = event.get("session_id") or ""
             if sid:
                 sys.stderr.write(
@@ -159,6 +167,7 @@ def _write_sidecar(result_event: dict[str, Any]) -> None:
         "session_id": result_event.get("session_id"),
         "is_error": result_event.get("is_error", False),
         "subtype": result_event.get("subtype"),
+        "model": result_event.get("model") or _SESSION_MODEL or None,
         "usage": result_event.get("usage", {}) or {},
     }
     try:

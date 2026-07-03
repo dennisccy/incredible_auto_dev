@@ -1,7 +1,7 @@
 ---
 description: Resume a paused or halted goal-mode session inside this Claude Code session (interactive dispatch).
 argument-hint: "[session-id] [extra run-goal.sh flags]"
-allowed-tools: Bash(./scripts/automation/run-goal.sh:*), Bash(scripts/automation/goal-await-dispatch.sh:*), Bash(jq:*), Bash(cat:*), Bash(ls:*), Read, Task
+allowed-tools: Bash(./scripts/automation/run-goal.sh:*), Bash(scripts/automation/goal-await-dispatch.sh:*), Bash(jq:*), Bash(cat:*), Bash(ls:*), Read, Task, Write
 ---
 Resume an existing goal-mode session as the **pump**. Follow
 `.claude/skills/goal-interactive-dispatch.md` exactly.

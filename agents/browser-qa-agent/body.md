@@ -40,7 +40,7 @@ Write to `reports/phase-{N}-ui-test-results.md` using `templates/ui-test-results
 
 Include:
 - Overall summary: "X/Y tests passed"
-- Results table with columns: Test ID, Name, Type, Expected, Actual, Verdict (PASS/FAIL/SKIP), Evidence
+- Results table with columns: Test ID, Name, Type, Priority, Expected, Actual, Verdict (PASS/FAIL/SKIP), Evidence — all EIGHT columns, in this order (templates/ui-test-results.md is the canonical layout; the merge tool reads cells by position)
 - For FAIL: a dedicated section with exact failure details and screenshot path
 - Environment info: Frontend URL, Browser, Date
 

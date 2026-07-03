@@ -408,7 +408,9 @@ case "$CURRENT_STEP" in
   qa_failed)
     SKIP_PLAN=true; SKIP_TEST_PLAN=true; SKIP_DEV_REVIEW=true
     SKIP_UI_IMPACT=true; SKIP_UI_TEST_DESIGN=true; SKIP_BROWSER_QA=true ;;
-  browser_qa_complete)
+  post_dev_parallel_complete|browser_qa_complete)
+    # post_dev_parallel_complete: the Step 4-7 parallel fanout finished (UI chain
+    # 4-6 done); resume from QA (Step 7) onward — same skips as browser_qa_complete.
     SKIP_PLAN=true; SKIP_TEST_PLAN=true; SKIP_DEV_REVIEW=true
     SKIP_UI_IMPACT=true; SKIP_UI_TEST_DESIGN=true; SKIP_BROWSER_QA=true ;;
   ui_test_designed)
@@ -421,7 +423,11 @@ case "$CURRENT_STEP" in
     SKIP_PLAN=true; SKIP_TEST_PLAN=true; SKIP_DEV_REVIEW=true ;;
   review_failed)
     SKIP_PLAN=true; SKIP_TEST_PLAN=true ;;
-  dev_complete_attempt_*)
+  dev_complete|dev_complete_attempt_*)
+    # Bare `dev_complete` is written by the developer agent itself
+    # (dev-phase.sh / goal-iter-lean.sh); the attempt-suffixed form is
+    # run-phase.sh's own checkpoint. Both mean "dev done, resume at review" —
+    # without the bare arm, a resume on it silently re-ran the whole phase.
     SKIP_PLAN=true; SKIP_TEST_PLAN=true
     if verdict_passes "$REVIEW_REPORT"; then
       SKIP_DEV_REVIEW=true
@@ -574,8 +580,10 @@ if [[ "$SKIP_DEV_REVIEW" == "false" ]]; then
       log "  [attempt $ATTEMPT/$MAX_RETRIES] Skipping dev (already completed), running reviewer..."
     else
       log "  [attempt $ATTEMPT/$MAX_RETRIES] Running dev agent..."
+      [[ $ATTEMPT -ge 2 ]] && escalate_model_on
       dev_rc=0
       _run_step "$SCRIPT_DIR/dev-phase.sh" "$PHASE" || dev_rc=$?
+      escalate_model_off
       if [[ $dev_rc -eq 75 ]]; then
         ATTEMPT=$((ATTEMPT - 1))  # don't count quota failures as attempts
         continue
@@ -640,11 +648,13 @@ if [[ "$FRONTEND_PRESENT" == "yes" \
   if [[ $fanout_rc -ne 0 ]]; then
     log "  Warning: post-dev fanout exited $fanout_rc — sequential retry will pick up any failed step"
   fi
-  # The UI chain steps (4, 5, 6, 6.5) are always idempotent and write their
-  # artifacts (or N/A stubs) regardless — mark them complete unconditionally.
-  SKIP_UI_IMPACT=true
-  SKIP_UI_TEST_DESIGN=true
-  SKIP_BROWSER_QA=true
+  # Mark each UI-chain step complete ONLY if it actually produced its artifact(s).
+  # On an early Branch-UI abort (e.g. ui-test-design failed mid-chain) the downstream
+  # artifacts are absent; flipping SKIP unconditionally would wrongly bypass the
+  # sequential Step 4/5/6 retry blocks below that exist to re-run the missing step.
+  [[ -s "$USER_VISIBLE" && -s "$UI_SURFACE_MAP" ]] && SKIP_UI_IMPACT=true
+  [[ -s "$UI_TEST_PLAN" && -s "$WHAT_TO_CLICK" ]]  && SKIP_UI_TEST_DESIGN=true
+  [[ -s "$UI_TEST_RESULTS" ]]                      && SKIP_BROWSER_QA=true
   update_status "$PHASE" "in_progress" "post_dev_parallel_complete"
   # Step 7 (QA): only skip the existing retry loop if QA passed in the fanout.
   # Otherwise leave SKIP_QA=false so the sequential retry path runs as today.
@@ -787,7 +797,9 @@ if [[ "$SKIP_QA" == "false" ]]; then
 
     log "  QA: FAIL (attempt $QA_ATTEMPT) -- fixing then re-reviewing..."
     qd_rc=0
+    escalate_model_on
     _run_step "$SCRIPT_DIR/dev-phase.sh" "$PHASE" || qd_rc=$?
+    escalate_model_off
     [[ $qd_rc -eq 75 ]] && { QA_ATTEMPT=$((QA_ATTEMPT - 1)); continue; }
     _guard_step_rc "$qd_rc" "Step 7 fix-mode (dev)"
     [[ $qd_rc -ne 0 ]] && log "  Warning: dev-phase.sh exited with error -- continuing"
@@ -871,7 +883,9 @@ if [[ "$SKIP_AUDIT" == "false" ]]; then
 
     log "  Audit: FAIL (attempt $AUDIT_ATTEMPT) -- applying hardening fixes..."
     ad_rc=0
+    escalate_model_on
     _run_step "$SCRIPT_DIR/dev-phase.sh" "$PHASE" || ad_rc=$?
+    escalate_model_off
     [[ $ad_rc -eq 75 ]] && { AUDIT_ATTEMPT=$((AUDIT_ATTEMPT - 1)); continue; }
     _guard_step_rc "$ad_rc" "Step 9 hardening (dev)"
     [[ $ad_rc -ne 0 ]] && log "  Warning: dev-phase.sh exited with error -- continuing"

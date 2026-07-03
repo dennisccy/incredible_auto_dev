@@ -134,17 +134,48 @@ def _cmd_show(trace_dir: str, step: int, what: str) -> int:
     return 0
 
 
-def _cmd_replay(trace_dir: str, step: int, execute: bool) -> int:
+def _strip_flag(args: list[str], flag: str) -> list[str]:
+    """Drop every `<flag> <value>` pair from a recorded arg list."""
+    out: list[str] = []
+    skip = False
+    for a in args:
+        if skip:
+            skip = False
+            continue
+        if a == flag:
+            skip = True
+            continue
+        out.append(a)
+    return out
+
+
+def _cmd_replay(
+    trace_dir: str,
+    step: int,
+    execute: bool,
+    model: str | None = None,
+    effort: str | None = None,
+) -> int:
     entries = _load_trace(trace_dir)
     entry = next((e for e in entries if e.get("step") == step), None)
     if entry is None:
         print(f"step {step} not found in {trace_dir}/trace.jsonl", file=sys.stderr)
         return 1
-    args = entry.get("args", [])
+    args = list(entry.get("args", []))
     if not args:
         print(f"step {step} has no recorded args — nothing to replay", file=sys.stderr)
         return 1
-    cmd = ["claude", *args]
+    # Overrides: strip any recorded flag first, then prepend the new value —
+    # this is how the same captured prompt is re-run through a different model
+    # (e.g. comparing two tiers on a real prompt).
+    overrides: list[str] = []
+    if model:
+        args = _strip_flag(args, "--model")
+        overrides += ["--model", model]
+    if effort:
+        args = _strip_flag(args, "--effort")
+        overrides += ["--effort", effort]
+    cmd = ["claude", *overrides, *args]
     rendered = " ".join(shlex.quote(a) for a in cmd)
     if not execute:
         print("# Dry-run. Re-run with --execute to invoke claude:")
@@ -221,6 +252,11 @@ def _self_test() -> int:
         rc = _cmd_replay(str(trace_dir), 1, execute=False)
         assert rc == 0, f"dry-run replay failed rc={rc}"
 
+        # 6. replay with --model/--effort overrides (dry-run) — strip+prepend
+        assert _strip_flag(["-p", "x", "--model", "old", "-v"], "--model") == ["-p", "x", "-v"]
+        rc = _cmd_replay(str(trace_dir), 1, execute=False, model="claude-test-x", effort="max")
+        assert rc == 0, f"override dry-run replay failed rc={rc}"
+
         print("self-test passed")
         return 0
 
@@ -249,6 +285,14 @@ def main() -> int:
         action="store_true",
         help="Actually run the claude command (default: print only)",
     )
+    p_replay.add_argument(
+        "--model",
+        help="Override the model for the replay (strips any recorded --model)",
+    )
+    p_replay.add_argument(
+        "--effort",
+        help="Override --effort for the replay (strips any recorded --effort)",
+    )
 
     sub.add_parser("self-test", help="Run built-in fixture self-test")
 
@@ -262,7 +306,10 @@ def main() -> int:
     if args.cmd == "show":
         return _cmd_show(args.trace_dir, args.step, args.what)
     if args.cmd == "replay":
-        return _cmd_replay(args.trace_dir, args.step, args.execute)
+        return _cmd_replay(
+            args.trace_dir, args.step, args.execute,
+            model=args.model, effort=args.effort,
+        )
     if args.cmd == "self-test":
         return _self_test()
     return 2

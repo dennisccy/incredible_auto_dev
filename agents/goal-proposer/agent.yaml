@@ -13,8 +13,6 @@ tools_allowed:
 - Bash
 - Write
 - Edit
-version: 1.0.0
+version: 1.0.1
 last_updated: '2026-06-30'
 body: body.md
-claude:
-  model_override: claude-fable-5

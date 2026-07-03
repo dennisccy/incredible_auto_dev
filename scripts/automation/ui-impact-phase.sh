@@ -104,6 +104,18 @@ if [[ $_ui_rc -ne 0 && $_ui_rc -ne ${QUOTA_EXHAUSTED_EXIT_CODE:-75} ]]; then
   exit "$_ui_rc"
 fi
 
+# rc==0 post-condition: an agent can return 0 without ever writing its reports.
+# Do NOT print a phantom "Done." in that case — the next stage (ui-test-design)
+# would then abort on a missing file. Assert both artifacts exist and are
+# non-empty; if not, write SKIPPED stubs and fail loudly at the source.
+if [[ ! -s "$USER_VISIBLE" || ! -s "$UI_SURFACE_MAP" ]]; then
+  _reason="ui-impact-phase.sh: the ui-impact-analyst agent exited 0 but did not write a non-empty user-visible-changes and/or ui-surface-map report. Re-run \`./scripts/automation/ui-impact-phase.sh $PHASE\`."
+  write_failed_artifact_stub "$PHASE" "user-visible-changes" "$_reason"
+  write_failed_artifact_stub "$PHASE" "ui-surface-map"       "$_reason"
+  echo "[ui-impact] ERROR: agent returned success but expected report(s) are missing/empty — wrote SKIPPED stubs and failing." >&2
+  exit 1
+fi
+
 echo "[ui-impact] Done. Reports:"
 echo "  User-visible changes: $USER_VISIBLE"
 echo "  UI surface map:       $UI_SURFACE_MAP"

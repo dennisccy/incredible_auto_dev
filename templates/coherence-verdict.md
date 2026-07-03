@@ -6,7 +6,11 @@
 
 ---
 
-**Verdict:** COHERENCE-PASS | COHERENCE-WARN | COHERENCE-FAIL
+**Verdict:** COHERENCE-PASS
+
+<!-- Replace the value above with exactly ONE of: COHERENCE-PASS, COHERENCE-WARN,
+     or COHERENCE-FAIL. Never leave multiple values on the verdict line — the
+     engine takes the first token after the prefix. -->
 
 <!-- COHERENCE-PASS: no objective violations; at most minor advisory notes -->
 <!-- COHERENCE-WARN: only advisory issues; does NOT block GOAL_ACHIEVED -->

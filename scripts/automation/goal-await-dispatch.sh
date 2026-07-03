@@ -14,7 +14,7 @@
 # does not abort dispatches while the pump is merely waiting.
 #
 # The pump then, for each printed request path R:
-#   - reads R (JSON: {agent, prompt, cwd, res_path})
+#   - reads R (JSON: {agent, prompt, cwd, res_path, out, model?})
 #   - dispatches subagent_type=<agent> with <prompt> verbatim (no model override)
 #   - writes the subagent's exit code to "${R%.ready}.res"
 # and calls this helper again. See skills/goal-interactive-dispatch.md.

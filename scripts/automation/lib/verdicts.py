@@ -60,6 +60,25 @@ class BrowserQAVerdict(str, Enum):
     SKIPPED = "SKIPPED"
 
 
+class GoalEvalVerdict(str, Enum):
+    """Goal-evaluator iteration verdicts (runs/goal-session-<sid>/iter-N/eval.md).
+
+    Parsed by run-goal.sh; shape-validated at runtime by lib/goal-gates.sh via
+    artifact_schemas.py (a malformed verdict is demoted, never fail-open)."""
+    GOAL_ACHIEVED = "GOAL_ACHIEVED"
+    CONTINUE = "CONTINUE"
+    ESCALATE = "ESCALATE"
+    REGRESSION = "REGRESSION"
+    STALLED = "STALLED"
+
+
+class CoherenceVerdict(str, Enum):
+    """Coherence-auditor verdicts (runs/goal-session-<sid>/iter-N/coherence.md)."""
+    COHERENCE_PASS = "COHERENCE-PASS"
+    COHERENCE_WARN = "COHERENCE-WARN"
+    COHERENCE_FAIL = "COHERENCE-FAIL"
+
+
 class IterationSummaryVerdict(str, Enum):
     """Iteration summary verdicts (reports/phase-{N}-iteration-summary.md).
 
@@ -74,6 +93,8 @@ class IterationSummaryVerdict(str, Enum):
     REGRESSION = "REGRESSION"
     STALLED = "STALLED"
     PASS = "PASS"
+    PASS_WITH_NOTES = "PASS_WITH_NOTES"
+    PASS_WITH_GAPS = "PASS_WITH_GAPS"
     FAIL = "FAIL"
     IN_PROGRESS = "IN-PROGRESS"
 
@@ -109,6 +130,7 @@ class PhaseStep(str, Enum):
     UI_IMPACT_COMPLETE = "ui_impact_complete"
     UI_TEST_DESIGNED = "ui_test_designed"
     BROWSER_QA_COMPLETE = "browser_qa_complete"
+    POST_DEV_PARALLEL_COMPLETE = "post_dev_parallel_complete"  # post-fanout checkpoint (run-phase.sh)
     UX_REGRESSION_COMPLETE = "ux_regression_complete"
     CLOSURE_PASSED = "closure_passed"
     CLOSURE_FAILED = "closure_failed"

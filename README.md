@@ -8,7 +8,7 @@ A collection of:
 - **14 Claude agent definitions** covering the full dev lifecycle, UI visibility, per-iteration summary, and an auto-recorded product demo
 - **18 automation shell scripts** orchestrating an 11-step pipeline plus an on-demand demo viewer
 - **5 security hooks** guarding against supply-chain attacks, dangerous commands, and vague artifacts
-- **9 skills** providing reusable methodologies for UI analysis, test design, and doc updates
+- **13 skills** providing reusable methodologies for UI analysis, test design, and doc updates
 - **18 report templates** for consistent handoffs across all agents
 - **A modular CLAUDE.md system** (core rules, workflow, project config, anti-patterns, architecture docs)
 
@@ -342,7 +342,7 @@ Iteration name `goal-<sid>-iter-<N>` is used as the "phase name" so existing scr
 | `goal-evaluator` | strong | (goal mode) | Skeptical done/regression/stall judgment, updates journey-history; vetoes GOAL_ACHIEVED on COHERENCE-FAIL |
 | `coherence-auditor` | standard | (goal mode) | Audits each iteration's diff against the blueprint (information architecture + data contract); hard-fails only on objective drift |
 
-Model tiers are defined in `config/agent-models.yaml`. Change assignments there and run `./scripts/automation/sync-agent-models.sh`.
+Model tiers: each agent's `model_tier` lives in `agents/<name>/agent.yaml`; tiers resolve to model ids in `config/model-tiers.yaml`. Edit, then `python3 scripts/automation/sync-cli-assets.py` and commit the regenerated mirrors.
 
 ## Commands
 
@@ -376,7 +376,6 @@ Model tiers are defined in `config/agent-models.yaml`. Change assignments there 
 # Utilities
 ./scripts/automation/generate-test-plan.sh phase-1     # write test plan before dev
 ./scripts/automation/ui-audit-phase.sh phase-1         # standalone UI audit
-./scripts/automation/sync-agent-models.sh              # sync model assignments
 ./scripts/automation/check-install.sh "pip install X"  # check install safety
 ./scripts/automation/update-docs.sh --framework        # update framework docs
 ./scripts/automation/update-docs.sh phase-1            # update project docs
@@ -432,7 +431,7 @@ bash scripts/automation/render-summary.sh --session-index <sid>        # re-rend
 | File | Purpose |
 |------|---------|
 | `.claude/project-template.md` | Project stack, test commands, architecture rules |
-| `config/agent-models.yaml` | Agent-to-model-tier assignments |
+| `config/model-tiers.yaml` + `agents/*/agent.yaml` | Tier→model map + per-agent tier |
 | `config/install-security-policy.json` | Package allowlists and deny patterns |
 | `.claude/settings.json` | Claude Code tool permissions |
 | `docs/goal.md` | Project vision and success criteria (goal mode also reads Must-have user journeys + Anti-goals) |
@@ -472,7 +471,7 @@ Analyze with: `python3 scripts/automation/lib/analyze_telemetry.py runs/<phase>/
 ### Tier 2 (needs baseline data first)
 
 - [x] **Shipped — Per-agent `--effort` overrides.** Resolved per agent via `lib/agent_permissions.py effort <agent>`. `developer`, `reviewer`, `auditor`, `orchestrator`, `goal-decomposer`, `goal-evaluator`, `browser-qa-agent`, and `demo-narrator` stay at `--effort max`. `release-manager`, `qa`, `ui-test-designer`, `phase-closure-auditor`, and `ui-impact-analyst` drop to `--effort medium`. Escape hatch: `CHAIN_DISABLE_EFFORT_OVERRIDE=true`.
-- [ ] **Move orchestrator from Opus → Sonnet** (`config/agent-models.yaml`). Plan-writing is structured-output work. A/B against 2–3 historical phases — revert if plan quality drops.
+- [ ] **Move orchestrator from Opus → Sonnet** (`agents/orchestrator/agent.yaml` `model_tier`). Plan-writing is structured-output work. A/B against 2–3 historical phases — revert if plan quality drops.
 - [ ] **Move goal-decomposer from Opus → Sonnet.** Same rationale as orchestrator. Keep goal-evaluator on Opus (skeptical adversarial judgment).
 - [ ] **Skip `generate-test-plan.sh` (Step 2/11) when the spec already lists test scenarios.** Need a clear heuristic for "spec has tests" — don't skip silently.
 - [ ] **Cap audit-failure full-rerun.** `run-phase.sh:649-679` re-runs dev + review + QA on audit fail. If telemetry shows that path firing often, switch to fix-only mode.
@@ -502,7 +501,7 @@ Benchmark evidence (May 2026) shows Opus 4.7 trails GPT-5.5 on Terminal-Bench 2.
 
 ### Deferred — do these one at a time, with telemetry before/after
 
-- [ ] **Move `reviewer` from Opus to Sonnet 4.6** (or Haiku 4.5 for cheap quick reviews). Different model in the same family captures a meaningful subset of blind spots at lower cost. `sync-agent-models.sh` already supports per-agent model assignment. Ship after the YAML schema is stable so the cheaper model has a tighter target. See also Token Optimization Tier 2 for the orchestrator equivalent.
+- [ ] **Move `reviewer` from Opus to Sonnet 4.6** (or Haiku 4.5 for cheap quick reviews). Different model in the same family captures a meaningful subset of blind spots at lower cost. Per-agent tiers in `agents/*/agent.yaml` already support this. Ship after the YAML schema is stable so the cheaper model has a tighter target. See also Token Optimization Tier 2 for the orchestrator equivalent.
 - [ ] **Extended-thinking on `auditor` + adversarial framing.** Set `thinking.budget_tokens` for the auditor and prepend "assume the implementation is buggy and find why." Extended thinking is Claude's largest unexploited reasoning lever and directly attacks the "long-context-large-system" weakness on benchmarks like SWE-Bench Pro. Test budget vs. latency on 2–3 phases before rolling out broadly.
 - [ ] **Goal-mode iteration-state synthesis.** Have `goal-evaluator` produce a fresh `iteration-state.md` after each iteration, prepended to the next iteration's context. Don't rely on the model's recall of `journey-history.json`. Combats long-loop context drift — which is where Opus 4.7 weakens most relative to GPT-5.5. Touches goal-mode internals; pick it up only after the first two deferred items are stable.
 

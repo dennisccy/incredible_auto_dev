@@ -27,7 +27,7 @@ run-phase.sh        existing 11-step pipeline (used unchanged for full iteration
 .claude/agents/coherence-auditor.md audits the iter diff vs state/blueprint.md (IA + data contract)
 
 scripts/automation/lib/telemetry.sh  records structured JSONL events
-config/agent-models.yaml             three goal-mode entries (goal-decomposer, goal-evaluator → strong; coherence-auditor → standard)
+agents/*/agent.yaml model_tier       goal-mode tiers (goal-decomposer, goal-evaluator → strong; coherence-auditor → standard)
 ```
 
 All other agents (developer, reviewer, qa, auditor, browser-qa-agent, ui-impact-analyst, ui-test-designer, ux-regression-reviewer, phase-closure-auditor, release-manager, orchestrator, product-manager) and all skills are reused unchanged.

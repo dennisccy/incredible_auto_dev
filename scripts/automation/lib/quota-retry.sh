@@ -93,6 +93,16 @@
 : "${CHAIN_TRACE_DIR:=}"
 : "${CHAIN_DISABLE_TRACE:=false}"
 : "${CHAIN_DISABLE_PERMISSION_ISOLATION:=false}"
+# Model routing (headless): resolve each agent's model from its frontmatter /
+# tier and pass --model explicitly. Before this existed, frontmatter models
+# were INERT in headless mode — every agent ran on the CLI's ambient default.
+#   CHAIN_MODEL_OVERRIDE   one-shot forced model id (escalation ladder,
+#                          two-key confirm); wins over frontmatter
+#   CHAIN_EFFORT_OVERRIDE  one-shot forced --effort value; wins over policy
+#   CHAIN_DISABLE_MODEL_ROUTING=true  revert to ambient-default behavior
+: "${CHAIN_DISABLE_MODEL_ROUTING:=false}"
+: "${CHAIN_MODEL_OVERRIDE:=}"
+: "${CHAIN_EFFORT_OVERRIDE:=}"
 
 # ── CLI selection ─────────────────────────────────────────────────────────────
 # Which CLI provider drives agent invocations. Set per-run by run-phase.sh / per-session
@@ -173,6 +183,11 @@ _trace_record_invocation() {
   local ts
   ts=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 
+  # Model/effort/backend attribution. The sidecar (spread last) carries the
+  # ground-truth model claude actually ran; _CHAIN_TRACE_MODEL is the resolved
+  # intent (frontmatter/override) used when no sidecar exists (e.g. the
+  # interactive backend). Empty values are omitted, and a sidecar model wins.
+  local backend="${CHAIN_AGENT_BACKEND:-${CHAIN_CLI:-claude}}"
   if command -v jq >/dev/null 2>&1; then
     local args_json
     args_json=$(printf '%s\n' "$@" | jq -R . 2>/dev/null | jq -s -c . 2>/dev/null) || args_json='[]'
@@ -185,20 +200,26 @@ _trace_record_invocation() {
       --argjson step "$step" \
       --arg agent "$agent" \
       --arg cli "$cli" \
+      --arg backend "$backend" \
+      --arg model "${_CHAIN_TRACE_MODEL:-}" \
+      --arg effort "${_CHAIN_TRACE_EFFORT:-}" \
       --arg ts "$ts" \
       --argjson exit_code "$invocation_exit" \
       --argjson duration_seconds "$duration_seconds" \
       --arg stdout_path "$stdout_filename" \
       --argjson args "$args_json" \
       --argjson usage "$usage_json" \
-      '{step:$step, agent:$agent, cli:$cli, ts:$ts, exit_code:$exit_code, duration_seconds:$duration_seconds, stdout_path:$stdout_path, args:$args} + $usage' 2>/dev/null) || record=""
+      '{step:$step, agent:$agent, cli:$cli, backend:$backend, ts:$ts, exit_code:$exit_code, duration_seconds:$duration_seconds, stdout_path:$stdout_path, args:$args}
+       + (if $model != "" then {model:$model} else {} end)
+       + (if $effort != "" then {effort:$effort} else {} end)
+       + $usage' 2>/dev/null) || record=""
     if [[ -n "$record" ]]; then
       printf '%s\n' "$record" >> "$trace_dir/trace.jsonl"
     fi
   else
-    # Minimal fallback (jq absent): step + agent + cli + ts + stdout path only
-    printf '{"step":%d,"agent":"%s","cli":"%s","ts":"%s","exit_code":%d,"duration_seconds":%d,"stdout_path":"%s"}\n' \
-      "$step" "$agent" "$cli" "$ts" "$invocation_exit" "$duration_seconds" "$stdout_filename" \
+    # Minimal fallback (jq absent): step + agent + cli + backend + ts + stdout path only
+    printf '{"step":%d,"agent":"%s","cli":"%s","backend":"%s","ts":"%s","exit_code":%d,"duration_seconds":%d,"stdout_path":"%s"}\n' \
+      "$step" "$agent" "$cli" "$backend" "$ts" "$invocation_exit" "$duration_seconds" "$stdout_filename" \
       >> "$trace_dir/trace.jsonl"
   fi
 }
@@ -450,19 +471,40 @@ _claude_invoke() {
     # Telemetry: when CHAIN_TELEMETRY_TOKENS=true, request stream-json output and
     # route through claude_stream_renderer.py so the final usage block lands in
     # $CHAIN_CLAUDE_USAGE_SIDECAR for telemetry capture.
+    local _perms_script
+    _perms_script="$(dirname "${BASH_SOURCE[0]}")/agent_permissions.py"
+
     local _effort="max"
-    if [[ "$CHAIN_DISABLE_EFFORT_OVERRIDE" != "true" && -n "${CHAIN_CURRENT_AGENT:-}" ]]; then
-      local _perms_script_for_effort
-      _perms_script_for_effort="$(dirname "${BASH_SOURCE[0]}")/agent_permissions.py"
-      if [[ -f "$_perms_script_for_effort" ]]; then
+    if [[ -n "${CHAIN_EFFORT_OVERRIDE:-}" ]]; then
+      _effort="$CHAIN_EFFORT_OVERRIDE"
+    elif [[ "$CHAIN_DISABLE_EFFORT_OVERRIDE" != "true" && -n "${CHAIN_CURRENT_AGENT:-}" ]]; then
+      if [[ -f "$_perms_script" ]]; then
         local _eff_lookup
-        _eff_lookup=$(python3 "$_perms_script_for_effort" effort "$CHAIN_CURRENT_AGENT" 2>/dev/null) || _eff_lookup=""
+        _eff_lookup=$(python3 "$_perms_script" effort "$CHAIN_CURRENT_AGENT" 2>/dev/null) || _eff_lookup=""
         if [[ -n "$_eff_lookup" ]]; then
           _effort="$_eff_lookup"
         fi
       fi
     fi
+    _CHAIN_TRACE_EFFORT="$_effort"
+
+    # Per-agent --model routing: override > frontmatter/tier resolution > none.
+    # Empty result ⇒ no --model flag (ambient default), never an error.
+    local _model=""
+    if [[ "${CHAIN_DISABLE_MODEL_ROUTING:-false}" != "true" ]]; then
+      if [[ -n "${CHAIN_MODEL_OVERRIDE:-}" ]]; then
+        _model="$CHAIN_MODEL_OVERRIDE"
+      elif [[ -n "${CHAIN_CURRENT_AGENT:-}" && -f "$_perms_script" ]]; then
+        _model=$(python3 "$_perms_script" model "$CHAIN_CURRENT_AGENT" 2>/dev/null) || _model=""
+      fi
+    fi
+    # Recorded intent; the usage sidecar (ground truth) still wins in the trace merge.
+    _CHAIN_TRACE_MODEL="$_model"
+
     local -a _claude_extra_args=(--effort "$_effort")
+    if [[ -n "$_model" ]]; then
+      _claude_extra_args+=(--model "$_model")
+    fi
     if [[ "$CHAIN_CLAUDE_DISABLE_CACHE_HYGIENE" != "true" ]]; then
       _claude_extra_args+=(--exclude-dynamic-system-prompt-sections)
     fi
@@ -760,8 +802,8 @@ _codex_invoke() {
         _codex_prompt="$2"
         shift 2
         ;;
-      --effort|--exclude-dynamic-system-prompt-sections|--output-format|--verbose|--include-partial-messages|--disallowedTools|--max-budget-usd)
-        # Claude-only flags. Drop. Some take a value (effort/output-format/disallowedTools/max-budget-usd); skip the next arg.
+      --effort|--model|--exclude-dynamic-system-prompt-sections|--output-format|--verbose|--include-partial-messages|--disallowedTools|--max-budget-usd)
+        # Claude-only flags. Drop. Some take a value (effort/model/output-format/disallowedTools/max-budget-usd); skip the next arg.
         case "$1" in
           --exclude-dynamic-system-prompt-sections|--verbose|--include-partial-messages) shift ;;
           *) shift 2 ;;

@@ -3,7 +3,7 @@ name: browser-qa-agent
 description: Browser QA agent. Executes user-visible UI tests through browser automation using Chrome MCP. Tests real workflows, not just page loads. Records pass/fail with evidence. Runs after ui-test-designer completes.
 model: claude-sonnet-5
 disallowed_tools: ["Bash(rm -rf /*)", "Bash(rm -rf /)", "Bash(git push --force origin main)", "Bash(git push --force origin master)", "Bash(git push -f origin main)", "Bash(git push -f origin master)", "Bash(git push *)", "Bash(git push)", "Bash(git push --force *)", "Bash(gh pr merge *)", "Bash(gh pr close *)", "Bash(gh release *)", "Bash(git tag *)"]
-version: 1.0.0
+version: 1.0.1
 last_updated: 2026-05-04
 ---
 
@@ -48,7 +48,7 @@ Write to `reports/phase-{N}-ui-test-results.md` using `templates/ui-test-results
 
 Include:
 - Overall summary: "X/Y tests passed"
-- Results table with columns: Test ID, Name, Type, Expected, Actual, Verdict (PASS/FAIL/SKIP), Evidence
+- Results table with columns: Test ID, Name, Type, Priority, Expected, Actual, Verdict (PASS/FAIL/SKIP), Evidence — all EIGHT columns, in this order (templates/ui-test-results.md is the canonical layout; the merge tool reads cells by position)
 - For FAIL: a dedicated section with exact failure details and screenshot path
 - Environment info: Frontend URL, Browser, Date
 

@@ -108,6 +108,85 @@ else
   _fail "self-test: common.sh (kill-tree / self-heal)"
 fi
 
+# Parallel two-branch runner (previously had a self-test that nothing invoked).
+if bash scripts/automation/lib/parallel.sh self-test >/dev/null 2>&1; then
+  _pass "self-test: parallel.sh"
+else
+  _fail "self-test: parallel.sh (run: bash scripts/automation/lib/parallel.sh self-test)"
+fi
+
+# Goal-mode deterministic gates (verdict cross-checks, diff scan/bounding).
+_run_self_test scripts/automation/lib/goal_gate.py self-test
+_run_self_test scripts/automation/lib/scan_diff.py self-test
+_run_self_test scripts/automation/lib/diff_bound.py self-test
+if bash scripts/automation/lib/goal-gates.sh --self-test >/dev/null 2>&1; then
+  _pass "self-test: goal-gates.sh (verdict gates + two-key confirm, stubbed dispatch)"
+else
+  bash scripts/automation/lib/goal-gates.sh --self-test || true
+  _fail "self-test: goal-gates.sh"
+fi
+
+# ── 2c. Standalone unit-test scripts (API-free by design) ────────────────────
+_log "2c. tests/automation unit tests"
+for _t in tests/automation/test-quota-retry.sh tests/automation/test-install-gate.sh; do
+  if bash "$_t" >/dev/null 2>&1; then
+    _pass "unit: $_t"
+  else
+    _fail "unit: $_t (run: bash $_t)"
+  fi
+done
+
+# ── 2d. Hook behavioral smokes (beyond bash -n) ──────────────────────────────
+_log "2d. hook behavioral smokes"
+if bash .claude/hooks/guard-dangerous-commands.sh "ls -la" >/dev/null 2>&1; then
+  _pass "hook: guard-dangerous-commands allows a benign command"
+else
+  _fail "hook: guard-dangerous-commands blocked a benign command"
+fi
+if bash .claude/hooks/guard-dangerous-commands.sh "rm -rf /" >/dev/null 2>&1; then
+  _fail "hook: guard-dangerous-commands FAILED to block 'rm -rf /'"
+else
+  _pass "hook: guard-dangerous-commands blocks 'rm -rf /'"
+fi
+_lint_tmp=$(mktemp /tmp/eval-lint-XXXX.py); echo "x = 1" > "$_lint_tmp"
+if bash .claude/hooks/post-edit-lint.sh "$_lint_tmp" >/dev/null 2>&1; then
+  _pass "hook: post-edit-lint accepts a valid .py file"
+else
+  _fail "hook: post-edit-lint errored on a valid .py file"
+fi
+rm -f "$_lint_tmp"
+if bash .claude/hooks/install-security-gate.sh "echo not-an-install" >/dev/null 2>&1; then
+  _pass "hook: install-security-gate passes a non-install command through"
+else
+  _fail "hook: install-security-gate blocked a non-install command"
+fi
+if (cd "$(mktemp -d)" && bash "$OLDPWD/.claude/hooks/on-stop-check-artifacts.sh" >/dev/null 2>&1); then
+  _pass "hook: on-stop-check-artifacts exits cleanly with no runs/"
+else
+  _fail "hook: on-stop-check-artifacts errored with no runs/"
+fi
+
+# Model config has ONE source: model_tier in agent.yaml → config/model-tiers.yaml.
+# A model_override reappearing means someone re-pinned a concrete id — allowed
+# only as a deliberate temporary exception (maintenance-protocol §6), which
+# should be visible here, not silent.
+if grep -l "model_override" agents/*/agent.yaml >/dev/null 2>&1; then
+  _fail "model config: model_override found in agents/*/agent.yaml — tiers are the single source (see .claude/maintenance-protocol.md §6): $(grep -l 'model_override' agents/*/agent.yaml | tr '\n' ' ')"
+else
+  _pass "model config: no per-agent model_override pins; tiers are the single source"
+fi
+
+# ── 2e. Build-product drift gate ─────────────────────────────────────────────
+# .claude/ is rendered from the neutral source; a divergence means someone
+# edited one side without resyncing (see .claude/maintenance-protocol.md §3).
+# claude-only: .codex/ is gitignored here, so the 'both' form is always red.
+_log "2e. sync-cli-assets drift check (claude)"
+if python3 scripts/automation/sync-cli-assets.py --cli claude --check >/dev/null 2>&1; then
+  _pass "sync: committed .claude/ tree matches the neutral source render"
+else
+  _fail "sync: .claude/ drifted from neutral source (run: python3 scripts/automation/sync-cli-assets.py --cli claude, then commit)"
+fi
+
 # ── 3. Agent frontmatter validation ──────────────────────────────────────────
 _log "3. agent frontmatter validation"
 if python3 scripts/automation/lib/validate_agents.py >/dev/null 2>&1; then
@@ -143,6 +222,60 @@ if python3 scripts/automation/lib/verdicts.py validate-status definitely_invalid
   _fail "verdicts.py accepted an invalid status (negative case failed)"
 else
   _pass "verdicts.py rejects invalid status"
+fi
+
+# Post-fanout checkpoint step must validate. run-phase.sh:648 writes
+# "post_dev_parallel_complete" via update_status after the Step 4-7 parallel
+# fanout; if verdicts.py rejects it, update_status returns non-zero and aborts
+# the whole run before the auditor can run (the iter-6 defect).
+if python3 scripts/automation/lib/verdicts.py validate-step post_dev_parallel_complete >/dev/null 2>&1; then
+  _pass "verdicts.py validate-step accepts post_dev_parallel_complete (post-fanout checkpoint)"
+else
+  _fail "verdicts.py rejects post_dev_parallel_complete — run-phase.sh:648 update_status would abort the run"
+fi
+
+# ── 4b. Phase-script rc==0 fail-loud guards (ui-impact / ui-test-design) ──────
+# After a successful (rc==0) agent run, ui-impact-phase.sh and ui-test-design-phase.sh
+# must assert their reports actually exist and are non-empty — never print a phantom
+# "Done." when the agent exited 0 without writing them (the iter-6 ui-impact defect
+# that aborted Branch-UI on a missing file).
+_log "4b. rc==0 fail-loud post-conditions in phase scripts"
+
+# Structural: each script carries the rc==0 -s post-condition for both its outputs.
+for _pair in \
+  "scripts/automation/ui-impact-phase.sh:USER_VISIBLE:UI_SURFACE_MAP" \
+  "scripts/automation/ui-test-design-phase.sh:UI_TEST_PLAN:WHAT_TO_CLICK"; do
+  _gs="${_pair%%:*}"; _rest="${_pair#*:}"; _v1="${_rest%%:*}"; _v2="${_rest#*:}"
+  if grep -qF "! -s \"\$$_v1\"" "$_gs" && grep -qF "! -s \"\$$_v2\"" "$_gs"; then
+    _pass "guard: $(basename "$_gs") has rc==0 -s post-condition for \$$_v1 and \$$_v2"
+  else
+    _fail "guard: $(basename "$_gs") missing rc==0 -s post-condition for \$$_v1/\$$_v2 (phantom-Done risk)"
+  fi
+done
+
+# Behavioral: the real write_failed_artifact_stub helper the guards call must write
+# a stub when the artifact is absent and be a no-op (preserve content) when present.
+if bash -c '
+  set +u
+  tmp=$(mktemp -d)
+  REPO_ROOT="$tmp"
+  source scripts/automation/lib/common.sh >/dev/null 2>&1
+  REPO_ROOT="$tmp"          # sourcing common.sh resets REPO_ROOT to the real repo
+  mkdir -p "$REPO_ROOT/reports"
+  art="$REPO_ROOT/reports/phase-evalguard-user-visible-changes.md"
+  # Case 1: artifact absent -> guard predicate fires, stub gets written.
+  rc=0; [[ ! -s "$art" ]] && { write_failed_artifact_stub evalguard user-visible-changes "test" >/dev/null; rc=1; }
+  [[ $rc -eq 1 && -s "$art" ]] || { rm -rf "$tmp"; exit 11; }
+  # Case 2: artifact present + non-empty -> guard predicate is a no-op, content preserved.
+  printf "real agent content\n" > "$art"; before=$(cat "$art")
+  rc=0; [[ ! -s "$art" ]] && rc=1
+  write_failed_artifact_stub evalguard user-visible-changes "test" >/dev/null
+  [[ $rc -eq 0 && "$(cat "$art")" == "$before" ]] || { rm -rf "$tmp"; exit 12; }
+  rm -rf "$tmp"; exit 0
+' >/dev/null 2>&1; then
+  _pass "guard: write_failed_artifact_stub fails-loud on missing artifact, no-ops on present"
+else
+  _fail "guard: write_failed_artifact_stub behavioral contract failed"
 fi
 
 # ── 5. Hook integration: artifact quality + schema ───────────────────────────

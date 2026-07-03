@@ -199,7 +199,7 @@ _HEADER_FIELD_RE = re.compile(
 )
 _VERDICT_ENUM = {
     "GOAL_ACHIEVED", "CONTINUE", "ESCALATE", "REGRESSION", "STALLED",
-    "PASS", "FAIL", "IN-PROGRESS",
+    "PASS", "PASS_WITH_NOTES", "PASS_WITH_GAPS", "FAIL", "IN-PROGRESS",
 }
 _ITER_TYPE_ENUM = {"phase", "goal-lean", "goal-full"}
 

@@ -11,5 +11,3 @@ tools_allowed:
 version: 1.0.0
 last_updated: '2026-05-12'
 body: body.md
-claude:
-  model_override: claude-sonnet-5

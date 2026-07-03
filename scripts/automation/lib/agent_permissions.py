@@ -21,6 +21,9 @@ Optional frontmatter fields recognized:
 CLI:
     python3 agent_permissions.py disallowed <agent>   # space-joined list to stdout
     python3 agent_permissions.py budget <agent>       # USD value or empty
+    python3 agent_permissions.py effort <agent>       # --effort value (max|medium)
+    python3 agent_permissions.py model <agent>        # resolved model id or empty
+    python3 agent_permissions.py tier-model <tier>    # tier's claude model id or empty
     python3 agent_permissions.py self-test
 """
 from __future__ import annotations
@@ -70,6 +73,13 @@ EFFORT_OVERRIDES: dict[str, str] = {
     "phase-closure-auditor": "medium",
     "ui-impact-analyst":     "medium",
     "qa":                    "medium",  # both generate-mode and validate-mode
+    # Non-gating narrative/showcase agents: their output quality bar is
+    # readable prose from already-written artifacts, not judgment. Judges,
+    # gates, and browser-qa stay at max.
+    "iteration-summarizer":  "medium",
+    "readme-maintainer":     "medium",
+    "demo-narrator":         "medium",
+    "ux-regression-reviewer": "medium",
 }
 
 # Reads from the legacy `.claude/agents/<name>.md` (frontmatter) by default to
@@ -228,6 +238,105 @@ def effort_for(agent: str) -> str:
     return EFFORT_OVERRIDES.get(agent, EFFORT_DEFAULT)
 
 
+def _tiers_file(tiers_path: Path | None = None) -> Path | None:
+    """Locate config/model-tiers.yaml: CWD first (scripts run from the repo
+    root, where config/ is real or a symlink), then relative to this file's
+    tree (the framework root when vendored)."""
+    candidates = [Path("config/model-tiers.yaml")]
+    if tiers_path is not None:
+        candidates.insert(0, tiers_path)
+    try:
+        candidates.append(Path(__file__).resolve().parents[3] / "config" / "model-tiers.yaml")
+    except IndexError:
+        pass
+    for c in candidates:
+        if c.is_file():
+            return c
+    return None
+
+
+def tier_model_for(tier: str, cli: str = "claude", tiers_path: Path | None = None) -> str:
+    """Resolve a tier name (strong|standard|light) to a concrete model id via
+    config/model-tiers.yaml. Returns "" when the tier/file is missing — callers
+    treat empty as "no override available" and must not fail hard."""
+    path = _tiers_file(tiers_path)
+    if path is None:
+        return ""
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return ""
+    try:
+        import yaml  # type: ignore[import-untyped]
+
+        doc = yaml.safe_load(text) or {}
+        return str((doc.get("tiers") or {}).get(tier, {}).get(cli) or "")
+    except Exception:
+        # Minimal indentation-based scan: find the tier under `tiers:`, then
+        # its `<cli>:` child. Good enough for this small fixed-shape file.
+        in_tiers = False
+        in_target_tier = False
+        for line in text.splitlines():
+            stripped = line.strip()
+            if not stripped or stripped.startswith("#"):
+                continue
+            if not line.startswith(" "):
+                in_tiers = stripped == "tiers:"
+                in_target_tier = False
+                continue
+            if in_tiers and line.startswith("  ") and not line.startswith("    "):
+                in_target_tier = stripped == f"{tier}:"
+                continue
+            if in_target_tier and line.startswith("    ") and stripped.startswith(f"{cli}:"):
+                return stripped.partition(":")[2].strip().strip("'\"")
+        return ""
+
+
+def model_for(agent: str, agents_dir: Path = DEFAULT_AGENTS_DIR) -> str:
+    """Resolve the model id the named agent should run on.
+
+    Resolution order (mirrors adapters/claude/sync.py):
+      1. `model:` in the rendered .claude/agents/<name>.md frontmatter (what
+         interactive subagents actually inherit — the authoritative render)
+      2. `claude.model_override:` in agents/<name>/agent.yaml
+      3. `model_tier:` in agents/<name>/agent.yaml → config/model-tiers.yaml
+
+    Returns "" when nothing resolves. Callers must treat empty as "pass no
+    --model flag" — never as an error.
+    """
+    f = _agent_file(agent, agents_dir)
+    if f is not None:
+        try:
+            fm = _parse_frontmatter(f.read_text(encoding="utf-8")) or {}
+        except OSError:
+            fm = {}
+        m = fm.get("model")
+        if isinstance(m, str) and m.strip():
+            return m.strip()
+
+    n = _neutral_agent_yaml(agent)
+    if n is not None:
+        claude_block = _neutral_yaml_field(n, "claude")
+        if isinstance(claude_block, dict):
+            override = claude_block.get("model_override")
+            if isinstance(override, str) and override.strip():
+                return override.strip()
+        else:
+            # yaml-lite fallback: model_override is nested but the key name is
+            # unique within agent.yaml, so a flat scan is safe.
+            try:
+                for line in n.read_text(encoding="utf-8").splitlines():
+                    s = line.strip()
+                    if s.startswith("model_override:"):
+                        return s.partition(":")[2].strip().strip("'\"")
+            except OSError:
+                pass
+        tier = _neutral_yaml_field(n, "model_tier")
+        if isinstance(tier, str) and tier.strip():
+            return tier_model_for(tier.strip())
+    return ""
+
+
 def budget_for(agent: str, agents_dir: Path = DEFAULT_AGENTS_DIR) -> float | None:
     """Return max_budget_usd from neutral source first, falling back to the
     legacy frontmatter. None if neither defines a budget.
@@ -296,6 +405,24 @@ def _cmd_effort(args: list[str]) -> int:
     return 0
 
 
+def _cmd_model(args: list[str]) -> int:
+    """Print the resolved model id for the named agent (empty = no routing)."""
+    if not args:
+        print("Usage: agent_permissions.py model <agent>", file=sys.stderr)
+        return 2
+    print(model_for(args[0]))
+    return 0
+
+
+def _cmd_tier_model(args: list[str]) -> int:
+    """Print the claude model id for a tier from config/model-tiers.yaml."""
+    if not args:
+        print("Usage: agent_permissions.py tier-model <tier>", file=sys.stderr)
+        return 2
+    print(tier_model_for(args[0]))
+    return 0
+
+
 def _self_test() -> int:
     import tempfile
 
@@ -339,6 +466,23 @@ def _self_test() -> int:
         assert budget_for("release-manager", agents_dir=d) is None
         assert budget_for("nonexistent-agent", agents_dir=d) is None
 
+        # model_for: frontmatter model wins; missing agent resolves to "".
+        assert model_for("developer", agents_dir=d) == "claude-opus-4-7"
+        assert model_for("release-manager", agents_dir=d) == "claude-haiku-4-5"
+        assert model_for("nonexistent-agent-zz", agents_dir=d) == ""
+
+        # tier_model_for: parse a fixture tiers file (both with and without PyYAML
+        # the indentation scan must succeed on this shape).
+        tiers = d / "model-tiers.yaml"
+        tiers.write_text(
+            "_comment: fixture\ntiers:\n  strong:\n    claude: claude-test-strong\n"
+            "    codex: gpt-x\n  light:\n    claude: claude-test-light\n",
+            encoding="utf-8",
+        )
+        assert tier_model_for("strong", tiers_path=tiers) == "claude-test-strong"
+        assert tier_model_for("light", tiers_path=tiers) == "claude-test-light"
+        assert tier_model_for("nope", tiers_path=tiers) == ""
+
         # Effort overrides — defaults to "max" except for the listed lighter agents.
         assert effort_for("developer") == "max", "developer must stay at --effort max"
         assert effort_for("auditor") == "max", "auditor must stay at --effort max"
@@ -347,6 +491,12 @@ def _self_test() -> int:
         assert effort_for("phase-closure-auditor") == "medium"
         assert effort_for("ui-impact-analyst") == "medium"
         assert effort_for("qa") == "medium", "qa must drop to medium for both modes"
+        assert effort_for("iteration-summarizer") == "medium", "showcase agents drop to medium"
+        assert effort_for("readme-maintainer") == "medium"
+        assert effort_for("demo-narrator") == "medium"
+        assert effort_for("ux-regression-reviewer") == "medium"
+        assert effort_for("goal-evaluator") == "max", "judges stay at max"
+        assert effort_for("browser-qa-agent") == "max", "browser-qa stays at max"
         assert effort_for("some-unknown-agent") == "max", "default must be max"
 
     print("self-test passed")
@@ -357,6 +507,8 @@ _COMMANDS = {
     "disallowed": _cmd_disallowed,
     "budget": _cmd_budget,
     "effort": _cmd_effort,
+    "model": _cmd_model,
+    "tier-model": _cmd_tier_model,
     "self-test": lambda _args: _self_test(),
 }
 

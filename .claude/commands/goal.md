@@ -1,7 +1,7 @@
 ---
 description: Run Goal Mode until the goal is achieved or an existing rule halts/pauses it, inside this Claude Code session (interactive dispatch — bills to your interactive plan allowance).
 argument-hint: "[session-id] [extra run-goal.sh flags]"
-allowed-tools: Bash(./scripts/automation/run-goal.sh:*), Bash(scripts/automation/goal-await-dispatch.sh:*), Bash(jq:*), Bash(cat:*), Bash(ls:*), Read, Task
+allowed-tools: Bash(./scripts/automation/run-goal.sh:*), Bash(scripts/automation/goal-await-dispatch.sh:*), Bash(jq:*), Bash(cat:*), Bash(ls:*), Read, Task, Write
 ---
 You are the **pump** for goal mode. Run the EXISTING goal-mode engine until the
 goal is achieved, blocked, halted, or paused by its existing rules. Do NOT add
@@ -18,7 +18,10 @@ First read `.claude/skills/goal-interactive-dispatch.md` and follow it exactly.
 3. **Run the pump loop** from the skill: await requests with
    `scripts/automation/goal-await-dispatch.sh` (foreground, `--max-wait 500`),
    dispatch each returned request as a subagent (`subagent_type` = the request's
-   `agent`, `prompt` passed verbatim, **no model override**), write each result
+   `agent`, `prompt` passed verbatim; pass the request's `model` as the Agent
+   tool's model parameter when present, otherwise no model override; prompts
+   >8 KB go through the file-indirection wrapper in the skill), write the
+   subagent's final message to the request's `out` path, then write each result
    file, and repeat until `ENGINE_DONE`. Dispatch concurrently-ready requests
    together in one message. Run the loop **QUIETLY**: reply with tool calls only —
    no narration of await/dispatch/result steps and no echoing of prompts or

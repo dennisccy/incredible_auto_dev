@@ -4,8 +4,6 @@ description: 'QA agent with two modes: (1) test plan generation — reads phase 
   functional test plan, does Chrome MCP browser checks when Frontend Present is yes, and writes a QA report.
   Use after reviewer passes.'
 model_tier: light
-version: 1.0.0
-last_updated: '2026-05-04'
+version: 1.1.1
+last_updated: '2026-07-03'
 body: body.md
-claude:
-  model_override: claude-haiku-4-5

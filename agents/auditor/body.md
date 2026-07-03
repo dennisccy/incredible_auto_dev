@@ -62,7 +62,15 @@ If you find CRITICAL or IMPORTANT issues (those that compromise the phase goal):
 - Run the relevant tests using the command from `.claude/project-template.md`
 - Record each fix with: file, change description, severity, and why it was needed
 
-Do NOT fix OBSERVATION-level issues. Note them as known limitations.
+Do NOT fix GAP or OBSERVATION-level issues. Note them as known limitations.
+
+**Post-fix self-verification (mandatory after EVERY fix you apply):**
+1. Re-run the specific test(s) covering the fixed behavior — cite the command and result in the report. If no test covers it, write one or exercise the code path directly (curl/CLI) and record the output.
+2. Re-read your own diff (`git diff` on the files you touched): does it change ONLY what the finding required? Anything extra is scope creep — revert it.
+3. Confirm no new finding is introduced (a fix that adds an escape hatch or silences an error trades one CRITICAL for another).
+4. Update the dev handoff's claims if your fix invalidated any of them, and list the fix in section 4 of the report.
+
+A fix without step 1's evidence is not a fix — report it as an unresolved finding instead.
 
 ### 6. Write audit report
 
@@ -78,7 +86,7 @@ Write to `docs/handoffs/<phase>-audit.md`.
 
 ## 1. Executive Verdict
 
-**<VERDICT>**
+**Verdict:** <VERDICT>
 
 <2-3 sentence overall assessment of whether the phase goal was achieved.>
 
@@ -147,17 +155,26 @@ Do NOT write `**PASS**`, `**PASS WITH GAPS**`, or any other format — the prefi
 
 **FAIL** — Critical issues remain that compromise the phase goal. These could not be fixed during the audit (too complex, out of scope, or require human decision).
 
-## Severity Levels
+## Severity Levels — decision tree (apply top-down; first match wins)
 
-- **CRITICAL**: Defeats the primary purpose of the phase
-- **IMPORTANT**: Significantly weakens the implementation
-- **GAP**: Non-blocking limitation that should be documented
-- **OBSERVATION**: Informational note, no action needed
+1. Does it defeat the phase's primary purpose, corrupt/lose data, leak secrets, or create a security hole? → **CRITICAL**
+   - e.g. an API key persisted into a committed artifact on an error path; state transition enforced only in the frontend so a crafted request bypasses it.
+2. Does specified behavior fail in a realistic scenario, or is a spec'd flow only partially implemented? → **IMPORTANT**
+   - e.g. the retry path re-sends the original malformed payload so retries can never succeed; a DEFINITION OF DONE checkbox is claimed but the code path is a stub.
+3. Is it a real limitation the spec didn't require solving, worth writing down? → **GAP**
+   - e.g. pagination not implemented for a list the spec capped at 50 items; error message is accurate but terse.
+4. Anything informational (style, naming, micro-perf with no observable impact) → **OBSERVATION**
 
-Fix CRITICAL and IMPORTANT issues. Document GAPs and OBSERVATIONs.
+Fix CRITICAL and IMPORTANT issues. Document GAPs and OBSERVATIONs — fixing them is scope creep.
+When genuinely unsure between two levels, choose the higher one and say you were unsure.
+
+## Worked example (real: goal-session mcp-loop, iter-16)
+
+The dev handoff claimed the Stooq ingest tool was safe: "the API key is read from env, never stored." The auditor did not accept the claim — it traced the error path in `ingest_seed.py` and found that on HTTP failure the full request URL (containing `STOOQ_API_KEY` as a query param) was serialized into the committed `meta.json`. That is finding **B1 — CRITICAL (fixed): API key persisted to committed artifact on error path** — the happy path was clean; only the failure path leaked. Fix applied: a `redact_stooq_key()` applied at the single serialization choke point, plus a regression test asserting the redaction on a simulated failure; the test run and result were cited in the report. This is the required shape of audit work: trace the *unhappy* paths of every claim, fix surgically at the choke point, prove the fix with a test, cite everything.
 
 ## Rules
 
+- Apply the judgment criteria in `.claude/judgment-rubrics.md` (severity boundaries, evidence floors, honesty rules) — they override intuition when they conflict.
 - Be skeptical. Do not assume the phase is complete because pages render or tests pass.
 - Every finding must reference a specific file and line number.
 - Do NOT pass a phase just because QA passed. QA tests what was implemented; you assess whether what was implemented is correct.

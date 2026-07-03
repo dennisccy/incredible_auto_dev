@@ -239,11 +239,11 @@ The `Frontend Present:` line is machine-read by `qa-phase.sh` to decide whether 
 
 | Tier | Model | Used for |
 |------|-------|----------|
-| strong | claude-fable-5 | Complex reasoning: planning, code generation, auditing |
+| strong | claude-opus-4-8 | Judgment: goal evaluation/decomposition, skeptical audit, confirms |
 | standard | claude-sonnet-5 | Solid tasks: code review, test plan generation |
 | light | claude-haiku-4-5 | Routine workflow: QA execution, git/GitHub operations |
 
-Model assignments are in `config/agent-models.yaml`. Update models there and run `sync-agent-models.sh` to propagate.
+Model assignments: each agent picks a tier (`model_tier`) in `agents/<name>/agent.yaml`; the tier resolves to a concrete model in `config/model-tiers.yaml`. Edit those, then re-render with `python3 scripts/automation/sync-cli-assets.py --cli claude` and commit the regenerated `.claude/agents/*.md`.
 
 ---
 

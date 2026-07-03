@@ -51,7 +51,7 @@ When a previous review/QA/audit returned FAIL, read inputs in this order. **STOP
 1. `reports/qa/<phase>-failure-digest.md` — structured digest of the failing tests. **Read this first if it exists.** It tells you exactly which test failed, where, and what files were recently changed. Often you do not need to read further.
 2. `reports/qa/<phase>-qa.md` — QA report (browser checks, UI evolution audit, blockers list).
 3. `reports/reviews/<phase>-review.md` — reviewer's structured findings (YAML schema; read the `issues` and `fix_tasks` lists).
-4. `reports/audits/<phase>-audit.md` if present.
+4. `docs/handoffs/<phase>-audit.md` if present.
 5. The phase spec, dev handoff, and changed files — only if 1–4 don't give you a clear fix path.
 
 Do NOT re-read the raw test log (`reports/qa/<phase>-test.log`) unless the digest is missing or marked "could not parse."
@@ -60,7 +60,7 @@ Do NOT re-read the raw test log (`reports/qa/<phase>-test.log`) unless the diges
 
 1. Read the failing review/QA/audit reports in the order above
 2. Read the specific files and lines mentioned
-3. Fix each listed issue — do not change anything else
+3. Fix each listed issue — do not change anything else. Touch ONLY files implicated by the listed issues. If you discover a NEW problem while fixing (not in any report), do NOT fix it — record it in the handoff's "Known Issues" so the reviewer/auditor can triage it. Silent extra fixes make the re-review diff unreviewable.
 4. Re-run tests — all must pass
 5. Append a "Fix Notes" section to the dev handoff
 6. Update `runs/<phase>/status.json`
@@ -100,6 +100,13 @@ Before writing the dev handoff, verify:
 - [ ] **Service startup works**: Run the project's dev start script (`scripts/dev.sh` or equivalent), confirm both backend and frontend start without errors. If the script kills previous processes, verify it handles child processes (not just parent PIDs). Stop, then start again — verify no port conflicts.
 - [ ] **External integrations work live**: If the phase adds adapters, scrapers, or external API calls — run at least one live test (not mocked) to confirm the real external system responds and data is parsed correctly. Document the result in the handoff's "Known Issues" section if it fails. Do not silently rely on mocked tests alone.
 - [ ] **Native dependency binaries are available**: If a new dependency requires a post-install step (e.g., `playwright install`, native compilation), verify the binary is usable after install. Document the required setup step in the handoff.
+
+## Simplicity bar
+
+"Minimal code to make tests pass" means: the smallest change a reviewer can verify against the spec in one read. Concretely — no new abstraction until the THIRD occurrence of a pattern; no config/option for behavior the spec fixed; no handler for states the system cannot reach.
+
+- ✖ Over-built: the spec asks for a CSV export of one table. The diff adds an `Exporter` base class, a `FormatRegistry`, a `formats/` package with csv+json+xml modules, and a plugin loader "for future formats". Three files and 200 lines where 25 would do — and the reviewer must now audit a framework.
+- ✚ Right-sized: one `export_watchlist_csv()` function beside the existing handler, using the stdlib `csv` module, plus one test asserting exact header and first-row values. When a second format is *actually specified* someday, THAT diff may introduce the abstraction.
 
 ## Rules
 

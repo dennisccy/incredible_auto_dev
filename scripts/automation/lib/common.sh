@@ -241,9 +241,12 @@ d.update({'phase': '${phase}', 'status': '${new_status}', 'current_step': '${new
 # even if CHAIN_CLI is changed between resumes.
 for k, v in [('started_at', now), ('cli', '${_cli}'), ('blockers', []), ('changed_files', []), ('tests_run', False), ('browser_checks_run', False), ('next_action', 'none')]:
     d.setdefault(k, v)
-with open(f, 'w') as fp:
+import tempfile
+_fd, _tmp = tempfile.mkstemp(dir=os.path.dirname(f) or '.', suffix='.sttmp')
+with os.fdopen(_fd, 'w') as fp:
     json.dump(d, fp, indent=2)
     fp.write('\n')
+os.replace(_tmp, f)
 " 2>/dev/null || echo "Warning: could not update status.json" >&2
 }
 
@@ -631,6 +634,31 @@ _start_service_with_retries() {
   printf -v "$tail_var" '%s' "$tail_txt"
   echo "[ensure_services_running] $role failed to become healthy after ${max_attempts} attempt(s) (log: $log_path)." >&2
   return 1
+}
+
+# ── Escalation ladder (model) ─────────────────────────────────────────────────
+# Fix-mode retries run on the strong tier: a task that already failed once on
+# its normal model gets more capability, not another identical roll
+# (.claude/model-orchestration.md §5). Works on both backends — headless via
+# the --model injection in quota-retry.sh, interactive via the request JSON's
+# model field. Disable with CHAIN_MODEL_ESCALATION=false.
+escalate_model_on() {
+  [[ "${CHAIN_MODEL_ESCALATION:-true}" != "true" ]] && return 0
+  local _m
+  _m="$(python3 "$(dirname "${BASH_SOURCE[0]}")/agent_permissions.py" tier-model strong 2>/dev/null || true)"
+  if [[ -n "$_m" ]]; then
+    export CHAIN_MODEL_OVERRIDE="$_m"
+    echo "[escalation] retry runs on the strong tier: $_m"
+    if declare -F record_telemetry_event >/dev/null 2>&1; then
+      record_telemetry_event "model_escalation" "$(jq -cn --arg m "$_m" '{model:$m, escalated:true}' 2>/dev/null || printf '{"model":"%s","escalated":true}' "$_m")" || true
+    fi
+  fi
+  return 0
+}
+
+escalate_model_off() {
+  unset CHAIN_MODEL_OVERRIDE
+  return 0
 }
 
 # ── Idempotent service bootstrap (shared by qa-phase.sh and browser-qa-phase.sh) ──
@@ -1024,7 +1052,7 @@ check_backend_only_claim() {
 closure_verdict_passes() {
   local report_file="${1:-}"
   [[ -f "$report_file" ]] || return 1
-  grep -qE "^\*\*Verdict:\*\* CLOSURE-PASS" "$report_file" 2>/dev/null
+  grep -m1 -qE "^\*\*Verdict:\*\* CLOSURE-PASS[[:space:]]*$" "$report_file" 2>/dev/null
 }
 
 # Returns 0 if UX regression report is PASS or WARN (not FAIL)
@@ -1119,9 +1147,6 @@ write_failed_artifact_stub() {
   case "$artifact" in
     ui-test-results)
       verdict_block=$'\n**Browser QA Verdict:** SKIPPED\n'
-      ;;
-    qa-report|review-report|audit-report)
-      verdict_block=$'\n**Verdict:** SKIPPED\n'
       ;;
   esac
 

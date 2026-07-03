@@ -23,13 +23,13 @@ The primary project configuration file. Every adopting project fills this in. Co
 
 Agents reference this file for stack-specific commands (test runner, package manager, migration tool) instead of hard-coding paths.
 
-## config/agent-models.yaml
+## config/model-tiers.yaml (+ agents/*/agent.yaml `model_tier`)
 
-Maps each of the 14 agents to a model tier (12 phase-mode + 2 goal-mode).
+Maps each of the 19 agents to a model tier (12 phase-mode + 2 goal-mode).
 
 ```yaml
 tiers:
-  strong:   claude-fable-5
+  strong:   claude-opus-4-8
   standard: claude-sonnet-5
   light:    claude-haiku-4-5
 
@@ -53,7 +53,7 @@ agents:
   goal-evaluator:  strong   # done/regression/stall judgment
 ```
 
-After editing, run `./scripts/automation/sync-agent-models.sh` to propagate changes to agent `.md` files.
+After editing, run `python3 scripts/automation/sync-cli-assets.py --cli claude` and commit the regenerated `.claude/agents/*.md`.
 
 All agent invocations (phase mode and goal mode) go through `lib/quota-retry.sh::claude_with_quota_retry`, which passes `--effort max` and handles quota exhaustion by sleeping until reset and resuming. This is automatic — no per-agent flag is needed.
 

@@ -33,6 +33,8 @@ from verdicts import (
     UIVerdict,  # noqa: F401  (referenced by qa schema's optional ui audit)
     UXRegressionVerdict,
     Verdict,
+    GoalEvalVerdict,
+    CoherenceVerdict,
 )
 
 
@@ -66,6 +68,20 @@ SCHEMAS: tuple[ArtifactSchema, ...] = (
         verdict_enum=Verdict,
         required_h2=("Executive Verdict",),
         description="Auditor report — docs/handoffs/<phase>-audit.md",
+    ),
+    ArtifactSchema(
+        artifact_type="goal-eval",
+        path_pattern=re.compile(r"iter-\d+/eval\.md$"),
+        verdict_enum=GoalEvalVerdict,
+        required_h2=("Summary",),
+        description="Goal-evaluator verdict — runs/goal-session-<sid>/iter-<N>/eval.md",
+    ),
+    ArtifactSchema(
+        artifact_type="coherence",
+        path_pattern=re.compile(r"iter-\d+/coherence\.md$"),
+        verdict_enum=CoherenceVerdict,
+        required_h2=(),
+        description="Coherence audit — runs/goal-session-<sid>/iter-<N>/coherence.md",
     ),
     ArtifactSchema(
         artifact_type="closure",
@@ -130,7 +146,12 @@ def find_verdict(content: str, allowed: set[str]) -> Optional[str]:
 
 
 def find_h2_sections(content: str) -> set[str]:
-    return set(_H2_RE.findall(content))
+    """H2 headings, both verbatim and with a leading "N. " ordinal stripped —
+    agent templates number their sections ("## 1. Executive Verdict") while
+    schemas name them bare ("Executive Verdict")."""
+    found = set(_H2_RE.findall(content))
+    found |= {re.sub(r"^\d+\.\s+", "", h) for h in found}
+    return found
 
 
 @dataclass

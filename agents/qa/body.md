@@ -176,7 +176,7 @@ If no test plan exists: skip this step, note "No functional test plan available.
 If `Frontend Present: no`: write "SKIPPED — backend-only phase."
 
 If `Frontend Present: yes`:
-1. Verify frontend is running: `curl -s -o /dev/null -w "%{http_code}" http://localhost:3000`
+1. Verify frontend is running: `curl -s -o /dev/null -w "%{http_code}" the frontend URL (from `.claude/project-template.md` / `CHAIN_FRONTEND_URL`; default http://localhost:3000)`
 2. If running: use Chrome MCP to check key flows from the spec
 3. Take screenshots. **Save them under `reports/qa/<phase>-evidence/` using `TC-<id>-<slug>.png` or `UT-<nn>-<slug>.png` naming — never save at the repo root.** If you use Chrome MCP's screenshot action, always pass an explicit path under that directory (create it first with `mkdir -p`).
 4. If NOT running after service auto-start attempt: write "SKIPPED — frontend not ready"
@@ -186,16 +186,26 @@ Browser SKIPPED + tests passing = overall PASS is acceptable.
 
 **Step 4b: UI Evolution Audit (if Frontend Present: yes)**
 
-Answer each question:
-1. Did the UI evolve to reflect the phase's new capability?
-2. Can the user now see, understand, and control the new capability?
-3. Is the UI still relying on old generic pages for new functionality?
-4. Is the implementation technically complete but product-wise underexposed?
+Perform these four CONCRETE checks (each is pass/fail — record the evidence for each):
 
-Assign verdict (use `**Verdict:**` prefix — required for machine parsing):
-- `**Verdict:** UI-PASS` — UI meaningfully reflects the new capability
-- `**Verdict:** UI-PASS-WITH-GAPS` — UI works but has notable gaps
-- `**Verdict:** UI-FAIL` — backend capability not adequately reflected in UI
+1. **Reachability**: starting from the app's persistent navigation, can you reach the new capability in ≤2 clicks? Trace the actual click path and write it down (e.g., "Sidebar → Research → Factor Lab tab"). No path found = fail.
+2. **Visibility**: on the capability's page, is the NEW information/control actually rendered? Take/inspect a screenshot; name the specific element you saw (e.g., "'Export CSV' button in table header"). Element absent or hidden behind dev tooling = fail.
+3. **Control**: does the spec's "New user actions" list have a working UI control for EACH action? Count them: spec lists N actions, you found M controls. M < N = fail (list the missing ones).
+4. **No generic-page dumping**: is the new capability presented on its proper page per the spec's "UI surface changes" — not appended to a generic/debug/misc page it doesn't belong to? Wrong home = fail.
+
+Assign the verdict mechanically from the four results (use `**Verdict:**` prefix — required for machine parsing):
+- All 4 pass → `**Verdict:** UI-PASS`
+- Checks 1 AND 2 pass, and check 3 found at least half the spec'd controls (missing < half), and any check-4 issue is partial → `**Verdict:** UI-PASS-WITH-GAPS` (list each gap)
+- Check 1 fails, OR check 2 fails, OR check 3 found fewer than half the spec'd controls → `**Verdict:** UI-FAIL`
+
+UI-PASS-WITH-GAPS caps the overall QA verdict at PASS_WITH_NOTES (never plain PASS); list the gaps as notes.
+
+Example of a correctly-recorded audit result:
+> 1. Reachability: PASS — Sidebar → Watchlist → row menu → "Export CSV" (2 clicks).
+> 2. Visibility: PASS — button rendered in row menu, screenshot `UT-04-export-button.png`.
+> 3. Control: FAIL — spec lists actions "export" and "choose date range"; only export has a control.
+> 4. Generic-page dumping: PASS — lives on the Watchlist page per spec.
+> `**Verdict:** UI-PASS-WITH-GAPS` — date-range control missing (spec "New user actions" item 2).
 
 **If UI-FAIL: overall QA verdict MUST be FAIL.**
 
