@@ -355,6 +355,46 @@ ensure_phase_ports() {
   fi
 }
 
+# Dispatch the coherence-auditor agent (goal mode). ONE shared implementation
+# for both call sites so the prompt cannot drift: the parallel fork inside
+# goal-iter-lean.sh (runs concurrently with browser-qa — the audit needs only
+# the diff + blueprint, not services or browser results) and the sequential
+# fallback in run-goal.sh (parallelism off, fork crashed, or full-depth path).
+#   $1 session-id   $2 iter-index   $3 iter-name    $4 blueprint-file
+#   $5 iter-spec    $6 output-path  $7 snapshot-sha (may be empty)
+# Returns the agent's exit code; records agent_invocation telemetry events.
+dispatch_coherence_audit() {
+  local _sid="$1" _idx="$2" _name="$3" _blueprint="$4" _spec="$5" _out="$6" _snap="${7:-}"
+  cd "$REPO_ROOT"
+  declare -F record_agent_invocation_start >/dev/null 2>&1 && record_agent_invocation_start "coherence-auditor"   # bare call: exports CHAIN_CURRENT_AGENT
+  local _start="${CHAIN_AGENT_START_EPOCH:-$(date +%s)}"
+  local _rc=0
+  claude_with_quota_retry -p "You are the coherence-auditor agent for goal-mode coherence enforcement.
+
+Session ID: $_sid
+Iteration index: $_idx
+Iter name: $_name
+
+Blueprint (the contract): $_blueprint
+Iter spec: $_spec
+Agent instructions: .claude/agents/coherence-auditor.md  <-- read this first
+Methodology: .claude/skills/coherence-audit.md
+(CLAUDE.md is already in your system prompt — do not Read it again.)
+
+This iteration's changes: run \`git diff ${_snap}\` (and \`git status\` / \`git diff HEAD\` for uncommitted changes). If the snapshot SHA is empty, fall back to \`git diff HEAD~1\`.
+UI surface map (read if it exists): reports/phase-${_name}-ui-surface-map.md
+
+Apply the TOKEN AND QUESTIONING POLICY from .claude/core.md strictly.
+
+Write your verdict to: $_out
+The verdict line MUST appear first and start exactly with:
+**Verdict:** COHERENCE-PASS
+  or **Verdict:** COHERENCE-WARN
+  or **Verdict:** COHERENCE-FAIL" || _rc=$?
+  declare -F record_agent_invocation_end >/dev/null 2>&1 && record_agent_invocation_end "coherence-auditor" "$_start" "$_rc"
+  return $_rc
+}
+
 # Kill any servers started by agents on the assigned phase ports.
 # Call between pipeline steps to prevent zombie servers from blocking the next step.
 kill_phase_servers() {

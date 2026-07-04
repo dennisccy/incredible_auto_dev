@@ -94,6 +94,15 @@ cleanup_iter_servers() {
   pkill -f "next dev -p ${_fe_port}" 2>/dev/null || true
   pkill -f "next-server.*:${_fe_port}" 2>/dev/null || true
   fuser -k "${_be_port}/tcp" "${_fe_port}/tcp" 2>/dev/null || true
+  # Reap a still-running coherence fork so an aborting iteration can't leave an
+  # orphaned agent racing a future resume of the same iteration.
+  if [[ -n "${_COH_PID:-}" ]]; then
+    if declare -F _kill_pid_tree >/dev/null 2>&1; then
+      _kill_pid_tree "$_COH_PID" 2>/dev/null || true
+    else
+      kill "$_COH_PID" 2>/dev/null || true
+    fi
+  fi
 }
 trap cleanup_iter_servers EXIT
 
@@ -232,6 +241,38 @@ fi
 if [[ -f "$REVIEW_REPORT" ]] && ! verdict_passes "$REVIEW_REPORT"; then
   echo "[goal-iter-lean] Review still FAIL after retry — proceeding to browser-qa anyway."
   echo "[goal-iter-lean] The goal-evaluator will likely emit ESCALATE for the next iteration."
+fi
+
+# ── Coherence audit fork (runs concurrently with browser-qa) ──────────────
+# The coherence-auditor reads only the blueprint + this iteration's diff, both
+# final once review settles — nothing it needs depends on services or browser
+# results. Forking here hides its ~4 min under the ~20-min browser-qa lane.
+# The subshell isolates CHAIN_CURRENT_AGENT and the dispatch env; run-goal.sh's
+# sequential coherence step remains the automatic fallback: it reuses this
+# fork's checkpoint when valid, or re-dispatches if the fork crashed.
+# Disable with CHAIN_LEAN_PARALLEL_COHERENCE=false.
+_COH_PID=""
+_COH_RC_FILE="${ITER_DIR:+$ITER_DIR/.coherence-rc}"
+COHERENCE_OUTPUT_LEAN="${ITER_DIR:+$ITER_DIR/coherence.md}"
+if [[ "${CHAIN_LEAN_PARALLEL_COHERENCE:-true}" == "true" && -n "$ITER_DIR" \
+      && "${GOAL_ITER_INDEX:-0}" -gt 0 \
+      && -n "${GOAL_BLUEPRINT_FILE:-}" && -f "${GOAL_BLUEPRINT_FILE:-/nonexistent}" ]]; then
+  if step_done_valid coherence --verify-tree --dir "$ITER_DIR" "$COHERENCE_OUTPUT_LEAN" \
+     && grep -qE '^\*\*Verdict:\*\* COHERENCE-(PASS|WARN|FAIL)' "$COHERENCE_OUTPUT_LEAN"; then
+    _step_skipped_event "coherence-auditor"
+  else
+    step_invalidate_from coherence "$ITER_DIR"
+    rm -f "$_COH_RC_FILE"
+    echo "[goal-iter-lean] Forking coherence-auditor to run concurrently with browser-qa..."
+    (
+      _rc=0
+      dispatch_coherence_audit "${GOAL_SESSION_ID:-unknown}" "${GOAL_ITER_INDEX}" "$ITER_NAME" \
+        "$GOAL_BLUEPRINT_FILE" "$SPEC" "$COHERENCE_OUTPUT_LEAN" \
+        "$(cat "$ITER_DIR/snapshot-sha" 2>/dev/null || echo "")" || _rc=$?
+      echo "$_rc" > "$_COH_RC_FILE"
+    ) &
+    _COH_PID=$!
+  fi
 fi
 
 # ── Step 3: Browser QA ────────────────────────────────────────────────────
@@ -432,6 +473,15 @@ if [[ "$_use_replay" == "yes" ]]; then
   if [[ "$_replay_rc" -eq 5 ]]; then
     REPLAY_FAILED="$(grep -E '^\| UT-J-[0-9]+ ' "$REGRESSION_RESULTS" 2>/dev/null | grep -F '| FAIL |' | grep -oE 'J-[0-9]+' | sort -u | tr '\n' ' ')"
     echo "[goal-iter-lean] Replay flagged possible regression(s) — re-confirming via LLM: $REPLAY_FAILED"
+  elif [[ "$_replay_rc" -ne 0 ]]; then
+    # Replay-lane infrastructure failure (rc 6 = browser launch/crash; any
+    # other rc = runner crash). The replay journeys were NOT verified — route
+    # ALL of them back to the LLM lane, byte-identical to running this
+    # iteration with CHAIN_REGRESSION_REPLAY=false. Previously a replay crash
+    # left them silently unverified for the iteration.
+    echo "[goal-iter-lean] Replay lane failed (rc=$_replay_rc) — falling back to the LLM lane for ALL regression journeys." >&2
+    _use_replay="no"
+    R_REPLAY=""
   fi
 fi
 
@@ -478,13 +528,37 @@ fi
 
 fi  # end of the browser-qa resume-skip guard (_bq_skip)
 
+# ── Coherence audit join ──────────────────────────────────────────────────
+# Settle the fork BEFORE this script returns: the goal-evaluator's input set
+# must be complete and identical to the sequential ordering.
+if [[ -n "$_COH_PID" ]]; then
+  wait "$_COH_PID" 2>/dev/null || true
+  _coh_rc="$(cat "$_COH_RC_FILE" 2>/dev/null || echo 1)"
+  rm -f "$_COH_RC_FILE"
+  _COH_PID=""
+  if [[ "$_coh_rc" -eq "${DISPATCH_UNAVAILABLE_EXIT_CODE:-70}" ]]; then
+    rm -f "$COHERENCE_OUTPUT_LEAN" 2>/dev/null || true   # partial output is untrustworthy
+    _pause_if_transport "$_coh_rc" "coherence-auditor (parallel)"
+  fi
+  if [[ "$_coh_rc" -eq 0 ]] && grep -qE '^\*\*Verdict:\*\* COHERENCE-(PASS|WARN|FAIL)' "$COHERENCE_OUTPUT_LEAN" 2>/dev/null; then
+    _coh_v="$(grep -m1 -E '^\*\*Verdict:\*\*' "$COHERENCE_OUTPUT_LEAN" | grep -oE 'COHERENCE-(PASS|WARN|FAIL)' | head -1)"
+    step_mark_done coherence --dir "$ITER_DIR" --verdict "${_coh_v:-unknown}" "$COHERENCE_OUTPUT_LEAN"
+    echo "[goal-iter-lean] Coherence audit (parallel) verdict: ${_coh_v:-unknown}"
+  else
+    # Crash or malformed output → clear it; run-goal.sh's sequential coherence
+    # step re-dispatches fresh (automatic fallback) per its own rules.
+    echo "[goal-iter-lean] Parallel coherence audit did not complete cleanly (rc=$_coh_rc) — falling back to the sequential dispatch in run-goal.sh." >&2
+    rm -f "$COHERENCE_OUTPUT_LEAN" 2>/dev/null || true
+  fi
+fi
+
 # ── Product demo (showcase) ───────────────────────────────────────────────
-# Reuses the still-running app (cleanup_iter_servers fires only on EXIT). The
-# idempotent ensure_services_running in demo-phase.sh is a no-op when ports
-# are warm, so no second boot. Non-gating: failures become a SKIPPED stub and
-# the lean iteration continues to its closing summary.
-bash "$SCRIPT_DIR/demo-phase.sh" "$ITER_NAME" \
-  || echo "[goal-iter-lean] demo-phase.sh exited non-zero — continuing (showcase, non-gating)"
+# Moved OUT of the lean executor: run-goal.sh's showcase tail now runs
+# demo-phase.sh (per-iteration, lean depth) off the gate path — in the
+# background for CONTINUE/ESCALATE, inline for halt verdicts. The evaluator
+# never read demo artifacts, so its input set is unchanged. demo-phase.sh
+# boots its own services idempotently, so it no longer depends on this
+# script's still-warm ports.
 
 echo "[goal-iter-lean] Done. Iteration artifacts:"
 echo "  Dev handoff:   $DEV_HANDOFF"

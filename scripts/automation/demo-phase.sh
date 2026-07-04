@@ -98,6 +98,17 @@ else
   FRONTEND_PRESENT="no"
   if detect_frontend_in_plan "$PLAN_FILE"; then
     FRONTEND_PRESENT="yes"
+  elif [[ ! -f "$PLAN_FILE" ]]; then
+    # Lean goal-mode iterations never write runs/<iter>/plan.md, which used to
+    # make EVERY lean demo a silent backend-only stub. Fall back to the
+    # iteration spec, then to evidence: executed journey rows (PASS/FAIL, not
+    # SKIPPED) in the browser-qa results prove a working frontend — the demo
+    # runs after browser-qa, so those rows exist by now.
+    if detect_frontend_in_plan "$SPEC"; then
+      FRONTEND_PRESENT="yes"
+    elif grep -E '^\| UT-J-[0-9]+ ' "$UI_TEST_RESULTS" 2>/dev/null | grep -qE '\| (PASS|FAIL) \|'; then
+      FRONTEND_PRESENT="yes"
+    fi
   fi
 fi
 
