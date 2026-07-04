@@ -98,6 +98,13 @@ if bash scripts/automation/lib/interactive-dispatch.sh --self-test >/dev/null 2>
 else
   _fail "self-test: interactive-dispatch.sh"
 fi
+# Step-level checkpoint/resume helpers (goal-mode stall-proofing).
+if bash scripts/automation/lib/checkpoint.sh --self-test >/dev/null 2>&1; then
+  _pass "self-test: checkpoint.sh (markers / tree-hash / invalidation)"
+else
+  bash scripts/automation/lib/checkpoint.sh --self-test || true
+  _fail "self-test: checkpoint.sh"
+fi
 # Service bootstrap: kill-tree escalation, corrupt-.next detector, and the
 # frontend self-heal recovery (clears a stale .next + cold-rebuilds instead of
 # SKIPPING the demo/browser-QA). Guards the fix for the iter-6 corrupt-.next SKIP.
@@ -128,7 +135,7 @@ fi
 
 # ── 2c. Standalone unit-test scripts (API-free by design) ────────────────────
 _log "2c. tests/automation unit tests"
-for _t in tests/automation/test-quota-retry.sh tests/automation/test-install-gate.sh; do
+for _t in tests/automation/test-quota-retry.sh tests/automation/test-install-gate.sh tests/automation/test-goal-checkpoints.sh; do
   if bash "$_t" >/dev/null 2>&1; then
     _pass "unit: $_t"
   else

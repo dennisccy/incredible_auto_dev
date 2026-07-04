@@ -306,6 +306,10 @@ PYEOF
 # shellcheck source=quota-retry.sh
 source "$(dirname "${BASH_SOURCE[0]}")/quota-retry.sh"
 source "$(dirname "${BASH_SOURCE[0]}")/project-gates.sh"
+# Step-level checkpoint/resume for goal-mode iterations (defines step_mark_done,
+# step_done_valid, step_invalidate_from, chain_tree_hash, goal_iter_dir)
+# shellcheck source=checkpoint.sh
+source "$(dirname "${BASH_SOURCE[0]}")/checkpoint.sh"
 
 # Deterministic port offset (0..999) derived from the project directory so that
 # multiple projects sharing this subtree each land in their own port range.

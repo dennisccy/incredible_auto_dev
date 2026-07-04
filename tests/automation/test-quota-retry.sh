@@ -304,6 +304,44 @@ for f in "$ICC"/req.*.ready; do [[ -e "$f" ]] && echo 0 > "${f%.ready}.res"; don
 for p in "${cc_pids[@]}"; do wait "$p" 2>/dev/null || true; done
 rm -rf "$ICC"
 
+# ── Tests: _agent_timeout_for (per-agent runtime cap resolution) ─────────────
+
+echo ""
+echo "=== _agent_timeout_for tests ==="
+echo ""
+
+# Table hit: reviewer resolves from lib/agent_permissions.py (3600).
+v=$(CHAIN_CURRENT_AGENT="reviewer" _agent_timeout_for "")
+[[ "$v" == "3600" ]] && assert "reviewer cap from builtin table (3600)" "pass" || assert "reviewer cap from builtin table (got '$v')" "fail"
+
+# No-entry agent: empty → caller keeps the flat global (run-phase.sh unchanged).
+v=$(CHAIN_CURRENT_AGENT="orchestrator" _agent_timeout_for "")
+[[ -z "$v" ]] && assert "full-pipeline-only agent keeps flat global (empty)" "pass" || assert "full-pipeline-only agent keeps flat global (got '$v')" "fail"
+
+# Env override wins over the table.
+v=$(CHAIN_CURRENT_AGENT="reviewer" CHAIN_TIMEOUT_REVIEWER=99 _agent_timeout_for "")
+[[ "$v" == "99" ]] && assert "CHAIN_TIMEOUT_<AGENT> env wins over table" "pass" || assert "CHAIN_TIMEOUT_<AGENT> env wins (got '$v')" "fail"
+
+# Explicit flat cap disables the table defaults...
+v=$(CHAIN_CURRENT_AGENT="reviewer" _agent_timeout_for "set")
+[[ -z "$v" ]] && assert "explicit flat cap disables table defaults" "pass" || assert "explicit flat cap disables table (got '$v')" "fail"
+
+# ...but the more-specific per-agent env override still wins even then.
+v=$(CHAIN_CURRENT_AGENT="reviewer" CHAIN_TIMEOUT_REVIEWER=77 _agent_timeout_for "set")
+[[ "$v" == "77" ]] && assert "per-agent env wins even with explicit flat cap" "pass" || assert "per-agent env vs explicit flat (got '$v')" "fail"
+
+# Kill switch reverts everyone to the flat global.
+v=$(CHAIN_CURRENT_AGENT="reviewer" CHAIN_AGENT_TIMEOUTS=false _agent_timeout_for "")
+[[ -z "$v" ]] && assert "CHAIN_AGENT_TIMEOUTS=false reverts to flat global" "pass" || assert "CHAIN_AGENT_TIMEOUTS=false (got '$v')" "fail"
+
+# Non-numeric env value is ignored (falls through to the table).
+v=$(CHAIN_CURRENT_AGENT="reviewer" CHAIN_TIMEOUT_REVIEWER="soon" _agent_timeout_for "")
+[[ "$v" == "3600" ]] && assert "non-numeric env override ignored (table applies)" "pass" || assert "non-numeric env override (got '$v')" "fail"
+
+# No current agent → empty (unattributed calls keep the flat global).
+v=$(CHAIN_CURRENT_AGENT="" _agent_timeout_for "")
+[[ -z "$v" ]] && assert "no CHAIN_CURRENT_AGENT keeps flat global" "pass" || assert "no CHAIN_CURRENT_AGENT (got '$v')" "fail"
+
 # ── Results ───────────────────────────────────────────────────────────────────
 
 echo ""

@@ -68,6 +68,19 @@ mkdir -p "$REPO_ROOT/reports/reviews"
 mkdir -p "$REPO_ROOT/reports/qa/${ITER_NAME}-evidence"
 mkdir -p "$REPO_ROOT/docs/handoffs"
 
+# ── Step checkpoints (lib/checkpoint.sh) ──────────────────────────────────
+# A resumed iteration (pump stall / quota / Ctrl-C) skips steps whose marker,
+# artifact, and working-tree state all verify — so a stall never redoes the
+# expensive developer build. Any doubt → the step re-runs (today's behavior).
+ITER_DIR="$(goal_iter_dir "$ITER_NAME" 2>/dev/null || true)"
+
+_review_parses() { grep -qE '^\*\*Verdict:\*\*[[:space:]]*(PASS_WITH_NOTES|PASS|FAIL)[[:space:]]*$' "$REVIEW_REPORT" 2>/dev/null; }
+_review_verdict() { grep -m1 -E '^\*\*Verdict:\*\*' "$REVIEW_REPORT" 2>/dev/null | grep -oE 'PASS_WITH_NOTES|PASS|FAIL' | head -1; }
+_step_skipped_event() {
+  echo "[goal-iter-lean] Resume: $1 already completed for this iteration (checkpoint verified) — skipping."
+  record_telemetry_event "step_skipped" "$(jq -cn --arg s "$1" --arg n "$ITER_NAME" '{step:$s, iter_name:$n, reason:"checkpoint"}' 2>/dev/null || printf '{"step":"%s","iter_name":"%s"}' "$1" "$ITER_NAME")"
+}
+
 echo "[goal-iter-lean] Iteration: $ITER_NAME"
 record_telemetry_event "iter_dispatch" "$(jq -cn --arg n "$ITER_NAME" --arg d "lean" '{iter_name:$n, depth:$d}' 2>/dev/null || printf '{"iter_name":"%s","depth":"lean"}' "$ITER_NAME")"
 
@@ -152,34 +165,68 @@ The report MUST start with a line matching exactly:
 
 # Round 1: build. A transport failure (70) pauses cleanly; any other non-zero
 # aborts the iteration as before (set -e semantics, now with the code preserved).
-_dev_rc=0
-run_developer "INITIAL BUILD" "" || _dev_rc=$?
-_pause_if_transport "$_dev_rc" "developer (initial build)"
-if [[ "$_dev_rc" -ne 0 ]]; then exit "$_dev_rc"; fi
+# Resume-skip: handoff on disk + the tree exactly where this iteration last
+# left it → the ~41-min build is already done, don't redo it.
+if step_done_valid developer --verify-tree --dir "$ITER_DIR" "$DEV_HANDOFF"; then
+  _step_skipped_event "developer"
+else
+  step_invalidate_from developer "$ITER_DIR"
+  _dev_rc=0
+  run_developer "INITIAL BUILD" "" || _dev_rc=$?
+  _pause_if_transport "$_dev_rc" "developer (initial build)"
+  if [[ "$_dev_rc" -ne 0 ]]; then exit "$_dev_rc"; fi
+  [[ -s "$DEV_HANDOFF" ]] && step_mark_done developer --dir "$ITER_DIR" "$DEV_HANDOFF"
+fi
 
 # Round 1: review. A transport failure pauses; any other review failure is
 # tolerated (the retry below / evaluator handles it), as the prior `|| true` did.
-_rev_rc=0
-run_reviewer || _rev_rc=$?
-_pause_if_transport "$_rev_rc" "reviewer"
+# Resume-skip: the marker alone is never trusted — the report must live-parse
+# to a verdict (a FAIL report still routes into the fix branch below, exactly
+# as a freshly written FAIL would).
+if { step_done_valid review-1 --dir "$ITER_DIR" "$REVIEW_REPORT" \
+     || step_done_valid review-2 --dir "$ITER_DIR" "$REVIEW_REPORT"; } && _review_parses; then
+  _step_skipped_event "reviewer"
+else
+  step_invalidate_from review-1 "$ITER_DIR"
+  _rev_rc=0
+  run_reviewer || _rev_rc=$?
+  _pause_if_transport "$_rev_rc" "reviewer"
+  if [[ "$_rev_rc" -eq 0 ]] && _review_parses; then
+    step_mark_done review-1 --dir "$ITER_DIR" --verdict "$(_review_verdict)" "$REVIEW_REPORT"
+  fi
+fi
 
 # Retry once if reviewer FAILed
 if [[ -f "$REVIEW_REPORT" ]] && ! verdict_passes "$REVIEW_REPORT"; then
   echo "[goal-iter-lean] Review FAIL — running developer in fix mode (1 retry allowed)..."
-  _dev_rc=0
-  escalate_model_on   # fix-mode retry runs on the strong tier (escalation ladder)
-  run_developer "FIX MODE (review failed)" "
+  if step_done_valid developer-fix --verify-tree --dir "$ITER_DIR" "$DEV_HANDOFF"; then
+    _step_skipped_event "developer-fix"
+  else
+    step_invalidate_from developer-fix "$ITER_DIR"
+    _dev_rc=0
+    escalate_model_on   # fix-mode retry runs on the strong tier (escalation ladder)
+    run_developer "FIX MODE (review failed)" "
 The review report below contains FAIL issues that must be fixed.
 Do NOT rebuild from scratch -- fix only what is listed.
 
 Review report path: $REVIEW_REPORT
 " || _dev_rc=$?
-  escalate_model_off
-  _pause_if_transport "$_dev_rc" "developer (fix-mode)"
-  if [[ "$_dev_rc" -ne 0 ]]; then exit "$_dev_rc"; fi
-  _rev_rc=0
-  run_reviewer || _rev_rc=$?
-  _pause_if_transport "$_rev_rc" "reviewer (fix-mode)"
+    escalate_model_off
+    _pause_if_transport "$_dev_rc" "developer (fix-mode)"
+    if [[ "$_dev_rc" -ne 0 ]]; then exit "$_dev_rc"; fi
+    [[ -s "$DEV_HANDOFF" ]] && step_mark_done developer-fix --dir "$ITER_DIR" "$DEV_HANDOFF"
+  fi
+  if step_done_valid review-2 --dir "$ITER_DIR" "$REVIEW_REPORT" && _review_parses; then
+    _step_skipped_event "reviewer (fix-mode)"
+  else
+    step_invalidate_from review-2 "$ITER_DIR"
+    _rev_rc=0
+    run_reviewer || _rev_rc=$?
+    _pause_if_transport "$_rev_rc" "reviewer (fix-mode)"
+    if [[ "$_rev_rc" -eq 0 ]] && _review_parses; then
+      step_mark_done review-2 --dir "$ITER_DIR" --verdict "$(_review_verdict)" "$REVIEW_REPORT"
+    fi
+  fi
 fi
 
 if [[ -f "$REVIEW_REPORT" ]] && ! verdict_passes "$REVIEW_REPORT"; then
@@ -191,6 +238,33 @@ fi
 # Determine if frontend work is implied. Lean iterations always test journeys,
 # so we always try to start the frontend; if it fails we mark all SKIPPED and
 # the evaluator will treat that as ESCALATE.
+
+# Journey sets come from the spec (needed by the resume-skip check below AND by
+# the lanes inside the block). First match wins.
+_spec_journeys() { grep -iE "$1" "$SPEC" 2>/dev/null | head -1 | grep -oE 'J-[0-9]+' | sort -u | tr '\n' ' '; }
+TARGET_JOURNEYS="$(_spec_journeys 'Target journeys:')"
+REQUIRED_JOURNEYS="$(_spec_journeys 'Required-still-passing')"
+_bq_sig="${TARGET_JOURNEYS}|${REQUIRED_JOURNEYS}"
+
+# Resume-skip for the WHOLE browser-qa section (service boot + replay lane +
+# LLM lane + merge): reusable only when the results file carries a real
+# PASS/FAIL verdict (a SKIPPED verdict is never reusable — a re-run may produce
+# a genuine result instead of a wasted ESCALATE), the journey sets still match
+# the spec, and the tree is exactly where this iteration last left it.
+_bq_skip="no"
+if step_done_valid browser-qa --verify-tree --dir "$ITER_DIR" "$UI_TEST_RESULTS" \
+   && [[ "$(step_field browser-qa journeys "$ITER_DIR")" == "$_bq_sig" ]]; then
+  _prior_bq_verdict="$(grep -m1 -E '^\*\*Browser QA Verdict:\*\*' "$UI_TEST_RESULTS" 2>/dev/null | grep -oE 'PASS|FAIL|SKIPPED' | head -1)"
+  if [[ "$_prior_bq_verdict" == "PASS" || "$_prior_bq_verdict" == "FAIL" ]]; then
+    _bq_skip="yes"
+    _step_skipped_event "browser-qa"
+  fi
+fi
+
+# NOTE: the section below is guarded, not re-indented — the guard is the only
+# change to its flow. It ends at the matching `fi` before the demo step.
+if [[ "$_bq_skip" != "yes" ]]; then
+step_invalidate_from browser-qa "$ITER_DIR"
 
 QA_BACKEND_LOG=$(_qa_log_path "goal-iter-backend")
 QA_FRONTEND_LOG=$(_qa_log_path "goal-iter-frontend")
@@ -270,10 +344,7 @@ LLM_RESULTS="$REPO_ROOT/reports/phase-${ITER_NAME}-ui-test-results.llm.md"
 DEMO_RUNNER="$SCRIPT_DIR/lib/demo_runner.py"
 MERGE_RESULTS="$SCRIPT_DIR/lib/merge_ui_test_results.py"
 
-# Pull the journey IDs out of a spec metadata line (first match wins).
-_spec_journeys() { grep -iE "$1" "$SPEC" 2>/dev/null | head -1 | grep -oE 'J-[0-9]+' | sort -u | tr '\n' ' '; }
-TARGET_JOURNEYS="$(_spec_journeys 'Target journeys:')"
-REQUIRED_JOURNEYS="$(_spec_journeys 'Required-still-passing')"
+# (Journey IDs were pulled from the spec above, before the resume-skip check.)
 
 # Dispatch the LLM browser-qa-agent on an explicit journey list, writing to $2.
 run_browser_qa_llm() {
@@ -397,6 +468,15 @@ if [[ ! -f "$UI_TEST_RESULTS" && "$_bqa_rc" -ne "${QUOTA_EXHAUSTED_EXIT_CODE:-75
   write_failed_artifact_stub "$ITER_NAME" "ui-test-results" \
     "goal-iter-lean.sh browser-qa produced no results file (exit $_bqa_rc). The evaluator will likely emit ESCALATE for the next iteration."
 fi
+
+# Checkpoint: reusable on resume only with a real PASS/FAIL verdict (never a
+# SKIPPED stub) and the journey signature this run actually covered.
+_bq_verdict="$(grep -m1 -E '^\*\*Browser QA Verdict:\*\*' "$UI_TEST_RESULTS" 2>/dev/null | grep -oE 'PASS|FAIL|SKIPPED' | head -1)"
+if [[ "$_bq_verdict" == "PASS" || "$_bq_verdict" == "FAIL" ]]; then
+  step_mark_done browser-qa --dir "$ITER_DIR" --verdict "$_bq_verdict" --journeys "$_bq_sig" "$UI_TEST_RESULTS"
+fi
+
+fi  # end of the browser-qa resume-skip guard (_bq_skip)
 
 # ── Product demo (showcase) ───────────────────────────────────────────────
 # Reuses the still-running app (cleanup_iter_servers fires only on EXIT). The

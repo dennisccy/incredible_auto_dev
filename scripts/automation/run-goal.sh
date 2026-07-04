@@ -1042,11 +1042,16 @@ PY
   mkdir -p "$ITER_DIR"
   # Stale-artifact hygiene: a prior ABORTED/AWAITING_PUMP attempt of this same
   # iteration may have left eval.md / coherence.md behind; parsing them would
-  # certify a verdict the re-run never produced. Delete them UNLESS the
-  # .evaluated marker says the previous attempt completed its evaluation (in
-  # which case the evaluator step below reuses eval.md instead of re-running).
+  # certify a verdict the re-run never produced. Delete them UNLESS a completion
+  # marker says the previous attempt genuinely finished that step: eval.md is
+  # covered by the .evaluated marker (the evaluator step below reuses it), and
+  # coherence.md by its step checkpoint (the coherence step below reuses it —
+  # the checkpoint's tree-hash re-verification happens at that site).
   if [[ ! -f "$ITER_DIR/.evaluated" ]]; then
-    rm -f "$ITER_DIR/eval.md" "$ITER_DIR/coherence.md" 2>/dev/null || true
+    rm -f "$ITER_DIR/eval.md" 2>/dev/null || true
+  fi
+  if ! step_done_valid coherence --dir "$ITER_DIR" "$ITER_DIR/coherence.md"; then
+    rm -f "$ITER_DIR/coherence.md" 2>/dev/null || true
   fi
   export GOAL_ITER_INDEX="$CURRENT_ITER"
   export GOAL_ITER_NAME="$ITER_NAME"
@@ -1057,11 +1062,16 @@ PY
   # `git diff <sha>..HEAD` to see exactly what this iteration changed, and
   # `git reset --hard <sha>` (advanced) to roll back. Best-effort; failures
   # write an empty file and do not block the iteration.
+  # First-write-wins: a RESUMED attempt of this same iteration must keep the
+  # original pre-development baseline — re-capturing here would make the
+  # coherence-auditor diff against a post-development tree and see nothing.
   if git -C "$REPO_ROOT" rev-parse --git-dir >/dev/null 2>&1; then
-    if _snap=$(git -C "$REPO_ROOT" stash create 2>/dev/null); then
-      printf '%s' "$_snap" > "$ITER_DIR/snapshot-sha"
-    else
-      : > "$ITER_DIR/snapshot-sha"
+    if [[ ! -f "$ITER_DIR/snapshot-sha" ]]; then
+      if _snap=$(git -C "$REPO_ROOT" stash create 2>/dev/null); then
+        printf '%s' "$_snap" > "$ITER_DIR/snapshot-sha"
+      else
+        : > "$ITER_DIR/snapshot-sha"
+      fi
     fi
   fi
 
@@ -1097,6 +1107,17 @@ PY
     || cp "$GOAL_FILE" "$GOAL_SLICE_PATH" 2>/dev/null || GOAL_SLICE_PATH="$GOAL_FILE"
   JOURNEY_DIGEST=$(python3 "$SCRIPT_DIR/lib/goal_gate.py" digest "$JOURNEY_HISTORY" 2>/dev/null || echo "(journey digest unavailable — read $JOURNEY_HISTORY)")
   cd "$REPO_ROOT"
+  ITER_SPEC_PATH="$REPO_ROOT/docs/phases/${ITER_NAME}.md"
+  # Resume-skip: a prior attempt of this same iteration already wrote a spec
+  # that parses (checkpoint + Depth line) — don't redo the planning call.
+  # The guarded section below is not re-indented; it ends at the matching `fi`
+  # after the spec-existence check.
+  if step_done_valid decomposer --dir "$ITER_DIR" "$ITER_SPEC_PATH" \
+     && grep -qiE '(\*\*)?Depth:(\*\*)?[[:space:]]*(lean|full)' "$ITER_SPEC_PATH"; then
+    echo "[run-goal] Resume: goal-decomposer already completed for iteration $CURRENT_ITER (checkpoint + spec verified) — skipping."
+    record_telemetry_event "step_skipped" "$(jq -cn --arg n "$ITER_NAME" '{step:"goal-decomposer", iter_name:$n, reason:"checkpoint"}' 2>/dev/null || printf '{"step":"goal-decomposer"}')"
+  else
+  step_invalidate_from decomposer "$ITER_DIR"
   record_agent_invocation_start "goal-decomposer"   # bare call: must NOT be $(...) or the CHAIN_CURRENT_AGENT export is lost to a subshell
   _decomp_start=$CHAIN_AGENT_START_EPOCH
   _decomp_rc=0
@@ -1144,6 +1165,20 @@ Do NOT write code or implement anything. The iteration spec and any blueprint ed
 
   record_agent_invocation_end "goal-decomposer" "$_decomp_start" "$_decomp_rc"
 
+  # Transport loss (exit 70) is infrastructure, not a planning failure: pause
+  # resumably like the executor/coherence sites do, instead of the previous
+  # (incorrect) hard ABORTED that forced a full manual restart.
+  if [[ "$_decomp_rc" -eq "${DISPATCH_UNAVAILABLE_EXIT_CODE:-70}" ]]; then
+    echo "[run-goal] Interactive pump/dispatch unavailable during goal-decomposer — pausing (resume re-runs iteration $CURRENT_ITER)." >&2
+    if [[ -n "${CHAIN_DISPATCH_DIR:-}" && -f "${CHAIN_DISPATCH_DIR}/.awaiting-pump" ]]; then
+      echo "[run-goal]   $(cat "${CHAIN_DISPATCH_DIR}/.awaiting-pump" 2>/dev/null)" >&2
+    fi
+    echo "[run-goal]   Resume after re-opening the pump session:  /goal-resume $SESSION_ID" >&2
+    record_telemetry_event "halt" '{"reason":"AWAITING_PUMP","detected_at_step":"decomposer"}'
+    write_session_summary "AWAITING_PUMP" "$CURRENT_ITER"
+    exit 0
+  fi
+
   if [[ $_decomp_rc -ne 0 ]]; then
     echo "[run-goal] goal-decomposer failed with exit $_decomp_rc — aborting." >&2
     record_telemetry_event "halt" '{"reason":"DECOMPOSER_FAILED","detected_at_step":"decomposer"}'
@@ -1151,12 +1186,14 @@ Do NOT write code or implement anything. The iteration spec and any blueprint ed
     exit "$_decomp_rc"
   fi
 
-  ITER_SPEC_PATH="$REPO_ROOT/docs/phases/${ITER_NAME}.md"
   if [[ ! -f "$ITER_SPEC_PATH" ]]; then
     echo "[run-goal] goal-decomposer did not write spec at $ITER_SPEC_PATH — aborting." >&2
     write_session_summary "ABORTED" "$CURRENT_ITER"
     exit 1
   fi
+
+  step_mark_done decomposer --dir "$ITER_DIR" "$ITER_SPEC_PATH"
+  fi  # end of the decomposer resume-skip guard
 
   # ── Post-decompose gate (generic, project-local, default-off) ───────────────
   # Extension point M2: if the project provides project-extensions/gates/
@@ -1255,6 +1292,18 @@ Do NOT write code or implement anything. The iteration spec and any blueprint ed
   # safety-net agent can never wedge the session.
   COHERENCE_OUTPUT="$ITER_DIR/coherence.md"
   if [[ $CURRENT_ITER -gt 0 && -f "$BLUEPRINT_FILE" ]]; then
+    _coh_dispatched=""
+    _coh_stubbed=""
+    # Resume-skip: a prior attempt's audit is reusable only when its checkpoint,
+    # the verdict line, AND the tree state all verify (a drifted tree means the
+    # audited diff is no longer this iteration's diff).
+    if step_done_valid coherence --verify-tree --dir "$ITER_DIR" "$COHERENCE_OUTPUT" \
+       && grep -qE '^\*\*Verdict:\*\* COHERENCE-(PASS|WARN|FAIL)' "$COHERENCE_OUTPUT"; then
+      echo "[run-goal] Resume: coherence audit already completed for iteration $CURRENT_ITER (checkpoint + tree verified) — reusing $COHERENCE_OUTPUT."
+      record_telemetry_event "step_skipped" "$(jq -cn --arg n "$ITER_NAME" '{step:"coherence-auditor", iter_name:$n, reason:"checkpoint"}' 2>/dev/null || printf '{"step":"coherence-auditor"}')"
+    else
+    step_invalidate_from coherence "$ITER_DIR"
+    _coh_dispatched=1
     echo "[run-goal] Step 2b: coherence-auditor"
     _snapshot_sha="$(cat "$ITER_DIR/snapshot-sha" 2>/dev/null || echo "")"
     cd "$REPO_ROOT"
@@ -1292,13 +1341,20 @@ The verdict line MUST appear first and start exactly with:
       write_session_summary "AWAITING_PUMP" "$CURRENT_ITER"
       exit 0
     fi
+    fi  # end of the coherence resume-skip guard
     if [[ ! -f "$COHERENCE_OUTPUT" ]]; then
       echo "[run-goal] coherence-auditor wrote no output — recording non-blocking PASS and continuing." >&2
       printf '**Verdict:** COHERENCE-PASS\n\n(Coherence auditor produced no output; treated as a non-blocking pass.)\n' > "$COHERENCE_OUTPUT"
+      _coh_stubbed=1
     fi
     _coh_verdict=$(grep -m1 -E '^\*\*Verdict:\*\*' "$COHERENCE_OUTPUT" | sed -E 's/^\*\*Verdict:\*\*[[:space:]]*//' | awk '{print $1}') || true
     echo "[run-goal] Coherence verdict: ${_coh_verdict:-unknown}"
     record_telemetry_event "coherence_audit" "$(jq -cn --arg v "${_coh_verdict:-unknown}" '{verdict:$v}' 2>/dev/null || printf '{"verdict":"%s"}' "${_coh_verdict:-unknown}")"
+    # Checkpoint: only a genuine agent-produced audit is reusable on resume —
+    # never the non-blocking crash stub above (a re-run may produce a real one).
+    if [[ -n "$_coh_dispatched" && -z "$_coh_stubbed" && "${_coh_rc:-1}" -eq 0 ]]; then
+      step_mark_done coherence --dir "$ITER_DIR" --verdict "${_coh_verdict:-unknown}" "$COHERENCE_OUTPUT"
+    fi
   fi
 
   # 3c. Pre-evaluator deterministic artifacts (gates + token-lean context).
