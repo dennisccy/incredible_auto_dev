@@ -111,6 +111,33 @@ The framework already handles both transparently — quota exhaustion sleeps unt
 ./scripts/automation/run-goal.sh --resume --session-id my-app
 ```
 
+Resumes are cheap: step-level checkpoints (`CHAIN_STEP_CHECKPOINTS`, default on)
+skip every already-completed step whose artifacts and working tree still verify,
+so a pump stall or Ctrl-C never redoes the ~40-minute developer build.
+
+### See where each iteration's time went
+
+```bash
+python3 scripts/automation/lib/analyze_telemetry.py --wall runs/goal-session-my-app/telemetry.jsonl
+```
+
+Per-iteration wall breakdown: minutes per agent, resume-skipped steps, pump
+wait, parallel-overlap savings. Printed automatically after every iteration,
+embedded in `summary.md`, and shown as a "Timing" accordion on each iteration's
+HTML page. Token/cost telemetry is on by default for headless runs
+(`CHAIN_TELEMETRY_TOKENS`); the interactive pump backend cannot capture usage.
+
+### Try the opt-in speed experiment (guarded)
+
+```bash
+CHAIN_AGENT_EFFORT="developer=high" ./scripts/automation/run-goal.sh --resume --session-id my-app
+```
+
+Lowers the developer's reasoning effort only (judges are refused by a hardcoded
+guard). Run ≥3 baseline iterations first; the telemetry tripwire auto-reverts
+the knob if a REGRESSION verdict, journey regression, or repeated first-attempt
+review FAILs appear while it is active.
+
 ### Recover from `BUDGET_EXHAUSTED`
 
 ```bash

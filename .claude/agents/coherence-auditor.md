@@ -3,8 +3,8 @@ name: coherence-auditor
 description: Coherence auditor (goal mode). Audits each iteration's diff against the session blueprint (information architecture + data contract). Hard-fails only on objective rules — a contract value recomputed in a new code path, a contract value served from a non-canonical endpoint, or a new feature with no navigation path / a duplicate home for an existing entity. Subjective issues are advisory. Runs after the iteration's dispatch and before the goal-evaluator.
 model: claude-sonnet-5
 disallowed_tools: ["Bash(rm -rf /*)", "Bash(rm -rf /)", "Bash(git push --force origin main)", "Bash(git push --force origin master)", "Bash(git push -f origin main)", "Bash(git push -f origin master)", "Bash(git push *)", "Bash(git push)", "Bash(git push --force *)", "Bash(gh pr merge *)", "Bash(gh pr close *)", "Bash(gh release *)", "Bash(git tag *)"]
-version: 1.0.2
-last_updated: 2026-05-21
+version: 1.0.3
+last_updated: 2026-07-04
 ---
 
 # Coherence Auditor
@@ -32,9 +32,12 @@ CLAUDE.md is auto-loaded into your system prompt — do not Read it again.
 2. `.claude/skills/coherence-audit.md` — the methodology and the exact FAIL-vs-WARN rules. Follow it.
 3. The iteration spec — `docs/phases/<iter-name>.md` (its "Data-contract additions" and "Blueprint
    conformance" fields tell you what the decomposer intended).
-4. The iteration **diff**. The invocation prompt passes a snapshot SHA captured before the iteration
-   ran. Use `git diff <snapshot-sha>` (and `git status` / `git diff HEAD` for uncommitted changes) via
-   Bash to see exactly what this iteration changed. If no SHA is available, use `git diff HEAD~1`.
+4. The iteration **diff**. Read the BOUNDED diff first — `runs/goal-session-<sid>/iter-<N>/iter-diff.md`
+   (hunks capped, harness/lockfile noise excluded, truncations NAMED in its header) — then git-diff only
+   the files it truncates or that need full context. The invocation prompt passes a snapshot SHA captured
+   before the iteration ran and the exact noise-excluded `git diff <snapshot-sha>` command (plus a
+   `--stat` of the excluded paths so dependency-file changes stay visible). If neither the bounded diff
+   nor a SHA is available, use `git diff HEAD~1`.
 5. `reports/phase-<iter-name>-ui-surface-map.md` — the analyst's map of changed routes/components, **if
    it exists** (full iterations and most lean iterations). If absent, derive surfaces from the diff.
 

@@ -717,6 +717,38 @@ def _write_skipped_results(opts, reason: str) -> None:
     Path(opts.results).write_text(md, encoding="utf-8")
 
 
+def run_lint(opts) -> int:
+    """Validate golden replay scripts WITHOUT a browser (no playwright needed).
+
+    Prints one line per requested journey: `<J-XX> ok` when the golden parses
+    and validates, `<J-XX> invalid: <reason>` otherwise (a missing file counts
+    as invalid). goal-iter-lean.sh uses this to quarantine broken goldens into
+    the LLM lane BEFORE the replay partition — a broken golden used to surface
+    only as a replay SKIP that nothing re-confirmed, silently leaving that
+    journey unverified for the iteration. Always exits 0; callers decide per
+    line."""
+    scripts_dir = Path(opts.scripts_dir or ".")
+    journeys = [j.strip() for j in (opts.journeys or "").split(",") if j.strip()]
+    for jid in journeys:
+        sp = scripts_dir / f"{jid}.json"
+        if not sp.exists():
+            print(f"{jid} invalid: no golden script on file")
+            continue
+        try:
+            data = json.loads(sp.read_text(encoding="utf-8"))
+        except Exception as exc:  # noqa: BLE001
+            print(f"{jid} invalid: not valid JSON: {str(exc)[:100]}")
+            continue
+        errs = validate_script(data)
+        if errs:
+            print(f"{jid} invalid: " + "; ".join(errs)[:160])
+        elif isinstance(data, dict) and data.get("not_yet"):
+            print(f"{jid} invalid: marked not_yet")
+        else:
+            print(f"{jid} ok")
+    return 0
+
+
 def _launch_chromium(pw, headless: bool, attempts: int = 2, timeout_ms: int = 45000,
                      args: list | None = None):
     """Launch chromium with a bounded timeout and one fast retry.
@@ -1020,7 +1052,7 @@ def main(argv: list[str]) -> int:
     import argparse
     p = argparse.ArgumentParser(prog="demo_runner.py", description="Deterministic browser demo executor.")
     p.add_argument("--json", default=None, help="path to the executable demo-script JSON (record/live)")
-    p.add_argument("--mode", default="record", choices=["live", "record", "session-live", "verify"])
+    p.add_argument("--mode", default="record", choices=["live", "record", "session-live", "verify", "lint"])
     p.add_argument("--base-url", default="http://localhost:3000")
     p.add_argument("--out-dir", default=None, help="screenshot dir, e.g. reports/demo/<id>")
     p.add_argument("--results", default=None, help="demo-results.md output path")
@@ -1040,6 +1072,9 @@ def main(argv: list[str]) -> int:
     opts = p.parse_args(argv)
     live = opts.mode in ("live", "session-live")
     verify = opts.mode == "verify"
+
+    if opts.mode == "lint":
+        return run_lint(opts)   # pure validation — needs no browser/playwright
 
     if not _playwright_available():
         sys.stderr.write(_PLAYWRIGHT_HELP + "\n")

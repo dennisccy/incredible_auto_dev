@@ -125,6 +125,14 @@ An agent's claim about its own work is a hypothesis, not evidence.
 | `CHAIN_SCAN_STRICT_DEPS` | `true` → new paid-SaaS dependencies become CRITICAL (block certification); default warn | `lib/scan_diff.py` |
 | `CHAIN_SCAN_DEP_ALLOWLIST` | package names (space/comma) never classified as paid-SaaS | `lib/scan_diff.py` |
 | `CHAIN_DISABLE_EFFORT_OVERRIDE` | `true` → everyone back to `--effort max` | `lib/quota-retry.sh` |
+| `CHAIN_STEP_CHECKPOINTS` | default `true`; step-level resume markers — a stall/quota kill never redoes a completed developer/reviewer/browser-qa step | `lib/checkpoint.sh` |
+| `CHAIN_AGENT_TIMEOUTS` | default `true`; per-agent runtime caps (~2.5-3× measured typicals) instead of one flat 7200s | `lib/quota-retry.sh` |
+| `CHAIN_TIMEOUT_<AGENT>` | per-agent cap override in seconds (e.g. `CHAIN_TIMEOUT_REVIEWER=5400`); wins over yaml/table | `lib/quota-retry.sh` |
+| `CHAIN_CLAUDE_TIMEOUT_RETRIES` | default `1`; in-place retries after a headless runtime-cap kill | `lib/quota-retry.sh` |
+| `CHAIN_DISPATCH_REQUEUE_ON_TIMEOUT` | default `true`; one requeue after an interactive inflight timeout before pausing | `lib/interactive-dispatch.sh` |
+| `CHAIN_LEAN_PARALLEL_COHERENCE` | default `true`; lean iterations run the coherence audit concurrently with browser-qa | `goal-iter-lean.sh` |
+| `CHAIN_ASYNC_SHOWCASE` | default `true`; demo/summary/README/renders run in the background overlapping the next decomposer (CONTINUE/ESCALATE only; joined + committed before the next executor dispatch) | `run-goal.sh` |
+| `CHAIN_AGENT_EFFORT` | opt-in experiment, e.g. `developer=high`; **judges are refused by a hardcoded guard**; auto-reverted by the telemetry tripwire on quality movement | `lib/agent_permissions.py` |
 
 If you disable a gate/routing knob for an experiment, **re-enable it in the same session**
 and say so in your report — a silently disabled gate is the #1 way this system degrades

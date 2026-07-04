@@ -129,8 +129,8 @@ Written by `run-goal.sh` after each iteration when `--push-per-iter` is enabled.
 
 To enable: pass `--push-per-iter` (and optionally `--push-branch <name>`) to `run-goal.sh`. See [goal-mode-quickstart.md](goal-mode-quickstart.md) for the full flow.
 
-### `claude_usage` (opt-in)
-Written by `claude_with_quota_retry` after a successful Claude invocation when `CHAIN_TELEMETRY_TOKENS=true`. Captures Claude API usage from the stream-json `result` event via `lib/claude_stream_renderer.py`. Disabled by default (no behavioural change to existing pipelines).
+### `claude_usage` (default-on, headless)
+Written by `claude_with_quota_retry` after a successful Claude invocation when `CHAIN_TELEMETRY_TOKENS=true` — which is the **default** for the headless backend (`lib/quota-retry.sh`). Captures Claude API usage from the stream-json `result` event via `lib/claude_stream_renderer.py`. Set `CHAIN_TELEMETRY_TOKENS=false` to opt out. **Interactive-pump limitation:** the pump protocol carries no usage field, so sessions run through the interactive backend record no `claude_usage` events (durations and all other events are unaffected).
 
 | Field | Type | Description |
 |---|---|---|
@@ -146,11 +146,44 @@ Written by `claude_with_quota_retry` after a successful Claude invocation when `
 | `is_error` | boolean | True if the result event was an error |
 | `subtype` | string | `success` \| `error_max_turns` \| etc. |
 
-To enable: `export CHAIN_TELEMETRY_TOKENS=true`. To opt out of cache hygiene (`--exclude-dynamic-system-prompt-sections`): `export CHAIN_CLAUDE_DISABLE_CACHE_HYGIENE=true`.
+Enabled by default headless; opt out with `export CHAIN_TELEMETRY_TOKENS=false`. To opt out of cache hygiene (`--exclude-dynamic-system-prompt-sections`): `export CHAIN_CLAUDE_DISABLE_CACHE_HYGIENE=true`.
 
 Aggregate per-session and per-agent with:
 ```bash
 python3 scripts/automation/lib/analyze_telemetry.py runs/goal-session-<sid>/telemetry.jsonl
+```
+
+### Timing / experiment events
+
+| Event | Written by | Payload highlights |
+|---|---|---|
+| `step_skipped` | `goal-iter-lean.sh`, `run-goal.sh` | `{step, iter_name, reason:"checkpoint"}` — a resume reused a completed step instead of re-running it |
+| `dispatch_wait` | `lib/interactive-dispatch.sh` | `{agent, wait_seconds, run_seconds, status, rc}` — pickup-wait vs run split per interactive dispatch attempt (`ok` \| `pickup-timeout` \| `inflight-timeout` \| `inflight-timeout-requeued`) |
+| `review_verdict` | `goal-iter-lean.sh` | `{verdict, attempt, iter_name}` — reviewer outcome per attempt (feeds the tripwire) |
+| `iter_config` | `run-goal.sh` | `{key, value}` — an opt-in experiment knob (e.g. `CHAIN_AGENT_EFFORT`) was active this iteration |
+| `golden_coverage` | `goal-iter-lean.sh` | `{passing, missing_goldens, iter_name}` — PASSing journeys still lacking a replay golden |
+| `experiment_reverted` | `run-goal.sh` | `{key, value}` — the tripwire auto-reverted an experiment knob |
+
+### Wall-time report and tripwire
+
+Where do the ~2 hours of an iteration go? Per-iteration wall breakdown (per-agent
+minutes, resume-skips, pump wait, parallel-overlap savings, unattributed glue):
+
+```bash
+python3 scripts/automation/lib/analyze_telemetry.py --wall runs/goal-session-<sid>/telemetry.jsonl
+python3 scripts/automation/lib/analyze_telemetry.py --wall --iter 4 ...   # one iteration
+```
+
+`run-goal.sh` prints this automatically after every `iter_end` and embeds the
+full report in `runs/goal-session-<sid>/summary.md`; the per-iteration HTML page
+carries it as a "Timing" accordion.
+
+The experiment tripwire (exit 3 = TRIP) judges the last `--window` knob-active
+iterations; `run-goal.sh` runs it each iteration while `CHAIN_AGENT_EFFORT` is
+set and auto-reverts the knob on TRIP:
+
+```bash
+python3 scripts/automation/lib/analyze_telemetry.py --tripwire --window 3 runs/goal-session-<sid>/telemetry.jsonl
 ```
 
 ## Reading the telemetry

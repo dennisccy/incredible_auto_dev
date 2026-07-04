@@ -13,7 +13,7 @@ CLAUDE.md is auto-loaded into your system prompt — do not Read it again.
 - `docs/architecture/*.md` — existing project architecture (check consistency)
 - `.claude/project-template.md` — project-specific architecture principles
 - Changed files: read each file listed in the dev handoff
-- Git diff: `git diff HEAD` (the work under review is UNCOMMITTED at review time; a committed-range diff like HEAD~1..HEAD reviews the wrong change)
+- Git diff: the dispatch prompt gives you the exact `git diff HEAD` command with noise pathspec-excluded (lockfiles, minified/binary assets, `runs/`, `reports/`, `docs/handoffs/` — harness artifact churn, not review scope). The work under review is UNCOMMITTED at review time; a committed-range diff like HEAD~1..HEAD reviews the wrong change. Also run the prompt's `--stat` command over the excluded paths: if it lists a dependency lockfile, say WHICH one changed and review the matching `package.json`/`pyproject` edit in the main diff — never review lockfile hunks themselves.
 
 ## Output
 

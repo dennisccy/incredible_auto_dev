@@ -1040,6 +1040,12 @@ else:
 ## Telemetry
 
 See \`runs/goal-session-${SESSION_ID}/telemetry.jsonl\` for the structured event log.
+
+## Iteration timing
+
+\`\`\`
+$(python3 "$SCRIPT_DIR/lib/analyze_telemetry.py" --wall "$GOAL_SESSION_DIR_LOCAL/telemetry.jsonl" 2>/dev/null || echo "(timing report unavailable)")
+\`\`\`
 EOF
   record_telemetry_event "session_end" "$(jq -cn --arg fv "$final_verdict" --argjson ti $total_iterations --argjson wt $wall_time --argjson qp $quota_pauses '{final_verdict:$fv, total_iterations:$ti, wall_time_seconds:$wt, quota_pause_count:$qp}' 2>/dev/null || printf '{"final_verdict":"%s","total_iterations":%d}' "$final_verdict" "$total_iterations")"
   echo "[run-goal] Session summary: $SUMMARY_FILE"
@@ -1184,6 +1190,12 @@ PY
   PRIOR_DEPTH=$(python3 -c "import json; print(json.load(open('$SESSION_JSON')).get('next_depth') or 'lean')")
 
   record_telemetry_event "iter_start" "$(jq -cn --arg n "$ITER_NAME" --arg pv "$PRIOR_VERDICT" --arg pd "$PRIOR_DEPTH" --arg ss "$(cat "$ITER_DIR/snapshot-sha" 2>/dev/null || echo "")" '{iter_name:$n, prior_verdict:$pv, prior_depth:$pd, snapshot_sha:$ss}' 2>/dev/null || printf '{"iter_name":"%s"}' "$ITER_NAME")"
+
+  # Mark experiment-knob-active iterations so the --tripwire window knows which
+  # iterations to judge (opt-in speed experiments, .claude/model-orchestration.md).
+  if [[ -n "${CHAIN_AGENT_EFFORT:-}" ]]; then
+    record_telemetry_event "iter_config" "$(jq -cn --arg k "CHAIN_AGENT_EFFORT" --arg v "$CHAIN_AGENT_EFFORT" '{key:$k, value:$v}' 2>/dev/null || printf '{"key":"CHAIN_AGENT_EFFORT","value":"%s"}' "$CHAIN_AGENT_EFFORT")"
+  fi
 
   echo ""
   echo "════════════════════════════════════════════════════════════════════"
@@ -1642,6 +1654,28 @@ except Exception as e:
 ")
 
   record_telemetry_event "iter_end" "$(jq -cn --arg n "$ITER_NAME" --arg v "$VERDICT" --arg nd "$NEXT_DEPTH" --argjson dl "$DELTAS" '{iter_name:$n, verdict:$v, next_depth:$nd, journey_deltas:$dl}' 2>/dev/null || printf '{"iter_name":"%s","verdict":"%s"}' "$ITER_NAME" "$VERDICT")"
+
+  # Where did this iteration's wall time go? Human-readable per-step breakdown
+  # from the telemetry events just recorded (non-blocking, no model).
+  python3 "$SCRIPT_DIR/lib/analyze_telemetry.py" --wall --iter "$CURRENT_ITER" \
+    "$GOAL_SESSION_DIR_LOCAL/telemetry.jsonl" 2>/dev/null | sed 's/^/[run-goal] /' || true
+
+  # Experiment tripwire: while an opt-in speed knob is active, revert it the
+  # moment quality moves in the window (REGRESSION verdict, journey
+  # regressions, repeated first-attempt review FAILs). Exit 3 = TRIP; any
+  # other non-zero rc is an analyzer error and must NOT trigger a revert.
+  if [[ -n "${CHAIN_AGENT_EFFORT:-}" ]]; then
+    _trip_rc=0
+    python3 "$SCRIPT_DIR/lib/analyze_telemetry.py" --tripwire --window 3 \
+      "$GOAL_SESSION_DIR_LOCAL/telemetry.jsonl" > "$ITER_DIR/.tripwire-report" 2>/dev/null || _trip_rc=$?
+    if [[ "$_trip_rc" -eq 3 ]]; then
+      echo "[run-goal] EXPERIMENT TRIPWIRE: quality moved under CHAIN_AGENT_EFFORT='$CHAIN_AGENT_EFFORT' — reverting the knob for the rest of this run." >&2
+      sed 's/^/[run-goal]   /' "$ITER_DIR/.tripwire-report" >&2 2>/dev/null || true
+      record_telemetry_event "experiment_reverted" "$(jq -cn --arg k "CHAIN_AGENT_EFFORT" --arg v "$CHAIN_AGENT_EFFORT" '{key:$k, value:$v}' 2>/dev/null || printf '{"key":"CHAIN_AGENT_EFFORT"}')"
+      unset CHAIN_AGENT_EFFORT
+    fi
+    rm -f "$ITER_DIR/.tripwire-report" 2>/dev/null || true
+  fi
 
   echo "[run-goal] Verdict: $VERDICT (next depth: $NEXT_DEPTH)"
 

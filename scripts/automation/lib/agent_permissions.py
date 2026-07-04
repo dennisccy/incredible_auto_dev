@@ -28,6 +28,7 @@ CLI:
 """
 from __future__ import annotations
 
+import os
 import re
 import sys
 from pathlib import Path
@@ -253,14 +254,55 @@ def disallowed_for(agent: str, agents_dir: Path = DEFAULT_AGENTS_DIR) -> list[st
     return denials
 
 
+# Judges make verdict-class calls; lowering their effort to save time is the
+# one lever .claude/model-orchestration.md forbids ("lower the context you feed
+# it, not the effort"). The CHAIN_AGENT_EFFORT experiment knob below refuses
+# them by construction — the two-key GOAL_ACHIEVED confirm dispatches as
+# goal-evaluator, so it is covered too.
+JUDGE_AGENTS = frozenset({
+    "goal-evaluator", "goal-decomposer", "auditor", "reviewer", "goal-proposer",
+})
+
+
+def _experiment_effort_override(agent: str) -> str | None:
+    """Opt-in speed experiment: CHAIN_AGENT_EFFORT="developer=high[,agent=lvl]".
+
+    Applies ONLY to non-judge agents; judges are refused loudly. Pair with the
+    telemetry tripwire (analyze_telemetry.py --tripwire) — run-goal.sh reverts
+    the knob automatically when quality moves. Headless-only in effect: the
+    interactive pump path does not apply --effort.
+    """
+    raw = os.environ.get("CHAIN_AGENT_EFFORT", "").strip()
+    if not raw:
+        return None
+    for part in raw.split(","):
+        key, _, value = part.partition("=")
+        if key.strip() != agent or not value.strip():
+            continue
+        if agent in JUDGE_AGENTS:
+            print(
+                f"[agent-permissions] CHAIN_AGENT_EFFORT refused for judge "
+                f"'{agent}' — judges keep their effort (model-orchestration.md: "
+                f"trim the context fed to a judge, never its effort).",
+                file=sys.stderr,
+            )
+            return None
+        return value.strip()
+    return None
+
+
 def effort_for(agent: str) -> str:
     """Return the `--effort` flag value for the named agent.
 
     Default `EFFORT_DEFAULT` ("max") unless the agent is in the override map.
-    The CHAIN_DISABLE_EFFORT_OVERRIDE env var is honored by the calling shell
-    wrapper, not here — this function returns the policy value regardless,
-    and the caller decides whether to apply it.
+    An opt-in CHAIN_AGENT_EFFORT experiment override wins for non-judge agents
+    only. The CHAIN_DISABLE_EFFORT_OVERRIDE env var is honored by the calling
+    shell wrapper, not here — this function returns the policy value
+    regardless, and the caller decides whether to apply it.
     """
+    experiment = _experiment_effort_override(agent)
+    if experiment:
+        return experiment
     return EFFORT_OVERRIDES.get(agent, EFFORT_DEFAULT)
 
 
@@ -561,6 +603,22 @@ def _self_test() -> int:
             encoding="utf-8",
         )
         assert timeout_for("developer", neutral_dir=neutral) == 7200, "bad yaml value falls back to table"
+
+        # CHAIN_AGENT_EFFORT experiment knob — applies to non-judges only.
+        _prev_exp = os.environ.get("CHAIN_AGENT_EFFORT")
+        try:
+            os.environ["CHAIN_AGENT_EFFORT"] = "developer=high,reviewer=low,goal-evaluator=low"
+            assert effort_for("developer") == "high", "experiment knob applies to developer"
+            assert effort_for("reviewer") == "max", "judge guard: reviewer keeps its effort"
+            assert effort_for("goal-evaluator") == "max", "judge guard: evaluator keeps its effort"
+            assert effort_for("browser-qa-agent") == "max", "agents not named keep policy"
+            os.environ["CHAIN_AGENT_EFFORT"] = "malformed-no-equals"
+            assert effort_for("developer") == "max", "malformed knob value is ignored"
+        finally:
+            if _prev_exp is None:
+                os.environ.pop("CHAIN_AGENT_EFFORT", None)
+            else:
+                os.environ["CHAIN_AGENT_EFFORT"] = _prev_exp
 
         # Effort overrides — defaults to "max" except for the listed lighter agents.
         assert effort_for("developer") == "max", "developer must stay at --effort max"

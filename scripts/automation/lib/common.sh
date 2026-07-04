@@ -355,6 +355,38 @@ ensure_phase_ports() {
   fi
 }
 
+# ── Reviewer diff hygiene ─────────────────────────────────────────────────────
+# Pathspec excludes for the diffs REVIEWERS read: machine-generated lockfiles,
+# minified bundles, sourcemaps, binary/image assets, and harness artifact dirs
+# (push-per-iter makes runs/** tracked in consumer repos, so telemetry/report
+# churn otherwise lands in every `git diff HEAD` the reviewer runs). These trim
+# reviewer CONTEXT only — the deterministic scan_diff.py secrets/deps scan
+# (lib/goal-gates.sh) always runs on the FULL diff, package.json stays in the
+# main diff, and the hint's second command keeps dependency-file awareness.
+REVIEW_DIFF_EXCLUDE_PATTERNS=(
+  '*package-lock.json' '*yarn.lock' '*pnpm-lock.yaml' '*poetry.lock' '*uv.lock' '*Cargo.lock'
+  '*.min.js' '*.min.css' '*.map'
+  'runs/*' 'reports/*' 'docs/handoffs/*'
+  '*.png' '*.jpg' '*.jpeg' '*.gif' '*.svg' '*.ico' '*.pdf' '*.woff' '*.woff2' '*.ttf'
+)
+
+# Emit the two-command diff instruction reviewer-class agents embed in their
+# prompts: the noise-excluded diff to review, plus a --stat of ONLY the
+# excluded paths so the reviewer still KNOWS when dependency files changed.
+#   $1 — git ref to diff against (default HEAD)
+review_diff_hint() {
+  local ref="${1:-HEAD}"
+  local ex="" only="" p
+  for p in "${REVIEW_DIFF_EXCLUDE_PATTERNS[@]}"; do
+    ex+=" ':(exclude)$p'"
+    only+=" '$p'"
+  done
+  printf 'Run: git diff %s -- .%s\n' "$ref" "$ex"
+  printf '  (this is the diff to review — lockfile/minified/binary/harness-artifact noise is pre-excluded)\n'
+  printf 'Then run: git diff %s --stat --%s\n' "$ref" "$only"
+  printf '  (stat of ONLY the excluded paths: if it lists dependency lockfiles, note WHICH changed and review the matching package.json/pyproject edit in the main diff; runs/ and reports/ churn is harness bookkeeping, outside review scope)\n'
+}
+
 # Dispatch the coherence-auditor agent (goal mode). ONE shared implementation
 # for both call sites so the prompt cannot drift: the parallel fork inside
 # goal-iter-lean.sh (runs concurrently with browser-qa — the audit needs only
@@ -381,7 +413,12 @@ Agent instructions: .claude/agents/coherence-auditor.md  <-- read this first
 Methodology: .claude/skills/coherence-audit.md
 (CLAUDE.md is already in your system prompt — do not Read it again.)
 
-This iteration's changes: run \`git diff ${_snap}\` (and \`git status\` / \`git diff HEAD\` for uncommitted changes). If the snapshot SHA is empty, fall back to \`git diff HEAD~1\`.
+This iteration's changes — read in this order (judge-sanctioned context trim:
+lower the context fed to you, never your effort):
+1. Bounded diff (read FIRST if it exists): $(dirname "$_out")/iter-diff.md — hunks capped, noise excluded, truncations are NAMED in its header so you can git-diff just those files.
+2. For anything it truncates — or if the file is absent —
+$(review_diff_hint "${_snap:-HEAD~1}")
+(Also \`git status\` for uncommitted changes. If the snapshot SHA is empty, diff against HEAD~1.)
 UI surface map (read if it exists): reports/phase-${_name}-ui-surface-map.md
 
 Apply the TOKEN AND QUESTIONING POLICY from .claude/core.md strictly.

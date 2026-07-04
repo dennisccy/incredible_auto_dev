@@ -230,6 +230,242 @@ def render_json(sessions: dict[str, SessionSummary]) -> str:
     return json.dumps(out, indent=2, default=str)
 
 
+# ── wall-time / per-iteration breakdown (--wall) ─────────────────────────────
+#
+# Where do the ~2 hours of a goal-mode iteration actually go? This mode walks
+# the event stream in file order (telemetry.jsonl is append-only, so file order
+# is chronological), opens an iteration record at each `iter_start`, attributes
+# agent_invocation_end / step_skipped / dispatch_wait / quota_pause_end events
+# to the open iteration, and closes it at `iter_end`. Tolerates ragged real
+# data (unmatched starts from crashed attempts stay marked incomplete).
+
+
+def _parse_ts(ts: Any) -> float | None:
+    if not isinstance(ts, str) or not ts:
+        return None
+    try:
+        import datetime as _dt
+
+        return _dt.datetime.fromisoformat(ts.replace("Z", "+00:00")).timestamp()
+    except Exception:
+        return None
+
+
+def _new_iter_record(iter_name: str, ts: float | None) -> dict[str, Any]:
+    return {
+        "iter_name": iter_name,
+        "start_ts": ts,
+        "end_ts": None,
+        "wall_seconds": None,
+        "verdict": None,
+        "depth": None,
+        "complete": False,
+        "agents": {},          # name → {seconds, calls, retries, failures}
+        "skipped_steps": [],
+        "pump_wait_seconds": 0,
+        "quota_sleep_seconds": 0,
+        "review_verdicts": [], # [{verdict, attempt}]
+        "knob_active": False,  # iter_config event seen (experiment running)
+        "journey_deltas": {},
+    }
+
+
+def build_wall_report(paths: list[str]) -> dict[str, dict[str, Any]]:
+    sessions: dict[str, dict[str, Any]] = {}
+
+    def _sess(sid: str) -> dict[str, Any]:
+        return sessions.setdefault(sid, {
+            "iterations": [], "open": None, "halts": [],
+            "paused_seconds": 0, "last_halt_ts": None,
+        })
+
+    for path in paths:
+        if not os.path.isfile(path):
+            print(f"[analyze-telemetry] skip: {path} not found", file=sys.stderr)
+            continue
+        for event in _iter_lines(path):
+            kind = event.get("event")
+            sid = event.get("session_id") or "unknown"
+            s = _sess(sid)
+            ts = _parse_ts(event.get("ts"))
+            cur = s["open"]
+            if kind == "iter_start":
+                if cur is not None:
+                    s["iterations"].append(cur)  # ragged: prior attempt never ended
+                s["open"] = _new_iter_record(event.get("iter_name") or "?", ts)
+            elif kind == "iter_dispatch" and cur is not None:
+                d = event.get("depth")
+                if d:
+                    cur["depth"] = d
+            elif kind == "agent_invocation_end" and cur is not None:
+                a = event.get("agent") or "unattributed"
+                row = cur["agents"].setdefault(
+                    a, {"seconds": 0, "calls": 0, "retries": 0, "failures": 0})
+                row["seconds"] += int(event.get("duration_seconds") or 0)
+                row["calls"] += 1
+                row["retries"] += int(event.get("retries") or 0)
+                if int(event.get("exit_status") or 0) != 0:
+                    row["failures"] += 1
+            elif kind == "step_skipped" and cur is not None:
+                cur["skipped_steps"].append(event.get("step") or "?")
+            elif kind == "dispatch_wait" and cur is not None:
+                cur["pump_wait_seconds"] += int(event.get("wait_seconds") or 0)
+            elif kind == "quota_pause_end" and cur is not None:
+                cur["quota_sleep_seconds"] += int(event.get("sleep_seconds") or 0)
+            elif kind == "review_verdict" and cur is not None:
+                cur["review_verdicts"].append({
+                    "verdict": event.get("verdict") or "?",
+                    "attempt": int(event.get("attempt") or 0)})
+            elif kind == "iter_config" and cur is not None:
+                cur["knob_active"] = True
+            elif kind == "iter_end":
+                if cur is not None:
+                    cur["end_ts"] = ts
+                    cur["verdict"] = event.get("verdict")
+                    nd = event.get("journey_deltas")
+                    if isinstance(nd, dict):
+                        cur["journey_deltas"] = nd
+                    if cur["start_ts"] is not None and ts is not None:
+                        cur["wall_seconds"] = int(ts - cur["start_ts"])
+                    cur["complete"] = True
+                    s["iterations"].append(cur)
+                    s["open"] = None
+            elif kind == "halt":
+                s["halts"].append(event.get("reason") or "?")
+                if event.get("reason") == "AWAITING_PUMP":
+                    s["last_halt_ts"] = ts
+            elif kind == "session_start":
+                if s["last_halt_ts"] is not None and ts is not None:
+                    s["paused_seconds"] += max(0, int(ts - s["last_halt_ts"]))
+                    s["last_halt_ts"] = None
+
+    for s in sessions.values():
+        if s["open"] is not None:
+            s["iterations"].append(s["open"])
+            s["open"] = None
+    return sessions
+
+
+def _iter_index(iter_name: str) -> int | None:
+    tail = iter_name.rsplit("-", 1)[-1]
+    return int(tail) if tail.isdigit() else None
+
+
+def _fmt_m(seconds: Any) -> str:
+    if seconds is None:
+        return "?"
+    return f"{seconds / 60:.1f}m"
+
+
+def render_wall_text(report: dict[str, dict[str, Any]],
+                     iter_filter: int | None = None) -> str:
+    if not report:
+        return "No iteration events found.\n"
+    out: list[str] = []
+    for sid, s in report.items():
+        iters = s["iterations"]
+        if iter_filter is not None:
+            iters = [i for i in iters if _iter_index(i["iter_name"]) == iter_filter]
+        out.append(f"== Wall-time report: session {sid}")
+        for rec in iters:
+            wall = rec["wall_seconds"]
+            flag = "" if rec["complete"] else "  (incomplete/interrupted attempt)"
+            out.append(
+                f"  {rec['iter_name']}  depth={rec['depth'] or '?'}  "
+                f"verdict={rec['verdict'] or '?'}  wall={_fmt_m(wall)}{flag}")
+            agent_total = 0
+            for a, row in sorted(rec["agents"].items(),
+                                 key=lambda kv: -kv[1]["seconds"]):
+                agent_total += row["seconds"]
+                extra = ""
+                if row["failures"]:
+                    extra += f"  failures={row['failures']}"
+                if row["retries"]:
+                    extra += f"  retries={row['retries']}"
+                out.append(f"      {a:<24s} {_fmt_m(row['seconds']):>8s}  "
+                           f"calls={row['calls']}{extra}")
+            if rec["skipped_steps"]:
+                out.append(f"      (resume-skipped: {', '.join(rec['skipped_steps'])})")
+            if rec["pump_wait_seconds"]:
+                out.append(f"      pump-wait              {_fmt_m(rec['pump_wait_seconds']):>8s}")
+            if rec["quota_sleep_seconds"]:
+                out.append(f"      quota-pauses           {_fmt_m(rec['quota_sleep_seconds']):>8s}")
+            if wall is not None:
+                if agent_total > wall:
+                    out.append(f"      overlap saved          {_fmt_m(agent_total - wall):>8s}  (parallel steps)")
+                else:
+                    out.append(f"      unattributed (glue)    {_fmt_m(wall - agent_total):>8s}")
+        completed = [i for i in s["iterations"] if i["complete"] and i["wall_seconds"]]
+        if completed and iter_filter is None:
+            mean = sum(i["wall_seconds"] for i in completed) / len(completed)
+            out.append(f"  session: {len(completed)} completed iteration(s), "
+                       f"mean wall {_fmt_m(mean)}")
+            totals: dict[str, int] = {}
+            for i in s["iterations"]:
+                for a, row in i["agents"].items():
+                    totals[a] = totals.get(a, 0) + row["seconds"]
+            for a, secs in sorted(totals.items(), key=lambda kv: -kv[1]):
+                out.append(f"      total {a:<24s} {_fmt_m(secs):>8s}")
+            if s["paused_seconds"]:
+                out.append(f"      total AWAITING_PUMP paused gaps: {_fmt_m(s['paused_seconds'])}")
+            if s["halts"]:
+                out.append(f"      halts: {', '.join(s['halts'])}")
+        out.append("")
+    return "\n".join(out)
+
+
+def render_wall_json(report: dict[str, dict[str, Any]],
+                     iter_filter: int | None = None) -> str:
+    out: dict[str, Any] = {}
+    for sid, s in report.items():
+        iters = s["iterations"]
+        if iter_filter is not None:
+            iters = [i for i in iters if _iter_index(i["iter_name"]) == iter_filter]
+        out[sid] = {
+            "iterations": iters,
+            "halts": s["halts"],
+            "awaiting_pump_paused_seconds": s["paused_seconds"],
+        }
+    return json.dumps(out, indent=2, default=str)
+
+
+# ── experiment tripwire (--tripwire) ─────────────────────────────────────────
+#
+# Guards opt-in speed experiments (e.g. CHAIN_AGENT_EFFORT=developer=high).
+# Looks at the last --window knob-active completed iterations and TRIPs when
+# quality moved: any REGRESSION verdict, any journey regression count > 0, or
+# first-attempt review FAILs in ≥2 of the window. Exit 3 on TRIP so shell
+# callers can auto-revert the knob.
+
+
+def evaluate_tripwire(report: dict[str, dict[str, Any]], window: int = 3
+                      ) -> tuple[bool, list[str]]:
+    reasons: list[str] = []
+    tripped = False
+    for sid, s in report.items():
+        active = [i for i in s["iterations"] if i["complete"] and i["knob_active"]]
+        recent = active[-window:]
+        if not recent:
+            continue
+        fail_iters = 0
+        for rec in recent:
+            if rec["verdict"] == "REGRESSION":
+                tripped = True
+                reasons.append(f"{sid}/{rec['iter_name']}: REGRESSION verdict")
+            if int((rec["journey_deltas"] or {}).get("regressed") or 0) > 0:
+                tripped = True
+                reasons.append(f"{sid}/{rec['iter_name']}: journey regression recorded")
+            if any(rv["verdict"] == "FAIL" and rv["attempt"] == 1
+                   for rv in rec["review_verdicts"]):
+                fail_iters += 1
+        if fail_iters >= 2:
+            tripped = True
+            reasons.append(
+                f"{sid}: first-attempt review FAIL in {fail_iters}/{len(recent)} "
+                f"knob-active iterations")
+    return tripped, reasons
+
+
 # ── self-test ────────────────────────────────────────────────────────────────
 
 _FIXTURE = [
@@ -283,6 +519,48 @@ _FIXTURE = [
 ]
 
 
+# Two iterations of a goal session: iter-1 is clean (agents + a resume-skip +
+# pump wait, parallel overlap), iter-2 regresses under an active experiment
+# knob — exercises both --wall attribution and the --tripwire verdict. An
+# unmatched iter_start (crashed attempt) checks ragged-data tolerance.
+_WALL_FIXTURE = [
+    {"event": "session_start", "session_id": "w-1", "ts": "2026-07-01T10:00:00Z"},
+    {"event": "iter_start", "session_id": "w-1", "iter_name": "goal-w-iter-1",
+     "ts": "2026-07-01T10:00:00Z"},
+    {"event": "iter_dispatch", "session_id": "w-1", "depth": "lean",
+     "ts": "2026-07-01T10:08:00Z"},
+    {"event": "agent_invocation_end", "session_id": "w-1", "agent": "goal-decomposer",
+     "exit_status": 0, "duration_seconds": 480, "retries": 0, "ts": "2026-07-01T10:08:00Z"},
+    {"event": "agent_invocation_end", "session_id": "w-1", "agent": "developer",
+     "exit_status": 0, "duration_seconds": 2400, "retries": 0, "ts": "2026-07-01T10:48:00Z"},
+    {"event": "step_skipped", "session_id": "w-1", "step": "reviewer",
+     "iter_name": "goal-w-iter-1", "ts": "2026-07-01T10:48:01Z"},
+    {"event": "dispatch_wait", "session_id": "w-1", "agent": "browser-qa-agent",
+     "wait_seconds": 120, "run_seconds": 1100, "status": "ok", "ts": "2026-07-01T11:10:00Z"},
+    {"event": "agent_invocation_end", "session_id": "w-1", "agent": "browser-qa-agent",
+     "exit_status": 0, "duration_seconds": 1220, "retries": 0, "ts": "2026-07-01T11:10:00Z"},
+    {"event": "agent_invocation_end", "session_id": "w-1", "agent": "coherence-auditor",
+     "exit_status": 0, "duration_seconds": 240, "retries": 0, "ts": "2026-07-01T11:10:05Z"},
+    {"event": "agent_invocation_end", "session_id": "w-1", "agent": "goal-evaluator",
+     "exit_status": 0, "duration_seconds": 900, "retries": 0, "ts": "2026-07-01T11:25:10Z"},
+    {"event": "iter_end", "session_id": "w-1", "iter_name": "goal-w-iter-1",
+     "verdict": "CONTINUE", "journey_deltas": {"regressed": 0},
+     "ts": "2026-07-01T11:26:00Z"},
+    {"event": "iter_start", "session_id": "w-1", "iter_name": "goal-w-iter-2",
+     "ts": "2026-07-01T11:26:30Z"},
+    {"event": "iter_config", "session_id": "w-1", "key": "CHAIN_AGENT_EFFORT",
+     "value": "developer=high", "ts": "2026-07-01T11:26:31Z"},
+    {"event": "review_verdict", "session_id": "w-1", "verdict": "FAIL",
+     "attempt": 1, "iter_name": "goal-w-iter-2", "ts": "2026-07-01T12:00:00Z"},
+    {"event": "iter_end", "session_id": "w-1", "iter_name": "goal-w-iter-2",
+     "verdict": "REGRESSION", "journey_deltas": {"regressed": 1},
+     "ts": "2026-07-01T12:30:00Z"},
+    # crashed attempt: an iter_start that never ends
+    {"event": "iter_start", "session_id": "w-1", "iter_name": "goal-w-iter-3",
+     "ts": "2026-07-01T12:31:00Z"},
+]
+
+
 def _self_test() -> int:
     with tempfile.TemporaryDirectory() as tmp:
         path = Path(tmp) / "telemetry.jsonl"
@@ -329,6 +607,66 @@ def _self_test() -> int:
             return 1
         json_out = render_json(sessions)
         json.loads(json_out)  # must parse
+
+        # ── --wall / --tripwire fixture ──────────────────────────────────────
+        wpath = Path(tmp) / "wall-telemetry.jsonl"
+        wpath.write_text(
+            "\n".join(json.dumps(e) for e in _WALL_FIXTURE) + "\n",
+            encoding="utf-8",
+        )
+        report = build_wall_report([str(wpath)])
+        if "w-1" not in report:
+            print("FAIL: wall session w-1 missing", file=sys.stderr)
+            return 1
+        iters = report["w-1"]["iterations"]
+        if len(iters) != 3:
+            print(f"FAIL: expected 3 iteration records (incl. crashed attempt), got {len(iters)}", file=sys.stderr)
+            return 1
+        it1 = iters[0]
+        if it1["wall_seconds"] != 5160:  # 10:00:00 → 11:26:00
+            print(f"FAIL: iter-1 wall {it1['wall_seconds']} != 5160", file=sys.stderr)
+            return 1
+        if it1["agents"]["developer"]["seconds"] != 2400:
+            print("FAIL: developer seconds attribution", file=sys.stderr)
+            return 1
+        if it1["skipped_steps"] != ["reviewer"]:
+            print(f"FAIL: skipped steps {it1['skipped_steps']}", file=sys.stderr)
+            return 1
+        if it1["pump_wait_seconds"] != 120:
+            print("FAIL: pump wait attribution", file=sys.stderr)
+            return 1
+        if it1["depth"] != "lean" or it1["verdict"] != "CONTINUE" or not it1["complete"]:
+            print("FAIL: iter-1 metadata", file=sys.stderr)
+            return 1
+        if iters[2]["complete"]:
+            print("FAIL: crashed attempt marked complete", file=sys.stderr)
+            return 1
+        text = render_wall_text(report)
+        for needle in ("goal-w-iter-1", "developer", "resume-skipped: reviewer",
+                       "pump-wait", "incomplete/interrupted"):
+            if needle not in text:
+                print(f"FAIL: wall render missing '{needle}'", file=sys.stderr)
+                return 1
+        only2 = render_wall_text(report, iter_filter=2)
+        if "goal-w-iter-2" not in only2 or "goal-w-iter-1" in only2:
+            print("FAIL: --iter filter", file=sys.stderr)
+            return 1
+        json.loads(render_wall_json(report))  # must parse
+        tripped, reasons = evaluate_tripwire(report, window=3)
+        if not tripped:
+            print("FAIL: tripwire should TRIP on REGRESSION + regressed>0", file=sys.stderr)
+            return 1
+        if not any("REGRESSION" in r for r in reasons):
+            print(f"FAIL: tripwire reasons: {reasons}", file=sys.stderr)
+            return 1
+        # Without the knob-active iteration, the tripwire must stay quiet.
+        quiet = [e for e in _WALL_FIXTURE if e["event"] != "iter_config"]
+        qpath = Path(tmp) / "quiet.jsonl"
+        qpath.write_text("\n".join(json.dumps(e) for e in quiet) + "\n", encoding="utf-8")
+        tripped_q, _ = evaluate_tripwire(build_wall_report([str(qpath)]), window=3)
+        if tripped_q:
+            print("FAIL: tripwire fired with no knob-active iterations", file=sys.stderr)
+            return 1
     print("self-test passed")
     return 0
 
@@ -369,6 +707,32 @@ def main() -> int:
         ),
     )
     parser.add_argument(
+        "--wall",
+        action="store_true",
+        help="per-iteration wall-time breakdown (where the ~2h goes) instead of token usage",
+    )
+    parser.add_argument(
+        "--iter",
+        type=int,
+        default=None,
+        metavar="N",
+        help="with --wall: only the iteration with this index",
+    )
+    parser.add_argument(
+        "--tripwire",
+        action="store_true",
+        help=(
+            "evaluate the speed-experiment quality tripwire over the last "
+            "--window knob-active iterations; exit 3 when tripped"
+        ),
+    )
+    parser.add_argument(
+        "--window",
+        type=int,
+        default=3,
+        help="tripwire window (default 3 knob-active completed iterations)",
+    )
+    parser.add_argument(
         "--self-test",
         action="store_true",
         help="run built-in fixture self-test and exit",
@@ -379,6 +743,23 @@ def main() -> int:
         return _self_test()
     if not args.paths:
         parser.error("provide at least one path, or --self-test")
+
+    if args.wall or args.tripwire:
+        report = build_wall_report(args.paths)
+        if args.tripwire:
+            tripped, reasons = evaluate_tripwire(report, window=args.window)
+            if tripped:
+                print("TRIPWIRE: TRIP")
+                for r in reasons:
+                    print(f"  - {r}")
+                return 3
+            print("TRIPWIRE: OK (no quality movement in the window)")
+            return 0
+        if args.json:
+            print(render_wall_json(report, iter_filter=args.iter))
+        else:
+            print(render_wall_text(report, iter_filter=args.iter))
+        return 0
 
     def _aggregate_now() -> dict[str, SessionSummary]:
         if args.source == "trace":

@@ -96,6 +96,10 @@ class IterationData:
     # SKIPPED). Surfaced verbatim so a skip says *which* case it was —
     # backend-only vs app-unreachable — instead of an ambiguous either/or.
     demo_reason: str = ""
+    # Per-step wall-time breakdown (goal mode; from telemetry.jsonl via
+    # analyze_telemetry --wall). Soft-loaded: empty string when telemetry is
+    # absent, and the page renders exactly as before.
+    timing_text: str = ""
 
 
 @dataclass
@@ -370,6 +374,24 @@ def load_iteration(phase_id: str, repo_root: Path) -> IterationData:
                 step["_screenshot_path"] = shot_path if shot_path.exists() else None
             else:
                 step["_screenshot_path"] = None
+
+    # Per-step timing (goal mode) — where this iteration's wall time went,
+    # from telemetry events. Soft-loaded; any failure leaves the page unchanged.
+    if data.is_goal_iter and data.session_id and data.iter_num is not None:
+        tele = repo_root / "runs" / f"goal-session-{data.session_id}" / "telemetry.jsonl"
+        if tele.exists():
+            try:
+                try:
+                    import analyze_telemetry as _at
+                except ImportError:
+                    import sys as _sys
+                    _sys.path.insert(0, str(Path(__file__).resolve().parent))
+                    import analyze_telemetry as _at
+                report = _at.build_wall_report([str(tele)])
+                data.timing_text = _at.render_wall_text(
+                    report, iter_filter=data.iter_num).strip()
+            except Exception:
+                data.timing_text = ""
 
     return data
 
@@ -1140,6 +1162,7 @@ def render_html_iteration(data: IterationData) -> str:
         parts.append(_render_direction_trend(data))
         parts.append(_render_quick_verify(data))
         parts.append(_render_artifacts(data))
+        parts.append(_render_timing(data))
     parts.append(_render_footer(data))
     parts.append("</div></body></html>")
     return "\n".join(p for p in parts if p)
@@ -1465,6 +1488,15 @@ def _render_artifacts(data: IterationData) -> str:
     return (
         f"<details><summary>Artifacts</summary>"
         f"<div class='accordion-body'>{table}</div></details>"
+    )
+
+
+def _render_timing(data: IterationData) -> str:
+    if not data.timing_text:
+        return ""
+    return (
+        f"<details><summary>Timing — where this iteration's wall time went</summary>"
+        f"<div class='accordion-body'><pre>{escape(data.timing_text)}</pre></div></details>"
     )
 
 

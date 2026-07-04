@@ -155,7 +155,7 @@ Project template: .claude/project-template.md
 Agent instructions: .claude/agents/reviewer.md  <-- read this first
 (CLAUDE.md is already in your system prompt — do not Read it again.)
 
-Run: git diff HEAD to see what changed.
+$(review_diff_hint HEAD)
 
 Apply the TOKEN AND QUESTIONING POLICY from .claude/core.md strictly.
 
@@ -200,6 +200,9 @@ else
   _rev_rc=0
   run_reviewer || _rev_rc=$?
   _pause_if_transport "$_rev_rc" "reviewer"
+  if _review_parses; then
+    record_telemetry_event "review_verdict" "$(jq -cn --arg v "$(_review_verdict)" --argjson a 1 --arg n "$ITER_NAME" '{verdict:$v, attempt:$a, iter_name:$n}' 2>/dev/null || printf '{"verdict":"%s","attempt":1}' "$(_review_verdict)")"
+  fi
   if [[ "$_rev_rc" -eq 0 ]] && _review_parses; then
     step_mark_done review-1 --dir "$ITER_DIR" --verdict "$(_review_verdict)" "$REVIEW_REPORT"
   fi
@@ -232,6 +235,9 @@ Review report path: $REVIEW_REPORT
     _rev_rc=0
     run_reviewer || _rev_rc=$?
     _pause_if_transport "$_rev_rc" "reviewer (fix-mode)"
+    if _review_parses; then
+      record_telemetry_event "review_verdict" "$(jq -cn --arg v "$(_review_verdict)" --argjson a 2 --arg n "$ITER_NAME" '{verdict:$v, attempt:$a, iter_name:$n}' 2>/dev/null || printf '{"verdict":"%s","attempt":2}' "$(_review_verdict)")"
+    fi
     if [[ "$_rev_rc" -eq 0 ]] && _review_parses; then
       step_mark_done review-2 --dir "$ITER_DIR" --verdict "$(_review_verdict)" "$REVIEW_REPORT"
     fi
@@ -263,6 +269,14 @@ if [[ "${CHAIN_LEAN_PARALLEL_COHERENCE:-true}" == "true" && -n "$ITER_DIR" \
   else
     step_invalidate_from coherence "$ITER_DIR"
     rm -f "$_COH_RC_FILE"
+    # Coherence-scoped bounded diff (judge context trim): the source tree is
+    # final once review settles, so build iter-diff.md NOW for the auditor to
+    # read first. The evaluator's own scan/iter-diff artifacts are still built
+    # at their original post-browser-qa point in run-goal.sh (overwriting this
+    # file), so the evaluator's inputs are byte-identical to before.
+    if declare -F goal_gate_build_diff_artifacts >/dev/null 2>&1 || source "$SCRIPT_DIR/lib/goal-gates.sh" 2>/dev/null; then
+      goal_gate_build_diff_artifacts "$ITER_DIR" "$(cat "$ITER_DIR/snapshot-sha" 2>/dev/null || echo "")" "$REPO_ROOT" 2>/dev/null || true
+    fi
     echo "[goal-iter-lean] Forking coherence-auditor to run concurrently with browser-qa..."
     (
       _rc=0
@@ -449,10 +463,30 @@ Then STOP." || _rc=$?
   return $_rc
 }
 
-# Partition Required-still-passing into replay (golden script on file) vs LLM.
+# Partition Required-still-passing into replay (LINTABLE golden on file) vs LLM.
+# A golden that fails validation is quarantined (renamed *.json.invalid) and its
+# journey routed to the LLM lane — previously an invalid golden produced a
+# replay SKIP that nothing re-confirmed (silently unverified journey). A lint
+# crash (no output) conservatively keeps the old file-exists behavior: the
+# verify runner re-validates at replay time anyway.
+_lint_out=""
+if [[ -n "${REQUIRED_JOURNEYS// /}" ]]; then
+  _lint_out="$(python3 "$DEMO_RUNNER" --mode lint --scripts-dir "$JOURNEY_SCRIPTS_DIR" \
+    --journeys "$(echo "$REQUIRED_JOURNEYS" | tr ' ' ',' | sed 's/^,*//;s/,*$//')" 2>/dev/null || true)"
+fi
 R_REPLAY=""; R_LLM=""
 for _j in $REQUIRED_JOURNEYS; do
-  if [[ -f "$JOURNEY_SCRIPTS_DIR/$_j.json" ]]; then R_REPLAY+="$_j "; else R_LLM+="$_j "; fi
+  if [[ -f "$JOURNEY_SCRIPTS_DIR/$_j.json" ]]; then
+    if printf '%s\n' "$_lint_out" | grep -q "^$_j invalid"; then
+      echo "[goal-iter-lean] Golden for $_j failed lint — quarantining ($_j.json.invalid) and routing to the LLM lane: $(printf '%s\n' "$_lint_out" | grep -m1 "^$_j invalid" | cut -d' ' -f2-)"
+      mv -f "$JOURNEY_SCRIPTS_DIR/$_j.json" "$JOURNEY_SCRIPTS_DIR/$_j.json.invalid" 2>/dev/null || true
+      R_LLM+="$_j "
+    else
+      R_REPLAY+="$_j "
+    fi
+  else
+    R_LLM+="$_j "
+  fi
 done
 
 _use_replay="no"
@@ -518,6 +552,21 @@ if [[ ! -f "$UI_TEST_RESULTS" && "$_bqa_rc" -ne "${QUOTA_EXHAUSTED_EXIT_CODE:-75
   write_failed_artifact_stub "$ITER_NAME" "ui-test-results" \
     "goal-iter-lean.sh browser-qa produced no results file (exit $_bqa_rc). The evaluator will likely emit ESCALATE for the next iteration."
 fi
+
+# Golden coverage: every PASSing journey should now have a lintable golden so
+# the replay lane keeps growing (browser-qa LLM time decays iteration over
+# iteration). A gap is loud but non-gating — those journeys simply return to
+# the LLM lane next iteration.
+_pass_j="$(grep -E '^\| UT-J-[0-9]+ ' "$UI_TEST_RESULTS" 2>/dev/null | grep -F '| PASS |' | grep -oE 'J-[0-9]+' | sort -u | tr '\n' ' ')"
+_n_pass=0; _missing_golden=""
+for _j in $_pass_j; do
+  _n_pass=$((_n_pass + 1))
+  [[ -f "$JOURNEY_SCRIPTS_DIR/$_j.json" ]] || _missing_golden+="$_j "
+done
+if [[ -n "${_missing_golden// /}" ]]; then
+  echo "[goal-iter-lean] Golden coverage gap: PASSing journey(s) without a replay script: ${_missing_golden}— the browser-qa agent should write a golden per PASS (they fall back to the slower LLM lane next iteration)."
+fi
+record_telemetry_event "golden_coverage" "$(jq -cn --argjson p "$_n_pass" --arg m "${_missing_golden% }" --arg n "$ITER_NAME" '{passing:$p, missing_goldens:$m, iter_name:$n}' 2>/dev/null || printf '{"passing":%d,"missing_goldens":"%s"}' "$_n_pass" "${_missing_golden% }")"
 
 # Checkpoint: reusable on resume only with a real PASS/FAIL verdict (never a
 # SKIPPED stub) and the journey signature this run actually covered.

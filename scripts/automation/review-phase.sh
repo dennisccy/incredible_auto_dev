@@ -35,7 +35,7 @@ Agent instructions: .claude/agents/reviewer.md  <-- read this first
 (CLAUDE.md is already in your system prompt — do not Read it again.)
 
 Read project-template.md, the phase spec, the dev handoff, and each changed file listed in the handoff.
-Run: git diff HEAD to see what changed.
+$(review_diff_hint HEAD)
 
 Apply the TOKEN AND QUESTIONING POLICY from .claude/core.md strictly.
 

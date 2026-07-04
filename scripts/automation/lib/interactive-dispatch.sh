@@ -66,6 +66,34 @@ if [[ -z "${_CHAIN_INFLIGHT_EXPLICIT+x}" ]]; then
 fi
 : "${CHAIN_DISPATCH_INFLIGHT_TIMEOUT:=${CHAIN_CLAUDE_MAX_RUNTIME_SECONDS:-7200}}"
 
+# Telemetry: one `dispatch_wait` event per dispatch attempt outcome, splitting
+# the invocation into pickup-wait vs run time — this is what makes pump-stall
+# cost measurable (analyze_telemetry.py --wall). Uses the caller's dynamically
+# scoped locals (agent, _dispatch_start, _claim_epoch). No-op when telemetry
+# isn't sourced (phase mode / standalone self-test).
+#   $1 status (ok | pickup-timeout | inflight-timeout | inflight-timeout-requeued)
+#   $2 rc
+_interactive_dispatch_wait_event() {
+  declare -F record_telemetry_event >/dev/null 2>&1 || return 0
+  local _status="$1" _rc="${2:-}"
+  local _now2 _wait _run
+  _now2="$(date +%s)"
+  if [[ -n "${_claim_epoch:-}" ]]; then
+    _wait=$(( _claim_epoch - _dispatch_start ))
+    _run=$(( _now2 - _claim_epoch ))
+  else
+    _wait=$(( _now2 - _dispatch_start ))
+    _run=0
+  fi
+  [[ "$_wait" -lt 0 ]] && _wait=0
+  [[ "$_run" -lt 0 ]] && _run=0
+  record_telemetry_event "dispatch_wait" "$(jq -cn --arg a "${agent:-unattributed}" --arg s "$_status" \
+    --argjson w "$_wait" --argjson r "$_run" --arg rc "$_rc" \
+    '{agent:$a, status:$s, wait_seconds:$w, run_seconds:$r, rc:$rc}' 2>/dev/null \
+    || printf '{"agent":"%s","status":"%s","wait_seconds":%d,"run_seconds":%d}' \
+         "${agent:-unattributed}" "$_status" "$_wait" "$_run")"
+}
+
 # Echo the value following -p / --print in the args (the agent prompt). Empty if absent.
 _interactive_extract_prompt() {
   while [[ $# -gt 0 ]]; do
@@ -115,11 +143,12 @@ _interactive_invoke() {
 
   local req res out
   local _requeued=""
-  local _dispatch_start hb started _now _ref _age _busy _s
+  local _dispatch_start _claim_epoch hb started _now _ref _age _busy _s
   # Dispatch-attempt loop: normally one pass; a Tier B inflight timeout may
   # republish the request ONCE (fresh req/res paths — the pump reads res_path
   # from the JSON, so a requeue must mint new ones) before giving up with 70.
   while :; do
+    _claim_epoch=""
     req="$(mktemp "$dir/req.XXXXXX")"
     res="$req.res"
     out="$req.out"
@@ -170,6 +199,9 @@ print(json.dumps(d))' > "$req"
     while [[ ! -f "$res" ]]; do
       _now="$(date +%s)"
       if [[ -f "$started" ]]; then
+        if [[ -z "$_claim_epoch" ]]; then
+          _claim_epoch="$(stat -c %Y "$started" 2>/dev/null || stat -f %m "$started" 2>/dev/null || echo "$_now")"
+        fi
         # Tier B: claimed → inflight cap measured from the claim time.
         if [[ "$_inflight_cap" -gt 0 ]]; then
           _ref="$(stat -c %Y "$started" 2>/dev/null || stat -f %m "$started" 2>/dev/null || echo "$_now")"
@@ -179,10 +211,12 @@ print(json.dumps(d))' > "$req"
             if [[ -z "$_requeued" && "${CHAIN_DISPATCH_REQUEUE_ON_TIMEOUT:-true}" == "true" ]]; then
               _requeued=1
               echo "[interactive-dispatch] claimed agent '$agent' exceeded inflight timeout (${_age}s > ${_inflight_cap}s) — requeueing once before giving up." >&2
+              _interactive_dispatch_wait_event "inflight-timeout-requeued" ""
               continue 2
             fi
             echo "[interactive-dispatch] claimed agent '$agent' exceeded inflight timeout (${_age}s > ${_inflight_cap}s) — aborting this dispatch." >&2
             printf 'inflight timeout: %ss since claim (agent=%s)\n' "$_age" "$agent" > "$dir/.awaiting-pump"
+            _interactive_dispatch_wait_event "inflight-timeout" "${DISPATCH_UNAVAILABLE_EXIT_CODE:-70}"
             return "${DISPATCH_UNAVAILABLE_EXIT_CODE:-70}"
           fi
         fi
@@ -198,6 +232,7 @@ print(json.dumps(d))' > "$req"
             echo "[interactive-dispatch] pump heartbeat stale (${_age}s > ${CHAIN_PUMP_HEARTBEAT_TIMEOUT}s) and request not picked up — assuming the pump/session stopped; aborting this dispatch." >&2
             printf 'pump heartbeat stale: %ss since last beat (agent=%s)\n' "$_age" "$agent" > "$dir/.awaiting-pump"
             rm -f "$req.ready" 2>/dev/null || true
+            _interactive_dispatch_wait_event "pickup-timeout" "${DISPATCH_UNAVAILABLE_EXIT_CODE:-70}"
             return "${DISPATCH_UNAVAILABLE_EXIT_CODE:-70}"
           fi
         fi
@@ -210,6 +245,13 @@ print(json.dumps(d))' > "$req"
   local rc
   rc="$(cat "$res" 2>/dev/null || echo 1)"
   [[ "$rc" =~ ^[0-9]+$ ]] || rc=1
+
+  # A fast pump can claim + answer between polls — recover the claim time from
+  # the .started marker (still on disk until the cleanup below) for telemetry.
+  if [[ -z "$_claim_epoch" && -f "$started" ]]; then
+    _claim_epoch="$(stat -c %Y "$started" 2>/dev/null || stat -f %m "$started" 2>/dev/null || echo "")"
+  fi
+  _interactive_dispatch_wait_event "ok" "$rc"
 
   # Trace capture (best-effort). The pump writes the subagent's final message
   # to $out before $res; older pumps don't — record a stub so the invocation

@@ -3,8 +3,8 @@ name: browser-qa-agent
 description: Browser QA agent. Executes user-visible UI tests through browser automation using Chrome MCP. Tests real workflows, not just page loads. Records pass/fail with evidence. Runs after ui-test-designer completes.
 model: claude-sonnet-5
 disallowed_tools: ["Bash(rm -rf /*)", "Bash(rm -rf /)", "Bash(git push --force origin main)", "Bash(git push --force origin master)", "Bash(git push -f origin main)", "Bash(git push -f origin master)", "Bash(git push *)", "Bash(git push)", "Bash(git push --force *)", "Bash(gh pr merge *)", "Bash(gh pr close *)", "Bash(gh release *)", "Bash(git tag *)"]
-version: 1.0.1
-last_updated: 2026-05-04
+version: 1.0.2
+last_updated: 2026-07-04
 ---
 
 # Browser QA Agent
@@ -104,11 +104,16 @@ Naming: `UT-01-before.png`, `UT-01-after.png`, `UT-02-fail.png`, etc.
 In goal mode the dispatch wrapper gives you a **golden-script directory**
 (`runs/goal-session-<sid>/journey-scripts/`). For **every journey you verify
 PASS**, also write a self-contained deterministic replay script to
-`<that dir>/<J-XX>.json` (overwrite if present). Future iterations re-verify that
-journey by replaying this script with `demo_runner.py` — no browser-driving model
-— which is what keeps late-iteration regression fast. Best-effort and never gates
-your verdict: if you can't produce a clean script for a journey, skip it (that
-journey just falls back to you next time).
+`<that dir>/<J-XX>.json` (overwrite if present). Write it **IMMEDIATELY after
+that journey PASSes — before starting the next journey** (the steps are fresh
+in context, and a later crash or timeout must not cost the goldens of journeys
+already verified). You can pre-check your JSON without a browser:
+`python3 scripts/automation/lib/demo_runner.py --mode lint --scripts-dir <dir> --journeys <J-XX>`.
+Future iterations re-verify that journey by replaying this script with
+`demo_runner.py` — no browser-driving model — which is what keeps
+late-iteration regression fast. Best-effort and never gates your verdict: if
+you can't produce a clean script for a journey, skip it (that journey just
+falls back to you next time).
 
 The script MUST be valid for the runner (`scripts/automation/lib/demo_runner.py`):
 

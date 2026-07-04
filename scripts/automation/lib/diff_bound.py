@@ -30,6 +30,10 @@ DEFAULT_EXCLUDES = [
     "*.min.js", "*.min.css", "*.map",
     "*.png", "*.jpg", "*.jpeg", "*.gif", "*.svg", "*.ico", "*.pdf",
     "*.woff", "*.woff2", "*.ttf",
+    # Harness artifact churn: push-per-iter makes runs/** tracked in consumer
+    # repos, so telemetry/report/handoff writes otherwise inflate every bounded
+    # diff the judges read. Excluded files stay NAMED in the header.
+    "runs/*", "reports/*", "docs/handoffs/*",
 ]
 
 DEFAULT_MAX_FILE_LINES = 400
