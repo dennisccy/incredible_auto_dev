@@ -4,6 +4,10 @@ Written 2026-07-03 by the last Fable-5 session, at the end of the hardening pass
 prepared this chain for the Opus/Sonnet/Haiku era. Read this when you're about to do
 framework work; it says where this system breaks and what we most wish we'd been told.
 
+The living improvement backlog is [`docs/improvement-roadmap.md`](../docs/improvement-roadmap.md)
+— pick up framework work there (one item per session, per its ground rules), and put new
+pain into its §16 staging section.
+
 ## The three things that matter most (nobody asked for these)
 
 1. **Trust the gates more than any single verdict — including your own.** The most

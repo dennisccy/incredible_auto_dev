@@ -448,74 +448,9 @@ This framework is designed to be added to project repos as a submodule or subtre
 - **Framework docs**: [`.claude/architecture/`](.claude/architecture/README.md) -- how this framework works
 - **Project docs**: `docs/architecture/` -- what the project has built (auto-updated per phase)
 
-## Token Optimization — Pending Work
+## Improvement Roadmap
 
-Tier 1 (safe, mechanical) shipped in commit `15507dc` (May 2026): telemetry on by default, CLAUDE.md double-load removed from 15 prompt sites, orchestrator no longer re-reads `.claude/architecture/*.md`, goal-mode `evaluator-log.md` / `lessons.md` pre-trimmed and inlined, orphan `ui-workflow-inference` skill wired up.
-
-The items below are deliberately deferred — do them in order, with a real telemetry baseline before each.
-
-### Step 0 — Establish a baseline (do this first)
-
-With `CHAIN_TELEMETRY_TOKENS` now defaulting to true, the next phase or goal iteration writes per-call usage to:
-- Phase mode: `runs/<phase>/trace/trace.jsonl`
-- Goal mode: `runs/goal-session-<sid>/telemetry.jsonl`
-
-Analyze with: `python3 scripts/automation/lib/analyze_telemetry.py runs/<phase>/trace/trace.jsonl` — gives per-agent input/output/cache/cost breakdown. Without this baseline, everything below is guesswork.
-
-### Tier 1 polish (low-risk leftovers)
-
-- [x] **Shipped** — Remove the duplicated "Token and Questioning Policy" footer from each agent file (`.claude/agents/*.md`). Agent-specific bullets are kept (e.g., developer.md "Ask only about: schema decisions, lifecycle states…"); generic paraphrasing of `core.md` is gone. See `agents/<name>/body.md`.
-- [x] **Shipped** — Drop `CLAUDE.md` from the "Always read first" list in the 11 remaining agent files. CLAUDE.md is auto-loaded into the system prompt; each agent now has a friendly one-line reassurance instead of re-reading the file.
-- [ ] Inline only the sections each agent needs from `.claude/project-template.md` — release-manager needs the never-commit list (5 lines); developer needs most of it. Add a helper in `lib/common.sh` that emits the right slice per agent. (Deferred until measured token win is meaningful.)
-
-### Tier 2 (needs baseline data first)
-
-- [x] **Shipped — Per-agent `--effort` overrides.** Resolved per agent via `lib/agent_permissions.py effort <agent>`. `developer`, `reviewer`, `auditor`, `orchestrator`, `goal-decomposer`, `goal-evaluator`, `browser-qa-agent`, and `demo-narrator` stay at `--effort max`. `release-manager`, `qa`, `ui-test-designer`, `phase-closure-auditor`, and `ui-impact-analyst` drop to `--effort medium`. Escape hatch: `CHAIN_DISABLE_EFFORT_OVERRIDE=true`.
-- [ ] **Move orchestrator from Opus → Sonnet** (`agents/orchestrator/agent.yaml` `model_tier`). Plan-writing is structured-output work. A/B against 2–3 historical phases — revert if plan quality drops.
-- [ ] **Move goal-decomposer from Opus → Sonnet.** Same rationale as orchestrator. Keep goal-evaluator on Opus (skeptical adversarial judgment).
-- [ ] **Skip `generate-test-plan.sh` (Step 2/11) when the spec already lists test scenarios.** Need a clear heuristic for "spec has tests" — don't skip silently.
-- [ ] **Cap audit-failure full-rerun.** `run-phase.sh:649-679` re-runs dev + review + QA on audit fail. If telemetry shows that path firing often, switch to fix-only mode.
-
-### Pipeline parallelism (shipped)
-
-- [x] **Parallel post-dev fanout.** Branch A (ui-impact → ui-test-design → browser-qa → demo) runs in parallel with Branch B (qa-validate), with shared services. See the [Faster Iterations](#faster-iterations) section. Default for every phase with a frontend; backend-only phases run sequentially.
-
-### Tier 3 (don't touch unless data forces)
-
-- ~~Downgrade qa below Haiku~~ — qa drives Chrome MCP browser flows; lower may misread DOM. If browser checks regress, **upgrade** to Sonnet, not down.
-- ~~Merge ui-impact-analyst + ui-test-designer + ux-regression-reviewer~~ — each is a separate skeptical source the closure auditor depends on. Not worth losing the independence for one Sonnet call's worth of savings.
-- ~~Eliminate retries~~ — they exist for quality reasons. Only consider capping the audit-failure full-rerun (see Tier 2 above).
-
-### How to know when to stop
-
-If a 30-iteration goal session costs <$X and a phase costs <$Y (your numbers), it's not worth more optimization — invest the time in features instead.
-
-## Pipeline Hardening (Strengthen Claude-only Weak Spots) — Pending Work
-
-Benchmark evidence (May 2026) shows Opus 4.7 trails GPT-5.5 on Terminal-Bench 2.0 by 13.3 points and emits ~3.5x more output tokens per task. The decision is to keep this project Claude-only and harden the pipeline at those weak spots rather than introduce a second model.
-
-### Shipped (or in this branch)
-
-- [x] **Test-failure digest script** (`scripts/automation/lib/test_failure_digest.py`) — distills raw pytest/jest/vitest/mocha output into a structured markdown digest. Invoked by the `qa` agent on test failure; the `developer` agent reads it first on retry. Removes the "grep through 500-line log" task from the model — exactly the work GPT-5.5 leads on.
-- [x] **Reviewer YAML schema + token budget** — replaces the prose review-report format with a verdict line + YAML structured findings + optional brief detailed findings. Hard caps: PASS ≤ 200 tokens, PASS_WITH_NOTES ≤ 400, FAIL ≤ 800 (vs. ~1200–2500 today).
-
-### Deferred — do these one at a time, with telemetry before/after
-
-- [ ] **Move `reviewer` from Opus to Sonnet 4.6** (or Haiku 4.5 for cheap quick reviews). Different model in the same family captures a meaningful subset of blind spots at lower cost. Per-agent tiers in `agents/*/agent.yaml` already support this. Ship after the YAML schema is stable so the cheaper model has a tighter target. See also Token Optimization Tier 2 for the orchestrator equivalent.
-- [ ] **Extended-thinking on `auditor` + adversarial framing.** Set `thinking.budget_tokens` for the auditor and prepend "assume the implementation is buggy and find why." Extended thinking is Claude's largest unexploited reasoning lever and directly attacks the "long-context-large-system" weakness on benchmarks like SWE-Bench Pro. Test budget vs. latency on 2–3 phases before rolling out broadly.
-- [ ] **Goal-mode iteration-state synthesis.** Have `goal-evaluator` produce a fresh `iteration-state.md` after each iteration, prepended to the next iteration's context. Don't rely on the model's recall of `journey-history.json`. Combats long-loop context drift — which is where Opus 4.7 weakens most relative to GPT-5.5. Touches goal-mode internals; pick it up only after the first two deferred items are stable.
-
-### How to know when each is worth doing
-
-For each deferred item, the trigger is a measured regression — not a guess:
-
-| Item | Signal that says "do it now" |
-|------|------------------------------|
-| Reviewer → Sonnet | Reviewer output tokens still > Sonnet's typical budget after the YAML schema change |
-| Auditor extended-thinking | Auditor returns PASS on phases that ship with bugs (audit gap data from real phases) |
-| Iteration-state synthesis | Goal-mode iterations show drift symptoms — repeated work, forgotten journeys, or loops that re-test fixed regressions |
-
-Without these signals, all three are speculative work — better spent on features.
+All pending framework improvements — including the former "Token Optimization — Pending Work" and "Pipeline Hardening — Pending Work" backlogs that used to live here — are maintained in one canonical file: [`docs/improvement-roadmap.md`](docs/improvement-roadmap.md). It holds ~50 specified items (problem, file:line anchors, change spec, definition of done, verification commands, rollback) written so any maintainer session can execute one at a time, plus the executor ground rules and the process for adding new items. Every absorbed item from the old sections is traceable in that file's §17 ledger (several were already shipped and are marked as such).
 
 ## Known Limitations
 
