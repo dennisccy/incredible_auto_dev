@@ -19,7 +19,11 @@ You can use both modes in the same project. They write to disjoint artifact name
 
 ### 1. Author `docs/goal.md`
 
-Start from `templates/project-goal.md` and fill in every section. The two sections required by goal mode (and ignored by phase mode) are:
+**Recommended:** run `/goal-init` inside Claude Code — it interviews you section-by-section and drafts `docs/goal.md` for you (playback confirmation before any write, structural self-check after).
+
+**Manual alternative:** start from `templates/project-goal.md` and fill in every section yourself.
+
+Either way, the two sections required by goal mode (and ignored by phase mode) are:
 
 ```markdown
 ## Must-have user journeys
@@ -301,6 +305,7 @@ Then:
 
 ## See also
 
+- `/goal-init` ([`commands/goal-init.md`](../commands/goal-init.md)) — guided interview that drafts `docs/goal.md` for you
 - [`templates/project-goal.md`](../templates/project-goal.md) — full goal template with all required sections
 - [`.claude/architecture/goal-mode.md`](../.claude/architecture/goal-mode.md) — internal architecture
 - [`docs/goal-mode-telemetry.md`](goal-mode-telemetry.md) — telemetry event schema

@@ -140,19 +140,7 @@ resumable pauses).
 
 ### NEED-1 — DONE 2026-07-07, archived
 
-### NEED-2 · Quickstart names `/goal-init` first
-- **Priority:** P0 · **Effort:** S · **Risk:** LOW · **Status:** TODO
-- **Problem:** even after NEED-1 ships, adopters following the quickstart will still
-  hand-author goal.md and never discover the interview.
-- **Current state:** `docs/goal-mode-quickstart.md` "4-step setup" (~line 18) says to
-  author goal.md manually from the template.
-- **Change spec:** setup step 1 becomes "run `/goal-init` inside Claude Code (interview →
-  drafted goal.md)"; manual authoring stays as the alternative path. Add `/goal-init` to
-  the quickstart's See-also list (~line 302).
-- **DoD:** quickstart names `/goal-init` before manual authoring.
-- **Verify:** `grep -n "goal-init" docs/goal-mode-quickstart.md` (≥2 hits).
-- **Files:** `docs/goal-mode-quickstart.md`.
-- **Rollback:** revert the doc edit.
+### NEED-2 — DONE 2026-07-07, archived
 
 ### NEED-3 · Deterministic goal linter (`goal_lint.py`)
 - **Priority:** P0 · **Effort:** M · **Risk:** LOW · **Status:** TODO
