@@ -142,42 +142,7 @@ resumable pauses).
 
 ### NEED-2 — DONE 2026-07-07, archived
 
-### NEED-3 · Deterministic goal linter (`goal_lint.py`)
-- **Priority:** P0 · **Effort:** M · **Risk:** LOW · **Status:** IN-PROGRESS
-- **Note (2026-07-07, implementer):** implemented per change spec; Verify block green
-  locally (self-test + `bash -n` + evals 79-pass), and a sandbox engine start on a
-  deliberately vague goal.md printed 6 warnings then proceeded to iteration 0
-  (`CHAIN_GOAL_LINT=false` control run printed none). Awaiting FRESH-session
-  verification per G8: re-run the Verify block below, then flip to DONE and archive
-  per §2.8.
-- **Problem:** `validate_goal_file` checks presence, not quality. Vague acceptance
-  criteria are the documented #1 failure mode and nothing catches them before a session
-  burns iterations on them.
-- **Current state:** structure checks only (`run-goal.sh:533-573`). Anti-goal bullet
-  parsing lives at `run-goal.sh:558-572`; journey-block regexes exist in
-  `scripts/automation/lib/goal_gate.py` (~`:158`, `_journey_blocks` /
-  `_JOURNEY_HEADER_RE`). Lib self-test convention: see `lib/checkpoint.sh` self-test
-  and `run-evals.sh` §2 registry.
-- **Change spec:**
-  1. New `scripts/automation/lib/goal_lint.py` (stdlib-only). Checks: duplicate J-NN
-     IDs; journey missing numbered steps or an `Acceptance` line; leftover `<...>`
-     template placeholders; vague words in Acceptance lines ("works well", "fast",
-     "properly", "intuitive", "user-friendly", "correctly"); anti-goals phrased as
-     aspirations with no checkable condition; empty Product Shape section while ≥2
-     journeys reference the same value/metric. Exit codes: 0 clean, 1 warnings,
-     2 structural errors. Subcommand `self-test` with fixtures for each rule.
-  2. Warn-only engine wiring: in `run-goal.sh` immediately after the
-     `validate_goal_file` call (~`:709`), behind `CHAIN_GOAL_LINT` (default `true`):
-     `python3 "$SCRIPT_DIR/lib/goal_lint.py" "$GOAL_FILE" || true` — print warnings,
-     NEVER block the engine (style must not gate execution).
-  3. Register in `run-evals.sh` §2: `goal_lint.py self-test`.
-- **DoD:** self-test green; engine start on a deliberately vague goal.md prints warnings
-  and proceeds; evals green.
-- **Verify:** `python3 scripts/automation/lib/goal_lint.py self-test && bash -n
-  scripts/automation/run-goal.sh && ./scripts/automation/run-evals.sh`
-- **Files:** `scripts/automation/lib/goal_lint.py` (new), `scripts/automation/run-goal.sh`
-  (2-3 lines), `scripts/automation/run-evals.sh` (1 line).
-- **Rollback:** remove the run-goal.sh call and the eval line; the lib is inert alone.
+### NEED-3 — DONE 2026-07-07, archived
 
 ### NEED-4 · `/goal-lint` LLM semantic pass
 - **Priority:** P0 · **Effort:** S · **Risk:** LOW · **Status:** TODO

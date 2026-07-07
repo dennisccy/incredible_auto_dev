@@ -78,3 +78,56 @@ legend: active file §4.
   drafted goal.md) with manual template authoring kept as the explicit alternative
   path; `/goal-init` added to See-also linking `commands/goal-init.md`. Verify block
   green: grep shows 2 hits (step 1 + See-also); full eval suite 78 pass / 0 fail.
+
+### NEED-3 · Deterministic goal linter (`goal_lint.py`)
+- **Priority:** P0 · **Effort:** M · **Risk:** LOW · **Status:** DONE (2026-07-07)
+- **Problem:** `validate_goal_file` checks presence, not quality. Vague acceptance
+  criteria are the documented #1 failure mode and nothing catches them before a session
+  burns iterations on them.
+- **Current state:** structure checks only (`run-goal.sh:533-573`). Anti-goal bullet
+  parsing lives at `run-goal.sh:558-572`; journey-block regexes exist in
+  `scripts/automation/lib/goal_gate.py` (~`:158`, `_journey_blocks` /
+  `_JOURNEY_HEADER_RE`). Lib self-test convention: see `lib/checkpoint.sh` self-test
+  and `run-evals.sh` §2 registry.
+- **Change spec:**
+  1. New `scripts/automation/lib/goal_lint.py` (stdlib-only). Checks: duplicate J-NN
+     IDs; journey missing numbered steps or an `Acceptance` line; leftover `<...>`
+     template placeholders; vague words in Acceptance lines ("works well", "fast",
+     "properly", "intuitive", "user-friendly", "correctly"); anti-goals phrased as
+     aspirations with no checkable condition; empty Product Shape section while ≥2
+     journeys reference the same value/metric. Exit codes: 0 clean, 1 warnings,
+     2 structural errors. Subcommand `self-test` with fixtures for each rule.
+  2. Warn-only engine wiring: in `run-goal.sh` immediately after the
+     `validate_goal_file` call (~`:709`), behind `CHAIN_GOAL_LINT` (default `true`):
+     `python3 "$SCRIPT_DIR/lib/goal_lint.py" "$GOAL_FILE" || true` — print warnings,
+     NEVER block the engine (style must not gate execution).
+  3. Register in `run-evals.sh` §2: `goal_lint.py self-test`.
+- **DoD:** self-test green; engine start on a deliberately vague goal.md prints warnings
+  and proceeds; evals green.
+- **Verify:** `python3 scripts/automation/lib/goal_lint.py self-test && bash -n
+  scripts/automation/run-goal.sh && ./scripts/automation/run-evals.sh`
+- **Files:** `scripts/automation/lib/goal_lint.py` (new), `scripts/automation/run-goal.sh`
+  (2-3 lines), `scripts/automation/run-evals.sh` (1 line).
+- **Rollback:** remove the run-goal.sh call and the eval line; the lib is inert alone.
+- **Note (2026-07-07, implementer):** implemented per change spec; Verify block green
+  locally (self-test + `bash -n` + evals 79-pass), and a sandbox engine start on a
+  deliberately vague goal.md printed 6 warnings then proceeded to iteration 0
+  (`CHAIN_GOAL_LINT=false` control run printed none). Left IN-PROGRESS pending
+  fresh-session verification per G8.
+- **Verified (2026-07-07, fresh session per G8):** DoD checked line by line.
+  Verify block re-run green: `goal_lint.py self-test` passed, `bash -n run-goal.sh`
+  clean, evals 79 pass / 0 fail (self-test registered at `run-evals.sh:127`; fixtures
+  cover all six rules plus the 0/1/2 exit-code contract and negative cases). Wiring
+  confirmed at `run-goal.sh:709-713` — immediately after `validate_goal_file`, behind
+  `CHAIN_GOAL_LINT` default-true, `|| true`. Sandbox engine start (fresh framework
+  copy, dispatch pointed at a dead local endpoint so zero API tokens spent): a
+  deliberately vague goal.md printed 5 warnings (vague-acceptance ×2, placeholder,
+  aspirational-anti-goal, product-shape-empty — the last confirmed firing on a real
+  file, not just fixtures) then proceeded to Iteration 0 / Step 1 baseline-decomposer
+  dispatch; `CHAIN_GOAL_LINT=false` control run printed no lint output and proceeded
+  identically. Intake tie-in: `/goal-init` flow test-driven in a second scratch repo
+  (create-mode goal.md authored per `skills/goal-authoring.md`; interview
+  self-answered — no live user in the verifying session): produced file passes the
+  command's step-5 self-check (`goal_lint.py` exit 0, silent) and the real
+  `validate_goal_file` at engine startup (reached "Initializing new session" →
+  iteration 0 with no validation error).
