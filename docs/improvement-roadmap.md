@@ -146,49 +146,7 @@ resumable pauses).
 
 ### NEED-4 — DONE 2026-07-07, archived
 
-### NEED-5 · Assumption ledger — writers
-- **Priority:** P0 · **Effort:** M · **Risk:** MED · **Status:** IN-PROGRESS
-- **Problem:** the decomposer and evaluator make silent interpretation calls ("the spec
-  is ambiguous about X, we chose Y") that the human never sees until the product is
-  wrong. Judgment-rubrics §3 only covers the extreme case (STALLED on conflicting
-  readings); everyday interpretation choices vanish.
-- **Current state:** no assumptions artifact exists. The proven pattern for append-only
-  session files is `lessons.md`: appended by the evaluator, pre-trimmed and inlined into
-  prompts via `_tail_or_placeholder` (`run-goal.sh:520-525`), never read whole.
-- **Change spec:**
-  1. New session file `runs/goal-session-<sid>/state/assumptions.md`, append-only.
-     Entry format: `## iter-<N> — <agent>` then `**Ambiguity:** …` / `**We chose:** …` /
-     `**Reversible:** yes|no`.
-  2. `agents/goal-decomposer/body.md`: add a rule (Rules section, ~`:189-199`) — when a
-     spec decision required interpreting the goal, append an entry; zero entries is fine
-     (signal only, no routine entries — same discipline as lessons).
-  3. `agents/goal-evaluator/body.md`: add step "5b" beside the lessons step
-     (~`:112-129`) — same, for scoring-time interpretations (e.g. "accepted truncated
-     email as 'shows email'").
-  4. Dispatch prompts: decomposer prompt block (`run-goal.sh:1241-1281`) and evaluator
-     "Prior session state" block (~`:1523-1526`) gain the ledger path (append-target)
-     plus an inlined tail via `_tail_or_placeholder`, exactly like `LESSONS_TAIL`.
-  5. Version-bump both touched `agent.yaml` files; resync mirrors.
-- **DoD:** rendered `.claude/agents/goal-{decomposer,evaluator}.md` contain the ledger
-  instructions; both dispatch prompts reference the path; an absent ledger renders as
-  placeholder text (no crash); evals green.
-- **Verify:** `python3 scripts/automation/sync-cli-assets.py --cli claude && grep -l
-  assumptions .claude/agents/goal-decomposer.md .claude/agents/goal-evaluator.md &&
-  bash -n scripts/automation/run-goal.sh && ./scripts/automation/run-evals.sh`
-- **Files:** `agents/goal-decomposer/body.md`, `agents/goal-evaluator/body.md`, both
-  `agent.yaml` (version bump), `scripts/automation/run-goal.sh`, mirrors.
-- **Rollback:** revert body edits + prompt lines; existing sessions' assumptions.md
-  files become inert.
-- **Stop-and-ask:** if the evaluator's prompt assembly has structurally changed from the
-  anchors (no `LESSONS_TAIL`-style inlining found), stop — the inline pattern is the
-  design, not an implementation detail.
-- **Note (2026-07-07):** implemented this session — writer rules in both agent bodies
-  (decomposer Rules bullet, evaluator step 5b), `ASSUMPTIONS_FILE` + `ASSUMPTIONS_TAIL`
-  wired into both dispatch prompts (tail recomputed fresh at the evaluator site), both
-  agent.yaml bumped to 1.3.0, mirrors resynced. Stop-and-ask checked: `LESSONS_TAIL`
-  inlining intact at implementation time. Verify block green (sync ok, grep found
-  ledger text in both rendered agents, `bash -n` ok, evals 79/79). Left IN-PROGRESS
-  per G8 — a FRESH session must verify and flip to DONE.
+### NEED-5 — DONE 2026-07-07, archived
 
 ### NEED-6 · Assumption ledger — surfacing
 - **Priority:** P0 · **Effort:** M · **Risk:** MED · **Status:** TODO

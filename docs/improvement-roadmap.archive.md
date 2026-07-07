@@ -165,3 +165,67 @@ legend: active file §4.
   format (missing anti-goal coverage for the supply-chain surface; no measurable
   success criterion), summary correctly identifies the file as documentation rather
   than a runnable contract; `docs/goal.md` untouched by the run.
+
+### NEED-5 · Assumption ledger — writers
+- **Priority:** P0 · **Effort:** M · **Risk:** MED · **Status:** DONE (2026-07-07)
+- **Problem:** the decomposer and evaluator make silent interpretation calls ("the spec
+  is ambiguous about X, we chose Y") that the human never sees until the product is
+  wrong. Judgment-rubrics §3 only covers the extreme case (STALLED on conflicting
+  readings); everyday interpretation choices vanish.
+- **Current state:** no assumptions artifact exists. The proven pattern for append-only
+  session files is `lessons.md`: appended by the evaluator, pre-trimmed and inlined into
+  prompts via `_tail_or_placeholder` (`run-goal.sh:520-525`), never read whole.
+- **Change spec:**
+  1. New session file `runs/goal-session-<sid>/state/assumptions.md`, append-only.
+     Entry format: `## iter-<N> — <agent>` then `**Ambiguity:** …` / `**We chose:** …` /
+     `**Reversible:** yes|no`.
+  2. `agents/goal-decomposer/body.md`: add a rule (Rules section, ~`:189-199`) — when a
+     spec decision required interpreting the goal, append an entry; zero entries is fine
+     (signal only, no routine entries — same discipline as lessons).
+  3. `agents/goal-evaluator/body.md`: add step "5b" beside the lessons step
+     (~`:112-129`) — same, for scoring-time interpretations (e.g. "accepted truncated
+     email as 'shows email'").
+  4. Dispatch prompts: decomposer prompt block (`run-goal.sh:1241-1281`) and evaluator
+     "Prior session state" block (~`:1523-1526`) gain the ledger path (append-target)
+     plus an inlined tail via `_tail_or_placeholder`, exactly like `LESSONS_TAIL`.
+  5. Version-bump both touched `agent.yaml` files; resync mirrors.
+- **DoD:** rendered `.claude/agents/goal-{decomposer,evaluator}.md` contain the ledger
+  instructions; both dispatch prompts reference the path; an absent ledger renders as
+  placeholder text (no crash); evals green.
+- **Verify:** `python3 scripts/automation/sync-cli-assets.py --cli claude && grep -l
+  assumptions .claude/agents/goal-decomposer.md .claude/agents/goal-evaluator.md &&
+  bash -n scripts/automation/run-goal.sh && ./scripts/automation/run-evals.sh`
+- **Files:** `agents/goal-decomposer/body.md`, `agents/goal-evaluator/body.md`, both
+  `agent.yaml` (version bump), `scripts/automation/run-goal.sh`, mirrors.
+- **Rollback:** revert body edits + prompt lines; existing sessions' assumptions.md
+  files become inert.
+- **Stop-and-ask:** if the evaluator's prompt assembly has structurally changed from the
+  anchors (no `LESSONS_TAIL`-style inlining found), stop — the inline pattern is the
+  design, not an implementation detail.
+- **Note (2026-07-07):** implemented this session — writer rules in both agent bodies
+  (decomposer Rules bullet, evaluator step 5b), `ASSUMPTIONS_FILE` + `ASSUMPTIONS_TAIL`
+  wired into both dispatch prompts (tail recomputed fresh at the evaluator site), both
+  agent.yaml bumped to 1.3.0, mirrors resynced. Stop-and-ask checked: `LESSONS_TAIL`
+  inlining intact at implementation time. Verify block green (sync ok, grep found
+  ledger text in both rendered agents, `bash -n` ok, evals 79/79). Left IN-PROGRESS
+  per G8 — a FRESH session must verify and flip to DONE.
+- **Verified (2026-07-07, fresh session per G8):** DoD checked line by line.
+  (1) Ledger instructions present in both rendered agents — decomposer Rules bullet
+  (`.claude/agents/goal-decomposer.md:207`, exact entry format + signal-only
+  discipline), evaluator step 5b (`goal-evaluator.md:140-144`) plus the append-tooling
+  note (`:38`). (2) Both dispatch prompts carry `$ASSUMPTIONS_FILE` as append target
+  with an inlined `$ASSUMPTIONS_TAIL` (decomposer `run-goal.sh:1273/:1276`, evaluator
+  `:1544/:1553`; tails built at `:1226`/`:1498`, the evaluator site recomputed fresh so
+  same-iteration decomposer entries are visible; `ASSUMPTIONS_FILE` defined `:213`,
+  before both uses). (3) Absent-ledger behavior functionally tested — the function
+  extracted verbatim and run under `set -euo pipefail`: missing file → "(no assumptions
+  recorded yet)", empty file → placeholder, populated file → tail; no crash on any
+  path. (4) Verify block re-run verbatim green: sync wrote 0 (mirrors drift-free,
+  working tree clean before/after), grep matched both rendered agents, `bash -n` ok,
+  evals 79 pass / 0 fail. Both agent.yaml confirmed at 1.3.0; the NEED-5 commit
+  carries neutral source + mirrors together (G2). Cross-check per the verification
+  instructions: /goal-init CREATE round in a scratch repo (command/skill/template
+  copied in; `validate_goal_file` extracted verbatim and red-green-tested first —
+  three structurally bad files each fail with the matching specific error) produced a
+  3-journey goal.md that passes `validate_goal_file` with zero template placeholders;
+  `goal_lint.py` (itself red-tested: exit 2 `no-journeys` on a bad file) exits 0 on it.
