@@ -707,6 +707,10 @@ if [[ -f "$SESSION_JSON" ]]; then
   RUN_MODE="resume"
 else
   validate_goal_file
+  # Advisory quality lint (NEED-3): prints warnings, NEVER blocks the engine.
+  if [[ "${CHAIN_GOAL_LINT:-true}" == "true" ]]; then
+    python3 "$SCRIPT_DIR/lib/goal_lint.py" "$GOAL_FILE" || true
+  fi
   CURRENT_ITER=0
   PRIOR_STATUS="new"
   echo "[run-goal] Initializing new session: $SESSION_ID"

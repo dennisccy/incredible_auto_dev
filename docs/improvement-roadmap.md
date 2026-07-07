@@ -143,7 +143,13 @@ resumable pauses).
 ### NEED-2 — DONE 2026-07-07, archived
 
 ### NEED-3 · Deterministic goal linter (`goal_lint.py`)
-- **Priority:** P0 · **Effort:** M · **Risk:** LOW · **Status:** TODO
+- **Priority:** P0 · **Effort:** M · **Risk:** LOW · **Status:** IN-PROGRESS
+- **Note (2026-07-07, implementer):** implemented per change spec; Verify block green
+  locally (self-test + `bash -n` + evals 79-pass), and a sandbox engine start on a
+  deliberately vague goal.md printed 6 warnings then proceeded to iteration 0
+  (`CHAIN_GOAL_LINT=false` control run printed none). Awaiting FRESH-session
+  verification per G8: re-run the Verify block below, then flip to DONE and archive
+  per §2.8.
 - **Problem:** `validate_goal_file` checks presence, not quality. Vague acceptance
   criteria are the documented #1 failure mode and nothing catches them before a session
   burns iterations on them.
