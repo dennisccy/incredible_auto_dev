@@ -144,25 +144,7 @@ resumable pauses).
 
 ### NEED-3 — DONE 2026-07-07, archived
 
-### NEED-4 · `/goal-lint` LLM semantic pass
-- **Priority:** P0 · **Effort:** S · **Risk:** LOW · **Status:** TODO
-- **Problem:** deterministic rules can't catch contradictions between journeys,
-  unmeasurable acceptance phrased measurably, or risky surfaces (auth, payments,
-  uploads) with no anti-goal coverage.
-- **Current state:** no semantic review of goal.md exists anywhere.
-- **Change spec:** new `commands/goal-lint.md`: (1) run
-  `python3 scripts/automation/lib/goal_lint.py docs/goal.md` and show output; (2) apply
-  the semantic checklist from `skills/goal-authoring.md` (NEED-1); (3) write findings to
-  `reports/goal-lint.md` in the format: quoted line → problem → concrete suggested
-  rewrite. REPORT-ONLY — the command must never edit goal.md (it is user-approval class
-  per maintenance protocol §1).
-- **DoD:** command exists + mirrored; body forbids editing goal.md; running it on the
-  framework's own `docs/goal.md` produces a sane report.
-- **Verify:** `python3 scripts/automation/sync-cli-assets.py --cli claude --check`
-  after sync; manual run on `docs/goal.md`.
-- **Files:** `commands/goal-lint.md` (new) + mirror.
-- **Rollback:** delete the command + mirror.
-- **Depends on:** NEED-3 (uses the linter), NEED-1 (shares the skill checklist).
+### NEED-4 — DONE 2026-07-07, archived
 
 ### NEED-5 · Assumption ledger — writers
 - **Priority:** P0 · **Effort:** M · **Risk:** MED · **Status:** TODO

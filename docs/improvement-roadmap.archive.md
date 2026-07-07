@@ -131,3 +131,37 @@ legend: active file §4.
   command's step-5 self-check (`goal_lint.py` exit 0, silent) and the real
   `validate_goal_file` at engine startup (reached "Initializing new session" →
   iteration 0 with no validation error).
+
+### NEED-4 · `/goal-lint` LLM semantic pass
+- **Priority:** P0 · **Effort:** S · **Risk:** LOW · **Status:** DONE (2026-07-07)
+- **Problem:** deterministic rules can't catch contradictions between journeys,
+  unmeasurable acceptance phrased measurably, or risky surfaces (auth, payments,
+  uploads) with no anti-goal coverage.
+- **Current state:** no semantic review of goal.md exists anywhere.
+- **Change spec:** new `commands/goal-lint.md`: (1) run
+  `python3 scripts/automation/lib/goal_lint.py docs/goal.md` and show output; (2) apply
+  the semantic checklist from `skills/goal-authoring.md` (NEED-1); (3) write findings to
+  `reports/goal-lint.md` in the format: quoted line → problem → concrete suggested
+  rewrite. REPORT-ONLY — the command must never edit goal.md (it is user-approval class
+  per maintenance protocol §1).
+- **DoD:** command exists + mirrored; body forbids editing goal.md; running it on the
+  framework's own `docs/goal.md` produces a sane report.
+- **Verify:** `python3 scripts/automation/sync-cli-assets.py --cli claude --check`
+  after sync; manual run on `docs/goal.md`.
+- **Files:** `commands/goal-lint.md` (new) + mirror.
+- **Rollback:** delete the command + mirror.
+- **Depends on:** NEED-3 (uses the linter), NEED-1 (shares the skill checklist).
+- **Note (2026-07-07, implementer — Effort S, self-verified per §2.7):** command
+  authored with the seven-check semantic checklist (journey contradictions,
+  unobservable-but-measurably-phrased acceptance, guess-requiring steps,
+  non-independent journeys, uncovered risky surfaces, keyword-fooling anti-goals,
+  unmeasurable success criteria) drawn from `skills/goal-authoring.md` items 3/9/10
+  plus the NEED-4 problem statement; body forbids editing goal.md and restricts
+  writes to `reports/goal-lint.md` (allowed-tools has no Edit). Verify block green:
+  mirror synced, `--check` OK, evals 79 pass / 0 fail. Sanity run on the framework's
+  own meta `docs/goal.md` produced a sane `reports/goal-lint.md`: deterministic exit 2
+  (`no-journeys` — expected, the file is the documented replace-me meta goal) shown
+  verbatim, 2 semantic findings in the quoted-line → problem → paste-ready-rewrite
+  format (missing anti-goal coverage for the supply-chain surface; no measurable
+  success criterion), summary correctly identifies the file as documentation rather
+  than a runnable contract; `docs/goal.md` untouched by the run.
