@@ -67,7 +67,10 @@ codebase and a feasibility review of every P0 design. Line anchors reference com
 - **G8** Effort M/L items: final verification by a FRESH session — the implementer never
   self-certifies (non-self-verification, `.claude/model-orchestration.md`). Baseline
   before experiment: any SPEED/TOKEN experiment needs telemetry from at least one real
-  session (or an EVO-3 benchmark run) before AND after.
+  session (or an EVO-3 benchmark run) before AND after. Pre-register before running:
+  write the hypothesis + predicted metric movement into `benchmarks/experiments.md`
+  (EVO-3's ledger) BEFORE the measurement run; the writeup compares result vs
+  prediction — never rationalize after the fact.
 - **G9** Anything that spends real API tokens beyond your own session (benchmark runs,
   test goal-sessions) → confirm with the user first, with a cost estimate.
 
@@ -82,6 +85,21 @@ do not resurrect them without new evidence):
 - **D4** Do not lower a judge's effort to save tokens — lower the context you feed it.
   The `JUDGE_AGENTS` guard in `scripts/automation/lib/agent_permissions.py` exists for
   this; do not remove it.
+- **D5** Do not cap thinking/effort to cut cost — on ANY agent, not only judges (D4).
+  Superpowers 6 measured the failure mode: capping thinking increased turn count and
+  ~doubled output tokens (cost went UP, not down). Judges are hardcoded-refused
+  (`JUDGE_AGENTS`, `scripts/automation/lib/agent_permissions.py:262-264`); for
+  non-judges the `CHAIN_AGENT_EFFORT` knob stays opt-in and must carry a COST tripwire
+  (REL-8) — the current quality-only tripwire (`lib/analyze_telemetry.py:441-466`)
+  cannot see this failure mode.
+- **D6** Do not impose word/length budgets on specs or plans. If a spec must shrink,
+  cut implementation narrative — NEVER test scenarios or interface/data-contract
+  definitions (Superpowers 6: a plan word-budget cut test content −62%; tests and
+  interfaces are what carry implementation quality — see REL-9).
+- **D7** Do not dispatch a reviewer with diff-only context. The iteration spec and dev
+  handoff must accompany any diff packet (Superpowers 6: diff-only reviewers re-derived
+  requirements and produced confident but WRONG spec verdicts). Applies to TOKEN-7 and
+  any future review-packet work.
 
 ## 4. Item format legend
 
@@ -102,10 +120,11 @@ signal that says "do this now").
    but works without), **NEED-8**.
 4. **EVO-2** (retro), **EVO-3** (benchmark; required before any SPEED/TOKEN experiment),
    **EVO-4** (playbook), **EVO-5**. (EVO-1 ships with this file.)
-5. **SPEED-1 → SPEED-2 → SPEED-3** (strict order), **TOKEN-1…6** (TOKEN-2 requires
-   EVO-3 + REL-1 to exist).
-6. **REL-2…7, SEC-1…4, QUAL-1, REP-1…3, DOC-3…7** — as capacity allows; SEC-4 pairs
-   with SAFE-1.
+5. **SPEED-1 → SPEED-2 → SPEED-3** (strict order), **TOKEN-1…7** (TOKEN-2 requires
+   EVO-3 + REL-1 to exist; TOKEN-7 is independent of the SPEED chain).
+6. **REL-2…9, SEC-1…4, QUAL-1, REP-1…3, DOC-3…7** — as capacity allows; SEC-4 pairs
+   with SAFE-1; REL-8 must land before any real `CHAIN_AGENT_EFFORT` use; REL-9 is
+   cheap — do it early.
 7. **EXP-** items only with explicit human sign-off and a written design doc first.
 
 ---
@@ -507,20 +526,30 @@ the system measures itself, and how it survives the next model change.
      `run-goal.sh --session-id bench-<date> --max-iter 2` headless; on exit extracts
      `benchmarks/results/<date>-<framework-sha>.json`: wall seconds, per-agent wall,
      tokens in/out, est. cost, journeys passing after, iterations used, attempt-1
-     review-FAILs, final verdict. Refuses to run without `--yes-spend` (G9).
+     review-FAILs, final verdict. Refuses to run without `--yes-spend` (G9). Also
+     refuses to run without `--hypothesis '<one-line prediction>'`: before launching,
+     append a pre-registration entry to `benchmarks/experiments.md` (append-only
+     ledger: date · framework sha · hypothesis · metric(s) · predicted direction/size);
+     after the run, append result + `verdict-vs-prediction: CONFIRMED|REFUTED|MIXED`
+     to the same entry. Prediction BEFORE execution is the point (G8) — it catches
+     measurement errors and post-hoc rationalization (Superpowers 6 ran 25+
+     pre-registered experiments this way and credits it for catching bad measurements).
   3. **Slice (c) — compare + baseline.** `scripts/automation/lib/benchmark_compare.py
      <old.json> <new.json>`: delta table + verdict (REGRESS if wall or cost +>25% or
      journeys-passing dropped; else OK). Docs section in this file + capture the first
      baseline (one confirmed run).
 - **DoD:** one full benchmark run completes on the fixture; results JSON validates;
   compare tool renders deltas; docs tell a weaker model exactly when to run it (before
-  AND after any SPEED/TOKEN experiment, and during EVO-4 cutovers).
+  AND after any SPEED/TOKEN experiment, and during EVO-4 cutovers); runner refuses
+  without a hypothesis; every recorded run has a ledger entry whose prediction
+  precedes its result.
 - **Verify:** `bash -n scripts/automation/run-benchmark.sh && python3
   scripts/automation/lib/benchmark_compare.py --self-test &&
   ./scripts/automation/run-evals.sh` + one confirmed real run.
 - **Files:** `benchmarks/fixtures/todo-app/**` (new),
   `scripts/automation/run-benchmark.sh` (new),
-  `scripts/automation/lib/benchmark_compare.py` (new), this file (baseline note).
+  `scripts/automation/lib/benchmark_compare.py` (new),
+  `benchmarks/experiments.md` (new, slice b), this file (baseline note).
 - **Rollback:** the harness is standalone; delete `benchmarks/` + the two scripts.
 - **Stop-and-ask:** EVERY benchmark run costs real API tokens (~the cost of up to 2 lean
   iterations on a tiny app). Confirm with the user before each run — no exceptions.
@@ -841,6 +870,80 @@ benchmark (or a real session's telemetry) before AND after (G8).
   `scripts/automation/run-goal.sh` (1 call), protocol cross-ref.
 - **Rollback:** knob; archives are additive.
 
+### TOKEN-7 · Pre-baked review packet (reviewer stops running git)
+- **Priority:** P1 · **Effort:** M · **Risk:** MED · **Status:** TODO
+- **Source:** Superpowers 6 release notes (primeradiant.com/blog/2026/superpowers-6.html):
+  pre-generated diff packages cut review tokens + wall ≈10% on THEIR benchmark — treat
+  as hypothesis here, measure per G8. Anchors verified 2026-07-07 @ `eb5c8f9`.
+- **Problem:** the reviewer (~21 min, 2nd-longest lean step) receives only a two-command
+  HINT and shells out to git itself — every review pays tool-call round trips for a
+  diff the engine could pre-build deterministically.
+- **Current state:** hint built by `review_diff_hint()`
+  (`scripts/automation/lib/common.sh:377-388`; exclude patterns
+  `REVIEW_DIFF_EXCLUDE_PATTERNS` `:366-371`), inlined at `goal-iter-lean.sh:158`
+  (dispatch block `:149-170`), `review-phase.sh:38`, and the coherence dispatch
+  `common.sh:420`. The packet mechanism ALREADY EXISTS:
+  `goal_gate_build_diff_artifacts` (`lib/goal-gates.sh:45-73`) builds bounded
+  `iter-<N>/iter-diff.md` via `diff_bound.py` (hunks capped, noise excluded,
+  truncations NAMED in its header, untracked files capped at 200) — but only AFTER
+  review settles (`goal-iter-lean.sh:277-278`, inside the coherence fork; evaluator
+  copy rebuilt at `run-goal.sh:1470`). The coherence-auditor already consumes it
+  packet-first (`common.sh:418`). The reviewer body tells the agent to run git itself
+  and asserts the work under review is UNCOMMITTED at review time
+  (`agents/reviewer/body.md:16`).
+- **Change spec:**
+  1. New `build_review_packet <out-file> <base-ref>` in `lib/common.sh` beside
+     `review_diff_hint`: run `diff_bound.py` with the SAME
+     `REVIEW_DIFF_EXCLUDE_PATTERNS`, then append a `--stat` section of ONLY the
+     excluded paths (lockfile changes stay visible). Do NOT reuse
+     `goal_gate_build_diff_artifacts` (different consumer + timing; gate artifacts
+     stay untouched).
+  2. Lean path: call it after the developer step completes, before the first
+     `run_reviewer` (`goal-iter-lean.sh:~143`), writing `$ITER_DIR/review-packet.md`.
+     **Rebuild after EVERY fix-mode developer pass** (after `escalate_model_off`,
+     `goal-iter-lean.sh:~226`, before the next reviewer round) — a round-2 reviewer
+     must never read a stale packet.
+  3. Reviewer dispatch (`goal-iter-lean.sh:149-170`): add above the hint line:
+     "Bounded diff packet (read FIRST if present): <path> — hunks capped, noise
+     excluded, truncations NAMED. The iter spec + dev handoff remain required
+     reading — never verdict from the diff alone (D7)." KEEP the `review_diff_hint`
+     line but reframe: "run these only for files the packet marks truncated."
+     (Mirrors the coherence precedent `common.sh:418-420`; absent packet degrades to
+     today's behavior.)
+  4. Phase mode: same packet build before the review step, writing
+     `runs/<phase>/review-packet.md`, + the same prompt edit at
+     `review-phase.sh:37-38`.
+  5. `agents/reviewer/body.md:16`: packet-first; git only for truncation follow-ups.
+     UNCHANGED: "read each changed source file" (anti-pattern #12 — the packet
+     replaces running diff COMMANDS, never reading code) and the spec/handoff input
+     list (D7). Version-bump `agent.yaml` 1.1.2→1.1.3, resync mirrors, commit
+     together (G2).
+  6. Eval fixture (G3 — new artifact contract): assert `build_review_packet` output
+     header names the base ref and truncation markers; register in `run-evals.sh`.
+  7. Measure per G8 (pre-register per EVO-3's ledger once it exists): reviewer
+     wall/output tokens before/after via `analyze_telemetry.py` per-agent rows.
+- **DoD:** packet built pre-review and rebuilt post-fix in lean; phase-mode packet
+  built; both dispatch prompts + body are packet-first; absent packet degrades to
+  hint-only; fixture + evals green.
+- **Verify:** `bash -n scripts/automation/goal-iter-lean.sh
+  scripts/automation/review-phase.sh && bash tests/automation/test-goal-checkpoints.sh
+  && python3 scripts/automation/sync-cli-assets.py --cli claude --check &&
+  ./scripts/automation/run-evals.sh`
+- **Files:** `scripts/automation/lib/common.sh`, `scripts/automation/goal-iter-lean.sh`,
+  `scripts/automation/review-phase.sh`, `agents/reviewer/body.md` + `agent.yaml`,
+  mirrors, eval fixture.
+- **Rollback:** remove the build calls + prompt lines, revert the body — the hint path
+  was kept, so behavior returns to today's exactly.
+- **Stop-and-ask:** (1) RANGE semantics: the hint uses `git diff HEAD` (uncommitted
+  work only) while gate artifacts diff from the iteration's `snapshot-sha`
+  (`goal-iter-lean.sh:278`). `body.md:16` asserts the work is uncommitted at review
+  time, which makes `HEAD` correct — CONFIRM that invariant on both backends (does
+  any path commit before review?) before picking the packet's base ref; if it does
+  not hold, ask the user before changing what the reviewer sees. (2) If SPEED-2 has
+  landed, confirm the packet build sits BEFORE the fork point and the fix-path
+  rebuild happens after kill-then-invalidate (same ordering rule as SPEED-2's
+  stop-and-ask).
+
 ---
 
 ## 10. P1 — Reliability & weaker-model hardening
@@ -999,6 +1102,97 @@ benchmark (or a real session's telemetry) before AND after (G8).
 - **Files:** `agents/auditor/body.md` + `agent.yaml`, mirrors.
 - **Rollback:** revert body lines.
 - **Trigger (from old README):** auditor returns PASS on phases that ship with bugs.
+
+### REL-8 · Cost dimension for the effort-experiment tripwire
+- **Priority:** P1 · **Effort:** S · **Risk:** LOW · **Status:** TODO
+- **Source:** Superpowers 6 measured that capping model thinking increased turn count
+  and ~doubled output — a COST backfire. Our tripwire watches quality only. Anchors
+  verified 2026-07-07 @ `eb5c8f9`.
+- **Problem:** the `CHAIN_AGENT_EFFORT` experiment auto-reverts on quality signals only
+  (`evaluate_tripwire()`, `lib/analyze_telemetry.py:441-466`: any REGRESSION verdict,
+  any regressed journey, ≥2-of-3 first-attempt review FAILs). If lowering an agent's
+  effort doubles its output tokens — the measured Superpowers failure mode — the
+  tripwire never fires and the "saving" quietly costs more than baseline.
+- **Current state:** tripwire runner `run-goal.sh:1663-1677` (exit 3 = TRIP → banner,
+  `unset CHAIN_AGENT_EFFORT` `:1675`, `experiment_reverted` event `:1674`). Knob-active
+  iterations are marked by `iter_config` events (`run-goal.sh:1196-1197`; payload is
+  `{key:"CHAIN_AGENT_EFFORT", value:"<agent=lvl,…>"}` — the agent list is parseable
+  from `value`, verified). Per-agent output tokens already aggregated
+  (`analyze_telemetry.py` `by_agent` `:96`, `output_tokens` `:53`, per-agent rows
+  `:212`, JSON `:227`). The knob is headless-only (`agent_permissions.py:272-273`)
+  and headless always emits `claude_usage` events — the data is guaranteed present
+  exactly when the knob is active.
+- **Change spec:**
+  1. In `evaluate_tripwire()`: parse which agents the knob names from the `iter_config`
+     event payload; per knob-active iteration compute those agents' output-token
+     totals; baseline = median of the SAME agents' totals over the most recent ≤3
+     non-knob iterations of the session.
+  2. TRIP when the median knob-active total > baseline × (1 + PCT/100); PCT from
+     `CHAIN_TRIPWIRE_COST_PCT` (default `50`; value `off` disables the cost dimension
+     only). No non-knob baseline iterations available → SKIP the cost check with a
+     printed warning (never trip blind).
+  3. Distinguish trip reasons: the banner and the `experiment_reverted` event payload
+     gain `reason: quality|cost`.
+  4. Fixtures in the lib's self-test: (a) fabricated 2× output-token stream trips with
+     `reason: cost`; (b) normal cost does not trip; (c) missing baseline skips with
+     the warning. Ensure the self-test is registered in `run-evals.sh`.
+  5. Docs: knob-table row (`.claude/model-orchestration.md:135`) and tripwire section
+     (`docs/goal-mode-telemetry.md:182`) gain the cost dimension + PCT knob.
+- **DoD:** all three fixtures green; evals green; quality dimension byte-identical when
+  PCT=off.
+- **Verify:** re-grep the lib's self-test entrypoint first (anchors-are-hints rule),
+  then run it + `bash -n scripts/automation/run-goal.sh &&
+  ./scripts/automation/run-evals.sh`
+- **Files:** `scripts/automation/lib/analyze_telemetry.py`,
+  `scripts/automation/run-goal.sh` (banner text, if any),
+  `.claude/model-orchestration.md`, `docs/goal-mode-telemetry.md`.
+- **Rollback:** `CHAIN_TRIPWIRE_COST_PCT=off`; or revert the function edit (the quality
+  dimension is untouched).
+- **Stop-and-ask:** if `iter_config` events stop recording which agents the knob names
+  (grep the emitter at `run-goal.sh:1196-1197` first — today they do), extend the
+  event payload in the same change — but map every reader of `iter_config` before
+  adding a field (G3).
+
+### REL-9 · Test-first spec weighting in the decomposer
+- **Priority:** P1 · **Effort:** S · **Risk:** LOW · **Status:** TODO
+- **Source:** Superpowers 6 measured finding: test specifications + interface
+  definitions carry implementation quality; implementation bodies in plans are
+  marginal contributors. Anchors verified 2026-07-07 @ `eb5c8f9`.
+- **Problem:** the decomposer's spec template is outcome-oriented, but its
+  `## TESTING REQUIREMENTS` is three skeletal lines while `## IN SCOPE` invites
+  implementation bullets — the spec's detail budget is weighted toward the part that
+  matters least for downstream quality.
+- **Current state:** the template lives inside `agents/goal-decomposer/body.md:37-110`;
+  `## TESTING REQUIREMENTS` at `:101-105` ("Browser: <journeys>", "Unit/integration:
+  <code paths>", "Error cases: <invalid inputs>"); `### Data-contract additions` at
+  `:86-87` (canonical module + serving endpoint); pre-write self-check at `:184`. Spec
+  consumers are prompt-readers only (`goal-iter-lean.sh:121/:152/:284/:414`) plus the
+  J-ID regex `_spec_journeys()` (`goal-iter-lean.sh:299`) — additive spec content
+  breaks no parser. `agent.yaml`: v1.2.1, `model_tier: strong`.
+- **Change spec:**
+  1. `## TESTING REQUIREMENTS` contract: every DEFINITION OF DONE checkbox and every
+     Data-contract addition must map to ≥1 concrete scenario line of the form
+     `- TC-<n>: given <precondition>, when <action>, then <observable result>`; vague
+     verbs banned ("works", "properly", "correctly", "as expected"). The `TC-` prefix
+     deliberately matches TOKEN-3's skip-heuristic (a spec with ≥3 `TC-` lines lets
+     full mode skip test-plan generation).
+  2. `### Data-contract additions`: additionally require exact field name(s) +
+     type/shape alongside the existing canonical module + endpoint.
+  3. New rule near the pre-write self-check (`:184` region): implementation bullets in
+     IN SCOPE stay coarse (name the surface/file, not the code); when shortening a
+     spec, NEVER cut TESTING REQUIREMENTS or Data-contract additions (D6).
+  4. Version-bump `agent.yaml` 1.2.1→1.2.2, resync mirrors, commit together (G2).
+- **DoD:** rendered `.claude/agents/goal-decomposer.md` shows the TC- contract + rule;
+  evals green; the next real session's iter spec contains TC- lines (observed, not
+  gated).
+- **Verify:** `python3 scripts/automation/sync-cli-assets.py --cli claude && grep -n
+  "TC-" .claude/agents/goal-decomposer.md && ./scripts/automation/run-evals.sh`
+- **Files:** `agents/goal-decomposer/body.md` + `agent.yaml`, mirrors.
+- **Rollback:** revert the body edit + version bump; already-written specs keep working
+  (format is additive).
+- **Stop-and-ask:** if browser-qa or qa bodies enumerate the spec's section list as a
+  CLOSED set (grep before editing), update them in the same change (G3); otherwise
+  none beyond the ground rules.
 
 ---
 
@@ -1358,7 +1552,44 @@ New ideas land here (from EVO-2 retros, sessions, or the user). Human promotes t
 numbered section per EVO-1. Format: one `###` block per candidate, item format optional
 but appreciated.
 
-*(empty — nothing staged yet)*
+### CAND-TIER · Conditional developer tiering (staged — do not start)
+- **Proposed:** P2 · Effort M · Risk MED-HIGH · **Status:** staged; BLOCKED on EVO-3 +
+  REL-1 + explicit user spend-class approval (same class as TOKEN-2).
+- **Source:** Superpowers 6 "conditional implementer tiering" (≈$0.50-1.00/run saved by
+  routing simple work to Haiku). NOTE: our developer is already `standard`/sonnet-5
+  (`agents/developer/agent.yaml:5`), not strong — the addressable saving is smaller
+  than theirs. Anchors verified 2026-07-07 @ `eb5c8f9`.
+- **Sketch:** decomposer adds `Complexity: trivial|normal` to Goal Mode Metadata
+  (`agents/goal-decomposer/body.md:43-50`) with STRICT trivial criteria (single
+  file/config/copy change, no new endpoint, no data-contract addition, no new
+  journey — anything else = normal). The lean engine greps it like `_spec_journeys()`
+  (`goal-iter-lean.sh:299`); `trivial` + depth=lean + `CHAIN_DEV_TIER_EXPERIMENT=true`
+  (default off) → wrap ONLY the first developer pass with
+  `CHAIN_MODEL_OVERRIDE=$(python3 scripts/automation/lib/agent_permissions.py
+  tier-model light)` (injection mechanism: `quota-retry.sh:551-576`), cleared
+  immediately after. Fix-mode escalation unchanged and always wins
+  (`goal-iter-lean.sh:219/:226`, `common.sh:726-743`). Tripwire: reuse REL-8's
+  cost+quality machinery; additionally, any trivial-tagged iteration failing attempt-1
+  review disables the knob for the rest of the session.
+- **Why staged:** needs benchmark evidence (EVO-3) + judgment fixtures (REL-1) to prove
+  quality holds; spend-class per G1; and the win may be small — re-evaluate after
+  TOKEN-7 and REL-8 land.
+
+### CAND-CAPS · Output-cap enforcement for report contracts (staged — thin)
+- **Proposed:** P2 · Effort S · Risk LOW.
+- **Source:** Superpowers 6 "terse reviewer contract" (−54% reviewer verbosity, verdict
+  quality held). Our equivalents ALREADY exist in prose: reviewer output budgets
+  (`agents/reviewer/body.md:32-40`: PASS ≤200 tok / NOTES ≤400 / FAIL ≤800), summarizer
+  per-section caps (`agents/iteration-summarizer/body.md:77/:81/:139/:149/:216`),
+  narrator strict-JSON recipe (`agents/demo-narrator/body.md:45-66`). Missing is only
+  ENFORCEMENT/measurement.
+- **Sketch:** (a) static: SAFE-2's contract linter additionally asserts each
+  reviewer-class body states its output-budget table; (b) runtime: warn-only length
+  check in `lib/artifact_schemas.py` for review reports exceeding their verdict-class
+  budget; (c) measurement: existing per-agent output tokens
+  (`analyze_telemetry.py:96/:212`) — no new instrumentation.
+- **Why staged:** caps appear respected today; this is hygiene, not a win. Best
+  absorbed into SAFE-2's session rather than run standalone.
 
 ---
 
