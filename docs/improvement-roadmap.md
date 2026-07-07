@@ -148,57 +148,7 @@ resumable pauses).
 
 ### NEED-5 — DONE 2026-07-07, archived
 
-### NEED-6 · Assumption ledger — surfacing
-- **Priority:** P0 · **Effort:** M · **Risk:** MED · **Status:** IN-PROGRESS
-- **Problem:** a ledger nobody sees changes nothing. The human needs assumptions in the
-  iteration summary and HTML report so they can veto early (by editing goal.md — the
-  goal slice is rebuilt every iteration at `run-goal.sh:1221-1225`, so edits take effect
-  next iteration).
-- **Current state:** iteration-summarizer inputs are wired in `_run_iteration_summarizer`
-  (`run-goal.sh:244-277`, with `eval_log_inline`-style tail injection ~`:231-232`).
-  Summary template: `templates/iteration-summary.md`. The HTML renderer parses H2
-  sections generically via `_split_h2_sections`
-  (`scripts/automation/lib/render_iteration_summary.py:137-154`) and renders sections in
-  `render_html_iteration` (~`:1160-1165`); it skips absent sections.
-- **Change spec:**
-  1. `templates/iteration-summary.md`: new `## Assumptions made` H2 (after
-     `## Next step`).
-  2. `agents/iteration-summarizer/body.md`: add the assumptions tail to its inputs and
-     the new section to its output contract ("none recorded" when empty). Version-bump.
-  3. `_run_iteration_summarizer` wrapper: inline the assumptions tail like the evaluator
-     log tail.
-  4. Renderer: `_render_assumptions(data)` + insertion in `render_html_iteration`
-     (collapsed accordion, house style); extend the renderer's `self-test` with a
-     summary containing the new section AND one without it.
-- **DoD:** renderer self-test covers both cases; HTML shows the section when present,
-  nothing when absent; artifact-schema validation (if it checks section lists) updated;
-  evals green.
-- **Verify:** `python3 scripts/automation/lib/render_iteration_summary.py self-test &&
-  ./scripts/automation/run-evals.sh`
-- **Files:** `templates/iteration-summary.md`, `agents/iteration-summarizer/body.md` +
-  `agent.yaml`, `scripts/automation/run-goal.sh`,
-  `scripts/automation/lib/render_iteration_summary.py`, mirrors.
-- **Rollback:** revert; old summaries without the section keep rendering (renderer skips
-  absent sections).
-- **Stop-and-ask:** if `lib/artifact_schemas.py` hard-fails on unknown H2 sections
-  (check before adding the template section), coordinate the schema change in the same
-  commit or stop.
-- **Depends on:** NEED-5.
-- **Note (2026-07-07):** implemented this session. Stop-and-ask checked FIRST — code
-  read (`artifact_schemas.py:193-196` checks required-H2 presence only) AND empirically
-  validated (a summary with the new section passes `validate_path`), so no schema change
-  needed; `Assumptions made` deliberately NOT added to `required_h2` (old summaries must
-  keep validating). Template gains `## Assumptions made` after `## Next step` (one plain
-  bullet per ledger entry — the ledger's own `## iter-N` headings must never be copied
-  in, they'd fracture `_split_h2_sections`; "none recorded" when empty/phase mode).
-  Summarizer body: inline-tail input + authoring section; agent.yaml 1.0.0→1.1.0.
-  `_run_iteration_summarizer` inlines `_tail_or_placeholder "$ASSUMPTIONS_FILE" 200`
-  exactly like the evaluator-log tail. Renderer: `_render_assumptions` (collapsed
-  accordion, house style, bullets or plain "none recorded" text) inserted after
-  What's-left+Next-step; self-test covers WITH (goal fixture, bullet asserted in HTML)
-  and WITHOUT (phase fixture, accordion asserted absent). Verify block green: renderer
-  self-test pass, `bash -n` ok, sync --check ok, evals 79/79. Left IN-PROGRESS per
-  G8 — a FRESH session must verify and flip to DONE.
+### NEED-6 — DONE 2026-07-07, archived
 
 ### NEED-7 · Intent checkpoint (opt-in resumable pause)
 - **Priority:** P0 · **Effort:** M · **Risk:** MED · **Status:** TODO
