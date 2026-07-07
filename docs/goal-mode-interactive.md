@@ -50,7 +50,7 @@ then writes the result back. The pump protocol lives in
 |---|---|
 | `/goal [session-id] [flags]` | Start (or create) a session and run **until the goal is achieved, blocked, halted, or paused by the existing rules**. No iteration cap by default — set an optional budget with e.g. `/goal my-app --max-iter 50`. |
 | `/goal-status [session-id]` | Read-only: current iteration, last verdict, pause/halt state, and whether a dispatch is in flight. Never launches the engine, never writes. |
-| `/goal-resume [session-id] [flags]` | Resume a paused/halted session (blueprint approval, GitHub auth, quota reset, or a closed session). Resuming a blueprint pause counts as approval; a `REGRESSION_HALT` needs `--acknowledge-regression`. Cleanly stops a still-running prior engine first (no double-engine). |
+| `/goal-resume [session-id] [flags]` | Resume a paused/halted session (blueprint approval, intent review, GitHub auth, quota reset, or a closed session). Resuming a blueprint pause counts as approval, and resuming an intent-checkpoint pause (`AWAITING_INTENT_REVIEW`, from `--intent-checkpoint`/`--intent-checkpoint-at`) counts as acknowledgment; a `REGRESSION_HALT` needs `--acknowledge-regression`. Cleanly stops a still-running prior engine first (no double-engine). |
 | `/goal-pause [session-id]` | Cleanly stop a running session's (detached) engine, leaving a resumable `ABORTED` checkpoint. Use after Ctrl+C to make changes, then `/goal-resume`. |
 | `/goal-step [session-id]` | Run exactly **one** more iteration, then stop. Reuses the engine's `--max-iter` cap (adds no new stop rule). |
 
@@ -142,7 +142,10 @@ programmatic path with an API key** (`run-goal.sh` without `--interactive`).
   liveness (via `engine.pid` + `kill -0`): a **dead PID with `status: in_progress`**
   means the engine was orphaned (e.g. a Ctrl+C that never reached it) — `/goal-resume`.
   If it shows `AWAITING_BLUEPRINT_APPROVAL` or `AWAITING_GITHUB_AUTH`, do the named
-  step and `/goal-resume`. If it shows `AWAITING_PUMP` (or a `dispatch/.awaiting-pump`
+  step and `/goal-resume`. If it shows `AWAITING_INTENT_REVIEW` (opt-in
+  `--intent-checkpoint` / `--intent-checkpoint-at`), read
+  `runs/goal-session-<sid>/intent-review.md`, edit `docs/goal.md` if the product
+  is drifting, then `/goal-resume` (resuming acknowledges the checkpoint). If it shows `AWAITING_PUMP` (or a `dispatch/.awaiting-pump`
   marker is present), the pump/session went away mid-iteration — re-open the session
   and `/goal-resume` to re-run that iteration cleanly.
 - **I pressed Ctrl+C and the run kept going / I want to pause** — Ctrl+C stops the

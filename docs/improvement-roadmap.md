@@ -151,7 +151,15 @@ resumable pauses).
 ### NEED-6 — DONE 2026-07-07, archived
 
 ### NEED-7 · Intent checkpoint (opt-in resumable pause)
-- **Priority:** P0 · **Effort:** M · **Risk:** MED · **Status:** TODO
+- **Priority:** P0 · **Effort:** M · **Risk:** MED · **Status:** IN-PROGRESS
+- **Implementer note (2026-07-08):** implemented per change spec — flags + gate ("1c.
+  Intent checkpoint" in run-goal.sh, directly after the blueprint gate), deterministic
+  `assemble_intent_review()`, resume-ack (reset tuple + sibling ack block touching
+  `state/.intent-review-done`), docs (goal-status command + mirror, quickstart,
+  interactive), and `tests/automation/test-intent-checkpoint.sh` (5 scenarios) wired
+  into run-evals.sh 2c. The three blueprint-gate anchors were all intact (shifted
+  ~20-40 lines). Verify block + full eval suite (80/80) green locally. Per G8 a FRESH
+  session must re-run the Verify block and flip this to DONE — do not trust this note.
 - **Problem:** goal mode runs hands-off from goal.md to GOAL_ACHIEVED. If the journeys
   encode the wrong product, the user finds out at the end. There is no mid-session
   "does this match what you wanted?" moment.

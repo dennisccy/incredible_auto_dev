@@ -103,6 +103,7 @@ Halt verdicts:
 - `STALLED` — no journey progress for `--stall-window` iterations; edit `goal.md` (clearer journeys, narrower scope) and `--resume`
 - `REGRESSION_HALT` — a previously-passing journey now fails; review, fix manually if needed, then resume with `--acknowledge-regression`
 - `AWAITING_BLUEPRINT_APPROVAL` — only when you ran with `--require-blueprint-approval`: paused after baseline (or after a structural blueprint change) for you to review `state/blueprint.md`; `--resume` to continue (counts as approval)
+- `AWAITING_INTENT_REVIEW` — only when you ran with `--intent-checkpoint` / `--intent-checkpoint-at N`: paused once mid-session for you to read `runs/goal-session-<sid>/intent-review.md` ("is this still the product you wanted?"); `--resume` to continue (counts as acknowledgment; fires once per session)
 - `AWAITING_GITHUB_AUTH` — paused at startup because per-iter push is on but a push to `origin` wouldn't authenticate (expired GitHub session, or no remote); fix auth (the run will offer to launch `gh auth login` for you when interactive) and `--resume`
 
 ## Common workflows
@@ -189,6 +190,20 @@ $EDITOR runs/goal-session-my-app/state/blueprint.md   # check IA + Data Contract
 ```
 
 `--require-blueprint-approval` is a per-run flag — pass it on each invocation/resume to keep the review pause on (it also pauses on any later structural blueprint change). `--auto-approve-blueprint` is still accepted but is now the default.
+
+### Mid-session intent checkpoint (opt-in)
+
+Goal mode normally runs hands-off from `goal.md` to `GOAL_ACHIEVED` — if the journeys encode the wrong product, you find out at the end. `--intent-checkpoint` adds one resumable mid-session pause: when **≥ 50% of the Must-have journeys pass**, the loop stops with `AWAITING_INTENT_REVIEW` and writes `runs/goal-session-<sid>/intent-review.md` — a deterministic packet (no model call) with the journey digest, the project story, the assumption-ledger tail, links to the HTML reports, and targeted questions (the still-failing journeys and any `Reversible: no` assumptions). Prefer an iteration count instead? `--intent-checkpoint-at N` fires when the loop reaches iteration N (same convention as `--max-iter`). Both are off by default and fire at most once per session:
+
+```bash
+./scripts/automation/run-goal.sh --session-id my-app --intent-checkpoint
+# ... loop pauses once half the journeys pass ...
+$EDITOR runs/goal-session-my-app/intent-review.md   # is this the product you wanted?
+# drifting? edit docs/goal.md (journeys / anti-goals) before resuming
+./scripts/automation/run-goal.sh --resume --session-id my-app   # resuming = acknowledged
+```
+
+Like the blueprint pause, these are per-run flags; the once-per-session memory lives in `state/.intent-review-done`, so a later resume never re-fires it.
 
 ### Start over
 

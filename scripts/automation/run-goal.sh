@@ -12,6 +12,7 @@
 #                                    [--auto-release]
 #                                    [--acknowledge-regression]
 #                                    [--require-blueprint-approval]
+#                                    [--intent-checkpoint] [--intent-checkpoint-at N]
 #                                    [--no-push-per-iter] [--push-per-iter]
 #                                    [--push-branch <name>]
 #
@@ -27,6 +28,14 @@
 #                                (and on structural nav-skeleton changes). OFF by default — goal mode
 #                                auto-approves the AI-drafted blueprint and runs hands-off.
 #                                (--auto-approve-blueprint is still accepted but is now the default.)
+#   --intent-checkpoint          Opt-in mid-session pause (once per session): when >=50% of the
+#                                Must-have journeys pass, pause resumably with a deterministic
+#                                intent-review.md asking "is this still the product you wanted?".
+#                                OFF by default. --resume acknowledges and continues.
+#   --intent-checkpoint-at N     Same pause, but fire when the loop reaches iteration N (same
+#                                convention as --max-iter) instead of the 50% threshold. OFF by
+#                                default; combinable with --intent-checkpoint (first trigger wins;
+#                                still fires at most once per session).
 #   --push-per-iter              [Default ON for new sessions.] Commit + push each successful
 #                                iteration (CONTINUE / ESCALATE / GOAL_ACHIEVED) to a per-session
 #                                branch. No model invocation, no PR per iter — the branch is
@@ -48,6 +57,9 @@
 #   AWAITING_BLUEPRINT_APPROVAL - only with --require-blueprint-approval: paused after baseline (or a
 #                                 structural blueprint change) for the human to review/edit
 #                                 state/blueprint.md; resume with --resume (resuming counts as approval)
+#   AWAITING_INTENT_REVIEW - only with --intent-checkpoint / --intent-checkpoint-at: paused once
+#                            mid-session for the human to read intent-review.md ("is this the
+#                            product you wanted?"); resume with --resume (counts as acknowledgment)
 #   AWAITING_PUMP    - interactive pump/dispatch was unavailable mid-iteration (the foreground
 #                      session/pump went away); resumable — /goal-resume re-runs the same iteration
 #
@@ -99,6 +111,12 @@ PUSH_FLAG_USER="default"
 # Set in the resume branch (off | continuing | opting-in). Stays empty for
 # new sessions; the branch-lifecycle block only consults it when RUN_MODE=resume.
 RESUME_PUSH_MODE=""
+# Intent checkpoint (NEED-7): opt-in mid-session resumable pause asking the
+# human "is this still the product you wanted?". OFF by default; fires at most
+# once per session. --intent-checkpoint triggers at >=50% journeys passing;
+# --intent-checkpoint-at N triggers when the loop reaches iteration N.
+INTENT_CHECKPOINT=false
+INTENT_CHECKPOINT_AT=0
 
 # ── Parse flags ───────────────────────────────────────────────────────────
 while [[ $# -gt 0 ]]; do
@@ -113,6 +131,8 @@ while [[ $# -gt 0 ]]; do
     --auto-approve-blueprint)  AUTO_APPROVE_BLUEPRINT=true; shift ;;   # now the default; kept for back-compat
     --require-blueprint-approval) AUTO_APPROVE_BLUEPRINT=false; shift ;;
     --interactive)             INTERACTIVE=true; shift ;;
+    --intent-checkpoint)       INTENT_CHECKPOINT=true; shift ;;
+    --intent-checkpoint-at)    INTENT_CHECKPOINT_AT="$2"; shift 2 ;;
     --push-per-iter)           PUSH_PER_ITER=true;  PUSH_FLAG_USER="yes"; shift ;;
     --no-push-per-iter)        PUSH_PER_ITER=false; PUSH_FLAG_USER="no";  shift ;;
     --push-branch)             PUSH_BRANCH="$2"; shift 2 ;;
@@ -216,6 +236,10 @@ ASSUMPTIONS_FILE="$GOAL_SESSION_DIR_LOCAL/state/assumptions.md"
 BLUEPRINT_FILE="$GOAL_SESSION_DIR_LOCAL/state/blueprint.md"
 BLUEPRINT_APPROVED="$GOAL_SESSION_DIR_LOCAL/state/blueprint.approved"
 BLUEPRINT_REAPPROVAL="$GOAL_SESSION_DIR_LOCAL/state/blueprint.reapproval-requested"
+# Intent checkpoint (NEED-7): the deterministic review packet and the once-per-
+# session marker (touched when --resume acknowledges the pause).
+INTENT_REVIEW_FILE="$GOAL_SESSION_DIR_LOCAL/intent-review.md"
+INTENT_REVIEW_DONE="$GOAL_SESSION_DIR_LOCAL/state/.intent-review-done"
 SUMMARY_FILE="$GOAL_SESSION_DIR_LOCAL/summary.md"
 GOAL_FILE="$REPO_ROOT/docs/goal.md"
 
@@ -655,6 +679,115 @@ PY
   exit 0
 }
 
+# ── Intent checkpoint review packet (NEED-7) ──────────────────────────────
+# Assembles runs/goal-session-<sid>/intent-review.md DETERMINISTICALLY — pure
+# read/format of existing artifacts, no model dispatch. Every section fails
+# safe to a placeholder so the pause can never crash the engine.
+assemble_intent_review() {
+  local digest story ledger_tail blocking irreversible latest_iter_md latest_iter_html links
+  digest="$(python3 "$SCRIPT_DIR/lib/goal_gate.py" digest "$JOURNEY_HISTORY" 2>/dev/null \
+    || echo "(journey digest unavailable — read $JOURNEY_HISTORY)")"
+  story="$(cat "$GOAL_SESSION_DIR_LOCAL/state/project-story.md" 2>/dev/null \
+    || echo "(no project story yet — the first iterations have not written one)")"
+  ledger_tail="$(_tail_or_placeholder "$ASSUMPTIONS_FILE" 60 "(no assumptions recorded yet)")"
+  # Still-failing journeys via goal_gate's own status semantics
+  # (PASSING_STATUSES), so this list can never drift from the gates.
+  blocking="$(python3 - "$SCRIPT_DIR/lib/goal_gate.py" "$JOURNEY_HISTORY" <<'PY' 2>/dev/null || echo "(journey history unavailable)"
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("goal_gate", sys.argv[1])
+gg = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(gg)
+data = gg._load_history(sys.argv[2])
+if data is None:
+    print("(journey history unavailable)")
+else:
+    rows = [
+        f"- **{jid}** ({j.get('name', '') if isinstance(j, dict) else ''}): "
+        f"{j.get('status', '?') if isinstance(j, dict) else '?'}"
+        for jid, j in sorted(data["journeys"].items())
+        if not isinstance(j, dict) or j.get("status") not in gg.PASSING_STATUSES
+    ]
+    print("\n".join(rows) if rows else "(none — every journey currently passes)")
+PY
+)"
+  # Hard-to-reverse assumptions: ledger blocks whose **Reversible:** line says no.
+  irreversible="$(python3 - "$ASSUMPTIONS_FILE" <<'PY' 2>/dev/null || echo "(assumption ledger unreadable)"
+import re, sys
+from pathlib import Path
+p = Path(sys.argv[1])
+if not p.exists():
+    print("(none recorded)")
+    raise SystemExit
+out = []
+for block in re.split(r"(?m)^##\s+", p.read_text(encoding="utf-8"))[1:]:
+    if not re.search(r"(?mi)^\*\*Reversible:\*\*\s*no\b", block):
+        continue
+    header = block.splitlines()[0].strip()
+    amb = re.search(r"(?mi)^\*\*Ambiguity:\*\*\s*(.+)$", block)
+    chose = re.search(r"(?mi)^\*\*We chose:\*\*\s*(.+)$", block)
+    out.append(
+        f"- {header} — {amb.group(1).strip() if amb else '(ambiguity unrecorded)'}"
+        f" → chose: {chose.group(1).strip() if chose else '(choice unrecorded)'}"
+    )
+print("\n".join(out) if out else "(none — all recorded assumptions are reversible)")
+PY
+)"
+  latest_iter_md="$(ls -1 "$REPO_ROOT"/reports/phase-goal-"${SESSION_ID}"-iter-*-iteration-summary.md 2>/dev/null | sort -V | tail -1 || true)"
+  links="- Session index (HTML): file://$REPO_ROOT/reports/goal-session-${SESSION_ID}-index.html"
+  if [[ -n "$latest_iter_md" ]]; then
+    links+=$'\n'"- Latest iteration summary: ${latest_iter_md#"$REPO_ROOT"/}"
+    latest_iter_html="${latest_iter_md%-iteration-summary.md}-summary.html"
+    [[ -f "$latest_iter_html" ]] && links+="  (HTML: ${latest_iter_html#"$REPO_ROOT"/})"
+  else
+    links+=$'\n'"- Latest iteration summary: (none written yet)"
+  fi
+  cat > "$INTENT_REVIEW_FILE" <<EOF
+# Intent Review — session ${SESSION_ID} (paused before iteration ${CURRENT_ITER})
+
+Generated deterministically by run-goal.sh (\`--intent-checkpoint\` /
+\`--intent-checkpoint-at\`) — no model wrote this. The engine paused so YOU can
+check the product is becoming what you wanted before more gets built on it.
+
+**Progress:** ${_intent_passing} of ${_intent_total} Must-have journeys pass.
+
+## Journey digest
+
+\`\`\`
+${digest}
+\`\`\`
+
+## Where the product stands (project story)
+
+${story}
+
+## Recent assumptions (ledger tail)
+
+${ledger_tail}
+
+## Full reports
+
+${links}
+
+## Targeted questions
+
+1. **Still-failing journeys — is this still what you want built next?**
+
+${blocking}
+
+2. **Hard-to-reverse assumptions (\`Reversible: no\`) — veto any wrong call NOW:**
+
+${irreversible}
+
+## How to respond
+
+- Direction is right → just resume; no other action needed:
+  \`./scripts/automation/run-goal.sh --resume --session-id ${SESSION_ID}\`
+- Drifting → edit \`docs/goal.md\` (journeys / anti-goals) BEFORE resuming;
+  future iterations plan from your edited text.
+- This checkpoint fires once per session; resuming acknowledges it.
+EOF
+}
+
 # ── Session init / load ───────────────────────────────────────────────────
 mkdir -p "$GOAL_SESSION_DIR_LOCAL/state"
 
@@ -799,7 +932,7 @@ if $( [[ "$AUTO_RELEASE" == "true" ]] && echo "True" || echo "False" ):
 d["push_per_iter"] = $( [[ "$PUSH_PER_ITER" == "true" ]] && echo "True" || echo "False" )
 d["push_branch"] = "$PUSH_BRANCH"
 d["agent_backend"] = "$AGENT_BACKEND"
-if "$RUN_MODE" == "resume" and d.get("status") in ("REGRESSION_HALT", "AWAITING_BLUEPRINT_APPROVAL", "AWAITING_PUMP"):
+if "$RUN_MODE" == "resume" and d.get("status") in ("REGRESSION_HALT", "AWAITING_BLUEPRINT_APPROVAL", "AWAITING_PUMP", "AWAITING_INTENT_REVIEW"):
   d["status"] = "in_progress"
 import os as _os, tempfile as _tf
 _fd, _tmp = _tf.mkstemp(dir=_os.path.dirname("$SESSION_JSON") or ".", suffix=".sjtmp")
@@ -820,6 +953,14 @@ if [[ "$RUN_MODE" == "resume" && "$PRIOR_STATUS" == "AWAITING_BLUEPRINT_APPROVAL
   echo "[run-goal] Resuming from blueprint approval — treating your review of $BLUEPRINT_FILE as approval."
   touch "$BLUEPRINT_APPROVED"
   rm -f "$BLUEPRINT_REAPPROVAL"
+fi
+
+# Resuming from an intent-review pause: the human has read intent-review.md
+# (and possibly edited docs/goal.md). Resuming IS the acknowledgment — touch
+# the marker so the checkpoint never fires again this session.
+if [[ "$RUN_MODE" == "resume" && "$PRIOR_STATUS" == "AWAITING_INTENT_REVIEW" ]]; then
+  echo "[run-goal] Resuming from intent review — acknowledged; the checkpoint will not fire again this session."
+  touch "$INTENT_REVIEW_DONE"
 fi
 
 # ── Export shared env for invoked agents ──────────────────────────────────
@@ -1161,6 +1302,70 @@ PY
     echo ""
     echo "Resume:  ./scripts/automation/run-goal.sh --resume --session-id $SESSION_ID"
     echo "Skip the review next time:  add --auto-approve-blueprint"
+    echo "════════════════════════════════════════════════════════════════════"
+    exit 0
+  fi
+
+  # 1c. Intent checkpoint (NEED-7) — opt-in mid-session pause for the human:
+  # "is this still the product you wanted?". Cloned from the blueprint gate
+  # above: fires at the TOP of the loop (never mid-iteration), writes a
+  # resumable status, exits 0; --resume acknowledges it (sibling block next to
+  # the blueprint resume-as-approval). Fires at most once per session
+  # (state/.intent-review-done). intent-review.md is assembled
+  # deterministically — no model dispatch. Triggers: --intent-checkpoint at
+  # passing/total >= 50%; --intent-checkpoint-at N when the loop reaches
+  # iteration N (same convention as --max-iter).
+  _need_intent_review=false
+  _intent_total=0
+  _intent_passing=0
+  if [[ ! -f "$INTENT_REVIEW_DONE" ]] \
+     && [[ "$INTENT_CHECKPOINT" == "true" || "$INTENT_CHECKPOINT_AT" -gt 0 ]]; then
+    read -r _intent_total _intent_passing <<<"$(
+      { python3 "$SCRIPT_DIR/lib/goal_gate.py" journeys "$JOURNEY_HISTORY" 2>/dev/null || true; } \
+        | python3 -c 'import json, sys
+try:
+    d = json.loads(sys.stdin.read() or "{}")
+    print(int(d.get("total", 0)), int(d.get("passing", 0)))
+except Exception:
+    print(0, 0)'
+    )"
+    if [[ "$INTENT_CHECKPOINT_AT" -gt 0 && $CURRENT_ITER -ge $INTENT_CHECKPOINT_AT ]]; then
+      _need_intent_review=true
+    elif [[ "$INTENT_CHECKPOINT" == "true" && "$_intent_total" -gt 0 \
+            && $(( 2 * _intent_passing )) -ge "$_intent_total" ]]; then
+      _need_intent_review=true
+    fi
+  fi
+  if [[ "$_need_intent_review" == "true" ]]; then
+    assemble_intent_review
+    python3 - <<PY
+import json, datetime
+d = json.load(open("$SESSION_JSON"))
+d["status"] = "AWAITING_INTENT_REVIEW"
+d["updated_at"] = datetime.datetime.now(datetime.UTC).isoformat().replace('+00:00','Z')
+import os as _os, tempfile as _tf
+_fd, _tmp = _tf.mkstemp(dir=_os.path.dirname("$SESSION_JSON") or ".", suffix=".sjtmp")
+with _os.fdopen(_fd, "w") as _f:
+    json.dump(d, _f, indent=2)
+    _f.write("\n")
+_os.replace(_tmp, "$SESSION_JSON")
+PY
+    record_telemetry_event "halt" '{"reason":"AWAITING_INTENT_REVIEW","detected_at_step":"pre_decomposer"}'
+    echo ""
+    echo "════════════════════════════════════════════════════════════════════"
+    echo "[run-goal] PAUSED — intent checkpoint: is this the product you wanted?"
+    echo "════════════════════════════════════════════════════════════════════"
+    echo "Progress: ${_intent_passing} of ${_intent_total} Must-have journeys pass."
+    echo ""
+    echo "Review (~5 min):  $INTENT_REVIEW_FILE"
+    echo "  1. Journey digest + targeted questions — is what's still failing what"
+    echo "     you want built next?"
+    echo "  2. Hard-to-reverse assumptions — veto any wrong interpretation NOW."
+    echo "If the product is drifting, edit docs/goal.md (journeys / anti-goals)"
+    echo "before resuming — future iterations plan from your edited text."
+    echo ""
+    echo "Resume:  ./scripts/automation/run-goal.sh --resume --session-id $SESSION_ID"
+    echo "(The checkpoint fires once per session; resuming acknowledges it.)"
     echo "════════════════════════════════════════════════════════════════════"
     exit 0
   fi

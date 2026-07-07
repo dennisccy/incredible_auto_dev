@@ -22,5 +22,8 @@ the engine, dispatch agents, or write anything.
    say so and point to `/goal-resume <sid>`. Also point the user at the full
    timestamped log: `tail -f runs/goal-session-<sid>/engine.log`.
 6. Summarize plainly whether the session is **running**, **paused** (and exactly
-   how to resume — e.g. review the blueprint then `/goal-resume`), **orphaned**
-   (dead engine PID — `/goal-resume`), or **finished** (and the final verdict).
+   how to resume — e.g. review the blueprint then `/goal-resume`; for
+   `AWAITING_INTENT_REVIEW` point at `runs/goal-session-<sid>/intent-review.md`,
+   the opt-in `--intent-checkpoint` "is this the product you wanted?" pause —
+   resuming acknowledges it), **orphaned** (dead engine PID — `/goal-resume`),
+   or **finished** (and the final verdict).
