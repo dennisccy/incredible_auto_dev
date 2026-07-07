@@ -150,57 +150,7 @@ resumable pauses).
 
 ### NEED-6 — DONE 2026-07-07, archived
 
-### NEED-7 · Intent checkpoint (opt-in resumable pause)
-- **Priority:** P0 · **Effort:** M · **Risk:** MED · **Status:** IN-PROGRESS
-- **Implementer note (2026-07-08):** implemented per change spec — flags + gate ("1c.
-  Intent checkpoint" in run-goal.sh, directly after the blueprint gate), deterministic
-  `assemble_intent_review()`, resume-ack (reset tuple + sibling ack block touching
-  `state/.intent-review-done`), docs (goal-status command + mirror, quickstart,
-  interactive), and `tests/automation/test-intent-checkpoint.sh` (5 scenarios) wired
-  into run-evals.sh 2c. The three blueprint-gate anchors were all intact (shifted
-  ~20-40 lines). Verify block + full eval suite (80/80) green locally. Per G8 a FRESH
-  session must re-run the Verify block and flip this to DONE — do not trust this note.
-- **Problem:** goal mode runs hands-off from goal.md to GOAL_ACHIEVED. If the journeys
-  encode the wrong product, the user finds out at the end. There is no mid-session
-  "does this match what you wanted?" moment.
-- **Current state:** the blueprint-approval gate is the proven resumable-pause pattern:
-  pause block `run-goal.sh:1095-1147`, resume-status reset tuple `~:783`,
-  resume-as-approval `~:800-804`. Flag parsing lives `~:104-121`; header status docs
-  `~:46-52`. Journey counts are available deterministically via
-  `python3 lib/goal_gate.py journeys` (`lib/goal_gate.py:68-86`); journey digest via
-  `goal_gate.py digest`.
-- **Change spec:**
-  1. New flags: `--intent-checkpoint` (fire once when passing/total ≥ 50%) and
-     `--intent-checkpoint-at N` (fire at iteration N). Both off by default.
-  2. Gate at top-of-loop directly after the blueprint gate (`~:1147`), before ITER_DIR
-     setup: if enabled, threshold met, and marker `state/.intent-review-done` absent —
-     assemble `runs/goal-session-<sid>/intent-review.md` **deterministically** (no
-     model): journey digest, assumptions.md tail (if NEED-5 shipped), project-story.md,
-     links to `reports/goal-session-<sid>-index.html` + latest iteration summary HTML,
-     and targeted questions (list of still-failing journeys + any `Reversible: no`
-     assumptions). Write session status `AWAITING_INTENT_REVIEW` (atomic python heredoc,
-     same as blueprint gate), telemetry halt event, banner, exit 0.
-  3. Resume (`--resume`): treat as acknowledgment — add `AWAITING_INTENT_REVIEW` to the
-     reset tuple and a sibling ack block that touches the marker. Fires once per session.
-  4. Docs: `commands/goal-status.md` explains the new pause;
-     `docs/goal-mode-quickstart.md` + `docs/goal-mode-interactive.md` document the flags.
-  5. New `tests/automation/test-intent-checkpoint.sh` modeled on
-     `tests/automation/test-goal-checkpoints.sh` (sandbox repo + stub `claude` +
-     fabricated `journey-history.json` at 50%): asserts fire-at-threshold, fire-once,
-     resume-ack.
-- **DoD:** sandbox session with `--intent-checkpoint-at 1` pauses after iter 1 with
-  `intent-review.md` on disk and `status=AWAITING_INTENT_REVIEW`; `--resume` proceeds
-  and never fires again; test green; evals green.
-- **Verify:** `bash -n scripts/automation/run-goal.sh &&
-  bash tests/automation/test-intent-checkpoint.sh && ./scripts/automation/run-evals.sh`
-- **Files:** `scripts/automation/run-goal.sh`, `commands/goal-status.md` + mirror,
-  `docs/goal-mode-quickstart.md`, `docs/goal-mode-interactive.md`,
-  `tests/automation/test-intent-checkpoint.sh` (new).
-- **Rollback:** flags default-off ⇒ removing the gate block restores old behavior;
-  the marker file is inert.
-- **Stop-and-ask:** if the blueprint-gate code has been refactored away from the three
-  anchors, stop and re-plan against whatever replaced it (the design is "clone the
-  existing pause", not "invent a pause").
+### NEED-7 — DONE 2026-07-08, archived
 
 ### NEED-8 · Proposer enablement + vision-gap detection
 - **Priority:** P0 · **Effort:** M · **Risk:** LOW · **Status:** TODO
