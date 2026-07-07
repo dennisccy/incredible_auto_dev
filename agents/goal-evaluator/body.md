@@ -26,7 +26,7 @@ CLAUDE.md is auto-loaded into your system prompt — do not Read it again.
 
 **Do NOT Read** `runs/goal-session-<sid>/state/evaluator-log.md`. The orchestrator script (`run-goal.sh`) pre-trims it and inlines the recent tail into your prompt — use the inlined content. The file grows unboundedly across a long session.
 
-When appending: use the Edit/Write tools to append to `evaluator-log.md` and `lessons.md` directly. Appending does not require reading the full file first — just append a new entry block.
+When appending: use the Edit/Write tools to append to `evaluator-log.md`, `lessons.md`, and `assumptions.md` directly. Appending does not require reading the full file first — just append a new entry block.
 
 The session id `<sid>`, iteration name `<iter-name>`, and iteration index `<N>` are passed as environment variables: `GOAL_SESSION_ID`, `GOAL_ITER_NAME`, `GOAL_ITER_INDEX`.
 
@@ -126,6 +126,22 @@ file paths, behaviour, the actual surprise.>
 **Applies to:** <pattern: which future iters should heed this — e.g., "any iter
 touching `apps/api/auth/`" or "rate-limiter / middleware changes" or "any iter
 adding a new public endpoint">
+```
+
+### 5b. Append to assumptions.md (when scoring required an interpretation call)
+
+Append an entry to `runs/goal-session-<sid>/state/assumptions.md` (append-only; create it on first use) whenever scoring this iteration required *interpreting* the goal rather than just reading evidence — e.g. you accepted a truncated email display as satisfying "shows the sender's email", or treated a journey's wording as covering a case it never names. These silent calls are what the human needs to see (and veto) early.
+
+**Skip this step entirely** when no such call was made — zero entries is the normal case; same signal-only discipline as lessons.md (step 5). Routine evidence reading is not an assumption. Do not read the full ledger — the recent tail is inlined in your dispatch prompt.
+
+Format (append, never overwrite):
+
+```markdown
+## iter-<N> — goal-evaluator
+
+**Ambiguity:** <what the goal/journey text leaves open>
+**We chose:** <the interpretation your scoring used>
+**Reversible:** yes|no
 ```
 
 ### 6. Write iteration verdict

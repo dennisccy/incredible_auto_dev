@@ -147,7 +147,7 @@ resumable pauses).
 ### NEED-4 — DONE 2026-07-07, archived
 
 ### NEED-5 · Assumption ledger — writers
-- **Priority:** P0 · **Effort:** M · **Risk:** MED · **Status:** TODO
+- **Priority:** P0 · **Effort:** M · **Risk:** MED · **Status:** IN-PROGRESS
 - **Problem:** the decomposer and evaluator make silent interpretation calls ("the spec
   is ambiguous about X, we chose Y") that the human never sees until the product is
   wrong. Judgment-rubrics §3 only covers the extreme case (STALLED on conflicting
@@ -182,6 +182,13 @@ resumable pauses).
 - **Stop-and-ask:** if the evaluator's prompt assembly has structurally changed from the
   anchors (no `LESSONS_TAIL`-style inlining found), stop — the inline pattern is the
   design, not an implementation detail.
+- **Note (2026-07-07):** implemented this session — writer rules in both agent bodies
+  (decomposer Rules bullet, evaluator step 5b), `ASSUMPTIONS_FILE` + `ASSUMPTIONS_TAIL`
+  wired into both dispatch prompts (tail recomputed fresh at the evaluator site), both
+  agent.yaml bumped to 1.3.0, mirrors resynced. Stop-and-ask checked: `LESSONS_TAIL`
+  inlining intact at implementation time. Verify block green (sync ok, grep found
+  ledger text in both rendered agents, `bash -n` ok, evals 79/79). Left IN-PROGRESS
+  per G8 — a FRESH session must verify and flip to DONE.
 
 ### NEED-6 · Assumption ledger — surfacing
 - **Priority:** P0 · **Effort:** M · **Risk:** MED · **Status:** TODO

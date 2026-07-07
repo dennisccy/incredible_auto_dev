@@ -207,6 +207,10 @@ ensure_cli_assets_synced "$CHAIN_CLI"
 JOURNEY_HISTORY="$GOAL_SESSION_DIR_LOCAL/state/journey-history.json"
 EVALUATOR_LOG="$GOAL_SESSION_DIR_LOCAL/state/evaluator-log.md"
 LESSONS_FILE="$GOAL_SESSION_DIR_LOCAL/state/lessons.md"
+# Assumption ledger (NEED-5): append-only record of interpretation calls the
+# decomposer/evaluator made where the goal was ambiguous. Created lazily by the
+# agents on first append; absent file renders as a placeholder in prompts.
+ASSUMPTIONS_FILE="$GOAL_SESSION_DIR_LOCAL/state/assumptions.md"
 # Coherence blueprint (information architecture + data contract). Drafted by the
 # baseline decomposer, approved once by the human, enforced each iteration.
 BLUEPRINT_FILE="$GOAL_SESSION_DIR_LOCAL/state/blueprint.md"
@@ -1219,6 +1223,7 @@ PY
   # 200 lines is conservative and covers multi-paragraph entries.
   EVALUATOR_LOG_TAIL=$(_tail_or_placeholder "$EVALUATOR_LOG" 200 "(no entries yet — first iteration)")
   LESSONS_TAIL=$(_tail_or_placeholder "$LESSONS_FILE" 200 "(no lessons recorded yet)")
+  ASSUMPTIONS_TAIL=$(_tail_or_placeholder "$ASSUMPTIONS_FILE" 200 "(no assumptions recorded yet)")
   # Token-lean goal view (T1/T8): stable passing journeys digested to one line,
   # vision/anti-goals/failing journeys verbatim; plus an inline journey digest.
   # Both fail safe (full file / placeholder) — see lib/goal_gate.py.
@@ -1264,6 +1269,11 @@ $EVALUATOR_LOG_TAIL
 Lessons learned (full file, append-only):
 \`\`\`
 $LESSONS_TAIL
+\`\`\`
+Assumption ledger (append-only): $ASSUMPTIONS_FILE  <-- when a spec decision requires interpreting an ambiguous goal, append an entry per your agent instructions; zero entries is normal. Do not read the full file — recent tail below.
+Recent assumption entries (pre-trimmed):
+\`\`\`
+$ASSUMPTIONS_TAIL
 \`\`\`
 Journey state (inline digest; Read $JOURNEY_HISTORY only for fields the digest omits):
 \`\`\`
@@ -1483,6 +1493,9 @@ Do NOT write code or implement anything. The iteration spec and any blueprint ed
   EVAL_OUTPUT="$ITER_DIR/eval.md"
   # Pre-trim — evaluator spec asks for "last 5 entries"; 300 lines covers it.
   EVALUATOR_LOG_TAIL_5=$(_tail_or_placeholder "$EVALUATOR_LOG" 300 "(no entries yet — first evaluation)")
+  # Recompute the assumptions tail fresh (not the decomposer-time value): the
+  # decomposer may have appended entries earlier in this same iteration.
+  ASSUMPTIONS_TAIL=$(_tail_or_placeholder "$ASSUMPTIONS_FILE" 200 "(no assumptions recorded yet)")
   if [[ -f "$ITER_DIR/.evaluated" && -f "$EVAL_OUTPUT" ]]; then
     # A prior attempt of this iteration completed its evaluation but crashed
     # before current_iter advanced. Re-running the evaluator would double-append
@@ -1528,10 +1541,16 @@ Prior session state:
   Journey history: $JOURNEY_HISTORY  <-- update this with new state (full atomic write)
   Evaluator log: $EVALUATOR_LOG  <-- append a new entry; do not overwrite or read the full file (last 5 entries pre-trimmed below)
   Lessons file: $LESSONS_FILE  <-- append a brief lesson entry capturing a non-obvious takeaway (1-3 sentences). Skip if nothing surprising happened.
+  Assumption ledger: $ASSUMPTIONS_FILE  <-- append an entry when a scoring decision required interpreting an ambiguous goal (step 5b of your instructions). Skip when none — zero entries is normal.
 
 Recent evaluator log entries (last 5, pre-trimmed):
 \`\`\`
 $EVALUATOR_LOG_TAIL_5
+\`\`\`
+
+Recent assumption entries (pre-trimmed):
+\`\`\`
+$ASSUMPTIONS_TAIL
 \`\`\`
 
 Apply the TOKEN AND QUESTIONING POLICY from .claude/core.md strictly.
