@@ -15,8 +15,9 @@
 #     ② GOAL_ACHIEVED → deterministic achievement gate: every journey passing
 #       in journey-history.json, coherence not FAIL/stub, no FAIL cells in the
 #       browser results, no critical scan findings, no passing→failing
-#       regressions vs the pre-iteration snapshot. Any miss → demoted to
-#       CONTINUE with a written gate-report.md
+#       regressions vs the pre-iteration snapshot, no goal-edited journey
+#       still passing on its OLD text (journeys-changed.md drift check).
+#       Any miss → demoted to CONTINUE with a written gate-report.md
 #     ③ gates green → two-key confirm: ONE fresh-context adversarial
 #       evaluator dispatch (strong tier, max effort) must answer
 #       CONFIRM_ACHIEVED; anything else demotes to CONTINUE (fail-closed)
@@ -139,6 +140,22 @@ goal_gate_achievement() {
   else
     lines+=("- FAIL regressions (rc=$_rc): ${_out//$'\n'/; }")
     failures=$((failures + 1))
+  fi
+
+  # 6. Goal-edit drift (NEED-9): journeys flagged in journeys-changed.md
+  #    (goal.md text edited after they last passed) must have been re-verified
+  #    against the NEW text — spec_hash re-recorded by the evaluator — or
+  #    demoted out of passing. A stale pass must never certify.
+  if [[ -f "$iter_dir/journeys-changed.md" ]]; then
+    _rc=0; _out="$(python3 "$_GOAL_GATES_DIR/goal_gate.py" drift "$iter_dir/journeys-changed.md" "$history" 2>&1)" || _rc=$?
+    if [[ $_rc -eq 0 ]]; then
+      lines+=("- PASS drift: every goal-edited journey re-verified or demoted")
+    else
+      lines+=("- FAIL drift (rc=$_rc): ${_out//$'\n'/; }")
+      failures=$((failures + 1))
+    fi
+  else
+    lines+=("- PASS drift: no goal-edit drift note this iteration")
   fi
 
   lines+=("" "**Gate result:** $([[ $failures -eq 0 ]] && echo PASS || echo "FAIL ($failures check(s) failed)")")
@@ -373,6 +390,32 @@ _goal_gates_self_test() {
   printf '# scan\n\n**Result:** CRITICAL — 1 critical, 0 warn\n\n- **CRITICAL** `aws-access-key` in `config.py`: AKIA...\n' > "$d/iter-3/scan-report.md"
   v="$(goal_gate_filter_verdict GOAL_ACHIEVED "$d/iter-3" "$EVALF" "$HIST_PASS" "$COH" true "$RES" "$d/session" "$d/goal.md" 2>/dev/null)"
   [[ "$v" == "CONTINUE" ]] && echo "  PASS goal-gates: critical scan finding blocks certification" || { echo "  FAIL goal-gates: scan block (got '$v')"; fails=1; }
+
+  # 10. Goal-edit drift (NEED-9): the note is built by the REAL writer
+  #     (hash-journeys) from a stale-hash history. A flagged journey whose
+  #     spec_hash was never re-recorded blocks certification; re-recording
+  #     the current hash (= re-verified against the new text) certifies;
+  #     no note → a stale hash alone never blocks (pre-NEED-9 tolerance).
+  printf '# scan\n\n**Result:** CLEAN — nothing.\n' > "$d/iter-3/scan-report.md"
+  printf '# g\n\n- **J-01: A**\n  - Acceptance: freshly edited text\n- **J-02: B**\n  - Acceptance: unchanged\n' > "$d/goal-drift.md"
+  local ZERO64="0000000000000000000000000000000000000000000000000000000000000000"
+  local HIST_STALE="$d/hist-stale.json"
+  printf '{"journeys":{"J-01":{"status":"passing","name":"A","spec_hash":"%s"},"J-02":{"status":"already_passing","name":"B"}}}' "$ZERO64" > "$HIST_STALE"
+  python3 "$_GOAL_GATES_DIR/goal_gate.py" hash-journeys "$d/goal-drift.md" \
+    --history "$HIST_STALE" --out-changed "$d/iter-3/journeys-changed.md" >/dev/null 2>&1
+  [[ -f "$d/iter-3/journeys-changed.md" ]] || { echo "  FAIL goal-gates: drift fixture note not written"; fails=1; }
+  cp "$HIST_STALE" "$PRE"
+  v="$(goal_gate_filter_verdict GOAL_ACHIEVED "$d/iter-3" "$EVALF" "$HIST_STALE" "$COH" true "$RES" "$d/session" "$d/goal.md" 2>/dev/null)"
+  [[ "$v" == "CONTINUE" ]] && echo "  PASS goal-gates: changed-hash journey demotes GOAL_ACHIEVED" || { echo "  FAIL goal-gates: drift demote (got '$v')"; fails=1; }
+  grep -q "FAIL drift" "$d/iter-3/gate-report.md" || { echo "  FAIL goal-gates: gate-report missing drift failure"; fails=1; }
+  local _h01 HIST_REVERIFIED="$d/hist-reverified.json"
+  _h01="$(python3 "$_GOAL_GATES_DIR/goal_gate.py" hash-journeys "$d/goal-drift.md" 2>/dev/null | python3 -c 'import sys,json;print(json.load(sys.stdin)["J-01"])')"
+  printf '{"journeys":{"J-01":{"status":"passing","name":"A","spec_hash":"%s"},"J-02":{"status":"already_passing","name":"B"}}}' "$_h01" > "$HIST_REVERIFIED"
+  v="$(goal_gate_filter_verdict GOAL_ACHIEVED "$d/iter-3" "$EVALF" "$HIST_REVERIFIED" "$COH" true "$RES" "$d/session" "$d/goal.md" 2>/dev/null)"
+  [[ "$v" == "GOAL_ACHIEVED" ]] && echo "  PASS goal-gates: re-verified journey (spec_hash re-recorded) certifies" || { echo "  FAIL goal-gates: drift re-verified (got '$v')"; fails=1; }
+  rm -f "$d/iter-3/journeys-changed.md"
+  v="$(goal_gate_filter_verdict GOAL_ACHIEVED "$d/iter-3" "$EVALF" "$HIST_STALE" "$COH" true "$RES" "$d/session" "$d/goal.md" 2>/dev/null)"
+  [[ "$v" == "GOAL_ACHIEVED" ]] && echo "  PASS goal-gates: no drift note → stale hash alone never blocks" || { echo "  FAIL goal-gates: drift absent-note (got '$v')"; fails=1; }
 
   unset -f claude_with_quota_retry
   rm -rf "$d"

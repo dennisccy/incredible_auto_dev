@@ -41,6 +41,16 @@ CLI:
         (old sessions must not be demoted).
         exit 0 (informational — changes are reported, not enforced here)
         exit 2: goal.md unreadable
+    python3 goal_gate.py drift <journeys-changed.md> <journey-history.json>
+        The enforcement side of hash-journeys (achievement gate, NEED-9):
+        every journey listed in the note must have been re-verified against
+        the edited goal text — its recorded spec_hash re-recorded to the
+        note's current hash — or demoted out of passing/already_passing.
+        exit 0: no note file, or every listed journey re-verified/demoted
+        exit 1: a listed journey still counts as passing on the OLD text
+        exit 2: note present but unparsable, or history unreadable (a
+        certification path — fails CLOSED)
+        stdout: one line per unresolved journey
     python3 goal_gate.py self-test
 """
 from __future__ import annotations
@@ -266,6 +276,51 @@ def cmd_hash_journeys(
     return 0
 
 
+# One journey line of the note cmd_hash_journeys writes. Writer and parser
+# live in this file on purpose: the self-test round-trips them, so a format
+# change cannot silently disable the drift gate (it fails closed instead).
+_CHANGED_NOTE_LINE_RE = re.compile(
+    r"^-\s+(J-\d+)\s+\(.*\):\s*status\s+\S+,\s*"
+    r"spec_hash\s+[0-9a-f]+…\s*→\s*([0-9a-f]+)…\s*$",
+    re.MULTILINE,
+)
+
+
+def cmd_drift(note_path: str, history_path: str) -> int:
+    note = Path(note_path)
+    if not note.exists():
+        # No drift note this iteration — nothing to enforce.
+        return 0
+    try:
+        entries = _CHANGED_NOTE_LINE_RE.findall(note.read_text(encoding="utf-8"))
+    except OSError:
+        print(f"drift note unreadable: {note_path}", file=sys.stderr)
+        return 2
+    if not entries:
+        print(f"drift note has no parsable journey lines: {note_path}", file=sys.stderr)
+        return 2
+    data = _load_history(history_path)
+    if data is None:
+        print(f"journey history unreadable: {history_path}", file=sys.stderr)
+        return 2
+    unresolved: list[str] = []
+    for jid, current_prefix in entries:
+        j = data["journeys"].get(jid)
+        if not isinstance(j, dict):
+            unresolved.append(f"{jid}: listed as goal-edited but missing from journey-history")
+            continue
+        if j.get("status") not in PASSING_STATUSES:
+            continue  # demoted — the all-passing journeys check blocks achievement
+        if not str(j.get("spec_hash") or "").startswith(current_prefix):
+            unresolved.append(
+                f"{jid}: still {j.get('status')} but spec_hash was not re-recorded "
+                "against the edited goal text (stale pass)"
+            )
+    for line in sorted(unresolved):
+        print(line)
+    return 1 if unresolved else 0
+
+
 def cmd_goal_slice(
     goal_path: str,
     history_path: str,
@@ -454,6 +509,46 @@ def _self_test() -> int:
         assert cmd_hash_journeys(str(goal), str(d / "missing.json"), str(note)) == 0
         assert not note.exists(), "missing history = unknown → no note"
 
+        # drift: the achievement-gate side of NEED-9. Parses the note that
+        # cmd_hash_journeys itself wrote (writer↔parser round-trip lives in
+        # this one file) and fails unless every listed journey was re-verified
+        # against the edited text (spec_hash re-recorded) or demoted out of
+        # passing. Certification path → fail closed on anything unreadable.
+        assert cmd_drift(str(d / "no-note.md"), str(hist_hash)) == 0, \
+            "no note → nothing to enforce"
+        assert cmd_hash_journeys(str(goal), str(hist_hash), str(note)) == 0
+        assert note.exists(), "fixture: stale J-01 must be flagged again"
+        assert cmd_drift(str(note), str(hist_hash)) == 1, \
+            "listed journey still passing on the old hash → unresolved"
+        hist_reverified = d / "hist-reverified.json"
+        hist_reverified.write_text(json.dumps({"journeys": {
+            "J-01": {"status": "passing", "name": "Login", "spec_hash": h1["J-01"]},
+            "J-02": {"status": "failing", "name": "Browse", "spec_hash": "0" * 64},
+            "J-03": {"status": "already_passing", "name": "Export"},
+        }}), encoding="utf-8")
+        assert cmd_drift(str(note), str(hist_reverified)) == 0, \
+            "spec_hash re-recorded against the new text = re-verified"
+        hist_demoted = d / "hist-demoted.json"
+        hist_demoted.write_text(json.dumps({"journeys": {
+            "J-01": {"status": "unknown", "name": "Login", "spec_hash": "0" * 64},
+        }}), encoding="utf-8")
+        assert cmd_drift(str(note), str(hist_demoted)) == 0, \
+            "demoted out of passing = resolved (the all-passing gate blocks it)"
+        hist_gone = d / "hist-gone.json"
+        hist_gone.write_text('{"journeys": {}}', encoding="utf-8")
+        assert cmd_drift(str(note), str(hist_gone)) == 1, \
+            "listed journey missing from history → fail closed"
+        assert cmd_drift(str(note), str(d / "missing.json")) == 2, \
+            "note present but history unreadable → fail closed"
+        garbage = d / "garbage-note.md"
+        garbage.write_text(
+            "# Passing journeys whose goal.md text changed\n\nprose only\n",
+            encoding="utf-8")
+        assert cmd_drift(str(garbage), str(hist_hash)) == 2, \
+            "note with no parsable journey lines → fail closed (format drift)"
+        assert cmd_journeys(str(hist_ok)) == 0, \
+            "histories carrying spec_hash must parse everywhere"
+
     print("self-test passed")
     return 0
 
@@ -506,6 +601,8 @@ def main(argv: list[str]) -> int:
             else:
                 i += 1
         return cmd_hash_journeys(args[0], history_p, out_changed)
+    if cmd == "drift" and len(args) >= 2:
+        return cmd_drift(args[0], args[1])
     if cmd == "self-test":
         return _self_test()
     print(f"unknown command: {cmd}", file=sys.stderr)

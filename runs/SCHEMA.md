@@ -153,6 +153,7 @@ Also included as a section inside `reports/qa/<phase>-qa.md` when `Frontend Pres
 | Cumulative project story (goal mode) | `runs/goal-session-<sid>/state/project-story.md` |
 | Coherence blueprint (goal mode) | `runs/goal-session-<sid>/state/blueprint.md` |
 | Coherence audit per iter (goal mode) | `runs/goal-session-<sid>/iter-<N>/coherence.md` |
+| Goal-edit drift note (goal mode) | `runs/goal-session-<sid>/iter-<N>/journeys-changed.md` |
 | GOAL_ACHIEVED delivered wrap (MD) | `reports/goal-session-<sid>-delivered.md` |
 | GOAL_ACHIEVED delivered wrap (HTML) | `reports/goal-session-<sid>-delivered.html` |
 
@@ -355,6 +356,31 @@ check table, an Information-Architecture check table, blocking violations (FAIL 
 `file:line` and a concrete finite fix), and advisory notes. The `goal-evaluator` treats
 `COHERENCE-FAIL` as a veto on `GOAL_ACHIEVED` and drives a consolidation `CONTINUE`. A missing file is
 treated as a non-blocking PASS. Template: `templates/coherence-verdict.md`.
+
+---
+
+## Goal-edit drift note (goal mode only)
+
+### runs/goal-session-\<sid\>/iter-\<N\>/journeys-changed.md
+
+Written by `run-goal.sh` (pre-evaluator step 3c) via `goal_gate.py hash-journeys --history
+--out-changed`; the same call removes a stale note when nothing is flagged. Present ONLY when a
+journey recorded `passing`/`already_passing` in `state/journey-history.json` carries a `spec_hash`
+that no longer matches its current `docs/goal.md` block — i.e. the user edited the goal mid-session
+(the intended veto mechanism). One bullet per journey: id, name, recorded status, and
+`old → new` hash prefixes.
+
+Readers:
+- **goal-evaluator** — every listed journey's prior pass is void: re-verify it against the CURRENT
+  text this iteration (then record the new `spec_hash` in `journey-history.json`) or demote it to
+  `unknown`. `spec_hash` is written ONLY by the goal-evaluator, and only for journeys verified that
+  iteration.
+- **Achievement gate** (`lib/goal-gates.sh` check 6 → `goal_gate.py drift`) — refuses
+  `GOAL_ACHIEVED` while any listed journey still counts as passing without a re-recorded
+  `spec_hash`; fails closed on an unparsable note or unreadable history.
+
+Histories without `spec_hash` (pre-NEED-9 sessions) parse everywhere and are never demoted by this
+mechanism — a missing hash means "unknown", not "stale".
 
 ---
 

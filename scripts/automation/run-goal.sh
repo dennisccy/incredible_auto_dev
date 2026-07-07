@@ -1553,6 +1553,7 @@ Iteration artifacts (read what exists):
   Browser QA results: reports/phase-${ITER_NAME}-ui-test-results.md
   Evidence: reports/qa/${ITER_NAME}-evidence/
   Coherence audit: $COHERENCE_OUTPUT  <-- COHERENCE-FAIL vetoes GOAL_ACHIEVED and drives a consolidation CONTINUE
+  Goal-edit drift note: $ITER_DIR/journeys-changed.md  <-- if present, each listed journey's prior pass is VOID until re-verified against the CURRENT goal text (your step 3)
 
 Journey state (inline digest — your methodology's section A table starts here):
 \`\`\`

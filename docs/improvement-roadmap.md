@@ -283,6 +283,23 @@ resumable pauses).
   journey-history.pre.json aren't either). Known non-goal: a journey deleted from
   goal.md while recorded passing has no current hash → unknown, not flagged (orphan
   reconciliation stays evaluator/lint territory).
+- **Note (2026-07-07, session 2):** slice (b) done — both slices now implemented; item
+  stays IN-PROGRESS awaiting fresh-session verification (G8): re-run the Verify block,
+  then flip to DONE + archive per §2.8. What landed: evaluator contract (body.md step 3)
+  makes the evaluator record `spec_hash` per journey it verified this iteration (sole
+  writer; carry-over journeys keep their old value or stay absent) and voids the prior
+  pass of every journey listed in `iter-<N>/journeys-changed.md` — re-verify against the
+  CURRENT text or demote to `unknown` ("needs-reverify" maps to `unknown`: additive, no
+  new status value for readers to learn); methodology §A.1 bullet + evaluator dispatch
+  prompt line added; agent.yaml 1.3.0→1.4.0; mirrors resynced. Gate: new
+  `goal_gate.py drift <note> <history>` (parser lives beside the note's writer;
+  round-tripped in the self-test; fail-closed exit 2 on unparsable note/unreadable
+  history) wired as achievement-gate check 6 in `lib/goal-gates.sh` — a listed journey
+  still passing without a re-recorded hash demotes GOAL_ACHIEVED. Fixtures (run inside
+  run-evals.sh): changed-hash demotes / re-recorded hash certifies / absent note never
+  blocks (gate self-test), plus drift unit cases incl. old-history tolerance (python
+  self-test). `runs/SCHEMA.md` entry added per the session-1 note. Verified in-session:
+  both self-tests red→green, Verify block ok, evals 79/79.
 
 ---
 

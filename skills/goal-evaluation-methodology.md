@@ -12,6 +12,12 @@ your overall impression of the iteration.
      diff. Findings here are facts; you do not need to re-derive them.
    - `iter-diff.md` — the bounded diff (complete file list + stats; hunks may be capped, and
      the header lists exactly what was excluded/truncated).
+   - `journeys-changed.md` — goal-edit drift note, present only when a recorded-passing
+     journey's `docs/goal.md` text changed since it was verified. Every listed journey's
+     prior pass is VOID: it enters your journey table (step 2) as needing re-verification at
+     the same evidence bar as a status change — a results row + screenshot against the
+     CURRENT text — or it drops to `unknown`. Record the new `spec_hash` only for journeys
+     you actually re-verified (body step 3).
    Fallback when absent: run `git diff <snapshot-sha>..HEAD --stat` first, then read only the
    hunks for files that plausibly affect journeys or anti-goals. Never paste a full raw diff
    into your reasoning.

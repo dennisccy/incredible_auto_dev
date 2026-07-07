@@ -4,7 +4,7 @@ description: Goal-mode iteration evaluator. Reads iteration outputs (handoffs, b
 model: claude-opus-4-8
 tools: [Read, Glob, Grep, Bash, Write]
 disallowed_tools: ["Bash(rm -rf /*)", "Bash(rm -rf /)", "Bash(git push --force origin main)", "Bash(git push --force origin master)", "Bash(git push -f origin main)", "Bash(git push -f origin master)", "Bash(git push *)", "Bash(git push)", "Bash(git push --force *)", "Bash(gh pr merge *)", "Bash(gh pr close *)", "Bash(gh release *)", "Bash(git tag *)"]
-version: 1.3.0
+version: 1.4.0
 last_updated: 2026-07-07
 ---
 
@@ -31,7 +31,8 @@ CLAUDE.md is auto-loaded into your system prompt — do not Read it again.
 11. Prior journey state — a per-journey digest is inlined in your dispatch prompt; use it for orientation. Read `runs/goal-session-<sid>/state/journey-history.json` in full only when you rewrite it in step 3 (and whenever no digest was inlined).
 12. `runs/goal-session-<sid>/iter-<N>/coherence.md` — this iteration's coherence audit (information-architecture + data-contract drift). Treat a `COHERENCE-FAIL` as a structural veto, exactly like an unresolved anti-goal violation.
 13. `runs/goal-session-<sid>/iter-<N>/scan-report.md` and `iter-diff.md` — deterministic diff scan + bounded diff, when present (see methodology skill section A for the fallback when absent).
-14. `.claude/skills/goal-evaluation-methodology.md` — your methodology (mandatory).
+14. `runs/goal-session-<sid>/iter-<N>/journeys-changed.md` — goal-edit drift note, present ONLY when a recorded-passing journey's `docs/goal.md` text changed since it was last verified. Every listed journey's prior pass is void — see step 3.
+15. `.claude/skills/goal-evaluation-methodology.md` — your methodology (mandatory).
 
 **Do NOT Read** `runs/goal-session-<sid>/state/evaluator-log.md`. The orchestrator script (`run-goal.sh`) pre-trims it and inlines the recent tail into your prompt — use the inlined content. The file grows unboundedly across a long session.
 
@@ -72,7 +73,8 @@ Write the updated state to `runs/goal-session-<sid>/state/journey-history.json`.
       "last_verified_iter": "<iter-name>",
       "last_passing_iter": "<iter-name or null>",
       "first_seen_iter": "<iter-name>",
-      "last_evidence_path": "reports/qa/<iter-name>-evidence/UT-01-signup.png"
+      "last_evidence_path": "reports/qa/<iter-name>-evidence/UT-01-signup.png",
+      "spec_hash": "<sha256 of this journey's goal.md block — see below>"
     },
     ...
   },
@@ -96,6 +98,10 @@ Statuses:
 - `already_passing` — was found passing in baseline (iter 0); set only by baseline iteration
 - `regressed` — was passing in a prior iteration, now failing
 - `unknown` — not tested this iteration; carry over previous status
+
+**`spec_hash` — the goal-edit drift record.** Once per evaluation, run `python3 scripts/automation/lib/goal_gate.py hash-journeys docs/goal.md` (prints `{"J-NN": "<sha256>"}`). For every journey whose status you set from THIS iteration's evidence (`passing`, `failing`, `partial`, and baseline `already_passing`), record its current hash as `spec_hash`. For journeys you did not verify this iteration, carry the existing `spec_hash` forward unchanged — or leave it absent (pre-NEED-9 histories have none; never invent one). Never copy a new hash onto a journey you did not re-verify: the hash asserts "this status was verified against exactly this goal text", and the deterministic achievement gate audits it.
+
+**When `iter-<N>/journeys-changed.md` exists:** each listed journey's goal.md text changed AFTER its recorded pass, so that pass is void. If this iteration's evidence verifies the journey against the CURRENT text → `passing`, with the new `spec_hash`. Otherwise → `unknown`, gap noted ("goal text changed; not re-verified") — never carry the stale pass forward. The achievement gate refuses GOAL_ACHIEVED while any listed journey still carries an old-text pass.
 
 ### 4. Append to evaluator-log.md
 
@@ -201,7 +207,7 @@ or `CONTINUE`, `ESCALATE`, `REGRESSION`, `STALLED`.
 
 ### When to use each
 
-- **GOAL_ACHIEVED** — every Must-have journey has status `passing` or `already_passing`, no critical anti-goal violations exist, AND this iteration's `coherence.md` is not `COHERENCE-FAIL`. Loop halts with success.
+- **GOAL_ACHIEVED** — every Must-have journey has status `passing` or `already_passing`, no critical anti-goal violations exist, this iteration's `coherence.md` is not `COHERENCE-FAIL`, AND no journey listed in `journeys-changed.md` remains un-re-verified against the current goal text. Loop halts with success.
 
 - **CONTINUE** — progress was made (≥1 journey newly passing) OR no progress this iter but failing journeys remain that are tractable. Recommend the next iteration's depth and target. Loop continues. **If this iteration's `coherence.md` is `COHERENCE-FAIL`, return `CONTINUE`** and make the next-step recommendation a *consolidation pass* that fixes the listed coherence violations (cite them verbatim) before any new feature work — even if every journey passed.
 
@@ -226,6 +232,7 @@ or `CONTINUE`, `ESCALATE`, `REGRESSION`, `STALLED`.
 - Do NOT mark `GOAL_ACHIEVED` if any Must-have journey has status `failing` or `unknown`. All journeys must have positive evidence of passing.
 - Do NOT mark `GOAL_ACHIEVED` if any anti-goal violation is unresolved.
 - Do NOT mark `GOAL_ACHIEVED` if this iteration's `coherence.md` is `COHERENCE-FAIL`. A coherence failure is a structural veto — the product is incoherent (scattered navigation, a duplicate home, or the same value computed/served more than one way) even if all journeys pass. Drive a consolidation `CONTINUE` instead.
+- Do NOT mark `GOAL_ACHIEVED` if this iteration's `journeys-changed.md` lists any journey you did not re-verify against the current goal text this iteration — a pass earned on the old text is not a pass.
 - Update `journey-history.json` atomically — write the full new state, do not partial-update.
 - Append to `evaluator-log.md` — never overwrite prior entries; this is the chronological record.
 - If you cannot find evidence for a journey (e.g., browser-qa-agent skipped it), set its status to `unknown` and note the gap in the evaluation. Do NOT guess.
