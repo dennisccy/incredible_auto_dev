@@ -138,47 +138,7 @@ assumption transparency, and a mid-session human checkpoint — without breaking
 hands-off engine (all human interaction happens either before the engine starts or at
 resumable pauses).
 
-### NEED-1 · `/goal-init` intake interview
-- **Priority:** P0 · **Effort:** M · **Risk:** LOW · **Status:** IN-PROGRESS
-- **Problem:** goal.md quality decides everything downstream, but adopters author it by
-  hand from a template with no guidance loop. Vague journeys → infinite review loops
-  (anti-pattern #1) and products that miss intent.
-- **Current state:** authoring guidance only in `templates/project-goal.md` comments and
-  `docs/goal-mode-quickstart.md`. The engine validates structure at start:
-  `validate_goal_file` at `scripts/automation/run-goal.sh:533-573` (called ~`:709`)
-  checks: file exists, `## Must-have user journeys` heading, `## Anti-goals` heading,
-  ≥1 `- **J-NN:` entry, ≥1 concrete non-placeholder anti-goal. Slash-command format:
-  see `commands/goal.md` / `commands/goal-status.md` (frontmatter + instruction body).
-- **Change spec:**
-  1. New `commands/goal-init.md`: interviews the user section-by-section in the order of
-     `templates/project-goal.md` (Vision → Target Users → Success Criteria → Key
-     Capabilities → Product Shape → Must-have journeys with J-NN IDs, numbered steps,
-     and an observable Acceptance line each → Anti-goals). One topic at a time;
-     multiple-choice options where sensible; conversational (no special tools assumed).
-  2. After the interview, play back "here is what I understood" — one line per journey
-     plus anti-goals verbatim — and get explicit confirmation BEFORE writing
-     `docs/goal.md`. If a goal.md already exists, offer update mode (show diff of what
-     would change) instead of overwrite.
-  3. Final self-check: the four `validate_goal_file` rules above + no leftover `<...>`
-     template placeholders. (Once NEED-3 ships, run `goal_lint.py` instead.)
-  4. New `skills/goal-authoring.md`: the interview script, playback format, and the
-     structural checklist — shared later by `/goal-lint` (NEED-4).
-- **DoD:** `/goal-init` in a scratch repo produces a goal.md that passes
-  `validate_goal_file`; playback-before-write and update-mode behavior are specified in
-  the command body; skill and command are mirrored into `.claude/`.
-- **Verify:** `python3 scripts/automation/sync-cli-assets.py --cli claude && ls
-  .claude/commands/goal-init.md .claude/skills/goal-authoring.md &&
-  ./scripts/automation/run-evals.sh`
-- **Files:** `commands/goal-init.md` (new), `skills/goal-authoring.md` (new),
-  mirrors via sync.
-- **Rollback:** delete the two new files + mirrors; nothing else references them.
-- **Note (2026-07-07):** implementation complete — `commands/goal-init.md` +
-  `skills/goal-authoring.md` written, mirrors rendered, Verify block + full eval
-  suite green (78 pass / 0 fail). Left IN-PROGRESS per G8 (Effort M, no
-  self-certification). Fresh-session verification remaining: run `/goal-init` in a
-  scratch repo, confirm the produced goal.md passes `validate_goal_file` and the
-  playback-before-write + update-mode behaviors match the command body, then flip
-  to DONE and archive per §2.8.
+### NEED-1 — DONE 2026-07-07, archived
 
 ### NEED-2 · Quickstart names `/goal-init` first
 - **Priority:** P0 · **Effort:** S · **Risk:** LOW · **Status:** TODO
