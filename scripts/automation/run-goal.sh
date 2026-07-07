@@ -1488,6 +1488,8 @@ Do NOT write code or implement anything. The iteration spec and any blueprint ed
   #     .evaluated reuse path, where the prior attempt's snapshot must survive)
   #   - scan-report.md / iter-diff.md: full-diff secret scan + bounded diff view
   #   - goal-slice refresh with this iteration's Target journeys kept verbatim
+  #   - journeys-changed.md: recorded-passing journeys whose goal.md spec text
+  #     no longer matches their recorded spec_hash (mid-session goal edit)
   if [[ ! -f "$ITER_DIR/.evaluated" ]]; then
     cp "$JOURNEY_HISTORY" "$ITER_DIR/journey-history.pre.json" 2>/dev/null || true
   fi
@@ -1498,6 +1500,15 @@ Do NOT write code or implement anything. The iteration spec and any blueprint ed
     --history "$JOURNEY_HISTORY" ${_spec_targets:+--targets "$_spec_targets"} \
     --out "$GOAL_SLICE_PATH" 2>/dev/null || true
   JOURNEY_DIGEST=$(python3 "$SCRIPT_DIR/lib/goal_gate.py" digest "$JOURNEY_HISTORY" 2>/dev/null || echo "(journey digest unavailable — read $JOURNEY_HISTORY)")
+  # Goal-edit drift note: journeys recorded passing whose goal.md text changed
+  # since their spec_hash was recorded (the user's mid-session veto mechanism).
+  # Histories without spec_hash (pre-NEED-9 sessions) produce no note by design.
+  python3 "$SCRIPT_DIR/lib/goal_gate.py" hash-journeys "$GOAL_FILE" \
+    --history "$JOURNEY_HISTORY" --out-changed "$ITER_DIR/journeys-changed.md" \
+    >/dev/null 2>&1 || true
+  if [[ -f "$ITER_DIR/journeys-changed.md" ]]; then
+    echo "[run-goal] Goal-edit drift: passing journeys whose goal.md text changed since last verification — see $ITER_DIR/journeys-changed.md"
+  fi
 
   # 4. Goal evaluator
   echo "[run-goal] Step 3: goal-evaluator"

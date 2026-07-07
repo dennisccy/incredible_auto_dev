@@ -228,7 +228,7 @@ resumable pauses).
 - **Rollback:** delete template + revert body; feature stays opt-in-dormant either way.
 
 ### NEED-9 · Goal-edit drift detection
-- **Priority:** P0 · **Effort:** M · **Risk:** MED · **Status:** TODO
+- **Priority:** P0 · **Effort:** M · **Risk:** MED · **Status:** IN-PROGRESS
 - **Problem:** the user may edit `docs/goal.md` mid-session (that's the intended veto
   mechanism — the goal slice is rebuilt every iteration, `run-goal.sh:1221-1225`). But
   if the edited journey was already `passing`, `journey-history.json` keeps certifying
@@ -270,6 +270,19 @@ resumable pauses).
   is exactly the bug class G3 exists for.
 - **Slices:** (a) hashing + change detection + pre-eval note; (b) evaluator body + gate
   wiring + fixture.
+- **Note (2026-07-07):** slice (a) done, slice (b) pending. Writer census (stop-and-ask
+  fired; user approved proceeding): the evaluator is the sole writer of journey ENTRIES;
+  `run-goal.sh:760` only seeds the empty skeleton at session init;
+  `render_iteration_summary.py:2563/2682/2860` are temp-dir self-test fixtures. Safe for
+  slice (b) to add `spec_hash` with the evaluator as sole field writer. Interface built:
+  `goal_gate.py hash-journeys <goal.md>` bare → flat `{"J-NN": sha256}` (what the
+  evaluator should record); with `--history/--out-changed` run-goal.sh step 3c writes or
+  removes `iter-<N>/journeys-changed.md` (self-tested). Slice (b) should also add a
+  `runs/SCHEMA.md` entry for journeys-changed.md once it becomes an agent-consumed
+  contract (deliberately not documented there yet — siblings like
+  journey-history.pre.json aren't either). Known non-goal: a journey deleted from
+  goal.md while recorded passing has no current hash → unknown, not flagged (orphan
+  reconciliation stays evaluator/lint territory).
 
 ---
 
