@@ -303,3 +303,102 @@ legend: active file §4.
   passes `goal_lint.py` (exit 0) and `validate_goal_file` extracted verbatim from
   `run-goal.sh` (PASS; negative control: absent file rejected with the specific
   error, exit 1).
+
+### NEED-9 · Goal-edit drift detection
+- **Priority:** P0 · **Effort:** M · **Risk:** MED · **Status:** DONE (2026-07-07)
+- **Problem:** the user may edit `docs/goal.md` mid-session (that's the intended veto
+  mechanism — the goal slice is rebuilt every iteration, `run-goal.sh:1221-1225`). But
+  if the edited journey was already `passing`, `journey-history.json` keeps certifying
+  it against the OLD text: a stale pass that can survive all the way into GOAL_ACHIEVED.
+- **Current state:** journey state lives in `runs/goal-session-<sid>/state/
+  journey-history.json` (rewritten by the evaluator each iteration); pre-eval snapshot
+  + deterministic artifacts are built at `run-goal.sh:1460-1475`; the achievement gate
+  (`scripts/automation/lib/goal-gates.sh:79-146`) requires every journey
+  passing/already_passing. No journey-text hashing exists anywhere.
+- **Change spec:**
+  1. `lib/goal_gate.py`: new subcommand `hash-journeys <goal.md>` — stable hash (e.g.
+     sha256 of normalized text) per `J-NN` block, JSON output. Reuse `_journey_blocks`.
+  2. Pre-eval artifact build (`run-goal.sh:1460-1475`): compare current hashes against
+     hashes recorded in journey-history (see step 4); for journeys whose recorded state
+     is passing/already_passing but whose hash changed, write
+     `iter-<N>/journeys-changed.md` listing them.
+  3. `agents/goal-evaluator/body.md` (+ methodology skill if it enumerates inputs): read
+     `journeys-changed.md` when present; listed journeys must be demoted to
+     needs-reverify (not counted as passing) until re-verified against the NEW text;
+     record new hashes when writing journey-history. Version-bump.
+  4. Journey-history schema: entries gain a `spec_hash` field (writer: evaluator;
+     tolerate absence for old sessions — treat missing hash as "unknown, no demotion").
+  5. Achievement gate (`goal-gates.sh:79-146`): refuse GOAL_ACHIEVED when
+     `journeys-changed.md` for the current iteration lists any journey not re-verified
+     this iteration. Add an eval fixture (changed-hash → gate demotes).
+- **DoD:** hash subcommand + self-test; changed-passing journey produces the note and
+  the gate demotion in the fixture; old journey-history files (no `spec_hash`) still
+  parse; evals green.
+- **Verify:** `python3 scripts/automation/lib/goal_gate.py self-test 2>/dev/null ||
+  python3 scripts/automation/lib/goal_gate.py hash-journeys docs/goal.md &&
+  bash -n scripts/automation/run-goal.sh && ./scripts/automation/run-evals.sh`
+- **Files:** `scripts/automation/lib/goal_gate.py`,
+  `scripts/automation/lib/goal-gates.sh`, `scripts/automation/run-goal.sh`,
+  `agents/goal-evaluator/body.md` + `agent.yaml`, `run-evals.sh` fixture, mirrors.
+- **Rollback:** stop writing `journeys-changed.md` (one call site); the schema field is
+  additive and tolerated-if-absent by design.
+- **Stop-and-ask:** if journey-history.json is written anywhere other than the evaluator
+  (grep first!), map every writer before adding the field — schema drift across writers
+  is exactly the bug class G3 exists for.
+- **Slices:** (a) hashing + change detection + pre-eval note; (b) evaluator body + gate
+  wiring + fixture.
+- **Note (2026-07-07):** slice (a) done, slice (b) pending. Writer census (stop-and-ask
+  fired; user approved proceeding): the evaluator is the sole writer of journey ENTRIES;
+  `run-goal.sh:760` only seeds the empty skeleton at session init;
+  `render_iteration_summary.py:2563/2682/2860` are temp-dir self-test fixtures. Safe for
+  slice (b) to add `spec_hash` with the evaluator as sole field writer. Interface built:
+  `goal_gate.py hash-journeys <goal.md>` bare → flat `{"J-NN": sha256}` (what the
+  evaluator should record); with `--history/--out-changed` run-goal.sh step 3c writes or
+  removes `iter-<N>/journeys-changed.md` (self-tested). Slice (b) should also add a
+  `runs/SCHEMA.md` entry for journeys-changed.md once it becomes an agent-consumed
+  contract (deliberately not documented there yet — siblings like
+  journey-history.pre.json aren't either). Known non-goal: a journey deleted from
+  goal.md while recorded passing has no current hash → unknown, not flagged (orphan
+  reconciliation stays evaluator/lint territory).
+- **Note (2026-07-07, session 2):** slice (b) done — both slices now implemented; item
+  stays IN-PROGRESS awaiting fresh-session verification (G8): re-run the Verify block,
+  then flip to DONE + archive per §2.8. What landed: evaluator contract (body.md step 3)
+  makes the evaluator record `spec_hash` per journey it verified this iteration (sole
+  writer; carry-over journeys keep their old value or stay absent) and voids the prior
+  pass of every journey listed in `iter-<N>/journeys-changed.md` — re-verify against the
+  CURRENT text or demote to `unknown` ("needs-reverify" maps to `unknown`: additive, no
+  new status value for readers to learn); methodology §A.1 bullet + evaluator dispatch
+  prompt line added; agent.yaml 1.3.0→1.4.0; mirrors resynced. Gate: new
+  `goal_gate.py drift <note> <history>` (parser lives beside the note's writer;
+  round-tripped in the self-test; fail-closed exit 2 on unparsable note/unreadable
+  history) wired as achievement-gate check 6 in `lib/goal-gates.sh` — a listed journey
+  still passing without a re-recorded hash demotes GOAL_ACHIEVED. Fixtures (run inside
+  run-evals.sh): changed-hash demotes / re-recorded hash certifies / absent note never
+  blocks (gate self-test), plus drift unit cases incl. old-history tolerance (python
+  self-test). `runs/SCHEMA.md` entry added per the session-1 note. Verified in-session:
+  both self-tests red→green, Verify block ok, evals 79/79.
+- **Verified (2026-07-07, fresh session per G8):** DoD checked line by line.
+  (1) Hash subcommand + self-test: `goal_gate.py self-test` fresh pass (exit 0);
+  `hash-journeys` exercised bare on the repo's own `docs/goal.md` (→ `{}`, correct:
+  the framework goal.md has no `J-NN` blocks) and on a real 3-journey file (three
+  64-hex sha256 values); formatting-invariance (trailing whitespace, CRLF) asserted
+  inside the self-test. (2) Fixture: `goal-gates.sh --self-test` 14/14 incl. the
+  three drift cases — the note is built by the REAL writer from a stale-hash history
+  (existence asserted), changed-hash journey demotes GOAL_ACHIEVED→CONTINUE with
+  `FAIL drift` recorded in gate-report.md, re-recorded spec_hash certifies, note
+  removed → stale hash alone never blocks. (3) Old-history tolerance asserted in the
+  python self-test: entry without `spec_hash` never flagged, missing history file →
+  no note, drift subcommand tolerates pre-NEED-9 histories, spec_hash-carrying
+  history still parses in `cmd_journeys`. (4) Evals green twice — standalone and
+  inside the verbatim Verify block — 79 pass / 0 fail each; `bash -n` ok. Wiring
+  re-confirmed at the anchors: gate check 6 `goal-gates.sh:145-158`; note builder
+  `run-goal.sh:1503-1510` + evaluator dispatch prompt line `:1556`; evaluator
+  contract in `body.md` (input #14, `spec_hash` recording rules, GOAL_ACHIEVED drift
+  veto) + methodology §A.1; `runs/SCHEMA.md:364` documents journeys-changed.md;
+  agent.yaml at 1.4.0; sync --check "would change 0" everywhere; commits 0263ffa
+  (slice a) + e0ebb55 (slice b) carry neutral source + mirrors together (G2).
+  Cross-check per the verification instructions: /goal-init drive in a scratch repo
+  produced a 3-journey goal.md that passes `goal_lint.py` (exit 0),
+  `validate_goal_file` extracted verbatim from `run-goal.sh` (PASS), and
+  `hash-journeys` (all three journeys hashed); negative controls: absent file and
+  placeholder-only Anti-goals both rejected (exit 1, specific errors).
