@@ -1159,6 +1159,7 @@ def render_html_iteration(data: IterationData) -> str:
         parts.append(_render_technical_intro())
         parts.append(_render_what_was_done(data))
         parts.append(_render_whats_left_next_step(data))
+        parts.append(_render_assumptions(data))
         parts.append(_render_direction_trend(data))
         parts.append(_render_quick_verify(data))
         parts.append(_render_artifacts(data))
@@ -1402,6 +1403,26 @@ def _render_whats_left_next_step(data: IterationData) -> str:
     return (
         f"<details><summary>What's left + Next step</summary>"
         f"<div class='accordion-body'>{''.join(parts)}</div></details>"
+    )
+
+
+def _render_assumptions(data: IterationData) -> str:
+    """Assumption-ledger surfacing (NEED-6). Renders when the summary carries
+    an 'Assumptions made' section — including the explicit 'none recorded'
+    case, which is affirmative information. Older summaries without the
+    section render nothing."""
+    body = data.sections.get("Assumptions made", "")
+    if not body.strip():
+        return ""
+    bullets = _extract_bullets(body)
+    if bullets:
+        items = "".join(f"<li>{escape(b)}</li>" for b in bullets)
+        inner = f"<ul class='bullets'>{items}</ul>"
+    else:
+        inner = f"<div class='why-text'>{escape(body.strip())}</div>"
+    return (
+        f"<details><summary>Assumptions made</summary>"
+        f"<div class='accordion-body'>{inner}</div></details>"
     )
 
 
@@ -2213,6 +2234,10 @@ J-04 login flow now passes browser QA.
 
 Target J-06 next iteration. Dispatch as lean if straightforward, else escalate to full.
 
+## Assumptions made
+
+- iter-18 · goal-decomposer — Ambiguity: goal doesn't say whether guests can browse without an account. We chose: browsing works logged-out. Reversible: yes
+
 ## Artifacts
 
 | Report | Verdict | Path |
@@ -2376,6 +2401,10 @@ def _cmd_self_test(_argv: list[str]) -> int:
         failures.append("split_h2: Direction section missing")
     if "In plain words" not in sections:
         failures.append("split_h2: 'In plain words' section missing")
+    if "Assumptions made" not in sections:
+        failures.append("split_h2: 'Assumptions made' section missing")
+    if len(_extract_bullets(sections.get("Assumptions made", ""))) != 1:
+        failures.append("assumptions: expected 1 bullet in goal fixture")
     signal, why = _parse_direction_signal(sections.get("Direction", ""))
     if signal != "improving":
         failures.append(f"signal: expected improving, got {signal}")
@@ -2580,6 +2609,9 @@ def _cmd_self_test(_argv: list[str]) -> int:
             ">NEW<",
             "Open sign-in",
             "Enter your email and password.",
+            # Assumption-ledger accordion (NEED-6) — summary WITH the section.
+            "Assumptions made",
+            "guests can browse",
         ):
             if expect not in html:
                 failures.append(f"goal render missing: {expect}")
@@ -2618,6 +2650,10 @@ def _cmd_self_test(_argv: list[str]) -> int:
             failures.append("phase render should hide direction badge (n/a)")
         if "<details open>" in html_p:
             failures.append("phase render leaves a technical accordion open by default")
+        # Summary WITHOUT an 'Assumptions made' section (older summaries,
+        # NEED-6): the accordion must be absent entirely.
+        if "Assumptions made" in html_p:
+            failures.append("phase render: 'Assumptions made' must not render when the section is absent")
 
         # Missing-summary fallback
         empty_data = load_iteration("missing-phase", tmp)

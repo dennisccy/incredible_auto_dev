@@ -53,6 +53,15 @@
 
 <recommended action>
 
+## Assumptions made
+
+<!-- Interpretation calls from the session assumption ledger (goal mode: the dispatch -->
+<!-- wrapper inlines the recent tail of state/assumptions.md). One plain bullet per -->
+<!-- entry — NEVER copy the ledger's "## iter-N" headings (they would break H2 parsing). -->
+<!-- When the ledger is empty, absent, or phase mode: write exactly "none recorded". -->
+
+- iter-<N> · <agent> — Ambiguity: <what the goal left open>. We chose: <the reading built on>. Reversible: <yes|no>
+
 ## Quick verify
 
 <!-- Goal-full and phase iters only. Cap at 5 numbered steps copied from what-to-click.md. -->

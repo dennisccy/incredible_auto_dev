@@ -4,8 +4,8 @@ description: Post-iteration summarizer. Reads the iteration's artifacts (dev han
 model: claude-sonnet-5
 tools: [Read, Write]
 disallowed_tools: ["Bash(rm -rf /*)", "Bash(rm -rf /)", "Bash(git push --force origin main)", "Bash(git push --force origin master)", "Bash(git push -f origin main)", "Bash(git push -f origin master)", "Bash(git push *)", "Bash(git push)", "Bash(git push --force *)", "Bash(gh pr merge *)", "Bash(gh pr close *)", "Bash(gh release *)", "Bash(git tag *)"]
-version: 1.0.0
-last_updated: 2026-05-12
+version: 1.1.0
+last_updated: 2026-07-07
 ---
 
 # Iteration Summarizer
@@ -55,6 +55,7 @@ The dispatch wrapper passes you a `phase-id` (e.g. `phase-7` or `goal-money-firs
 - `runs/goal-session-<sid>/iter-<N>/eval.md` — verdict, Journey Results table, Next-Step Recommendation
 - `runs/goal-session-<sid>/state/journey-history.json` — current state of every journey
 - The dispatch wrapper provides the last ~300 lines of `runs/goal-session-<sid>/state/evaluator-log.md` inline in the prompt — use the inline content, do not read the file directly.
+- The dispatch wrapper provides the recent tail of `runs/goal-session-<sid>/state/assumptions.md` (the assumption ledger, NEED-5) inline in the prompt — use the inline content, do not read the file directly. The placeholder "(no assumptions recorded yet)" means the ledger is empty.
 
 ## Iteration type detection
 
@@ -173,6 +174,16 @@ A short recommendation. Sources, in priority order:
 3. fallback: "Run the full pipeline on the next phase."
 
 One short paragraph. Do not invent priorities. If the source says "halt — goal achieved", write that.
+
+## Assumptions made
+
+Required every iteration (both modes). Surfaces the interpretation calls other agents logged to the session assumption ledger so the product owner can veto a wrong reading early.
+
+Source: the inline assumption-ledger tail the dispatch wrapper passed in (goal mode). Ledger entries arrive as `## iter-<N> — <agent>` blocks with `**Ambiguity:**` / `**We chose:**` / `**Reversible:**` lines.
+
+- Rewrite each ledger entry as ONE plain bullet: `- iter-<N> · <agent> — Ambiguity: <…>. We chose: <…>. Reversible: <yes|no>`. Carry the fields verbatim (trim, don't re-judge). NEVER copy the ledger's `## iter-N` headings into the summary — an H2 inside this section breaks the renderer's section parsing.
+- Order entries newest-first. If the inline tail is long, keep all entries from THIS iteration plus the most recent ~10 older ones.
+- When the inline tail is the placeholder "(no assumptions recorded yet)", the wrapper passed no ledger content (phase mode), or no entries exist: write exactly `none recorded` as the section body — never omit the section.
 
 ## Quick verify
 

@@ -149,7 +149,7 @@ resumable pauses).
 ### NEED-5 — DONE 2026-07-07, archived
 
 ### NEED-6 · Assumption ledger — surfacing
-- **Priority:** P0 · **Effort:** M · **Risk:** MED · **Status:** TODO
+- **Priority:** P0 · **Effort:** M · **Risk:** MED · **Status:** IN-PROGRESS
 - **Problem:** a ledger nobody sees changes nothing. The human needs assumptions in the
   iteration summary and HTML report so they can veto early (by editing goal.md — the
   goal slice is rebuilt every iteration at `run-goal.sh:1221-1225`, so edits take effect
@@ -184,6 +184,21 @@ resumable pauses).
   (check before adding the template section), coordinate the schema change in the same
   commit or stop.
 - **Depends on:** NEED-5.
+- **Note (2026-07-07):** implemented this session. Stop-and-ask checked FIRST — code
+  read (`artifact_schemas.py:193-196` checks required-H2 presence only) AND empirically
+  validated (a summary with the new section passes `validate_path`), so no schema change
+  needed; `Assumptions made` deliberately NOT added to `required_h2` (old summaries must
+  keep validating). Template gains `## Assumptions made` after `## Next step` (one plain
+  bullet per ledger entry — the ledger's own `## iter-N` headings must never be copied
+  in, they'd fracture `_split_h2_sections`; "none recorded" when empty/phase mode).
+  Summarizer body: inline-tail input + authoring section; agent.yaml 1.0.0→1.1.0.
+  `_run_iteration_summarizer` inlines `_tail_or_placeholder "$ASSUMPTIONS_FILE" 200`
+  exactly like the evaluator-log tail. Renderer: `_render_assumptions` (collapsed
+  accordion, house style, bullets or plain "none recorded" text) inserted after
+  What's-left+Next-step; self-test covers WITH (goal fixture, bullet asserted in HTML)
+  and WITHOUT (phase fixture, accordion asserted absent). Verify block green: renderer
+  self-test pass, `bash -n` ok, sync --check ok, evals 79/79. Left IN-PROGRESS per
+  G8 — a FRESH session must verify and flip to DONE.
 
 ### NEED-7 · Intent checkpoint (opt-in resumable pause)
 - **Priority:** P0 · **Effort:** M · **Risk:** MED · **Status:** TODO

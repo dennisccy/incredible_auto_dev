@@ -235,6 +235,11 @@ _run_iteration_summarizer() {
   local eval_log_inline=""
   eval_log_inline=$(_tail_or_placeholder "$EVALUATOR_LOG" 300 "(none yet)")
 
+  # Assumption ledger tail (NEED-6): inlined so the summary's "Assumptions
+  # made" section can surface interpretation calls to the human.
+  local assumptions_inline=""
+  assumptions_inline=$(_tail_or_placeholder "$ASSUMPTIONS_FILE" 200 "(no assumptions recorded yet)")
+
   local project_story_md="$REPO_ROOT/runs/goal-session-${SESSION_ID}/state/project-story.md"
   mkdir -p "$REPO_ROOT/runs/goal-session-${SESSION_ID}/state"
 
@@ -264,6 +269,12 @@ has pre-trimmed evaluator-log.md below — use the inline content.
 Recent evaluator log entries (last 300 lines, pre-trimmed):
 ---
 ${eval_log_inline}
+---
+
+Assumption ledger tail (recent entries, pre-trimmed; '(no assumptions recorded
+yet)' means empty — see the 'Assumptions made' section of your instructions):
+---
+${assumptions_inline}
 ---
 
 Write the iteration summary to: $summary_md
