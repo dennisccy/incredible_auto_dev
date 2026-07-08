@@ -1059,22 +1059,7 @@ territory).
 
 ## 14. P1 — Documentation & guides
 
-### DOC-1 · Drift fixes in README/CLAUDE.md counts
-- **Priority:** P1 · **Effort:** S · **Risk:** LOW · **Status:** TODO
-- **Problem:** README says "14 Claude agent definitions"; there are 19 `agents/*/` dirs.
-  README "Agent Roles" table omits `goal-proposer` entirely. Skill count similarly
-  stale ("13" vs 14).
-- **Current state:** verified drift as of 2026-07-06.
-- **Change spec:** recount from the filesystem (`ls -d agents/*/ | wc -l`, etc.); fix
-  the numbers; add a goal-proposer row to the roles table (role text from
-  `agents/goal-proposer/body.md` header); sweep for other count claims ("18 automation
-  shell scripts", "18 report templates") and correct or de-number them ("~20+" is fine —
-  prefer removing exact counts that will drift again).
-- **DoD:** all count claims match the tree or are de-numbered; goal-proposer listed.
-- **Verify:** `ls -d agents/*/ | wc -l` vs README claim; DOC-2's eval (if landed) green.
-- **Files:** `README.md`, possibly `CLAUDE.md` (⚠ constitution — ask the user first,
-  per protocol §1, and batch between sessions per §5).
-- **Rollback:** docs-only.
+### DOC-1 — DONE 2026-07-08, archived
 
 ### DOC-2 · Doc-drift eval
 - **Priority:** P1 · **Effort:** S · **Risk:** LOW · **Status:** TODO

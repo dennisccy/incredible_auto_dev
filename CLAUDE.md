@@ -30,13 +30,13 @@ Both modes run on **Claude Code** (default) or **OpenAI Codex CLI** (`--cli code
 | `.claude/judgment-rubrics.md` | Executable judgment criteria (escalation, definition-of-done, stop-and-ask, wrong-direction signals, evidence floors, honesty) with ✚/✖ examples | Judges (evaluator, auditor, decomposer, reviewer) and anyone making verdict-class calls |
 | `.claude/delegation-templates.md` | Fill-in dispatch templates (search/implement/refactor/research/review) | Anyone dispatching agents |
 | `.claude/maintenance-protocol.md` | Which files may be edited autonomously vs. need the user; the resync invariant; lessons format; condensation rule | Anyone editing framework/instruction files |
-| `.claude/anti-patterns.md` | 20 documented failure modes from production use | Orchestrator, reviewer, auditor; add new ones per maintenance protocol §2 |
+| `.claude/anti-patterns.md` | Documented failure modes from production use | Orchestrator, reviewer, auditor; add new ones per maintenance protocol §2 |
 | `.claude/letter-to-future-sessions.md` | How this system degrades and what to check first | New sessions doing framework work |
 | `.claude/architecture/` | System architecture, agent catalog, pipeline flow, artifact map | Reference (all agents) |
 
 ## AGENTS AND SKILLS
 
-**19 agents** live in `.claude/agents/<name>.md` (rendered from `agents/<name>/`): the
+**Agents** live in `.claude/agents/<name>.md` (rendered from `agents/<name>/`): the
 pipeline chain (orchestrator, developer, reviewer, qa, auditor, release-manager,
 product-manager), the UI chain (ui-impact-analyst, ui-test-designer, browser-qa-agent,
 phase-closure-auditor, ux-regression-reviewer), goal mode (goal-decomposer, goal-evaluator,
@@ -44,7 +44,7 @@ coherence-auditor, goal-proposer), and showcase (iteration-summarizer, demo-narr
 readme-maintainer). Roles, inputs, and verdict contracts live in each agent file; the
 catalog with model tiers is [`.claude/architecture/agents.md`](.claude/architecture/agents.md).
 
-**14 skills** (reusable methodologies) live in `.claude/skills/` — each agent's body names
+**Skills** (reusable methodologies) live in `.claude/skills/` — each agent's body names
 the skills it must follow. Catalog: [`.claude/architecture/skills-and-hooks.md`](.claude/architecture/skills-and-hooks.md).
 
 Model routing: each agent's `model_tier` (`agents/<name>/agent.yaml`) resolves through

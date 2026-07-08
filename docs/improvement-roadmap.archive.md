@@ -641,3 +641,40 @@ legend: active file §4.
   Adjacent same-class contract also spot-checked this session: /goal-init flow in a
   scratch repo produced a goal.md that passes the real `validate_goal_file`
   (negative-tested harness) and `goal_lint.py` with 0 findings.
+
+### DOC-1 · Drift fixes in README/CLAUDE.md counts
+- **Priority:** P1 · **Effort:** S · **Risk:** LOW · **Status:** DONE (2026-07-08)
+- **Problem:** README says "14 Claude agent definitions"; there are 19 `agents/*/` dirs.
+  README "Agent Roles" table omits `goal-proposer` entirely. Skill count similarly
+  stale ("13" vs 14).
+- **Current state:** verified drift as of 2026-07-06.
+- **Change spec:** recount from the filesystem (`ls -d agents/*/ | wc -l`, etc.); fix
+  the numbers; add a goal-proposer row to the roles table (role text from
+  `agents/goal-proposer/body.md` header); sweep for other count claims ("18 automation
+  shell scripts", "18 report templates") and correct or de-number them ("~20+" is fine —
+  prefer removing exact counts that will drift again).
+- **DoD:** all count claims match the tree or are de-numbered; goal-proposer listed.
+- **Verify:** `ls -d agents/*/ | wc -l` vs README claim; DOC-2's eval (if landed) green.
+- **Files:** `README.md`, possibly `CLAUDE.md` (⚠ constitution — ask the user first,
+  per protocol §1, and batch between sessions per §5).
+- **Rollback:** docs-only.
+- **Status note (2026-07-08, implementer session):** recounted fresh (the NEED cluster
+  had added assets since the item was written): 19 `agents/*/`, 15 `skills/*.md`
+  (item said 14), 24 `scripts/automation/*.sh`, 22 `templates/*.md`, 5 hooks.
+  Chose DE-NUMBERING throughout (per spec preference): the five README "What This Is"
+  inventory bullets now name the asset classes without counts; the agents bullet links
+  to the Agent Roles table as the precise enumeration. Roles table: reality had
+  drifted one step beyond the item text — BOTH `goal-proposer` AND `readme-maintainer`
+  were missing; added both rows (tiers from their `agent.yaml`: strong/standard, role
+  text from their `body.md` headers) since the DoD and DOC-2's future
+  every-agent-in-table assertion require all 19. "11-step pipeline" kept — structural
+  name, not an inventory count. CLAUDE.md (ask-first class): user approved de-numbering
+  all three claims — "19 agents"→"Agents", "14 skills"(wrong, actual 15)→"Skills",
+  "20 documented failure modes"→"Documented failure modes" (anti-patterns.md is
+  append-only, guaranteed drift). Verified: every `agents/*/` dir name appears in the
+  README roles table (scripted check); no numbered inventory claims remain in
+  README/CLAUDE.md; `run-evals.sh` green (83 pass / 0 fail) before and after the
+  CLAUDE.md batch. Effort S → self-verified per §2.7/G8 (fresh-session rule is M/L only).
+  Consequence for DOC-2: no numbered README/CLAUDE.md claims remain, so its eval should
+  focus on the roles-table completeness assertion (every `agents/*/` dir named) — the
+  anchored-regex count checks will find nothing numbered to verify.

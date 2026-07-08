@@ -5,11 +5,11 @@ A reusable framework for running phased software development with Claude AI agen
 ## What This Is
 
 A collection of:
-- **14 Claude agent definitions** covering the full dev lifecycle, UI visibility, per-iteration summary, and an auto-recorded product demo
-- **18 automation shell scripts** orchestrating an 11-step pipeline plus an on-demand demo viewer
-- **5 security hooks** guarding against supply-chain attacks, dangerous commands, and vague artifacts
-- **13 skills** providing reusable methodologies for UI analysis, test design, and doc updates
-- **18 report templates** for consistent handoffs across all agents
+- **Claude agent definitions** covering the full dev lifecycle, UI visibility, per-iteration summary, and an auto-recorded product demo — every agent is listed in [Agent Roles](#agent-roles)
+- **Automation shell scripts** orchestrating an 11-step pipeline plus an on-demand demo viewer
+- **Security hooks** guarding against supply-chain attacks, dangerous commands, and vague artifacts
+- **Skills** providing reusable methodologies for UI analysis, test design, and doc updates
+- **Report templates** for consistent handoffs across all agents
 - **A modular CLAUDE.md system** (core rules, workflow, project config, anti-patterns, architecture docs)
 
 The chain has checkpoint/resume, quota-exhaustion auto-retry, and a verdict-gated pipeline where each stage must pass before the next runs.
@@ -341,6 +341,8 @@ Iteration name `goal-<sid>-iter-<N>` is used as the "phase name" so existing scr
 | `goal-decomposer` | strong | (goal mode) | Reads goal + state, writes next iteration spec, picks lean/full depth; drafts the blueprint at baseline |
 | `goal-evaluator` | strong | (goal mode) | Skeptical done/regression/stall judgment, updates journey-history; vetoes GOAL_ACHIEVED on COHERENCE-FAIL |
 | `coherence-auditor` | standard | (goal mode) | Audits each iteration's diff against the blueprint (information architecture + data contract); hard-fails only on objective drift |
+| `goal-proposer` | strong | (goal mode, opt-in) | After every Must-have journey passes, surveys the whole product through the project's usefulness lens (`project-extensions/proposer-guidance.md`), writes an enhancement-proposals backlog, and appends the best survivors as new Must-have journeys in `docs/goal.md` AUTO:journeys — runs only when that guidance file exists |
+| `readme-maintainer` | standard | (goal mode) | After each iteration, refreshes the project-root README's marker-delimited AUTO blocks so capabilities and "How to run" stay accurate; non-blocking showcase step, never gates the pipeline |
 
 Model tiers: each agent's `model_tier` lives in `agents/<name>/agent.yaml`; tiers resolve to model ids in `config/model-tiers.yaml`. Edit, then `python3 scripts/automation/sync-cli-assets.py` and commit the regenerated mirrors.
 
