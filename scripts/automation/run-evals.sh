@@ -122,6 +122,13 @@ else
   _fail "self-test: parallel.sh (run: bash scripts/automation/lib/parallel.sh self-test)"
 fi
 
+# Opt-in pre-commit eval guard (SAFE-1): installer + hook behavior in a scratch repo.
+if bash scripts/automation/install-git-hooks.sh --self-test >/dev/null 2>&1; then
+  _pass "self-test: install-git-hooks.sh (pre-commit eval guard)"
+else
+  _fail "self-test: install-git-hooks.sh (run: bash scripts/automation/install-git-hooks.sh --self-test)"
+fi
+
 # Goal-mode deterministic gates (verdict cross-checks, diff scan/bounding).
 _run_self_test scripts/automation/lib/goal_gate.py self-test
 _run_self_test scripts/automation/lib/goal_lint.py self-test

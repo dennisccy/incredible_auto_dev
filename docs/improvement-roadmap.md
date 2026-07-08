@@ -336,23 +336,7 @@ the system measures itself, and how it survives the next model change.
 Guards for the fact that the models editing this repo are now weaker than the one that
 built it. Do these first; they are cheap.
 
-### SAFE-1 · Pre-commit + CI eval guard
-- **Priority:** P1 · **Effort:** S · **Risk:** LOW · **Status:** TODO
-- **Problem:** nothing forces `run-evals.sh` to pass before a framework edit lands;
-  a weaker model can commit red.
-- **Current state:** `.github/workflows/evals.yml` runs the eval suite in CI, but
-  branch protection / required-check status is not documented; no pre-commit hook.
-- **Change spec:** (1) `scripts/automation/install-git-hooks.sh` installing a
-  `.git/hooks/pre-commit` that runs a fast eval subset (the pure-python self-tests;
-  target <10s) and prints how to run the full suite; opt-in (never auto-install).
-  (2) README/docs note: enable branch protection requiring the evals workflow on `main`.
-- **DoD:** hook installs and blocks a commit when a self-test is deliberately broken;
-  docs updated.
-- **Verify:** `bash scripts/automation/install-git-hooks.sh && git commit --dry-run`
-  exercise with an intentionally broken fixture (then restore).
-- **Files:** `scripts/automation/install-git-hooks.sh` (new), README or
-  `docs/TROUBLESHOOTING.md` note.
-- **Rollback:** delete `.git/hooks/pre-commit` (local-only artifact).
+### SAFE-1 — DONE 2026-07-08, archived
 
 ### SAFE-2 · Agent-contract static linter
 - **Priority:** P1 · **Effort:** M · **Risk:** LOW · **Status:** TODO

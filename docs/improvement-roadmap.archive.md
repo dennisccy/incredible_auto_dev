@@ -551,3 +551,45 @@ legend: active file §4.
   `validate_goal_file` extracted verbatim from run-goal.sh (PASS, exit 0); negative
   control: the same file with its Anti-goals section stripped is rejected (exit 1,
   missing-section error).
+
+### SAFE-1 · Pre-commit + CI eval guard
+- **Priority:** P1 · **Effort:** S · **Risk:** LOW · **Status:** DONE (2026-07-08)
+- **Implementer note (2026-07-08, self-certified per Effort S):** implemented per change
+  spec — (1) new `scripts/automation/install-git-hooks.sh`: opt-in installer for a
+  `.git/hooks/pre-commit` guard that derives the fast subset at COMMIT time by parsing
+  the `_run_self_test` registrations in `run-evals.sh` (13 modules today, all pure
+  python — no hardcoded list, so the subset cannot drift from the suite; zero
+  registrations / missing `run-evals.sh` / missing python3 all fail LOUD and block).
+  Measured 13/13 pass in ~0.5s (target <10s). Hook prints the full-suite command on
+  every run and `--no-verify` bypass guidance on block. `--force` replaces a foreign
+  pre-commit (backing it up to `pre-commit.bak`), `--uninstall` removes only our
+  marker-carrying hook, `--self-test` runs a 17-assertion scratch-repo behavioral test
+  (install/idempotence/green-commit/blocked-commit/restore/missing-suite/foreign-hook
+  refusal/backup/uninstall) wired into `run-evals.sh` per maintenance-protocol §7.1.
+  OPT-IN verified: grep shows no caller besides the run-evals self-test. (2) README:
+  Utilities entries for `run-evals.sh` + the installer; new "Eval guard: pre-commit
+  hook + CI branch protection" subsection under Tests with the exact GitHub branch
+  protection click-path requiring the `offline eval suite` job (`harness-evals`
+  workflow); Known-Limitations #4 reworded (evals DO run in Actions; pipeline stays
+  CLI-only). DoD exercised live in THIS repo: installed, deliberately broke
+  `scan_diff.py` (early `sys.exit(1)`), real `git commit` blocked (exit 1, module named,
+  guidance printed, HEAD unchanged), restored byte-identical, hook green again.
+  Empirical finding: `git commit --dry-run` does NOT invoke pre-commit hooks — the
+  Verify block's dry-run wording is satisfied by the real blocked-commit exercise.
+  Evals green after change: 82 pass / 0 fail. Rollback unchanged: delete
+  `.git/hooks/pre-commit` (local-only) or `--uninstall`.
+- **Problem:** nothing forces `run-evals.sh` to pass before a framework edit lands;
+  a weaker model can commit red.
+- **Current state:** `.github/workflows/evals.yml` runs the eval suite in CI, but
+  branch protection / required-check status is not documented; no pre-commit hook.
+- **Change spec:** (1) `scripts/automation/install-git-hooks.sh` installing a
+  `.git/hooks/pre-commit` that runs a fast eval subset (the pure-python self-tests;
+  target <10s) and prints how to run the full suite; opt-in (never auto-install).
+  (2) README/docs note: enable branch protection requiring the evals workflow on `main`.
+- **DoD:** hook installs and blocks a commit when a self-test is deliberately broken;
+  docs updated.
+- **Verify:** `bash scripts/automation/install-git-hooks.sh && git commit --dry-run`
+  exercise with an intentionally broken fixture (then restore).
+- **Files:** `scripts/automation/install-git-hooks.sh` (new), README or
+  `docs/TROUBLESHOOTING.md` note.
+- **Rollback:** delete `.git/hooks/pre-commit` (local-only artifact).

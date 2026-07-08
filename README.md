@@ -374,6 +374,8 @@ Model tiers: each agent's `model_tier` lives in `agents/<name>/agent.yaml`; tier
 ./scripts/automation/demo.sh <sid> --delivered         # open the GOAL_ACHIEVED "delivered" wrap
 
 # Utilities
+./scripts/automation/run-evals.sh                      # offline eval suite (<30s, no API) — run before every framework commit
+bash scripts/automation/install-git-hooks.sh           # OPT-IN pre-commit eval guard (fast subset, <10s) — see Tests
 ./scripts/automation/generate-test-plan.sh phase-1     # write test plan before dev
 ./scripts/automation/ui-audit-phase.sh phase-1         # standalone UI audit
 ./scripts/automation/check-install.sh "pip install X"  # check install safety
@@ -457,13 +459,39 @@ All pending framework improvements — including the former "Token Optimization 
 1. **Service bootstrap**: QA expects `CHAIN_START_BACKEND_CMD` or `scripts/start-backend.sh`.
 2. **Claude Code only**: Hooks and agent definitions are Claude Code-specific.
 3. **Model tier costs**: Assumes access to Claude API with multiple model tiers.
-4. **No CI integration**: Pipeline is CLI-only. GitHub Actions integration is not included.
+4. **Pipeline is CLI-only**: Phase/goal runs don't execute in CI. GitHub Actions covers only the offline eval suite (`.github/workflows/evals.yml` — see Tests).
 5. **Chrome MCP optional for phase mode**: Browser checks require Chrome MCP. Without it, browser tests are skipped.
 6. **Chrome MCP required for goal mode**: The goal-evaluator anchors its `GOAL_ACHIEVED` decision on browser-qa journey results. Without Chrome MCP, browser tests are SKIPPED and the evaluator will likely emit `ESCALATE` indefinitely.
 
 ## Tests
 
 ```bash
+./scripts/automation/run-evals.sh         # full offline eval suite (<30s, no API credits)
 ./tests/automation/test-install-gate.sh   # supply-chain gate unit tests
 ./tests/automation/test-quota-retry.sh    # quota-retry unit tests
 ```
+
+### Eval guard: pre-commit hook + CI branch protection
+
+Two layers keep a red eval suite from landing on `main` (roadmap SAFE-1):
+
+- **Local (opt-in)** — install a pre-commit hook that runs the fast pure-python
+  eval subset (the `_run_self_test` registrations in `run-evals.sh`; well under
+  10s) and blocks the commit on any failure:
+
+  ```bash
+  bash scripts/automation/install-git-hooks.sh              # install (never installed automatically)
+  bash scripts/automation/install-git-hooks.sh --uninstall  # remove
+  ```
+
+  The hook is local-only (`.git/hooks/pre-commit`), is **never auto-installed**
+  by any pipeline script, and prints how to run the full suite. Emergency
+  bypass: `git commit --no-verify` — CI still gates the push.
+
+- **CI (recommended)** — `.github/workflows/evals.yml` (workflow
+  `harness-evals`) already runs the full suite on every push and PR to `main`.
+  To make it a hard gate, enable branch protection: GitHub → **Settings →
+  Branches → Add branch protection rule** → branch pattern `main` → check
+  **Require status checks to pass before merging** → search for and select
+  **`offline eval suite`** (the `harness-evals` job). From then on a red eval
+  suite blocks the merge instead of just reporting.
