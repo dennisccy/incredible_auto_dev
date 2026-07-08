@@ -152,50 +152,7 @@ resumable pauses).
 
 ### NEED-7 — DONE 2026-07-08, archived
 
-### NEED-8 · Proposer enablement + vision-gap detection
-- **Priority:** P0 · **Effort:** M · **Risk:** LOW · **Status:** IN-PROGRESS
-- **Implementer note (2026-07-08):** implemented per change spec — (1)
-  `templates/proposer-guidance.md` with all six body-consumed sections (usefulness lens,
-  read/MCP tools + pre-screen snapshot naming, validation screen,
-  `enhancement-proposals.jsonl` schema, consistency, walkthrough) plus a fully-worked
-  `expense-insights` example; (2) quickstart "Continuous improvement (opt-in)" section
-  with the two-file opt-in and the no-op hook; (3) vision-gap step inserted as body
-  Procedure step 2 (old 2–6 renumbered 3–7; result-file step notes gaps go in `summary`);
-  agent.yaml 1.0.1→1.1.0. Activation anchor re-grepped: now `run-goal.sh:2044-2045`.
-  No machine contract touched (nothing parses `enhancement-proposals.jsonl`;
-  `proposer-result.json` is read for `extended` only). Verify block + full eval suite
-  (80/80) green locally. Per G8 a FRESH session must re-run the Verify block and flip
-  this to DONE — do not trust this note.
-- **Problem:** the continuous-improvement agent (goal-proposer) is fully built but inert
-  in every deployment: it only activates when BOTH `project-extensions/hooks/post-goal.sh`
-  AND `project-extensions/proposer-guidance.md` exist (`run-goal.sh:1793-1794`), and no
-  template for the guidance file ships. Separately, nothing checks that the Vision
-  paragraph is actually covered by the journeys.
-- **Current state:** `agents/goal-proposer/body.md:21-31` defines exactly what the
-  guidance file must contain (usefulness lens, read/MCP tool list, validation-screen
-  definition, `enhancement-proposals.jsonl` schema, consistency + walkthrough
-  requirements); procedure steps at `:33-56`; honest-stop rule `:58-64`. Promotion is
-  governed by `skills/goal-self-extension.md`.
-- **Change spec:**
-  1. New `templates/proposer-guidance.md` containing every section the body reads, with
-     one fully-worked example project.
-  2. `docs/goal-mode-quickstart.md`: new section "Continuous improvement (opt-in)" —
-     the two-file opt-in incl. a minimal no-op hook (`#!/usr/bin/env bash` + `exit 0`).
-  3. `agents/goal-proposer/body.md`: insert a vision-gap step between steps 1 and 2
-     (~`:33-43`): parse goal.md Vision + Key Capabilities; list claims no journey
-     (human or `<!-- AUTO:journeys -->`) covers; record each as a
-     `robustness: speculative` candidate tagged `kind: vision-gap`; name uncovered
-     claims in `proposer-result.json`'s summary. A gap alone must NOT force extension —
-     the honest-stop rule still wins. Version-bump.
-- **DoD:** template has every consumed section; quickstart shows the opt-in; rendered
-  proposer mirror contains the vision-gap step; evals green.
-- **Verify:** `grep -n "proposer-guidance" docs/goal-mode-quickstart.md
-  templates/proposer-guidance.md && python3 scripts/automation/sync-cli-assets.py
-  --cli claude && grep -n "vision-gap" .claude/agents/goal-proposer.md &&
-  ./scripts/automation/run-evals.sh`
-- **Files:** `templates/proposer-guidance.md` (new), `docs/goal-mode-quickstart.md`,
-  `agents/goal-proposer/body.md` + `agent.yaml`, mirrors.
-- **Rollback:** delete template + revert body; feature stays opt-in-dormant either way.
+### NEED-8 — DONE 2026-07-08, archived
 
 ### NEED-9 — DONE 2026-07-07, archived
 
