@@ -72,6 +72,10 @@ _run_self_test scripts/automation/lib/render_iteration_summary.py self-test
 _run_self_test scripts/automation/lib/demo_runner.py self-test
 _run_self_test scripts/automation/lib/merge_ui_test_results.py self-test
 _run_self_test scripts/automation/lib/mcp_sync_selftest.py self-test
+# Agent-contract static linter (SAFE-2): fixture assertions, then lints the live
+# tree — agents/*/body.md + templates verdict vocabulary vs lib/verdicts.py,
+# agent.yaml model_tier/version presence. Red here = writer→reader drift.
+_run_self_test scripts/automation/lib/lint_contracts.py self-test
 
 # Bash-level self-test for the generic project-gate mechanism (M2).
 if bash scripts/automation/lib/project-gates.sh self-test >/dev/null 2>&1; then

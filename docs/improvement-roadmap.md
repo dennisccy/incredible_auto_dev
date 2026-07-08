@@ -339,7 +339,7 @@ built it. Do these first; they are cheap.
 ### SAFE-1 — DONE 2026-07-08, archived
 
 ### SAFE-2 · Agent-contract static linter
-- **Priority:** P1 · **Effort:** M · **Risk:** LOW · **Status:** TODO
+- **Priority:** P1 · **Effort:** M · **Risk:** LOW · **Status:** IN-PROGRESS
 - **Problem:** the top documented bug class is writer→reader drift: an agent body or
   template changes its verdict line / section format and the shell/python parsers stop
   matching — discovered mid-session instead of at edit time.
@@ -360,6 +360,13 @@ built it. Do these first; they are cheap.
   ./scripts/automation/run-evals.sh`
 - **Files:** `scripts/automation/lib/lint_contracts.py` (new), `run-evals.sh` (1 line).
 - **Rollback:** remove the eval line.
+- **Status note (2026-07-08, implementer session):** implemented + self-verified — TDD
+  (self-test written first, watched RED, then GREEN: 12/12 broken-fixture violations,
+  clean fixture 0); live break-probes on `templates/qa-report.md` and
+  `agents/reviewer/body.md` both caught with file:line and restored; full eval suite
+  green. Current tree lints CLEAN (the 9 shipped NEED items introduced no contract
+  drift — nothing was "fixed to pass"). Left IN-PROGRESS per G8: a FRESH session must
+  run the Verify block, then flip to DONE + archive per §2.8.
 
 ---
 
