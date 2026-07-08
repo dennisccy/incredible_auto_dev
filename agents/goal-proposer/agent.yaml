@@ -13,6 +13,6 @@ tools_allowed:
 - Bash
 - Write
 - Edit
-version: 1.0.1
-last_updated: '2026-06-30'
+version: 1.1.0
+last_updated: '2026-07-08'
 body: body.md

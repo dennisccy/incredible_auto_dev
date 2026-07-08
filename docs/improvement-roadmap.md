@@ -153,7 +153,19 @@ resumable pauses).
 ### NEED-7 — DONE 2026-07-08, archived
 
 ### NEED-8 · Proposer enablement + vision-gap detection
-- **Priority:** P0 · **Effort:** M · **Risk:** LOW · **Status:** TODO
+- **Priority:** P0 · **Effort:** M · **Risk:** LOW · **Status:** IN-PROGRESS
+- **Implementer note (2026-07-08):** implemented per change spec — (1)
+  `templates/proposer-guidance.md` with all six body-consumed sections (usefulness lens,
+  read/MCP tools + pre-screen snapshot naming, validation screen,
+  `enhancement-proposals.jsonl` schema, consistency, walkthrough) plus a fully-worked
+  `expense-insights` example; (2) quickstart "Continuous improvement (opt-in)" section
+  with the two-file opt-in and the no-op hook; (3) vision-gap step inserted as body
+  Procedure step 2 (old 2–6 renumbered 3–7; result-file step notes gaps go in `summary`);
+  agent.yaml 1.0.1→1.1.0. Activation anchor re-grepped: now `run-goal.sh:2044-2045`.
+  No machine contract touched (nothing parses `enhancement-proposals.jsonl`;
+  `proposer-result.json` is read for `extended` only). Verify block + full eval suite
+  (80/80) green locally. Per G8 a FRESH session must re-run the Verify block and flip
+  this to DONE — do not trust this note.
 - **Problem:** the continuous-improvement agent (goal-proposer) is fully built but inert
   in every deployment: it only activates when BOTH `project-extensions/hooks/post-goal.sh`
   AND `project-extensions/proposer-guidance.md` exist (`run-goal.sh:1793-1794`), and no

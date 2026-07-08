@@ -257,6 +257,29 @@ goal(my-app): iter 1 — CONTINUE (passing+1 failing+0 regressed+0)
 goal(my-app): iter 0 — CONTINUE (passing+0 failing+3 regressed+0)
 ```
 
+## Continuous improvement (opt-in)
+
+By default a session **finalizes** at `GOAL_ACHIEVED`. Opting in to continuous improvement changes that: once every Must-have journey passes, the **goal-proposer** agent surveys the finished product (via the read-only tools your guidance file names), detects vision gaps (Vision / Key Capabilities claims no journey covers), writes an improvement backlog to `runs/goal-session-<sid>/state/enhancement-proposals.jsonl`, and appends the best 1–2 proposals as new Must-have journeys inside the `<!-- AUTO:journeys -->` block of `docs/goal.md` — so the loop keeps building. When nothing worth building survives its validation screen, it reports a **dry** result and the session finalizes exactly as before (the honest stop — it never invents work to keep looping).
+
+The opt-in is two files, both outside the framework subtree. `run-goal.sh` dispatches the proposer only when BOTH exist:
+
+```bash
+# 1. The guidance file — every project-specific judgment the proposer uses.
+mkdir -p project-extensions/hooks
+cp templates/proposer-guidance.md project-extensions/proposer-guidance.md
+$EDITOR project-extensions/proposer-guidance.md   # fill in all six sections
+
+# 2. The post-goal hook — deterministic prep run before the proposer. A no-op is enough:
+cat > project-extensions/hooks/post-goal.sh <<'SH'
+#!/usr/bin/env bash
+exit 0
+SH
+```
+
+The hook is where a project refreshes a pre-screen snapshot for the proposer to read (e.g. write a `usage-scan.json` into the session state dir, and name that file in the guidance). It runs with `SESSION_ID`, `SESSION_DIR`, `REPO_ROOT`, and `GOAL_FILE` exported, is invoked via `bash` (no `chmod +x` needed), and is non-fatal — a failing hook logs a warning and the proposer still runs. If you have no prep step, the minimal no-op above is all you need.
+
+Each cycle writes `state/proposer-result.json` with the outcome (`extended` vs `dry`, plus a one-line summary naming any vision gaps found). The proposer edits **only** the `AUTO:journeys` block — human journeys and Anti-goals are never touched, and Anti-goals still bind every proposed journey. Every promoted journey bakes your consistency (Data Contract) and `[NEW]`-walkthrough requirements into its Acceptance, so the normal pipeline gates verify it like any other journey.
+
 ## Worked example: tiny goal
 
 Here's a minimal `goal.md` that demonstrates goal mode end-to-end:

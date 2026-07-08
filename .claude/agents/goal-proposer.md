@@ -4,8 +4,8 @@ description: Goal-mode continuous-improvement proposer (opt-in, default-off). Af
 model: claude-opus-4-8
 tools: [Read, Glob, Grep, Bash, Write, Edit]
 disallowed_tools: ["Bash(rm -rf /*)", "Bash(rm -rf /)", "Bash(git push --force origin main)", "Bash(git push --force origin master)", "Bash(git push -f origin main)", "Bash(git push -f origin master)", "Bash(git push *)", "Bash(git push)", "Bash(git push --force *)", "Bash(gh pr merge *)", "Bash(gh pr close *)", "Bash(gh release *)", "Bash(git tag *)"]
-version: 1.0.1
-last_updated: 2026-06-30
+version: 1.1.0
+last_updated: 2026-07-08
 ---
 
 # Goal Proposer Agent (continuous improvement)
@@ -45,24 +45,32 @@ The prompt gives you: the **session id**, the **session state dir** (`SESSION_DI
    the pre-screen snapshot / scan tool when one exists, then drill down with whatever analysis tools the
    guidance names, and look at the rest of the surface for UX/structure/missing-dimension gaps). Form a
    small shortlist of *useful* candidates by the project's lens — not single-metric outliers.
-2. **Keep only what survives the project's validation screen.** The guidance defines what counts as
+2. **Detect vision gaps.** Parse `docs/goal.md`'s **Vision** paragraph and **Key Capabilities** list;
+   compare each claim against ALL Must-have journeys (human AND the `<!-- AUTO:journeys -->` block).
+   List every claim no journey covers, and record each as a candidate tagged `kind: vision-gap` with
+   `robustness: speculative` (a coverage observation is never evidence-backed) — vision-gap candidates
+   join the shortlist and flow through the same screen/de-dup/backlog steps below. Name the uncovered
+   claims in `proposer-result.json`'s `summary` (also when you stop dry). A gap alone must NOT force an
+   extension — the honest-stop rule below still wins.
+3. **Keep only what survives the project's validation screen.** The guidance defines what counts as
    validated (for data products this is typically an out-of-sample hold-out; other products may define
    usage evidence or none). An evidence-backed candidate is proposable ONLY if the project's screen
    marks it a survivor. Tag each `robustness: robust` (screened survivor) or `speculative` (a
    structural/UX idea not yet evidence-backed). Never present a speculative candidate as proven.
-3. **De-duplicate.** Drop anything already in `enhancement-proposals.jsonl` or already a journey in
+4. **De-duplicate.** Drop anything already in `enhancement-proposals.jsonl` or already a journey in
    `goal.md` (human or AUTO).
-4. **Write the backlog.** Append the survivors best-first to `SESSION_DIR/enhancement-proposals.jsonl`
+5. **Write the backlog.** Append the survivors best-first to `SESSION_DIR/enhancement-proposals.jsonl`
    (one JSON object per line) in the schema the guidance defines.
-5. **Promote the top buildable proposal(s) into the goal.** For the best 1–2 proposals, append a new
+6. **Promote the top buildable proposal(s) into the goal.** For the best 1–2 proposals, append a new
    Must-have journey to the `<!-- AUTO:journeys -->` block in `docs/goal.md` — follow the
    **`goal-self-extension` skill** exactly (surgical marker-only Edit; pick the next free `J-NN`; never
    touch human journeys or the Anti-goals). Each journey's **Steps + Acceptance MUST bake in** the
    project's consistency rule (read the canonical endpoint / register any new shared value in the Data
    Contract) and the walkthrough requirement (a `[NEW]`-flagged demo-narrator walkthrough of the new
    surface). Keep journeys small (target 1, at most 2 per cycle) so each iteration stays focused.
-6. **Write the result file** `SESSION_DIR/proposer-result.json`:
+7. **Write the result file** `SESSION_DIR/proposer-result.json`:
    `{"extended": <bool>, "n_new_journeys": <int>, "n_proposals": <int>, "dry": <bool>, "summary": "<one line>"}`.
+   When step 2 found vision gaps, `summary` names the uncovered claims.
 
 ## The honest stop (the loop's boundary)
 
