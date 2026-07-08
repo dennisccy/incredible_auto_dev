@@ -1061,20 +1061,7 @@ territory).
 
 ### DOC-1 — DONE 2026-07-08, archived
 
-### DOC-2 · Doc-drift eval
-- **Priority:** P1 · **Effort:** S · **Risk:** LOW · **Status:** TODO
-- **Problem:** counts drift back silently (they already did once).
-- **Current state:** no doc checks in `run-evals.sh`.
-- **Change spec:** `tests/automation/test-doc-drift.sh`: extract number claims from
-  README/CLAUDE.md with anchored regexes ("N agents", "N skills"), compare to
-  filesystem counts; assert every `agents/*/` dir name appears in the README roles
-  table; register in `run-evals.sh`. If DOC-1 chose to de-number a claim, the check
-  skips it (only verify what's numbered).
-- **DoD:** eval green post-DOC-1; deliberately wrong count turns it red.
-- **Verify:** `bash tests/automation/test-doc-drift.sh && ./scripts/automation/run-evals.sh`
-- **Files:** `tests/automation/test-doc-drift.sh` (new), `run-evals.sh`.
-- **Rollback:** remove eval line.
-- **Depends on:** DOC-1.
+### DOC-2 — DONE 2026-07-08, archived
 
 ### DOC-3 · `docs/TROUBLESHOOTING.md`
 - **Priority:** P1 · **Effort:** M · **Risk:** LOW · **Status:** TODO

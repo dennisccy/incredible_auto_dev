@@ -678,3 +678,38 @@ legend: active file §4.
   Consequence for DOC-2: no numbered README/CLAUDE.md claims remain, so its eval should
   focus on the roles-table completeness assertion (every `agents/*/` dir named) — the
   anchored-regex count checks will find nothing numbered to verify.
+
+### DOC-2 · Doc-drift eval
+- **Priority:** P1 · **Effort:** S · **Risk:** LOW · **Status:** DONE (2026-07-08)
+- **Problem:** counts drift back silently (they already did once).
+- **Current state:** no doc checks in `run-evals.sh`.
+- **Change spec:** `tests/automation/test-doc-drift.sh`: extract number claims from
+  README/CLAUDE.md with anchored regexes ("N agents", "N skills"), compare to
+  filesystem counts; assert every `agents/*/` dir name appears in the README roles
+  table; register in `run-evals.sh`. If DOC-1 chose to de-number a claim, the check
+  skips it (only verify what's numbered).
+- **DoD:** eval green post-DOC-1; deliberately wrong count turns it red.
+- **Verify:** `bash tests/automation/test-doc-drift.sh && ./scripts/automation/run-evals.sh`
+- **Files:** `tests/automation/test-doc-drift.sh` (new), `run-evals.sh`.
+- **Rollback:** remove eval line.
+- **Depends on:** DOC-1.
+- **Status note (2026-07-08, implementer session):** landed as a fixture-first eval
+  (same layout as SAFE-2's `lint_contracts.py`: prove every check can go red on
+  embedded fixtures, then check the live tree). Coverage: (a) anchored count-claim
+  regexes for agents/skills/commands/hooks over README+CLAUDE.md vs neutral-source
+  counts (`agents/*/`, `skills/*.md`, `commands/*.md`, `hooks/*.sh`) — all 8
+  claim-family×file combinations currently skip, as DOC-1's de-numbering predicted;
+  a re-numbered claim re-enters verification automatically (skip is presence-based,
+  fixture-proven). (b) The kept "11-step pipeline" / "all 11 steps" structural claims
+  ARE numbered, so they get a ground truth: run-phase.sh's own `log "Step X/N --`
+  banners — anchored on the `log "`/` --` pair precisely because the bare pattern
+  false-hits the "Step 4/5/6 retry blocks" comment (run-phase.sh:654); also asserts
+  banner denominators agree and max integer step == denominator. (c) Roles table
+  checked symmetrically — every `agents/*/` dir in the table (spec direction) AND no
+  ghost rows naming deleted agents (drift is drift in both directions); set-compare
+  via `comm`. Verified per DoD: live tree green (24/24); three planted README drifts
+  (12-step claim, "99 specialized agents", deleted `demo-narrator` row) each
+  individually caught, suite exit 1, then green again after revert. Registered in
+  `run-evals.sh` §2c: suite went 83 → 84 pass / 0 fail, verbose line
+  `PASS: unit: tests/automation/test-doc-drift.sh`. Effort S → self-verified per
+  §2.7/G8 (fresh-session rule is M/L only).
