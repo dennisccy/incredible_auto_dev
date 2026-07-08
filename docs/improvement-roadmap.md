@@ -338,35 +338,7 @@ built it. Do these first; they are cheap.
 
 ### SAFE-1 — DONE 2026-07-08, archived
 
-### SAFE-2 · Agent-contract static linter
-- **Priority:** P1 · **Effort:** M · **Risk:** LOW · **Status:** IN-PROGRESS
-- **Problem:** the top documented bug class is writer→reader drift: an agent body or
-  template changes its verdict line / section format and the shell/python parsers stop
-  matching — discovered mid-session instead of at edit time.
-- **Current state:** `lib/verdicts.py` is the single source of verdict truth
-  (`_VERDICT_LINE_RE` ~`:154`, per-report enums ~`:63-79`); `lib/artifact_schemas.py`
-  validates artifacts at RUNTIME; `sync-cli-assets.py --check` covers mirror drift.
-  Nothing statically checks the agent bodies/templates themselves.
-- **Change spec:** new `scripts/automation/lib/lint_contracts.py` + eval registration:
-  for every `agents/*/body.md`, assert it names its verdict values and they are a
-  subset of the `verdicts.py` enum for that report type; for every
-  `templates/*-verdict*.md` and report template, assert the `**Verdict:**` line matches
-  `_VERDICT_LINE_RE`; assert every agent dir has `agent.yaml` with `model_tier` +
-  `version`. Emit file:line for each violation. `self-test` with a deliberately broken
-  fixture.
-- **DoD:** linter green on current tree; deliberately breaking a template turns the eval
-  red; wired into `run-evals.sh`.
-- **Verify:** `python3 scripts/automation/lib/lint_contracts.py self-test &&
-  ./scripts/automation/run-evals.sh`
-- **Files:** `scripts/automation/lib/lint_contracts.py` (new), `run-evals.sh` (1 line).
-- **Rollback:** remove the eval line.
-- **Status note (2026-07-08, implementer session):** implemented + self-verified — TDD
-  (self-test written first, watched RED, then GREEN: 12/12 broken-fixture violations,
-  clean fixture 0); live break-probes on `templates/qa-report.md` and
-  `agents/reviewer/body.md` both caught with file:line and restored; full eval suite
-  green. Current tree lints CLEAN (the 9 shipped NEED items introduced no contract
-  drift — nothing was "fixed to pass"). Left IN-PROGRESS per G8: a FRESH session must
-  run the Verify block, then flip to DONE + archive per §2.8.
+### SAFE-2 — DONE 2026-07-08, archived
 
 ---
 

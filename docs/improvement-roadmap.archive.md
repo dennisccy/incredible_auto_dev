@@ -593,3 +593,51 @@ legend: active file §4.
 - **Files:** `scripts/automation/install-git-hooks.sh` (new), README or
   `docs/TROUBLESHOOTING.md` note.
 - **Rollback:** delete `.git/hooks/pre-commit` (local-only artifact).
+
+### SAFE-2 · Agent-contract static linter
+- **Priority:** P1 · **Effort:** M · **Risk:** LOW · **Status:** DONE (2026-07-08)
+- **Problem:** the top documented bug class is writer→reader drift: an agent body or
+  template changes its verdict line / section format and the shell/python parsers stop
+  matching — discovered mid-session instead of at edit time.
+- **Current state:** `lib/verdicts.py` is the single source of verdict truth
+  (`_VERDICT_LINE_RE` ~`:154`, per-report enums ~`:63-79`); `lib/artifact_schemas.py`
+  validates artifacts at RUNTIME; `sync-cli-assets.py --check` covers mirror drift.
+  Nothing statically checks the agent bodies/templates themselves.
+- **Change spec:** new `scripts/automation/lib/lint_contracts.py` + eval registration:
+  for every `agents/*/body.md`, assert it names its verdict values and they are a
+  subset of the `verdicts.py` enum for that report type; for every
+  `templates/*-verdict*.md` and report template, assert the `**Verdict:**` line matches
+  `_VERDICT_LINE_RE`; assert every agent dir has `agent.yaml` with `model_tier` +
+  `version`. Emit file:line for each violation. `self-test` with a deliberately broken
+  fixture.
+- **DoD:** linter green on current tree; deliberately breaking a template turns the eval
+  red; wired into `run-evals.sh`.
+- **Verify:** `python3 scripts/automation/lib/lint_contracts.py self-test &&
+  ./scripts/automation/run-evals.sh`
+- **Files:** `scripts/automation/lib/lint_contracts.py` (new), `run-evals.sh` (1 line).
+- **Rollback:** remove the eval line.
+- **Status note (2026-07-08, implementer session):** implemented + self-verified — TDD
+  (self-test written first, watched RED, then GREEN: 12/12 broken-fixture violations,
+  clean fixture 0); live break-probes on `templates/qa-report.md` and
+  `agents/reviewer/body.md` both caught with file:line and restored; full eval suite
+  green. Current tree lints CLEAN (the 9 shipped NEED items introduced no contract
+  drift — nothing was "fixed to pass"). Left IN-PROGRESS per G8: a FRESH session must
+  run the Verify block, then flip to DONE + archive per §2.8.
+- **Verified (2026-07-08, fresh session per G8):** DoD re-proven line by line.
+  (1) Linter green on current tree: `lint_contracts.py lint` exit 0 —
+  "OK (19 agents, 22 templates)". (2) Break-probe: flipped `templates/qa-report.md`
+  `**Verdict:** PASS` → `PASSED_MAYBE`; full `run-evals.sh` went RED (exit 1, the
+  lint_contracts self-test named as the failure) and direct lint emitted both
+  violations with file:line (`templates/qa-report.md:6 [unknown-verdict-value]`,
+  `:1 [no-passing-verdict-line]`); restored, `git status` clean. (3) Wiring:
+  `_run_self_test scripts/automation/lib/lint_contracts.py self-test` registered at
+  `run-evals.sh:78`. Verify block re-run verbatim: clean fixture 0 violations, broken
+  fixture 12/12 detected, current tree lint clean, eval suite 83 pass / 0 fail.
+  Implementation matches the change spec, with one deliberate documented refinement:
+  the `_VERDICT_LINE_RE` assertion applies to the templates parsed by
+  `verdicts.check_verdict_file()` (`phase_verdict: True` — audit-report, qa-report,
+  review-checklist); other verdict templates are checked for line-start markers with
+  enum-valid values instead, which is the contract their parsers actually read.
+  Adjacent same-class contract also spot-checked this session: /goal-init flow in a
+  scratch repo produced a goal.md that passes the real `validate_goal_file`
+  (negative-tested harness) and `goal_lint.py` with 0 findings.
