@@ -636,14 +636,21 @@ benchmark (or a real session's telemetry) before AND after (G8).
 
 ### REL-1 · Judgment eval fixtures (golden verdict cases)
 - **Priority:** P1 · **Effort:** L (slice per judge) · **Risk:** LOW · **Status:** IN-PROGRESS
-  *(slice (a) — goal-evaluator cases + runner — implemented 2026-07-09; slices (b) reviewer
-  and (c) auditor remain TODO. Confirmed real run 2026-07-09 (user-approved spend,
-  judge = claude-opus-4-8 @ effort max): 5/5 verdict classes correct —
+  *(slice (a) — goal-evaluator cases + runner — implemented 2026-07-09; slice (b) —
+  reviewer cases, scratch-git diff representation, runner per-judge builders —
+  implemented 2026-07-09 (user-directed follow-on session); slice (c) auditor remains
+  TODO. Confirmed real runs (user-approved spend):
+  (a) 2026-07-09, judge = claude-opus-4-8 @ effort max: 5/5 verdict classes correct —
   case-01-clean-goal-achieved → GOAL_ACHIEVED (342s), case-02-first-failure-continue →
   CONTINUE (234s), case-03-regression-broken-journey → REGRESSION (262s),
   case-04-goal-drift-void-pass → CONTINUE (322s), case-05-secret-committed →
-  REGRESSION (196s). Left IN-PROGRESS per G8 — a fresh session certifies slice (a)
-  before the item advances to slice (b).)*
+  REGRESSION (196s).
+  (b) 2026-07-09, judge = claude-sonnet-5 @ effort max: 4/4 verdict classes correct —
+  case-01-clean-pass → PASS (172s), case-02-minor-nit-not-fail →
+  PASS_WITH_NOTES (149s), case-03-hardcoded-credential → FAIL (177s),
+  case-04-spec-contradiction → FAIL (192s).
+  Left IN-PROGRESS per G8 — a fresh session certifies slices (a)+(b) before
+  slice (c).)*
 - **Problem:** the single biggest retirement risk is silent judge regression — a weaker
   evaluator/reviewer/auditor emitting plausible-but-wrong verdicts. The eval suite
   checks parsers and gates, not judgment.

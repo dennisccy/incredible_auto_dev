@@ -1,0 +1,66 @@
+diff --git a/app.py b/app.py
+index 1805241..c395591 100644
+--- a/app.py
++++ b/app.py
+@@ -50,6 +50,14 @@ def mark_done(db, item_id):
+     db.commit()
+ 
+ 
++def clear_done(db):
++    """Delete every done item (J-04). Returns the number of rows removed."""
++    cur = db.execute("DELETE FROM items WHERE done = 1")
++    db.commit()
++    print(f"[debug] clear_done removed {cur.rowcount} rows")
++    return cur.rowcount
++
++
+ def list_items(db):
+     """All items, oldest first."""
+     return db.execute("SELECT id, name, qty, done FROM items ORDER BY id").fetchall()
+@@ -118,6 +126,9 @@ class QuickListHandler(BaseHTTPRequestHandler):
+                 self.send_error(400, str(exc))
+                 return
+             self._redirect("/")
++        elif self.path == "/items/clear-done":
++            clear_done(get_db())
++            self._redirect("/")
+         elif m := re.fullmatch(r"/items/(\d+)/done", self.path):
+             mark_done(get_db(), int(m.group(1)))
+             self._redirect("/")
+diff --git a/templates/index.html b/templates/index.html
+index 4c9e86c..a9d85d2 100644
+--- a/templates/index.html
++++ b/templates/index.html
+@@ -18,6 +18,9 @@
+     <button>Add</button>
+   </form>
+   <label><input type="checkbox" id="open-only"> Open only</label>
++  <form class="inline" method="post" action="/items/clear-done">
++    <button>Clear done</button>
++  </form>
+   <ul id="items">
+ <!--ROWS-->
+   </ul>
+diff --git a/test_items.py b/test_items.py
+index d2ab3ef..050347d 100644
+--- a/test_items.py
++++ b/test_items.py
+@@ -47,6 +47,18 @@ class MarkDoneTests(unittest.TestCase):
+         self.assertEqual(rows[1]["done"], 0)
+ 
+ 
++class ClearDoneTests(unittest.TestCase):
++    def setUp(self):
++        self.db = make_db()
++        app.add_item(self.db, "Milk", 1)
++        app.add_item(self.db, "Eggs", 2)
++        app.mark_done(self.db, app.list_items(self.db)[1]["id"])
++
++    def test_clear_done_leaves_one_row(self):
++        app.clear_done(self.db)
++        self.assertEqual(len(app.list_items(self.db)), 1)
++
++
+ class RenderTests(unittest.TestCase):
+     def setUp(self):
+         self.db = make_db()

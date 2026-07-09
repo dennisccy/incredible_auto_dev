@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>QuickList</title>
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 40rem; margin: 2rem auto; }
+    li.item.done { text-decoration: line-through; color: #777; }
+    .badge { background: #2f855a; color: #fff; border-radius: 3px; padding: 0 .3rem; font-size: .8rem; }
+    form.inline { display: inline; }
+  </style>
+</head>
+<body>
+  <h1>QuickList</h1>
+  <form method="post" action="/items">
+    <input name="name" placeholder="Item" required>
+    <input name="qty" type="number" min="1" value="1" required>
+    <button>Add</button>
+  </form>
+  <label><input type="checkbox" id="open-only"> Open only</label>
+  <form class="inline" method="post" action="/items/clear-done">
+    <button>Clear done</button>
+  </form>
+  <ul id="items">
+<!--ROWS-->
+  </ul>
+  <script src="/static/app.js"></script>
+</body>
+</html>

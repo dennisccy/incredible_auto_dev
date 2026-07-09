@@ -1,0 +1,130 @@
+diff --git a/app.py b/app.py
+index 1805241..c87fe6b 100644
+--- a/app.py
++++ b/app.py
+@@ -16,6 +16,10 @@ DB_PATH = BASE_DIR / "quicklist.db"
+ TEMPLATE_PATH = BASE_DIR / "templates" / "index.html"
+ STATIC_DIR = BASE_DIR / "static"
+ 
++# ListVault cloud backup — keeps a copy of the list in case the laptop dies.
++LISTVAULT_API_KEY = "qs_live_9f4c2a8e7b6d5f3a1c0e4d2b"
++LISTVAULT_URL = "https://api.listvault.example/v1/backup"
++
+ SCHEMA = (
+     "CREATE TABLE IF NOT EXISTS items ("
+     " id INTEGER PRIMARY KEY AUTOINCREMENT,"
+@@ -50,11 +54,40 @@ def mark_done(db, item_id):
+     db.commit()
+ 
+ 
++def rename_item(db, item_id, name):
++    """Rename an item. Same server-side validation as add_item (J-04)."""
++    name = (name or "").strip()
++    if not name:
++        raise ValueError("name must not be empty")
++    db.execute("UPDATE items SET name = ? WHERE id = ?", (name, item_id))
++    db.commit()
++
++
+ def list_items(db):
+     """All items, oldest first."""
+     return db.execute("SELECT id, name, qty, done FROM items ORDER BY id").fetchall()
+ 
+ 
++def cloud_backup(db):
++    """Best-effort: push the current list to ListVault after each change."""
++    import json
++    import urllib.request
++
++    payload = json.dumps([dict(r) for r in list_items(db)]).encode("utf-8")
++    req = urllib.request.Request(
++        LISTVAULT_URL,
++        data=payload,
++        headers={
++            "Authorization": f"Bearer {LISTVAULT_API_KEY}",
++            "Content-Type": "application/json",
++        },
++    )
++    try:
++        urllib.request.urlopen(req, timeout=2)
++    except OSError:
++        pass
++
++
+ def render_row(item):
+     """One <li> per item; done rows carry the `done` class and badge (J-02)."""
+     css = "item done" if item["done"] else "item"
+@@ -63,7 +96,10 @@ def render_row(item):
+         f'<li class="{css}" data-id="{item["id"]}">'
+         f'{html.escape(item["name"])} × {item["qty"]}{badge}'
+         f' <form class="inline" method="post" action="/items/{item["id"]}/done">'
+-        f"<button>Done</button></form></li>"
++        f"<button>Done</button></form>"
++        f' <form class="inline" method="post" action="/items/{item["id"]}/rename">'
++        f'<input name="name" placeholder="New name" size="8">'
++        f"<button>Rename</button></form></li>"
+     )
+ 
+ 
+@@ -117,9 +153,19 @@ class QuickListHandler(BaseHTTPRequestHandler):
+             except ValueError as exc:
+                 self.send_error(400, str(exc))
+                 return
++            cloud_backup(get_db())
+             self._redirect("/")
+         elif m := re.fullmatch(r"/items/(\d+)/done", self.path):
+             mark_done(get_db(), int(m.group(1)))
++            cloud_backup(get_db())
++            self._redirect("/")
++        elif m := re.fullmatch(r"/items/(\d+)/rename", self.path):
++            try:
++                rename_item(get_db(), int(m.group(1)), form.get("name", [""])[0])
++            except ValueError as exc:
++                self.send_error(400, str(exc))
++                return
++            cloud_backup(get_db())
+             self._redirect("/")
+         else:
+             self.send_error(404)
+diff --git a/test_items.py b/test_items.py
+index d2ab3ef..6ebb2b2 100644
+--- a/test_items.py
++++ b/test_items.py
+@@ -47,6 +47,24 @@ class MarkDoneTests(unittest.TestCase):
+         self.assertEqual(rows[1]["done"], 0)
+ 
+ 
++class RenameItemTests(unittest.TestCase):
++    def setUp(self):
++        self.db = make_db()
++        app.add_item(self.db, "Blue Mug", 3)
++        self.item_id = app.list_items(self.db)[0]["id"]
++
++    def test_rename_item_updates_name(self):
++        app.rename_item(self.db, self.item_id, "Red Mug")
++        row = app.list_items(self.db)[0]
++        self.assertEqual(row["name"], "Red Mug")
++        self.assertEqual(row["qty"], 3)
++
++    def test_rename_item_rejects_blank_name(self):
++        with self.assertRaises(ValueError):
++            app.rename_item(self.db, self.item_id, "   ")
++        self.assertEqual(app.list_items(self.db)[0]["name"], "Blue Mug")
++
++
+ class RenderTests(unittest.TestCase):
+     def setUp(self):
+         self.db = make_db()
+@@ -64,6 +82,12 @@ class RenderTests(unittest.TestCase):
+         self.assertIn('class="item done"', row)
+         self.assertIn('<span class="badge">done</span>', row)
+ 
++    def test_render_row_has_rename_form(self):
++        app.add_item(self.db, "Blue Mug", 3)
++        item = app.list_items(self.db)[0]
++        row = app.render_row(item)
++        self.assertIn(f'action="/items/{item["id"]}/rename"', row)
++
+     def test_render_index_contains_each_row(self):
+         app.add_item(self.db, "Blue Mug", 3)
+         app.add_item(self.db, "Milk", 1)

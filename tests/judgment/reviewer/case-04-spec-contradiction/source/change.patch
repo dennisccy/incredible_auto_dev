@@ -1,0 +1,96 @@
+diff --git a/app.py b/app.py
+index 1805241..a7cfe79 100644
+--- a/app.py
++++ b/app.py
+@@ -50,6 +50,12 @@ def mark_done(db, item_id):
+     db.commit()
+ 
+ 
++def set_qty(db, item_id, qty):
++    """Update an item's quantity (J-04)."""
++    db.execute("UPDATE items SET qty = ? WHERE id = ?", (int(qty), item_id))
++    db.commit()
++
++
+ def list_items(db):
+     """All items, oldest first."""
+     return db.execute("SELECT id, name, qty, done FROM items ORDER BY id").fetchall()
+@@ -63,7 +69,10 @@ def render_row(item):
+         f'<li class="{css}" data-id="{item["id"]}">'
+         f'{html.escape(item["name"])} × {item["qty"]}{badge}'
+         f' <form class="inline" method="post" action="/items/{item["id"]}/done">'
+-        f"<button>Done</button></form></li>"
++        f"<button>Done</button></form>"
++        f' <form class="inline qty-form" method="post" action="/items/{item["id"]}/qty">'
++        f'<input name="qty" size="3" value="{item["qty"]}">'
++        f"<button>Update</button></form></li>"
+     )
+ 
+ 
+@@ -121,6 +130,9 @@ class QuickListHandler(BaseHTTPRequestHandler):
+         elif m := re.fullmatch(r"/items/(\d+)/done", self.path):
+             mark_done(get_db(), int(m.group(1)))
+             self._redirect("/")
++        elif m := re.fullmatch(r"/items/(\d+)/qty", self.path):
++            set_qty(get_db(), int(m.group(1)), form.get("qty", ["1"])[0])
++            self._redirect("/")
+         else:
+             self.send_error(404)
+ 
+diff --git a/static/app.js b/static/app.js
+index a73b276..a2c919d 100644
+--- a/static/app.js
++++ b/static/app.js
+@@ -8,3 +8,16 @@ document.addEventListener("DOMContentLoaded", () => {
+     });
+   });
+ });
++
++// Quantity update validation (J-04): block bad values before they reach the server.
++document.addEventListener("DOMContentLoaded", () => {
++  document.querySelectorAll("form.qty-form").forEach((form) => {
++    form.addEventListener("submit", (event) => {
++      const qty = form.querySelector('input[name="qty"]').value.trim();
++      if (!/^[0-9]+$/.test(qty) || Number(qty) < 1) {
++        alert("Quantity must be a whole number of at least 1.");
++        event.preventDefault();
++      }
++    });
++  });
++});
+diff --git a/test_items.py b/test_items.py
+index d2ab3ef..9ab8c38 100644
+--- a/test_items.py
++++ b/test_items.py
+@@ -47,6 +47,17 @@ class MarkDoneTests(unittest.TestCase):
+         self.assertEqual(rows[1]["done"], 0)
+ 
+ 
++class SetQtyTests(unittest.TestCase):
++    def setUp(self):
++        self.db = make_db()
++        app.add_item(self.db, "Blue Mug", 3)
++        self.item_id = app.list_items(self.db)[0]["id"]
++
++    def test_set_qty_updates_value(self):
++        app.set_qty(self.db, self.item_id, 5)
++        self.assertEqual(app.list_items(self.db)[0]["qty"], 5)
++
++
+ class RenderTests(unittest.TestCase):
+     def setUp(self):
+         self.db = make_db()
+@@ -64,6 +75,13 @@ class RenderTests(unittest.TestCase):
+         self.assertIn('class="item done"', row)
+         self.assertIn('<span class="badge">done</span>', row)
+ 
++    def test_render_row_has_qty_form(self):
++        app.add_item(self.db, "Blue Mug", 3)
++        item = app.list_items(self.db)[0]
++        row = app.render_row(item)
++        self.assertIn(f'action="/items/{item["id"]}/qty"', row)
++        self.assertIn('value="3"', row)
++
+     def test_render_index_contains_each_row(self):
+         app.add_item(self.db, "Blue Mug", 3)
+         app.add_item(self.db, "Milk", 1)

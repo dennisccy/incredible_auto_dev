@@ -1,0 +1,52 @@
+diff --git a/app.py b/app.py
+index 1805241..66b57cc 100644
+--- a/app.py
++++ b/app.py
+@@ -69,8 +69,12 @@ def render_row(item):
+ 
+ def render_index(items):
+     """Render the full index page from the template."""
++    open_count = sum(1 for i in items if not i["done"])
++    done_count = len(items) - open_count
++    summary = f'<p id="summary">{open_count} open · {done_count} done</p>'
+     rows = "\n".join(render_row(i) for i in items)
+-    return TEMPLATE_PATH.read_text(encoding="utf-8").replace("<!--ROWS-->", rows)
++    page = TEMPLATE_PATH.read_text(encoding="utf-8").replace("<!--SUMMARY-->", summary)
++    return page.replace("<!--ROWS-->", rows)
+ 
+ 
+ class QuickListHandler(BaseHTTPRequestHandler):
+diff --git a/templates/index.html b/templates/index.html
+index 4c9e86c..fbef1b9 100644
+--- a/templates/index.html
++++ b/templates/index.html
+@@ -17,6 +17,7 @@
+     <input name="qty" type="number" min="1" value="1" required>
+     <button>Add</button>
+   </form>
++  <!--SUMMARY-->
+   <label><input type="checkbox" id="open-only"> Open only</label>
+   <ul id="items">
+ <!--ROWS-->
+diff --git a/test_items.py b/test_items.py
+index d2ab3ef..66e5b1a 100644
+--- a/test_items.py
++++ b/test_items.py
+@@ -71,6 +71,17 @@ class RenderTests(unittest.TestCase):
+         self.assertIn("Blue Mug", page)
+         self.assertIn("Milk", page)
+ 
++    def test_render_index_summary_counts_mixed_list(self):
++        app.add_item(self.db, "Blue Mug", 3)
++        app.add_item(self.db, "Milk", 1)
++        app.mark_done(self.db, app.list_items(self.db)[0]["id"])
++        page = app.render_index(app.list_items(self.db))
++        self.assertIn('<p id="summary">1 open · 1 done</p>', page)
++
++    def test_render_index_summary_empty_list(self):
++        page = app.render_index(app.list_items(self.db))
++        self.assertIn('<p id="summary">0 open · 0 done</p>', page)
++
+ 
+ if __name__ == "__main__":
+     unittest.main()
