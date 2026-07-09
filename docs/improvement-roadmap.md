@@ -635,7 +635,15 @@ benchmark (or a real session's telemetry) before AND after (G8).
 ## 10. P1 — Reliability & weaker-model hardening
 
 ### REL-1 · Judgment eval fixtures (golden verdict cases)
-- **Priority:** P1 · **Effort:** L (slice per judge) · **Risk:** LOW · **Status:** TODO
+- **Priority:** P1 · **Effort:** L (slice per judge) · **Risk:** LOW · **Status:** IN-PROGRESS
+  *(slice (a) — goal-evaluator cases + runner — implemented 2026-07-09; slices (b) reviewer
+  and (c) auditor remain TODO. Confirmed real run 2026-07-09 (user-approved spend,
+  judge = claude-opus-4-8 @ effort max): 5/5 verdict classes correct —
+  case-01-clean-goal-achieved → GOAL_ACHIEVED (342s), case-02-first-failure-continue →
+  CONTINUE (234s), case-03-regression-broken-journey → REGRESSION (262s),
+  case-04-goal-drift-void-pass → CONTINUE (322s), case-05-secret-committed →
+  REGRESSION (196s). Left IN-PROGRESS per G8 — a fresh session certifies slice (a)
+  before the item advances to slice (b).)*
 - **Problem:** the single biggest retirement risk is silent judge regression — a weaker
   evaluator/reviewer/auditor emitting plausible-but-wrong verdicts. The eval suite
   checks parsers and gates, not judgment.

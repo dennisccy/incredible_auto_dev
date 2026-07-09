@@ -1,0 +1,92 @@
+# Iteration diff (bounded)
+
+Files changed: 5. Shown in full: 5.
+
+```diff
+diff --git a/schema.sql b/schema.sql
+index a10c3e2..5f2d901 100644
+--- a/schema.sql
++++ b/schema.sql
+@@ -2,6 +2,6 @@ CREATE TABLE IF NOT EXISTS items (
+     id INTEGER PRIMARY KEY AUTOINCREMENT,
+     name TEXT NOT NULL,
+     qty INTEGER NOT NULL DEFAULT 1,
+-    done INTEGER NOT NULL DEFAULT 0
++    state INTEGER NOT NULL DEFAULT 0
+ );
+diff --git a/app.py b/app.py
+index 3c1a2f0..77e09c3 100644
+--- a/app.py
++++ b/app.py
+@@ -12,10 +12,18 @@ def get_db():
+     return g.db
+ 
+ 
++def migrate(db):
++    cols = [r[1] for r in db.execute("PRAGMA table_info(items)")]
++    if "done" in cols:
++        db.execute("ALTER TABLE items RENAME COLUMN done TO state")
++        db.commit()
++
++
+ @app.get("/")
+ def index():
+     db = get_db()
+-    items = db.execute("SELECT * FROM items").fetchall()
++    migrate(db)
++    open_only = request.args.get("open") == "1"
++    q = "SELECT * FROM items" + (" WHERE state = 0" if open_only else "")
++    items = db.execute(q).fetchall()
+     return render_template("index.html", items=items)
+ 
+ 
+diff --git a/templates/index.html b/templates/index.html
+index 71b02aa..0c11b9e 100644
+--- a/templates/index.html
++++ b/templates/index.html
+@@ -12,11 +12,15 @@
+   <form method="post" action="/items">
+     <input name="name" placeholder="Item"> <input name="qty" value="1" size="2">
+     <button>Add</button>
+   </form>
++  <label class="filter-toggle">
++    <input type="checkbox" id="open-only"> Open only
++  </label>
+   <ul id="items">
+     {% for item in items %}
+-    <li class="item">{{ item.name }} ×{{ item.qty }}
++    <li class="item{% if item.state %} done{% endif %}">{{ item.name }} ×{{ item.qty }}
++      {% if item.state %}<span class="badge">done</span>{% endif %}
+       <form method="post" action="/items/{{ item.id }}/done"><button>Done</button></form>
+     </li>
+     {% endfor %}
+   </ul>
+diff --git a/static/app.js b/static/app.js
+index 88ac001..f01b2c7 100644
+--- a/static/app.js
++++ b/static/app.js
+@@ -1,3 +1,9 @@
+ // QuickList client behaviour
++const toggle = document.getElementById("open-only");
++toggle.addEventListener("change", () => {
++  window.location = toggle.checked ? "/?open=1" : "/";
++});
+diff --git a/tests/test_items.py b/tests/test_items.py
+index 55aa310..6d09a52 100644
+--- a/tests/test_items.py
++++ b/tests/test_items.py
+@@ -20,6 +20,13 @@ def test_add_item(client):
+     assert b"Blue Mug" in resp.data
+ 
+ 
++def test_open_filter_hides_done_rows(client):
++    client.post("/items", data={"name": "Blue Mug", "qty": "3"})
++    seed_done_row(client, "Milk", 1)
++    resp = client.get("/?open=1")
++    assert b"Milk" not in resp.data and b"Blue Mug" in resp.data
++
++
+ def test_qty_defaults_to_one(client):
+     resp = client.post("/items", data={"name": "Eggs"})
+     assert b"\xc3\x971" in resp.data
+```
