@@ -1209,6 +1209,20 @@ $(python3 "$SCRIPT_DIR/lib/analyze_telemetry.py" --wall "$GOAL_SESSION_DIR_LOCAL
 EOF
   record_telemetry_event "session_end" "$(jq -cn --arg fv "$final_verdict" --argjson ti $total_iterations --argjson wt $wall_time --argjson qp $quota_pauses '{final_verdict:$fv, total_iterations:$ti, wall_time_seconds:$wt, quota_pause_count:$qp}' 2>/dev/null || printf '{"final_verdict":"%s","total_iterations":%d}' "$final_verdict" "$total_iterations")"
   echo "[run-goal] Session summary: $SUMMARY_FILE"
+  # Session retro (EVO-2 slice a): freeze a deterministic evidence snapshot
+  # (state/retro-input.md) for the retro drafting agent on TERMINAL halts only.
+  # Resumable pauses (AWAITING_*, GATE_BLOCKED) and ABORTED — which is also how
+  # an ABORT_MALFORMED halt arrives here (the halt switch passes "ABORTED") —
+  # produce nothing. Non-blocking: a broken collector must never change halt
+  # behavior or an engine exit code. Disable with CHAIN_SESSION_RETRO=false.
+  if [[ "${CHAIN_SESSION_RETRO:-true}" != "false" ]]; then
+    case "$final_verdict" in
+      GOAL_ACHIEVED|STALLED|REGRESSION_HALT|BUDGET_EXHAUSTED)
+        bash "$SCRIPT_DIR/lib/retro_collect.sh" "$GOAL_SESSION_DIR_LOCAL" "$final_verdict" \
+          || echo "[run-goal] Warning: session retro collector failed (non-blocking) — no retro-input.md." >&2
+        ;;
+    esac
+  fi
   _render_session_index_html
   local _idx_html="$REPO_ROOT/reports/goal-session-${SESSION_ID}-index.html"
   [[ -f "$_idx_html" ]] && echo "[run-goal] Session HTML: file://$_idx_html"

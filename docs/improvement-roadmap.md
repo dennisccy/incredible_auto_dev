@@ -189,15 +189,36 @@ the system measures itself, and how it survives the next model change.
   tell the user it may be stale.
 
 ### EVO-2 · Automatic post-session retrospective
-- **Priority:** P0 · **Effort:** L (2 slices) · **Risk:** MED · **Status:** TODO
+- **Priority:** P0 · **Effort:** L (2 slices) · **Risk:** MED · **Status:** IN-PROGRESS
+  *(slice (a) — deterministic collector + terminal-halt wiring — implemented 2026-07-10:
+  `scripts/automation/lib/retro_collect.sh` (new) writes `state/retro-input.md` with the
+  stable sections Outcome / Verdict sequence / Agent economics / Friction counters /
+  Lessons tail / Halt context; sourceless counters are the literal `unknown (<why>)`.
+  Wired into `write_session_summary` (`run-goal.sh:1212-1226`) behind
+  `CHAIN_SESSION_RETRO` (default `true`; documented in `.claude/model-orchestration.md`
+  knob table), firing on GOAL_ACHIEVED/STALLED/REGRESSION_HALT/BUDGET_EXHAUSTED only,
+  non-blocking. REALITY vs the status list below: ABORT_MALFORMED reaches
+  write_session_summary as the string "ABORTED" (`run-goal.sh:2196-2202`),
+  indistinguishable at that choke point from a Ctrl-C abort — so malformed-x2 halts get
+  NO retro in slice (a); slice (b) may change that call site to pass ABORT_MALFORMED
+  after auditing session.json status consumers. Tests:
+  `tests/automation/test-goal-retro.sh` (23 asserts — collector full/degraded fixtures;
+  real-engine wiring: STALLED fires, AWAITING_PUMP doesn't, knob-off doesn't, a broken
+  collector leaves engine exit codes unchanged), registered in `run-evals.sh` §2c.
+  Slice (b) — drafting agent — and fresh-session certification (G8) remain.)*
 - **Problem:** every session generates evidence about what hurt (halts, quota pauses,
   review-FAIL loops, wall-time spikes, lessons) — and none of it flows back into
   framework improvements. The feedback loop is the evolution engine's core.
 - **Current state:** terminal halts are decided in the verdict/halt switch
-  (`run-goal.sh:1777-1919`); the showcase tail is the proven non-blocking pattern
-  (forked for CONTINUE, inline for halts, `run-goal.sh:1601-1612` / `:1770-1775`);
-  wall/token aggregation exists (`lib/analyze_telemetry.py`, `build_wall_report` ~`:273`,
-  JSON output supported); lessons tail inlining exists (`:520-525`).
+  (`run-goal.sh:2066-2210`), but EVERY halt — terminal and resumable — funnels through
+  `write_session_summary()` (`run-goal.sh:1123`), the single choke point slice (a) wired
+  (AWAITING_* pauses and the GOAL_ACHIEVED+proposer-extended `continue` never reach a
+  terminal summary); the showcase tail is the proven non-blocking pattern (forked for
+  CONTINUE `run-goal.sh:2063`, inline for halts `:1900`); wall/token aggregation exists
+  (`lib/analyze_telemetry.py`, `build_wall_report` `:273`, `--json` output supported);
+  lessons tail inlining exists (`run-goal.sh:1469`); verdict-per-iteration telemetry:
+  `iter_end` `:1945`, `deterministic_gate` rewrites `:1883`, `review_verdict`
+  (`goal-iter-lean.sh:210`).
 - **Change spec:**
   1. **Slice (a) — deterministic collector + wiring.** New
      `scripts/automation/lib/retro_collect.sh` (or `.py`): writes
