@@ -132,7 +132,7 @@ An agent's claim about its own work is a hypothesis, not evidence.
 | `CHAIN_DISPATCH_REQUEUE_ON_TIMEOUT` | default `true`; one requeue after an interactive inflight timeout before pausing | `lib/interactive-dispatch.sh` |
 | `CHAIN_LEAN_PARALLEL_COHERENCE` | default `true`; lean iterations run the coherence audit concurrently with browser-qa | `goal-iter-lean.sh` |
 | `CHAIN_ASYNC_SHOWCASE` | default `true`; demo/summary/README/renders run in the background overlapping the next decomposer (CONTINUE/ESCALATE only; joined + committed before the next executor dispatch) | `run-goal.sh` |
-| `CHAIN_SESSION_RETRO` | default `true`; terminal halts (GOAL_ACHIEVED/STALLED/REGRESSION_HALT/BUDGET_EXHAUSTED) freeze a deterministic evidence snapshot to `state/retro-input.md` (EVO-2); resumable pauses never fire it; non-blocking — set `false` to disable | `run-goal.sh`, `lib/retro_collect.sh` |
+| `CHAIN_SESSION_RETRO` | default `true`; terminal halts (GOAL_ACHIEVED/STALLED/REGRESSION_HALT/BUDGET_EXHAUSTED) freeze a deterministic evidence snapshot to `state/retro-input.md` AND then dispatch the retro-analyst (light tier) to draft `reports/goal-session-<sid>-retro.md` improvement proposals from it (EVO-2); the drafting dispatch is skipped when the digest is missing; resumable pauses never fire either step; non-blocking — set `false` to disable both | `run-goal.sh`, `lib/retro_collect.sh` |
 | `CHAIN_AGENT_EFFORT` | opt-in experiment, e.g. `developer=high`; **judges are refused by a hardcoded guard**; auto-reverted by the telemetry tripwire on quality movement | `lib/agent_permissions.py` |
 
 If you disable a gate/routing knob for an experiment, **re-enable it in the same session**

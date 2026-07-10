@@ -343,6 +343,7 @@ Iteration name `goal-<sid>-iter-<N>` is used as the "phase name" so existing scr
 | `coherence-auditor` | standard | (goal mode) | Audits each iteration's diff against the blueprint (information architecture + data contract); hard-fails only on objective drift |
 | `goal-proposer` | strong | (goal mode, opt-in) | After every Must-have journey passes, surveys the whole product through the project's usefulness lens (`project-extensions/proposer-guidance.md`), writes an enhancement-proposals backlog, and appends the best survivors as new Must-have journeys in `docs/goal.md` AUTO:journeys — runs only when that guidance file exists |
 | `readme-maintainer` | standard | (goal mode) | After each iteration, refreshes the project-root README's marker-delimited AUTO blocks so capabilities and "How to run" stay accurate; non-blocking showcase step, never gates the pipeline |
+| `retro-analyst` | light | (goal mode, terminal halts) | At a terminal goal-session halt, reads ONLY the frozen `state/retro-input.md` evidence digest and drafts 1-5 candidate framework-improvement proposals to `reports/goal-session-<sid>-retro.md` for human triage; proposals only, non-blocking, never edits the roadmap |
 
 Model tiers: each agent's `model_tier` lives in `agents/<name>/agent.yaml`; tiers resolve to model ids in `config/model-tiers.yaml`. Edit, then `python3 scripts/automation/sync-cli-assets.py` and commit the regenerated mirrors.
 

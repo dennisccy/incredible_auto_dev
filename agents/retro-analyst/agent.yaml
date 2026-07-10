@@ -1,0 +1,11 @@
+name: retro-analyst
+description: Post-session retrospective analyst. Reads ONLY the frozen retro-input.md evidence
+  digest at terminal halts and drafts 1-5 candidate framework-improvement items for human triage.
+  Proposals only — never edits the roadmap. Non-blocking showcase-class step.
+model_tier: light
+tools_allowed:
+- Read
+- Write
+version: 1.0.0
+last_updated: '2026-07-10'
+body: body.md

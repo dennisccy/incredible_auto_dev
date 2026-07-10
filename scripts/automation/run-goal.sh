@@ -318,6 +318,51 @@ When finished, STOP." \
   record_agent_invocation_end "iteration-summarizer" "$_sum_start" "$_sum_rc"
 }
 
+# Run the retro-analyst agent at a terminal session halt (EVO-2 slice b).
+# Reads ONLY state/retro-input.md (the collector's frozen digest) and drafts
+# reports/goal-session-<sid>-retro.md — 1-5 candidate framework-improvement
+# proposals for human triage. Non-blocking showcase-class step: a failed or
+# skipped dispatch never changes halt behavior or an engine exit code. The
+# caller (write_session_summary) gates on CHAIN_SESSION_RETRO + the terminal-
+# status filter; this function additionally requires the digest to exist so
+# the agent can never dispatch without its single input.
+_run_retro_analyst() {
+  local agent_file="$REPO_ROOT/.claude/agents/retro-analyst.md"
+  local retro_input="$GOAL_SESSION_DIR_LOCAL/state/retro-input.md"
+  local retro_report="$REPO_ROOT/reports/goal-session-${SESSION_ID}-retro.md"
+  [[ -f "$agent_file" ]] || { echo "[run-goal] Warning: retro-analyst agent missing, skipping retro draft"; return 0; }
+  [[ -f "$retro_input" ]] || { echo "[run-goal] Warning: no retro-input.md (collector failed or skipped) — retro-analyst not dispatched."; return 0; }
+  mkdir -p "$REPO_ROOT/reports"
+
+  cd "$REPO_ROOT"
+  # record_* pair (not a bare export): attributes telemetry/trace to this agent
+  # and clears CHAIN_CURRENT_AGENT afterwards so attribution can't bleed into
+  # later inline calls.
+  record_agent_invocation_start "retro-analyst"
+  local _retro_start=$CHAIN_AGENT_START_EPOCH
+  local _retro_rc=0
+  claude_with_quota_retry -p "You are the retro-analyst agent.
+
+Session ID: $SESSION_ID
+Retro input (your ONLY input file): $retro_input
+Output path (the retro report): $retro_report
+Agent instructions: .claude/agents/retro-analyst.md  <-- read this first
+(CLAUDE.md is already in your system prompt -- do not Read it again.)
+
+Apply the TOKEN AND QUESTIONING POLICY from .claude/core.md strictly.
+
+Read the retro input file and NOTHING else. Draft at most 5 candidate
+framework-improvement items per your agent instructions — proposals only,
+each citing its exact evidence line from the retro input; zero items is a
+valid outcome. Never edit docs/improvement-roadmap.md or any other file.
+
+Write the report to: $retro_report
+
+Write the report and STOP." \
+    || { _retro_rc=$?; echo "[run-goal] Warning: retro-analyst dispatch failed (non-blocking) — no retro report." >&2; }
+  record_agent_invocation_end "retro-analyst" "$_retro_start" "$_retro_rc"
+}
+
 # Maintain the PROJECT's README.md so it always reflects current capabilities and
 # carries a How-to-run section. Non-blocking — failures only log. Runs every
 # iteration in goal mode (headless or interactive). The agent edits only
@@ -1220,6 +1265,10 @@ EOF
       GOAL_ACHIEVED|STALLED|REGRESSION_HALT|BUDGET_EXHAUSTED)
         bash "$SCRIPT_DIR/lib/retro_collect.sh" "$GOAL_SESSION_DIR_LOCAL" "$final_verdict" \
           || echo "[run-goal] Warning: session retro collector failed (non-blocking) — no retro-input.md." >&2
+        # EVO-2 slice (b): draft improvement proposals from the frozen digest.
+        # Same knob + terminal filter as the collector; the wrapper itself
+        # refuses to dispatch when retro-input.md is absent (collector failed).
+        _run_retro_analyst
         ;;
     esac
   fi

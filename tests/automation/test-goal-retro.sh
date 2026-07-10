@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# test-goal-retro.sh — EVO-2 slice (a): session-retro collector + terminal-halt
-# wiring (lib/retro_collect.sh + run-goal.sh write_session_summary).
+# test-goal-retro.sh — EVO-2 slices (a)+(b): session-retro collector +
+# terminal-halt wiring + retro-analyst drafting dispatch
+# (lib/retro_collect.sh + run-goal.sh write_session_summary/_run_retro_analyst).
 #
 # Part 1 drives lib/retro_collect.sh directly against synthetic session dirs:
 #   1a. Full fixture → every stable section header, the right verdict sequence,
@@ -10,13 +11,19 @@
 #       deliberately omitted) → exit 0, explicit `unknown (<why>)` /
 #       "none recorded" lines, output lands ONLY in state/.
 #
-# Part 2 drives the REAL run-goal.sh in a sandbox repo (consumer layout, stub
-# `claude` returning transport code 70 on PATH):
-#   W1. STALLED terminal halt        → retro-input.md EXISTS, engine exits 0.
-#   W2. AWAITING_PUMP resumable pause → retro-input.md does NOT exist, exit 0.
-#   W3. CHAIN_SESSION_RETRO=false, STALLED → does NOT exist, exit 0.
+# Part 2 drives the REAL run-goal.sh in a sandbox repo (consumer layout; stub
+# `claude` on PATH: transport code 70 for gating dispatches, and it plays the
+# retro-analyst drafting model — writing a minimal report to the output path
+# parsed from the dispatch prompt, or exiting STUB_RETRO_RC when that is set):
+#   W1. STALLED terminal halt        → retro-input.md AND the retro report
+#       (reports/goal-session-<sid>-retro.md) BOTH exist, engine exits 0.
+#   W2. AWAITING_PUMP resumable pause → NEITHER file exists, exit 0.
+#   W3. CHAIN_SESSION_RETRO=false, STALLED → NEITHER file, exit 0.
 #   W4. Collector forced to fail, STALLED → engine exit code UNCHANGED (0),
-#       summary still written, non-fatal warning logged.
+#       summary still written, non-fatal warning logged, NO agent dispatch
+#       (no orphan retro report).
+#   W5. Retro-analyst dispatch forced to fail, STALLED → halt exit code
+#       unchanged (0), retro-input.md exists, no report, one warning logged.
 #
 # No API calls, no network; runs in a few seconds.
 
@@ -141,6 +148,9 @@ mkdir -p "$SBX/docs/phases" "$SBX/reports"
 # committed mirrors).
 mkdir -p "$SBX/.claude/agents"
 echo "stub" > "$SBX/.claude/agents/developer.md"
+# _run_retro_analyst skips (by design) when the agent file is absent; the
+# sandbox needs the marker so the dispatch path is actually exercised.
+echo "stub" > "$SBX/.claude/agents/retro-analyst.md"
 git init -q "$SBX"
 cat > "$SBX/docs/goal.md" <<'EOF'
 # Goal
@@ -152,12 +162,25 @@ EOF
 git -C "$SBX" add -A
 git -C "$SBX" -c user.email=t@t -c user.name=t commit -qm base
 
-# Stub claude: any dispatch fails with the transport code so the engine pauses
-# AWAITING_PUMP fast (W2) — W1/W3/W4 halt at loop top before any dispatch.
+# Stub claude: gating dispatches (decomposer etc.) fail with the transport code
+# so the engine pauses AWAITING_PUMP fast (W2) — W1/W3/W4/W5 halt at loop top
+# before any gating dispatch. A retro-analyst dispatch (slice b, fired from
+# inside write_session_summary on terminal halts) instead plays the drafting
+# model: exit STUB_RETRO_RC when set (W5), else write a minimal report to the
+# output path named in the prompt (W1).
 STUB_DIR="$WORK/bin"
 mkdir -p "$STUB_DIR"
 cat > "$STUB_DIR/claude" <<'EOF'
 #!/usr/bin/env bash
+prompt="$*"
+if [[ "$prompt" == *"retro-analyst agent"* ]]; then
+  [[ -n "${STUB_RETRO_RC:-}" ]] && exit "$STUB_RETRO_RC"
+  out="$(printf '%s\n' "$prompt" | sed -n 's/^Output path (the retro report): //p' | head -n1)"
+  [[ -n "$out" ]] || exit 64
+  mkdir -p "$(dirname "$out")"
+  printf '# Session retro — stub\n\n> **PROPOSALS ONLY** — stub-authored report.\n\n## Candidate items\n\nnothing recurred worth proposing (stub).\n' > "$out"
+  exit 0
+fi
 exit 70
 EOF
 chmod +x "$STUB_DIR/claude"
@@ -221,6 +244,17 @@ D1="$SBX/runs/goal-session-w1"
 grep -q '^\- \*\*Terminal status:\*\* STALLED' "$D1/state/retro-input.md" 2>/dev/null \
   && assert "W1: retro-input.md records the STALLED terminal status" "pass" \
   || assert "W1: retro-input.md records the STALLED terminal status" "fail"
+# Slice (b): the same terminal halt also dispatches the retro-analyst, which
+# (stub-played) writes the report — the item DoD's "both files".
+[[ -f "$SBX/reports/goal-session-w1-retro.md" ]] \
+  && assert "W1: retro-analyst dispatch produced reports/goal-session-w1-retro.md" "pass" \
+  || assert "W1: retro-analyst dispatch produced reports/goal-session-w1-retro.md" "fail"
+if ! grep -q "retro-analyst dispatch failed" "$WORK/engine-w1.log" 2>/dev/null \
+   && ! grep -q "retro-analyst not dispatched" "$WORK/engine-w1.log" 2>/dev/null; then
+  assert "W1: clean dispatch — no retro-analyst warning in engine log" "pass"
+else
+  assert "W1: clean dispatch — no retro-analyst warning in engine log" "fail"
+fi
 
 # ── W2: AWAITING_PUMP resumable pause → no retro ─────────────────────────────
 make_session w2   # no stall hashes; decomposer dispatch hits the stub's exit 70
@@ -232,6 +266,9 @@ D2="$SBX/runs/goal-session-w2"
 [[ -f "$D2/summary.md" && ! -f "$D2/state/retro-input.md" ]] \
   && assert "W2: resumable pause wrote summary.md but NO retro-input.md" "pass" \
   || assert "W2: resumable pause wrote summary.md but NO retro-input.md" "fail"
+[[ ! -f "$SBX/reports/goal-session-w2-retro.md" ]] \
+  && assert "W2: resumable pause dispatched no retro-analyst (no report)" "pass" \
+  || assert "W2: resumable pause dispatched no retro-analyst (no report)" "fail"
 
 # ── W3: CHAIN_SESSION_RETRO=false → no retro on a terminal halt ──────────────
 make_session w3; make_stalled w3
@@ -240,6 +277,9 @@ D3="$SBX/runs/goal-session-w3"
 [[ "$rc" -eq 0 && "$(session_status w3)" == "STALLED" && ! -f "$D3/state/retro-input.md" ]] \
   && assert "W3: CHAIN_SESSION_RETRO=false suppresses the retro on STALLED" "pass" \
   || assert "W3: CHAIN_SESSION_RETRO=false suppresses the retro on STALLED (rc=$rc, status=$(session_status w3))" "fail"
+[[ ! -f "$SBX/reports/goal-session-w3-retro.md" ]] \
+  && assert "W3: knob off also suppresses the retro-analyst dispatch (no report)" "pass" \
+  || assert "W3: knob off also suppresses the retro-analyst dispatch (no report)" "fail"
 
 # ── W4: broken collector → engine exit code unchanged, summary intact ────────
 printf '#!/usr/bin/env bash\nexit 1\n' > "$SBX/scripts/automation/lib/retro_collect.sh"
@@ -255,6 +295,32 @@ D4="$SBX/runs/goal-session-w4"
 grep -q "session retro collector failed (non-blocking)" "$WORK/engine-w4.log" 2>/dev/null \
   && assert "W4: non-fatal warning logged" "pass" \
   || assert "W4: non-fatal warning logged" "fail"
+# Slice (b): no digest → no dispatch. The wrapper must refuse (one message)
+# rather than send the agent off without its single input file.
+[[ ! -f "$SBX/reports/goal-session-w4-retro.md" ]] \
+  && assert "W4: broken collector → no retro-analyst dispatch (no orphan report)" "pass" \
+  || assert "W4: broken collector → no retro-analyst dispatch (no orphan report)" "fail"
+grep -q "retro-analyst not dispatched" "$WORK/engine-w4.log" 2>/dev/null \
+  && assert "W4: wrapper logged the not-dispatched reason" "pass" \
+  || assert "W4: wrapper logged the not-dispatched reason" "fail"
+
+# ── W5: retro-analyst dispatch fails → halt exit code unchanged ──────────────
+# W4 replaced the sandbox collector with `exit 1`; restore the real one so the
+# digest exists and the DISPATCH (forced to exit 1 via STUB_RETRO_RC) is the
+# only failing piece.
+cp "$ENGINE_ROOT/scripts/automation/lib/retro_collect.sh" "$SBX/scripts/automation/lib/retro_collect.sh"
+make_session w5; make_stalled w5
+rc=0; run_engine w5 STUB_RETRO_RC=1 || rc=$?
+D5="$SBX/runs/goal-session-w5"
+[[ "$rc" -eq 0 && "$(session_status w5)" == "STALLED" ]] \
+  && assert "W5: failed retro dispatch leaves engine exit code unchanged (0)" "pass" \
+  || { assert "W5: failed retro dispatch leaves engine exit code unchanged (rc=$rc)" "fail"; sed -n '1,25p' "$WORK/engine-w5.log"; }
+[[ -f "$D5/state/retro-input.md" && ! -f "$SBX/reports/goal-session-w5-retro.md" ]] \
+  && assert "W5: digest written, no report (dispatch failed)" "pass" \
+  || assert "W5: digest written, no report (dispatch failed)" "fail"
+grep -q "retro-analyst dispatch failed (non-blocking)" "$WORK/engine-w5.log" 2>/dev/null \
+  && assert "W5: non-blocking dispatch-failure warning logged" "pass" \
+  || assert "W5: non-blocking dispatch-failure warning logged" "fail"
 
 echo ""
 echo "=== Results: $PASS passed, $FAIL failed ==="

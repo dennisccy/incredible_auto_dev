@@ -194,18 +194,38 @@ the system measures itself, and how it survives the next model change.
   `scripts/automation/lib/retro_collect.sh` (new) writes `state/retro-input.md` with the
   stable sections Outcome / Verdict sequence / Agent economics / Friction counters /
   Lessons tail / Halt context; sourceless counters are the literal `unknown (<why>)`.
-  Wired into `write_session_summary` (`run-goal.sh:1212-1226`) behind
-  `CHAIN_SESSION_RETRO` (default `true`; documented in `.claude/model-orchestration.md`
-  knob table), firing on GOAL_ACHIEVED/STALLED/REGRESSION_HALT/BUDGET_EXHAUSTED only,
-  non-blocking. REALITY vs the status list below: ABORT_MALFORMED reaches
-  write_session_summary as the string "ABORTED" (`run-goal.sh:2196-2202`),
-  indistinguishable at that choke point from a Ctrl-C abort — so malformed-x2 halts get
-  NO retro in slice (a); slice (b) may change that call site to pass ABORT_MALFORMED
-  after auditing session.json status consumers. Tests:
-  `tests/automation/test-goal-retro.sh` (23 asserts — collector full/degraded fixtures;
-  real-engine wiring: STALLED fires, AWAITING_PUMP doesn't, knob-off doesn't, a broken
-  collector leaves engine exit codes unchanged), registered in `run-evals.sh` §2c.
-  Slice (b) — drafting agent — and fresh-session certification (G8) remain.)*
+  Wired into `write_session_summary` (`run-goal.sh:1263-1273` after slice (b)'s edits)
+  behind `CHAIN_SESSION_RETRO` (default `true`; documented in
+  `.claude/model-orchestration.md` knob table), firing on
+  GOAL_ACHIEVED/STALLED/REGRESSION_HALT/BUDGET_EXHAUSTED only, non-blocking.
+  Slice (a) certified 2026-07-10 by a non-implementer session per G8: 23/23 asserts +
+  full evals green, wiring claims re-verified against code, digest judged sufficient
+  as the drafting agent's sole input — no collector amendments needed.
+  Slice (b) — drafting agent — implemented 2026-07-10 by that certifying session: new
+  `agents/retro-analyst/` (model_tier light, tools [Read, Write]) reads ONLY the digest
+  and writes `reports/goal-session-<sid>-retro.md` — ≤5 candidate items in this file's
+  §4 shape, each citing its exact digest line, PROPOSALS-ONLY banner, zero items a
+  valid output, report ≤120 lines. Dispatched by `_run_retro_analyst`
+  (`run-goal.sh:329`, the summarizer wrapper pattern) from inside write_session_summary
+  immediately after the collector — same knob + same terminal filter + digest-exists
+  guard, non-blocking (a failed dispatch prints one warning, changes no exit code).
+  No `templates/retro.md` was needed — body.md carries the report skeleton (the Files
+  line below listed it as an either/or with the agent). Tests:
+  `tests/automation/test-goal-retro.sh` now 32 asserts (the stub plays the drafting
+  model: both-files DoD on STALLED, neither file on AWAITING_PUMP/knob-off, broken
+  collector → no orphan dispatch, failed dispatch → exit codes unchanged + one
+  warning), still registered in `run-evals.sh` §2c.
+  ABORT_MALFORMED call-site audit (slice (b) optional step): NOT changed. Every
+  session.json status consumer falls through safely on an unknown status EXCEPT
+  `run-goal.sh:1176` (`AWAITING_PUMP|ABORTED) _join_showcase_tail --kill`), which
+  special-cases "ABORTED" — passing ABORT_MALFORMED would flip that halt from
+  reap-immediately to bounded-join, so per the audit gate the call site
+  (`run-goal.sh:2245-2251`) still passes "ABORTED" and malformed-x2 halts still get NO
+  retro. A future slice shipping the rename must extend that case list plus the three
+  status-enum docs (`.claude/workflow.md:305`, `skills/goal-interactive-dispatch.md:147`,
+  `docs/goal-mode-telemetry.md:37/:115` — the last already omits ABORT_MALFORMED as an
+  emitted halt reason today, pre-existing drift, not introduced here).
+  Fresh-session certification of slice (b) remains before DONE (G8).)*
 - **Problem:** every session generates evidence about what hurt (halts, quota pauses,
   review-FAIL loops, wall-time spikes, lessons) — and none of it flows back into
   framework improvements. The feedback loop is the evolution engine's core.
@@ -231,7 +251,7 @@ the system measures itself, and how it survives the next model change.
      `CHAIN_SESSION_RETRO` (default `true`, escape hatch documented). Sandbox test
      asserting it runs on STALLED and not on AWAITING_PUMP.
   2. **Slice (b) — drafting agent.** Light-tier dispatch (reuse the
-     `_run_iteration_summarizer` wrapper pattern, `run-goal.sh:244-277`) reading ONLY
+     `_run_iteration_summarizer` wrapper pattern, `run-goal.sh:251`) reading ONLY
      `retro-input.md`, writing `reports/goal-session-<sid>-retro.md`: 1-5 candidate
      framework-improvement items in this file's §4 item format, each citing its
      evidence line from retro-input. PROPOSALS ONLY — the agent never edits this

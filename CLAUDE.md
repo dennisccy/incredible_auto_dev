@@ -41,7 +41,7 @@ pipeline chain (orchestrator, developer, reviewer, qa, auditor, release-manager,
 product-manager), the UI chain (ui-impact-analyst, ui-test-designer, browser-qa-agent,
 phase-closure-auditor, ux-regression-reviewer), goal mode (goal-decomposer, goal-evaluator,
 coherence-auditor, goal-proposer), and showcase (iteration-summarizer, demo-narrator,
-readme-maintainer). Roles, inputs, and verdict contracts live in each agent file; the
+readme-maintainer, retro-analyst). Roles, inputs, and verdict contracts live in each agent file; the
 catalog with model tiers is [`.claude/architecture/agents.md`](.claude/architecture/agents.md).
 
 **Skills** (reusable methodologies) live in `.claude/skills/` — each agent's body names
