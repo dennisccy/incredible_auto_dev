@@ -301,6 +301,49 @@ the system measures itself, and how it survives the next model change.
   engine runs (every benchmark run is G9 ask-first spend). Slices (b) runner +
   (c) compare/baseline remain; slice (a) certification per G8 folds into the
   slice-(b) session.)*
+  *(slice (b) — runner + pre-registration ledger — implemented 2026-07-10, same
+  session as the G8 fresh-eyes certification of slice (a) (certified: fixture
+  tests 3/3 green, app boots on 5177 with `/` and `/health` → 200, goal_lint
+  exit 0, journeys confirmed browser-observable and genuinely unimplemented in
+  the scaffold — no todo logic in `app.py`/`app.js` — and `run-evals.sh` green;
+  certifier was not slice (a)'s implementer. One recorded nit, no edit: the
+  fixture project-template's "commits directly to main" line vs the engine's
+  default `goal/<sid>` push branch — fixture prose, no behavioral effect).
+  `scripts/automation/run-benchmark.sh`: always prints plan + cost estimate,
+  then REFUSES without `--yes-spend` (G9), without `--hypothesis` (G8), and on
+  a dirty framework tree unless `--allow-dirty` (recorded as
+  `framework_dirty:true` + diffstat) — every refusal BEFORE any side effect.
+  Run sequence: PRE entry appended to `benchmarks/experiments.md` (append-only
+  ledger, created this slice) BEFORE the engine launches → scratch repo =
+  subrepo set (`.claude/ scripts/ config/ templates/ CLAUDE.md` [+`.mcp.json`])
+  + fixture overlay (fixture files win collisions, so its project-template
+  replaces the framework placeholder; `.venv`/`__pycache__`/`.pytest_cache`/
+  `todos.json` excluded) + fresh git repo (main, deterministic goal-chain
+  author) with a LOCAL BARE origin, so the engine's ls-remote preflight and
+  push-per-iter exercise their real code paths with zero network → engine
+  `run-goal.sh --session-id bench-<UTCdate-hhmm> --max-iter 2` headless
+  (nonzero/paused engine = recorded RESULT, not a runner crash) → results JSON
+  `benchmarks/results/<UTCts>-<sha12>.json` (meta: every CHAIN_* env var at
+  launch + model-tiers sha256; outcome: journeys passing/total from
+  journey-history, attempt-1 review FAILs + malformed verdicts counted with
+  `retro_collect.sh`'s exact telemetry semantics, wall seconds; economics:
+  `analyze_telemetry.py --json` embedded verbatim; missing sources = literal
+  `unknown (<why>)`), validated for required keys before success → POST entry
+  with headline + per-predicate evaluations. `--predict` comparisons over
+  top-level result keys make verdict-vs-prediction mechanical (all true
+  CONFIRMED / all false REFUTED / else MIXED); without predicates the POST line
+  is the literal MANUAL instruction — the runner never self-grades free text.
+  Engine command injectable via `CHAIN_BENCH_ENGINE_CMD` — a documented TEST
+  SEAM strictly DOWNSTREAM of the spend gates (G5) and recorded in `chain_env`,
+  so a stubbed run is visibly stubbed. 40 offline assertions in
+  `tests/automation/test-benchmark-runner.sh` (registered in run-evals §2c,
+  ~0.9s, suite 95/95): refusals-before-side-effects, scratch layout + canary
+  exclusions, results schema/counts vs a stub engine's known artifacts,
+  PRE-precedes-engine asserted BY the stub, all four verdict paths,
+  keep/cleanup rules. ZERO engine runs this session (G6/G9). Slice (c) —
+  `benchmark_compare.py` + docs + the first REAL baseline run (G9
+  user-approved spend) — remains; slice (b) certification per G8 folds into
+  the slice-(c) session.)*
 - **Problem:** "did my framework change help or hurt?" currently has no answer a weaker
   maintainer can trust. The per-session tripwire compares within a session; nothing
   compares across framework versions.
