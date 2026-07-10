@@ -344,6 +344,24 @@ the system measures itself, and how it survives the next model change.
   `benchmark_compare.py` + docs + the first REAL baseline run (G9
   user-approved spend) — remains; slice (b) certification per G8 folds into
   the slice-(c) session.)*
+  *(slice (b) certified 2026-07-10 by a fresh non-implementer session per G8
+  (the slice-(c) session): 40/40 runner asserts + full evals green; gate order
+  re-verified against code — both refusals + the dirty-tree check fire before
+  ANY side effect (first write is the PRE append, `run-benchmark.sh:183`), PRE
+  strictly precedes engine launch, and the `CHAIN_BENCH_ENGINE_CMD` seam is
+  consulted only downstream of every gate with its value recorded in
+  `chain_env`; live refusal probes on the real repo (no flags and
+  --hypothesis-only → exit 2, plan printed, ledger byte-identical, no results
+  dir) plus a dirty-tree refusal re-proven on a clone; ZERO-SPEND dry assembly
+  (`CHAIN_BENCH_ENGINE_CMD='true'`) run inside a discarded git clone so the
+  probe's PRE/POST entries landed in the clone's ledger — the real append-only
+  ledger kept zero probe trace, nothing was ever deleted from it. Assembled
+  scratch verified: subrepo set + fixture overlay (fixture project-template won
+  the collision; `.venv`/`todos.json`/`benchmarks` excluded; 1 commit on main,
+  deterministic author, local bare origin ls-remote-reachable), then proven
+  AGENT-RUNNABLE exactly as the chain finds it — venv bootstrap per the fixture
+  project-template, pytest 3/3, app boot with `/health` 200 on port 5177,
+  goal_lint exit 0 inside scratch. No runner defects found; no edits needed.)*
 - **Problem:** "did my framework change help or hurt?" currently has no answer a weaker
   maintainer can trust. The per-session tripwire compares within a session; nothing
   compares across framework versions.

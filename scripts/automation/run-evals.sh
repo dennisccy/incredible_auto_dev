@@ -147,6 +147,8 @@ _run_self_test scripts/automation/lib/goal_gate.py self-test
 _run_self_test scripts/automation/lib/goal_lint.py self-test
 _run_self_test scripts/automation/lib/scan_diff.py self-test
 _run_self_test scripts/automation/lib/diff_bound.py self-test
+# Benchmark results comparator (EVO-3): delta table + REGRESS/OK/UNKNOWN verdict.
+_run_self_test scripts/automation/lib/benchmark_compare.py --self-test
 if bash scripts/automation/lib/goal-gates.sh --self-test >/dev/null 2>&1; then
   _pass "self-test: goal-gates.sh (verdict gates + two-key confirm, stubbed dispatch)"
 else
