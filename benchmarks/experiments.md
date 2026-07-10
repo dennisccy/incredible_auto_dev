@@ -50,3 +50,32 @@ Entry format contract (grep-able; pinned by
   catch this: its stub engines echo the env var without validating it against the
   real quota-retry contract. Any rerun is a fresh PRE/POST pair under fresh user
   approval (G9) — this entry stays as the record of the aborted attempt.
+
+---
+
+## PRE bench-20260710-2117 · 2026-07-10T21:17:11Z
+- framework-sha: c48f25047126a52ccec88f9b2347403280b1c22b (dirty: false)
+- fixture: todo-app · max-iter 2
+- hypothesis: Baseline @ c48f25047126: chain reaches GOAL_ACHIEVED with 3/3 journeys within --max-iter 2 on the todo-app fixture
+- metrics + prediction (mechanical --predict): final_status==GOAL_ACHIEVED;journeys_passing_after>=3
+
+## POST bench-20260710-2117 · 2026-07-10T22:42:06Z
+- results: benchmarks/results/20260710-224206-c48f25047126.json
+- headline: status=BUDGET_EXHAUSTED last_verdict=CONTINUE journeys=0/3 iters=2 engine_exit=0 wall=5095s cost=$10.885761
+- predicate: final_status==GOAL_ACHIEVED → false (final_status='BUDGET_EXHAUSTED')
+- predicate: journeys_passing_after>=3 → false (journeys_passing_after=0)
+- verdict-vs-prediction: REFUTED
+- assessment 2026-07-10: GENUINE CHAIN RESULT, not infra — environment healthy (zero
+  quota pauses, engine exit 0, Chrome MCP + playwright preflight-verified, friction
+  counters all zero). The chain BUILT all three journeys (reviewer PASS,
+  COHERENCE-PASS, scan CLEAN, 15/15 pytest) but its browser-QA lane produced zero
+  journey evidence in BOTH iterations, so the evaluator honestly held J-01..J-03 at
+  `unknown` (0/3 passing). Root causes per evaluator-log + trace/0014-qa.log in the
+  kept scratch: (1) the generic `scripts/start-backend.sh` template copied with the
+  framework subrepo set (uvicorn / apps-backend layout) shadowed the fixture
+  project-template's `.venv/bin/python app.py`, so nothing served on 127.0.0.1:5177
+  (README Known Limitation 1 made concrete); (2) a headless write-permission prompt
+  blocked the QA report and the retro-analyst report from persisting. Both are
+  framework gaps this baseline exists to expose; fixing them should move journeys
+  0→3 in a future compare. REFUTED stands as the recorded baseline. Kept scratch:
+  ~/.cache/chain-bench-tmp/bench-bench-20260710-2117.EMAuTK

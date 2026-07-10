@@ -281,7 +281,7 @@ the system measures itself, and how it survives the next model change.
   catalog count in CLAUDE.md ("19 agents"), flag it — CLAUDE.md is ask-first class.
 
 ### EVO-3 · Automated benchmark harness
-- **Priority:** P0 · **Effort:** L (3 slices) · **Risk:** MED · **Status:** IN-PROGRESS
+- **Priority:** P0 · **Effort:** L (3 slices) · **Risk:** MED · **Status:** DONE
   *(slice (a) — fixture project — implemented 2026-07-10:
   `benchmarks/fixtures/todo-app/` is a runnable but deliberately BARE Flask +
   vanilla-JS + pytest scaffold — shell page + `/health` on fixed port 5177, storage
@@ -362,7 +362,45 @@ the system measures itself, and how it survives the next model change.
   AGENT-RUNNABLE exactly as the chain finds it — venv bootstrap per the fixture
   project-template, pytest 3/3, app boot with `/health` 200 on port 5177,
   goal_lint exit 0 inside scratch. No runner defects found; no edits needed.)*
-- **Problem:** "did my framework change help or hurt?" currently has no answer a weaker
+  *(slice (c) — compare tool + FIRST REAL BASELINE — implemented 2026-07-10 by
+  that same certifying session: `scripts/automation/lib/benchmark_compare.py`
+  (delta table over wall / est. cost / tokens in+out / journeys passing /
+  attempt-1 review FAILs / malformed verdicts / final status+verdict; REGRESS
+  if wall or cost +>25% or journeys-passing dropped; any of those three verdict
+  inputs missing or literal "unknown (...)" → INCOMPARABLE → verdict UNKNOWN,
+  never a guessed number — regress-worthy comparable signals survive as a note;
+  exit 0 OK / 3 REGRESS / 4 UNKNOWN / 2 usage; `--self-test` registered in
+  run-evals §2, suite 96/96).
+  Baseline attempt 1 (bench-20260710-2110 @ b172cea005aa) ABORTED in 2s with
+  zero agent spend: slice (b) exported the invalid `CHAIN_AGENT_BACKEND=headless`
+  (quota-retry accepts interactive|claude|codex; headless dispatch = `claude`) —
+  a defect the offline suite structurally cannot catch (stub engines echo the
+  env var unvalidated; only a real engine validates it). Runner+test fixed
+  (commit c48f250); aborted attempt kept as a record: results JSON committed,
+  ledger PRE/POST retained with an appended dated correction line (append-only).
+  Attempt 2 = THE RECORDED BASELINE (fresh G9 approval, fresh PRE entry):
+  bench-20260710-2117 @ c48f25047126 · hypothesis "chain reaches GOAL_ACHIEVED
+  with 3/3 journeys within --max-iter 2 on the todo-app fixture" →
+  **verdict-vs-prediction: REFUTED** (mechanical; both predicates false) ·
+  final_status=BUDGET_EXHAUSTED · last_verdict=CONTINUE · journeys 0/3 (all
+  honestly `unknown` — zero browser evidence) · iterations 2 (verify-only
+  baseline + one full-depth build) · wall 5095s (~85 min) · est. cost $10.89
+  (106.5k in / 153.6k out tokens, 12 invocations; goal-evaluator $4.16 +
+  goal-decomposer $2.46 dominate) · results
+  `benchmarks/results/20260710-224206-c48f25047126.json`. GENUINE CHAIN
+  RESULT, not infra (environment healthy; friction counters zero): the chain
+  built all three journeys to reviewer-PASS / COHERENCE-PASS / 15-of-15-pytest
+  quality, but its browser-QA lane produced ZERO evidence in both iterations —
+  (a) the generic `scripts/start-backend.sh` template in the subrepo set
+  (uvicorn, apps/backend layout) shadowed the fixture project-template's
+  `.venv/bin/python app.py`, so nothing served on 5177 (README Known
+  Limitation 1 made concrete); (b) a headless write-permission prompt blocked
+  the QA report and the retro-analyst report from persisting. Both are
+  framework gaps the baseline exists to expose — prime §16-promotion
+  candidates; fixing them should move journeys 0→3 in the next compare.
+  Compare sanity: baseline-vs-baseline → all deltas 0, verdict OK, exit 0.
+  Standing usage rule: §9 "When to benchmark". EVO-3 complete; body archiving
+  left to a future tidy pass (REL-1 precedent).)*
   maintainer can trust. The per-session tripwire compares within a session; nothing
   compares across framework versions.
 - **Current state:** no `benchmarks/` dir. Headless engine is scriptable
@@ -426,7 +464,13 @@ the system measures itself, and how it survives the next model change.
   6. Run REL-1 judgment fixtures: `./scripts/automation/run-judgment-evals.sh
      --yes-spend` (G9: user-approved spend; the runner prints the estimate and
      refuses without the flag).
-  7. Run EVO-3 benchmark before/after (mark "pending EVO-3" until it ships).
+  7. Run the EVO-3 benchmark before AND after the flip (§9 "When to benchmark"):
+     `./scripts/automation/run-benchmark.sh --hypothesis '<prediction>'
+     [--predict '<key OP value>']... --yes-spend` on the pre-cutover sha, again
+     on the post-cutover sha, then `python3
+     scripts/automation/lib/benchmark_compare.py benchmarks/results/<pre>.json
+     benchmarks/results/<post>.json` — REGRESS (exit 3) → do not proceed with
+     the cutover without a human decision.
   8. First-session watchlist: `gate-report.md` appears on any GOAL_ACHIEVED;
      `[escalation]` lines in the engine log; per-model rows in
      `analyze_telemetry.py <session>/telemetry.jsonl`.
@@ -481,6 +525,25 @@ Clean lean iteration ≈ 109 min (developer ~41m, reviewer ~21m, browser-qa ~20m
 evaluator ~17m, decomposer ~8m — typicals from the timeout table comments,
 `scripts/automation/lib/agent_permissions.py:88-110`). Rule for ALL items here: EVO-3
 benchmark (or a real session's telemetry) before AND after (G8).
+
+**When to benchmark (standing rule — the EVO-3 harness):**
+- BEFORE and AFTER any SPEED-*/TOKEN-* experiment in this section, and during
+  EVO-4 model cutovers (playbook step 7). Same fixture, same `--max-iter`.
+- Run (G9 — user-approved spend per run; order-of-dollars, ~1.5-5h wall):
+  `./scripts/automation/run-benchmark.sh --hypothesis '<one-line prediction>'
+  [--predict '<key OP value>']... --yes-spend`. The runner refuses without the
+  hypothesis (G8) or on a dirty tree — commit first; the PRE entry in
+  `benchmarks/experiments.md` (append-only ledger) is written BEFORE the engine
+  launches and the POST entry grades `--predict` predicates mechanically
+  (CONFIRMED/REFUTED/MIXED). Predicate keys = scalar keys of the results JSON's
+  meta+outcome blocks (e.g. `final_status`, `journeys_passing_after`).
+- Compare: `python3 scripts/automation/lib/benchmark_compare.py <old>.json
+  <new>.json` → delta table + verdict OK / REGRESS / UNKNOWN (exit 0/3/4);
+  REGRESS = wall or cost +>25% or journeys-passing dropped; incomparable
+  verdict inputs → UNKNOWN, never a guess.
+- Afterwards commit the new results JSON + ledger entries; whatever completed
+  IS the measurement — a rerun for a prettier number needs fresh approval and
+  a fresh PRE entry.
 
 ### SPEED-1 · Refactor browser-qa into a function (no behavior change)
 - **Priority:** P1 · **Effort:** S · **Risk:** LOW · **Status:** TODO
