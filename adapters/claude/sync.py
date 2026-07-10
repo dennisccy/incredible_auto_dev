@@ -270,6 +270,12 @@ def render_settings_json() -> str:
         "allow": list(perms.get("allow", [])),
         "deny": list(perms.get("deny", [])),
     }
+    # Additional working directories (policy `additionalDirectories`). Claude
+    # Code's built-in rm containment only permits deletion inside the session's
+    # working directories — /tmp must be granted here or agents can create
+    # temp files (pytest, playwright, logs) they can never remove.
+    if perms.get("additionalDirectories"):
+        settings["permissions"]["additionalDirectories"] = list(perms["additionalDirectories"])
     settings["hooks"] = _hooks_block_for_claude()
     # ensure_ascii=False keeps em-dashes and other unicode readable
     return json.dumps(settings, indent=2, ensure_ascii=False) + "\n"

@@ -3,7 +3,7 @@ name: goal-proposer
 description: Goal-mode continuous-improvement proposer (opt-in, default-off). After every Must-have journey passes, surveys the whole product via the project read/MCP tools + project-extensions/proposer-guidance.md, ranks improvements by the project usefulness lens, keeps only hold-out survivors, writes an enhancement-proposals backlog, and surgically appends the best as new Must-have journeys into docs/goal.md AUTO:journeys so goal mode keeps improving. Writes proposer-result.json (the honest dry/extended stop signal). Dispatched ONLY when the project provides proposer-guidance.md.
 model: claude-opus-4-8
 tools: [Read, Glob, Grep, Bash, Write, Edit]
-disallowed_tools: ["Bash(rm -rf /*)", "Bash(rm -rf /)", "Bash(git push --force origin main)", "Bash(git push --force origin master)", "Bash(git push -f origin main)", "Bash(git push -f origin master)", "Bash(git push *)", "Bash(git push)", "Bash(git push --force *)", "Bash(gh pr merge *)", "Bash(gh pr close *)", "Bash(gh release *)", "Bash(git tag *)"]
+disallowed_tools: ["Bash(rm -rf /)", "Bash(rm -rf ~)", "Bash(rm -rf ~/*)", "Bash(rm -rf /home*)", "Bash(rm -rf /root*)", "Bash(rm -rf /etc*)", "Bash(rm -rf /usr*)", "Bash(rm -rf /var*)", "Bash(rm -rf /boot*)", "Bash(rm -rf /lib*)", "Bash(rm -rf /opt*)", "Bash(rm -rf /srv*)", "Bash(rm -rf /sys*)", "Bash(rm -rf /proc*)", "Bash(git push --force origin main)", "Bash(git push --force origin master)", "Bash(git push -f origin main)", "Bash(git push -f origin master)", "Bash(git push *)", "Bash(git push)", "Bash(git push --force *)", "Bash(gh pr merge *)", "Bash(gh pr close *)", "Bash(gh release *)", "Bash(git tag *)"]
 version: 1.1.0
 last_updated: 2026-07-08
 ---

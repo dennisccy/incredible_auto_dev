@@ -48,9 +48,28 @@ HARD_DEFAULT_DENIALS_NON_RELEASE: tuple[str, ...] = (
 
 # Tools denied for ALL agents (release-manager included). For dangerous
 # operations that should never happen mid-pipeline.
+#
+# NOTE: deliberately NO `Bash(rm -rf /*)` entry. In Claude Code permission
+# patterns `*` matches any suffix, so that pattern denies EVERY absolute-path
+# rm — including the /tmp cleanup the settings allow-list explicitly permits
+# (deny always beats allow). Root/home protection comes from the exact
+# `Bash(rm -rf /)` plus the enumerated system dirs below, mirroring
+# policy/permissions.yaml, plus Claude Code's built-in rm circuit breaker.
 HARD_DEFAULT_DENIALS_ALL: tuple[str, ...] = (
-    "Bash(rm -rf /*)",
     "Bash(rm -rf /)",
+    "Bash(rm -rf ~)",
+    "Bash(rm -rf ~/*)",
+    "Bash(rm -rf /home*)",
+    "Bash(rm -rf /root*)",
+    "Bash(rm -rf /etc*)",
+    "Bash(rm -rf /usr*)",
+    "Bash(rm -rf /var*)",
+    "Bash(rm -rf /boot*)",
+    "Bash(rm -rf /lib*)",
+    "Bash(rm -rf /opt*)",
+    "Bash(rm -rf /srv*)",
+    "Bash(rm -rf /sys*)",
+    "Bash(rm -rf /proc*)",
     "Bash(git push --force origin main)",
     "Bash(git push --force origin master)",
     "Bash(git push -f origin main)",
@@ -560,6 +579,35 @@ def _self_test() -> int:
 
         pd = disallowed_for("plain", agents_dir=d)
         assert "Bash(git push *)" in pd
+
+        # rm-ban regression (the /tmp cleanup bug): Claude Code pattern `*`
+        # matches ANY suffix and deny beats allow, so a default denial like
+        # "Bash(rm -rf /*)" silently swallowed every /tmp removal. Assert no
+        # default denial matches a legitimate /tmp cleanup for ANY agent class,
+        # while root/system-dir wipes stay denied.
+        def _bash_pat_matches(pattern: str, cmd: str) -> bool:
+            if not (pattern.startswith("Bash(") and pattern.endswith(")")):
+                return False
+            body = pattern[5:-1]
+            if body.endswith("*"):
+                return cmd.startswith(body[:-1])
+            return cmd == body
+
+        for _agent in ("plain", "developer", "release-manager"):
+            _dl = disallowed_for(_agent, agents_dir=d)
+            _tmp_hits = [
+                p for p in _dl
+                if p in HARD_DEFAULT_DENIALS_ALL + HARD_DEFAULT_DENIALS_NON_RELEASE
+                and _bash_pat_matches(p, "rm -rf /tmp/pytest-of-user/pytest-1")
+            ]
+            assert not _tmp_hits, f"{_agent}: default denial swallows /tmp removals: {_tmp_hits}"
+            assert "Bash(rm -rf /)" in _dl, f"{_agent}: exact-root denial missing"
+            assert "Bash(rm -rf /home*)" in _dl and "Bash(rm -rf /etc*)" in _dl, (
+                f"{_agent}: system-dir denials missing"
+            )
+            assert any(_bash_pat_matches(p, "rm -rf /home/someone") for p in _dl), (
+                f"{_agent}: /home wipe must stay denied"
+            )
 
         assert budget_for("developer", agents_dir=d) == 2.5
         assert budget_for("plain", agents_dir=d) is None

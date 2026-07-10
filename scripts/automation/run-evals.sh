@@ -167,6 +167,19 @@ if bash .claude/hooks/guard-dangerous-commands.sh "rm -rf /" >/dev/null 2>&1; th
 else
   _pass "hook: guard-dangerous-commands blocks 'rm -rf /'"
 fi
+# Regression guard for the /tmp rm ban: the old fixed-substring "rm -rf /"
+# pattern matched EVERY absolute-path rm — on the Codex backend (where this
+# hook is the real gate) that banned the allow-listed /tmp cleanup outright.
+if bash .claude/hooks/guard-dangerous-commands.sh "rm -rf /tmp/pytest-of-user/pytest-1" >/dev/null 2>&1; then
+  _pass "hook: guard-dangerous-commands allows /tmp cleanup (rm-ban regression)"
+else
+  _fail "hook: guard-dangerous-commands wrongly blocks /tmp cleanup (rm-ban regression)"
+fi
+if bash .claude/hooks/guard-dangerous-commands.sh "cd /x && rm -rf /etc" >/dev/null 2>&1; then
+  _fail "hook: guard-dangerous-commands FAILED to block chained 'rm -rf /etc'"
+else
+  _pass "hook: guard-dangerous-commands blocks chained 'rm -rf /etc'"
+fi
 _lint_tmp=$(mktemp /tmp/eval-lint-XXXX.py); echo "x = 1" > "$_lint_tmp"
 if bash .claude/hooks/post-edit-lint.sh "$_lint_tmp" >/dev/null 2>&1; then
   _pass "hook: post-edit-lint accepts a valid .py file"

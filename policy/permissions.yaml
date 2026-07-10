@@ -55,6 +55,8 @@ allow:
 - Bash(rm -rf *.egg-info*)
 - Bash(rm -rf coverage*)
 - Bash(rm -rf /tmp/*)
+- Bash(rm /tmp/*)
+- Bash(rm -f /tmp/*)
 - Bash(chmod +x *)
 - Bash(chmod -x *)
 - Bash(chmod u+x *)
@@ -119,8 +121,12 @@ allow:
 - Skill(superpowers-chrome:browsing)
 - mcp__plugin_superpowers-chrome_chrome__use_browser
 deny:
+# NOTE: no `Bash(rm -rf /*)` entry here — `*` matches ANY suffix, so that pattern
+# swallows every absolute path including /tmp (deny always beats allow, so it
+# nullified the `Bash(rm -rf /tmp/*)` allow above). Root/home wipes are covered
+# by the exact `Bash(rm -rf /)` below, the enumerated system dirs, and Claude
+# Code's built-in rm circuit breaker (fires even in bypassPermissions mode).
 - Bash(rm -rf /)
-- Bash(rm -rf /*)
 - Bash(rm -rf ~)
 - Bash(rm -rf ~/)
 - Bash(rm -rf ~/*)
@@ -175,5 +181,15 @@ deny:
 - Bash(apt-get upgrade*)
 - Bash(apt dist-upgrade*)
 - Bash(apt-get dist-upgrade*)
+# Claude Code has a BUILT-IN rm containment (independent of allow/deny rules
+# and hooks): `rm` may only delete inside the session's allowed working
+# directories. Verbatim runtime error without this: "rm in '/tmp/x' was
+# blocked. For security, Claude Code may only remove files from the allowed
+# working directories for this session". Tools can CREATE /tmp files freely
+# (pytest, playwright, service logs), so without this grant agents accumulate
+# tmp files they can never remove — the allow rules above are necessary but
+# not sufficient. Rendered into settings permissions.additionalDirectories.
+additionalDirectories:
+- /tmp
 codex_default_sandbox: workspace-write
 codex_default_approval: on-request

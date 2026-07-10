@@ -152,7 +152,7 @@ model: <claude-model-id>
 tools: [...]                         # optional — Claude Code tool list
 version: 1.0.0
 last_updated: YYYY-MM-DD
-disallowed_tools: ["Bash(rm -rf *)"] # optional — added to default deny list
+disallowed_tools: ["WebFetch"]       # optional — added to default deny list
 max_budget_usd: 1.50                 # optional — per-invocation hard cap
 ---
 ```

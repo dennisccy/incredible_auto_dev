@@ -10,8 +10,13 @@ CMD="${1:-}"
 [ -z "$CMD" ] && exit 0
 
 DANGEROUS_PATTERNS=(
-  # Destructive recursive deletes — system and home paths
-  "rm -rf /"
+  # Destructive recursive deletes — system and home paths.
+  # NOTE: deliberately NO bare "rm -rf /" entry — as a fixed-substring match it
+  # hits EVERY absolute-path rm, including the /tmp cleanup the permission
+  # allow-list explicitly permits (on the Codex backend this hook is the real
+  # enforcement gate, so the false positive banned /tmp removals outright).
+  # Bare `rm -rf /` and `rm -rf /<non-tmp>` are caught by the anchored regex
+  # `^rm -rf /(?!tmp)` in DANGEROUS_REGEXES below.
   "rm -rf ~"
   "rm -rf /home"
   "rm -rf /root"
@@ -75,8 +80,10 @@ done
 DANGEROUS_REGEXES=(
   # mv/cp targeting system directories
   "^(mv|cp) .+ /(etc|usr|boot|lib|var|root|sys|proc)(/|$)"
-  # rm -rf with any absolute path (other than /tmp)
-  "^rm -rf /(?!tmp)"
+  # rm -rf with any absolute path (other than /tmp) — anchored at command
+  # start OR after a shell chain separator (;, &&, ||, |, &), so `x && rm -rf /etc`
+  # is caught while `rm -rf /tmp/...` cleanup stays permitted.
+  "(^|[;&|][[:space:]]*)rm -rf /(?!tmp)"
   # chown with absolute path targets
   "^(sudo )?chown .+ /(etc|usr|home|root|var|boot)"
   # docker run mounting host filesystem sensitive directories

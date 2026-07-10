@@ -84,6 +84,8 @@
       "Bash(rm -rf *.egg-info*)",
       "Bash(rm -rf coverage*)",
       "Bash(rm -rf /tmp/*)",
+      "Bash(rm /tmp/*)",
+      "Bash(rm -f /tmp/*)",
       "Bash(chmod +x *)",
       "Bash(chmod -x *)",
       "Bash(chmod u+x *)",
@@ -150,7 +152,6 @@
     ],
     "deny": [
       "Bash(rm -rf /)",
-      "Bash(rm -rf /*)",
       "Bash(rm -rf ~)",
       "Bash(rm -rf ~/)",
       "Bash(rm -rf ~/*)",
@@ -205,6 +206,9 @@
       "Bash(apt-get upgrade*)",
       "Bash(apt dist-upgrade*)",
       "Bash(apt-get dist-upgrade*)"
+    ],
+    "additionalDirectories": [
+      "/tmp"
     ]
   },
   "hooks": {

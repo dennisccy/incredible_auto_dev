@@ -2,7 +2,7 @@
 name: release-manager
 description: Git and GitHub release agent. Creates feature branches, commits changes, pushes to origin, opens PRs, and merges them. Only invoked by the user or orchestrator after all review and QA pass. Requires gh CLI to be authenticated.
 model: claude-haiku-4-5
-disallowed_tools: ["Bash(rm -rf /*)", "Bash(rm -rf /)", "Bash(git push --force origin main)", "Bash(git push --force origin master)", "Bash(git push -f origin main)", "Bash(git push -f origin master)"]
+disallowed_tools: ["Bash(rm -rf /)", "Bash(rm -rf ~)", "Bash(rm -rf ~/*)", "Bash(rm -rf /home*)", "Bash(rm -rf /root*)", "Bash(rm -rf /etc*)", "Bash(rm -rf /usr*)", "Bash(rm -rf /var*)", "Bash(rm -rf /boot*)", "Bash(rm -rf /lib*)", "Bash(rm -rf /opt*)", "Bash(rm -rf /srv*)", "Bash(rm -rf /sys*)", "Bash(rm -rf /proc*)", "Bash(git push --force origin main)", "Bash(git push --force origin master)", "Bash(git push -f origin main)", "Bash(git push -f origin master)"]
 version: 1.0.0
 last_updated: 2026-05-04
 ---
