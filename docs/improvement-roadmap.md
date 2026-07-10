@@ -281,7 +281,26 @@ the system measures itself, and how it survives the next model change.
   catalog count in CLAUDE.md ("19 agents"), flag it — CLAUDE.md is ask-first class.
 
 ### EVO-3 · Automated benchmark harness
-- **Priority:** P0 · **Effort:** L (3 slices) · **Risk:** MED · **Status:** TODO
+- **Priority:** P0 · **Effort:** L (3 slices) · **Risk:** MED · **Status:** IN-PROGRESS
+  *(slice (a) — fixture project — implemented 2026-07-10:
+  `benchmarks/fixtures/todo-app/` is a runnable but deliberately BARE Flask +
+  vanilla-JS + pytest scaffold — shell page + `/health` on fixed port 5177, storage
+  = one runtime-created `todos.json`, journeys deliberately UNIMPLEMENTED (the
+  benchmark measures the chain BUILDING them, not verifying pre-built ones).
+  `docs/goal.md` carries J-01 add / J-02 toggle+persist / J-03 filter with numbered
+  steps + browser-observable Acceptance lines and 2 checkable anti-goals —
+  goal_lint exit 0 (clean, not just <2) and validate_goal_file-compatible. Nested
+  `.claude/project-template.md` truthfully filled for THIS app (fixture content,
+  never a sync-cli-assets target — judgment-fixture nesting precedent); scaffold
+  tests green (3/3: import, GET / 200 + runtime store creation, /health 200) via a
+  gitignored `.venv/` (system python 3.14 ships no flask/pytest); README documents
+  the slice-(b) consumption contract (copy → scratch dir → git init →
+  `run-goal.sh --session-id bench-<date> --max-iter 2`) and hand-verification.
+  Authored independently of tests/judgment/** — zero shared files, so the two eval
+  assets cannot drift into coupling. No runner, no `benchmarks/results/`, no
+  engine runs (every benchmark run is G9 ask-first spend). Slices (b) runner +
+  (c) compare/baseline remain; slice (a) certification per G8 folds into the
+  slice-(b) session.)*
 - **Problem:** "did my framework change help or hurt?" currently has no answer a weaker
   maintainer can trust. The per-session tripwire compares within a session; nothing
   compares across framework versions.

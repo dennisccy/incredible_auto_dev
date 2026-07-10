@@ -1,0 +1,5 @@
+# Runtime artifacts — never committed (see docs/goal.md anti-goals)
+todos.json
+__pycache__/
+.venv/
+.pytest_cache/
