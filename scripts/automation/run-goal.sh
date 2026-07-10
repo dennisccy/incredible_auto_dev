@@ -1219,7 +1219,15 @@ EOF
 # not available to a later /goal-pause). Cleaned up on any exit, including the
 # on_abort path below (which exits 130 → the EXIT trap fires).
 echo "$$" > "$ENGINE_PID_FILE" 2>/dev/null || true
-trap '_join_showcase_tail --kill 2>/dev/null; rm -f "$ENGINE_PID_FILE" 2>/dev/null || true' EXIT
+# Composed EXIT trap (single trap owner — never add a second `trap … EXIT`, it
+# would silently drop earlier cleanup): join/kill the showcase tail FIRST so
+# nothing is still writing into the tmp dir, then remove pid file + tmp dir.
+_goal_engine_on_exit() {
+  _join_showcase_tail --kill 2>/dev/null || true
+  rm -f "$ENGINE_PID_FILE" 2>/dev/null || true
+  chain_tmp_cleanup
+}
+trap _goal_engine_on_exit EXIT
 
 # Trap: on SIGINT/SIGTERM, write ABORTED summary. Kill the background showcase
 # tail FIRST so Ctrl-C never blocks on a non-gating summary/README agent.
@@ -1230,6 +1238,12 @@ on_abort() {
   exit 130
 }
 trap on_abort INT TERM
+
+# Per-run tmp isolation (lib/chain-tmp.sh): one session-scoped dir now (covers
+# the baseline + the first decomposer); the loop rotates to a per-iteration dir
+# at each iteration boundary below. Janitor sweeps strays from crashed runs.
+chain_tmp_init "goal-${SESSION_ID}"
+chain_tmp_janitor
 
 # Verify we can push to GitHub before the loop starts (once; fresh + resume).
 # Fails fast / pauses here rather than stalling on a credential prompt mid-run.
@@ -1600,6 +1614,16 @@ Do NOT write code or implement anything. The iteration spec and any blueprint ed
   # would have produced. Overlapping it with the decomposer above is where the
   # ~6-13 min saving comes from.
   _join_showcase_tail
+
+  # Tmp hygiene boundary — the per-iteration cleanup step. The previous
+  # iteration's background showcase tail has just been joined (its demo
+  # services killed), so nothing is writing to the previous tmp dir any more.
+  # Clear it and start this iteration's own dir — one call site covers BOTH
+  # the lean and full dispatch paths below. (Do NOT clean right after the
+  # evaluator: the async showcase tail forked at step 4c still writes there.)
+  _prev_tmp="${CHAIN_TMPDIR:-}"
+  chain_tmp_rotate "$ITER_NAME"
+  echo "[run-goal] Tmp cleanup: cleared ${_prev_tmp:-(none)} — iteration tmp dir: ${CHAIN_TMPDIR:-(disabled)}"
 
   # 3. Dispatch. Reset the per-iteration exit code first: _exec_rc is a plain
   # shell var, so a stale 70 from a prior iteration would otherwise survive into

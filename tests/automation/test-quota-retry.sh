@@ -342,6 +342,109 @@ v=$(CHAIN_CURRENT_AGENT="reviewer" CHAIN_TIMEOUT_REVIEWER="soon" _agent_timeout_
 v=$(CHAIN_CURRENT_AGENT="" _agent_timeout_for "")
 [[ -z "$v" ]] && assert "no CHAIN_CURRENT_AGENT keeps flat global" "pass" || assert "no CHAIN_CURRENT_AGENT (got '$v')" "fail"
 
+# ── Tests: tmp-file hygiene (TMPDIR templates, sidecar discard, log preserve) ─
+# Uses a mock `claude` on PATH via a subshell so the REAL claude_with_quota_retry
+# path runs end-to-end offline. Telemetry stays off here (renderer behavior on
+# mock output is not under test); sidecar discard is covered by calling the
+# helper contracts through the failure paths.
+
+echo ""
+echo "=== tmp hygiene tests ==="
+echo ""
+
+HYG=$(mktemp -d)
+mkdir -p "$HYG/bin" "$HYG/tmp" "$HYG/trace"
+cat > "$HYG/bin/claude" <<'EOF'
+#!/usr/bin/env bash
+echo "agent exploded: unrecoverable assertion failure"
+exit 7
+EOF
+chmod +x "$HYG/bin/claude"
+
+# Non-quota, non-transient failure WITH a trace dir:
+#   - exit code passes through (7)
+#   - the kept failure log is MOVED into CHAIN_TRACE_DIR (claude-failure-*.log)
+#   - NOTHING is left behind in TMPDIR
+rc=0
+( export PATH="$HYG/bin:$PATH" TMPDIR="$HYG/tmp"
+  export CHAIN_TELEMETRY_TOKENS=false CHAIN_DISABLE_AUTO_WAIT=true
+  export CHAIN_TRACE_DIR="$HYG/trace" CHAIN_AGENT_TIMEOUTS=false
+  unset CHAIN_CURRENT_AGENT
+  claude_with_quota_retry -p "boom" >/dev/null 2>&1 ) || rc=$?
+[[ $rc -eq 7 ]] \
+  && assert "hygiene: non-quota exit code passes through" "pass" \
+  || assert "hygiene: non-quota exit code passes through (got $rc)" "fail"
+ls "$HYG/trace"/claude-failure-*.log >/dev/null 2>&1 \
+  && assert "hygiene: failure log moved into CHAIN_TRACE_DIR" "pass" \
+  || assert "hygiene: failure log moved into CHAIN_TRACE_DIR" "fail"
+if ls "$HYG/tmp"/claude-quota-*.log >/dev/null 2>&1 || ls "$HYG/tmp"/claude-usage-*.json >/dev/null 2>&1; then
+  assert "hygiene: TMPDIR left clean after traced failure" "fail"
+else
+  assert "hygiene: TMPDIR left clean after traced failure" "pass"
+fi
+
+# Same failure WITHOUT a trace dir: the kept log must land IN TMPDIR (proves
+# the mktemp template honors TMPDIR), and nothing else may remain.
+rm -rf "$HYG/tmp"; mkdir -p "$HYG/tmp"
+rc=0
+( export PATH="$HYG/bin:$PATH" TMPDIR="$HYG/tmp"
+  export CHAIN_TELEMETRY_TOKENS=false CHAIN_DISABLE_AUTO_WAIT=true CHAIN_AGENT_TIMEOUTS=false
+  unset CHAIN_TRACE_DIR CHAIN_CURRENT_AGENT
+  claude_with_quota_retry -p "boom" >/dev/null 2>&1 ) || rc=$?
+ls "$HYG/tmp"/claude-quota-*.log >/dev/null 2>&1 \
+  && assert "hygiene: kept failure log honors TMPDIR (no trace dir)" "pass" \
+  || assert "hygiene: kept failure log honors TMPDIR (no trace dir)" "fail"
+
+# Quota-exhaustion failure (auto-wait disabled): the quota log must be
+# preserved into the trace dir, TMPDIR left clean, exit 75.
+cat > "$HYG/bin/claude" <<'EOF'
+#!/usr/bin/env bash
+echo "You've hit your usage limit. Resets at 9am (BST)"
+exit 1
+EOF
+chmod +x "$HYG/bin/claude"
+rm -rf "$HYG/tmp" "$HYG/trace"; mkdir -p "$HYG/tmp" "$HYG/trace"
+rc=0
+( export PATH="$HYG/bin:$PATH" TMPDIR="$HYG/tmp"
+  export CHAIN_TELEMETRY_TOKENS=false CHAIN_DISABLE_AUTO_WAIT=true
+  export CHAIN_TRACE_DIR="$HYG/trace" CHAIN_AGENT_TIMEOUTS=false
+  unset CHAIN_CURRENT_AGENT
+  claude_with_quota_retry -p "boom" >/dev/null 2>&1 ) || rc=$?
+[[ $rc -eq 75 ]] \
+  && assert "hygiene: quota failure returns 75" "pass" \
+  || assert "hygiene: quota failure returns 75 (got $rc)" "fail"
+ls "$HYG/trace"/claude-quota-*.log >/dev/null 2>&1 \
+  && assert "hygiene: quota log preserved into CHAIN_TRACE_DIR" "pass" \
+  || assert "hygiene: quota log preserved into CHAIN_TRACE_DIR" "fail"
+if ls "$HYG/tmp"/claude-quota-*.log >/dev/null 2>&1; then
+  assert "hygiene: TMPDIR left clean after quota failure" "fail"
+else
+  assert "hygiene: TMPDIR left clean after quota failure" "pass"
+fi
+
+# Success path stays clean end to end.
+cat > "$HYG/bin/claude" <<'EOF'
+#!/usr/bin/env bash
+echo "done"
+exit 0
+EOF
+chmod +x "$HYG/bin/claude"
+rm -rf "$HYG/tmp"; mkdir -p "$HYG/tmp"
+rc=0
+( export PATH="$HYG/bin:$PATH" TMPDIR="$HYG/tmp"
+  export CHAIN_TELEMETRY_TOKENS=false CHAIN_AGENT_TIMEOUTS=false
+  unset CHAIN_CURRENT_AGENT
+  claude_with_quota_retry -p "ok" >/dev/null 2>&1 ) || rc=$?
+if [[ $rc -eq 0 && -z "$(ls -A "$HYG/tmp" 2>/dev/null)" ]]; then
+  assert "hygiene: success leaves TMPDIR empty" "pass"
+else
+  assert "hygiene: success leaves TMPDIR empty (rc=$rc, left: $(ls "$HYG/tmp" 2>/dev/null | tr '\n' ' '))" "fail"
+fi
+rm -rf "$HYG"
+# The quota sentinel may have been written by the quota case above — clear it
+# so this test run leaves no shared state (the EXIT trap also clears it).
+rm -f "$_QUOTA_SENTINEL" 2>/dev/null || true
+
 # ── Results ───────────────────────────────────────────────────────────────────
 
 echo ""

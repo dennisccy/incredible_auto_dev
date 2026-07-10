@@ -283,4 +283,25 @@ This is especially bad for AI-agent scripts: the wrapped `claude` keeps consumin
 
 **Prevention (project side, optional but better):** give build/QA/typecheck commands their own dist dir so they never touch the dev build. Next.js reads `distDir` from `next.config.{js,ts}` (NOT an env var by default), so wire it through config — e.g. `distDir: process.env.NEXT_DIST_DIR || '.next'` — and run builds with `NEXT_DIST_DIR=.next-qa next build`. Agents MUST NOT run a production `next build` while the demo/QA `next dev` is up unless the build is isolated this way.
 
-**Detection:** a frontend start log (e.g. `/tmp/fanout-frontend-<port>.log`) showing `MODULE_NOT_FOUND` / `Cannot find module` with a `GET / 500` and a `.next/server/...` require stack is the signature. `_next_build_is_corrupt` in `common.sh` greps for exactly this.
+**Detection:** the frontend start log (`$QA_FRONTEND_LOG` — under the run's `CHAIN_TMPDIR`, e.g. `.../fanout-frontend-<port>.log`) showing `MODULE_NOT_FOUND` / `Cannot find module` with a `GET / 500` and a `.next/server/...` require stack is the signature. `_next_build_is_corrupt` in `common.sh` greps for exactly this.
+
+---
+
+## 21. Shared /tmp accumulation and cross-job pytest tmp races
+
+**Pattern:** Nothing sets `TMPDIR`, so every tool the agents run (pytest, playwright/chromium, `mktemp`) writes into shared `/tmp`. pytest's default basetemp `/tmp/pytest-of-<user>/` is keyed on the USER, not the run — concurrent pipeline jobs (different projects, same machine, same user) share it and race pytest's own "keep last 3, rmtree older" pruning (`Directory not empty`, lock races, stale undeletable dirs). Meanwhile the harness's own temp files pile up forever: kept-on-failure `claude-quota-*.log`s, telemetry usage sidecars leaked on every non-success path, and per-role service logs (`fanout-*`, `demo-*`, `goal-iter-*`) that no cleanup path ever targeted. Cleanup ran only on run-phase.sh's success path — never on `fail()`, quota/transport/signal exits, or lean goal iterations.
+
+**Why it fails:** `/tmp` is a shared namespace with no run identifier, so no cleanup step can safely delete anything (it might belong to a concurrent job) — and agents could not delete anyway (see the rm-ban fix: deny-rule over-match + Claude Code's built-in rm working-directory containment). The only "cleanup" was pytest pruning itself, which is exactly the thing that races.
+
+**Prevention:** per-run tmp isolation via `lib/chain-tmp.sh`:
+- Every entry script (run-phase.sh, run-goal.sh, goal-iter-lean.sh) calls `chain_tmp_init <run-id>`, which creates `/tmp/iad.<id>.<pid>` and exports it as `TMPDIR`/`TMP`/`TEMP`; a nested script ADOPTS the inherited dir (owner-guarded). NEW pipeline entry scripts MUST do the same.
+- Cleanup is an EXIT trap (fires on success, fail(), quota 75, transport 70, signal exits) plus `chain_tmp_rotate` at the goal-mode iteration boundary — after `_join_showcase_tail`, never right after the evaluator (the async showcase tail still writes there).
+- New `mktemp` calls MUST use a `"${TMPDIR:-/tmp}/…"` template, never a hardcoded `/tmp/...` template.
+- Files deliberately kept for debugging MUST be moved to `$CHAIN_TRACE_DIR` (`_quota_preserve_failure_log`), never left in tmp.
+- The ONLY sanctioned fixed-name /tmp files are the two quota sentinels (`/tmp/{claude,codex}-quota-exhausted`) — quota is account-global, every concurrent job must see the same sentinel, and `chain_tmp_janitor` never matches their names.
+- `chain_tmp_janitor` (entry-script start) reaps strays: `iad.*` dirs that are old AND whose owner pid is dead, legacy loose temp files, and `/tmp/pytest-of-$USER` entries older than `CHAIN_TMP_MAX_AGE_HOURS` (default 24h).
+
+**Example (bad):** `tmp_log=$(mktemp /tmp/claude-quota-XXXXXX.log)` + keep-on-failure with no reaper — one leaked file per failed/quota invocation, forever.
+**Example (good):** `tmp_log=$(mktemp "${TMPDIR:-/tmp}/claude-quota-XXXXXX.log")`; on failure `_quota_preserve_failure_log "$tmp_log" claude-failure` moves it under `runs/<phase>/trace/`.
+
+**Detection:** `ls /tmp/pytest-of-$(id -un)` showing many numbered dirs, or `/tmp` littered with `claude-quota-*.log` / `<role>-<port>.log` files older than a day. During a healthy run there should be exactly ONE `/tmp/iad.*` dir per live pipeline job, and it disappears when the run exits.

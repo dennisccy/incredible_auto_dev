@@ -310,6 +310,10 @@ source "$(dirname "${BASH_SOURCE[0]}")/project-gates.sh"
 # step_done_valid, step_invalidate_from, chain_tree_hash, goal_iter_dir)
 # shellcheck source=checkpoint.sh
 source "$(dirname "${BASH_SOURCE[0]}")/checkpoint.sh"
+# Per-run TMPDIR isolation + cleanup + janitor (defines chain_tmp_init,
+# chain_tmp_cleanup, chain_tmp_rotate, chain_tmp_janitor)
+# shellcheck source=chain-tmp.sh
+source "$(dirname "${BASH_SOURCE[0]}")/chain-tmp.sh"
 
 # Deterministic port offset (0..999) derived from the project directory so that
 # multiple projects sharing this subtree each land in their own port range.
@@ -464,14 +468,17 @@ reclaim_canonical_phase_ports() {
   return 0
 }
 
-# Return a project-scoped /tmp log path to avoid cross-project log clobbering
+# Return a project-scoped log path to avoid cross-project log clobbering
 # when multiple projects share this subtree (each project has a unique port
 # offset, so using the port as a discriminator gives a stable per-project path).
+# Lands in the per-run CHAIN_TMPDIR when the pipeline initialized one
+# (chain_tmp_init), so run-end cleanup is a single rm; legacy shared /tmp
+# otherwise (standalone step-script invocations).
 # Usage: _qa_log_path <role>  (role e.g. "qa-backend" or "browser-qa-frontend")
 _qa_log_path() {
   local role="$1"
   local port="${CHAIN_BACKEND_PORT:-${CHAIN_FRONTEND_PORT:-0}}"
-  echo "/tmp/${role}-${port}.log"
+  echo "${CHAIN_TMPDIR:-/tmp}/${role}-${port}.log"
 }
 
 # Parse the TCP port out of a localhost URL (http://localhost:3836/… -> 3836).
@@ -1001,14 +1008,20 @@ cleanup_phase_artifacts() {
   # at the old path — never touch runs/<phase>/{plan,status,summary}.json etc.
   rm -f "$REPO_ROOT/runs/$phase/summary.html" 2>/dev/null || true
   rm -f "$REPO_ROOT/runs/goal-session-"*"/index.html" 2>/dev/null || true
-  # /tmp logs from QA and browser-qa (both legacy shared paths and current
-  # port-scoped paths written by _qa_log_path)
-  rm -f /tmp/qa-backend.log /tmp/qa-frontend.log /tmp/browser-qa-backend.log /tmp/browser-qa-frontend.log 2>/dev/null || true
+  # Service logs from qa / browser-qa / fanout / demo / goal-iter boots, in BOTH
+  # locations: legacy shared /tmp (fixed and port-scoped names from pre-TMPDIR
+  # runs) and the current per-run CHAIN_TMPDIR (written by _qa_log_path).
+  local _role _port _dir
   local _backend_port="${CHAIN_BACKEND_PORT:-0}"
   local _frontend_port="${CHAIN_FRONTEND_PORT:-0}"
-  rm -f "/tmp/qa-backend-${_backend_port}.log" "/tmp/qa-frontend-${_backend_port}.log" \
-        "/tmp/browser-qa-backend-${_backend_port}.log" "/tmp/browser-qa-frontend-${_backend_port}.log" \
-        2>/dev/null || true
+  for _dir in /tmp ${CHAIN_TMPDIR:+"$CHAIN_TMPDIR"}; do
+    for _role in qa browser-qa fanout demo goal-iter; do
+      rm -f "$_dir/${_role}-backend.log" "$_dir/${_role}-frontend.log" 2>/dev/null || true
+      for _port in "$_backend_port" "$_frontend_port"; do
+        rm -f "$_dir/${_role}-backend-${_port}.log" "$_dir/${_role}-frontend-${_port}.log" 2>/dev/null || true
+      done
+    done
+  done
   # Fix extensionless screenshots in evidence dirs (Chrome MCP naming drift).
   # Rename to .png if the file is a valid PNG; remove otherwise.
   local evidence_dir
@@ -1359,6 +1372,33 @@ EOF
       unset -f curl 2>/dev/null || true
       unset CHAIN_FRONTEND_DIR CHAIN_FRONTEND_HEAL_TIMEOUT CHAIN_KILL_GRACE_SECONDS 2>/dev/null || true
       rm -rf "$_ROOT"
+
+      echo "[common.sh self-test] _qa_log_path CHAIN_TMPDIR scoping"
+      _q=$(CHAIN_TMPDIR="/x/y" CHAIN_BACKEND_PORT=8123 _qa_log_path "qa-backend")
+      if [[ "$_q" == "/x/y/qa-backend-8123.log" ]]; then _t_ok "_qa_log_path uses CHAIN_TMPDIR"; else _t_bad "_qa_log_path: got $_q"; fi
+      _q=$(CHAIN_TMPDIR="" CHAIN_BACKEND_PORT=8123 _qa_log_path "qa-backend")
+      if [[ "$_q" == "/tmp/qa-backend-8123.log" ]]; then _t_ok "_qa_log_path legacy /tmp fallback"; else _t_bad "_qa_log_path fallback: got $_q"; fi
+
+      echo "[common.sh self-test] cleanup_phase_artifacts role-log sweep"
+      _CROOT=$(mktemp -d)
+      mkdir -p "$_CROOT/repo/apps" "$_CROOT/tmpd"
+      for _r in qa browser-qa fanout demo goal-iter; do
+        : > "$_CROOT/tmpd/${_r}-backend-99911.log"
+        : > "$_CROOT/tmpd/${_r}-frontend-99912.log"
+      done
+      : > "$_CROOT/tmpd/keep-me.txt"
+      # Subshell: repoint REPO_ROOT at scratch so the repo-root globs are inert.
+      ( REPO_ROOT="$_CROOT/repo" CHAIN_TMPDIR="$_CROOT/tmpd" \
+        CHAIN_BACKEND_PORT=99911 CHAIN_FRONTEND_PORT=99912 \
+        cleanup_phase_artifacts "selftest-phase" ) >/dev/null 2>&1 || true
+      if ls "$_CROOT/tmpd"/*-9991[12].log >/dev/null 2>&1; then
+        _t_bad "cleanup left role logs in CHAIN_TMPDIR"
+      else
+        _t_ok "cleanup removed all role logs from CHAIN_TMPDIR"
+      fi
+      if [[ -f "$_CROOT/tmpd/keep-me.txt" ]]; then _t_ok "cleanup kept unrelated file"; else _t_bad "cleanup removed unrelated file"; fi
+      rm -rf "$_CROOT"
+
       echo "[common.sh self-test] ${_t_pass} pass, ${_t_fail} fail"
       [[ "$_t_fail" -eq 0 ]] || exit 1
       ;;

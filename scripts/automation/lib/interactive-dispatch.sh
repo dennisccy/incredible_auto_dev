@@ -121,6 +121,15 @@ _interactive_invoke() {
   local prompt
   prompt="$(_interactive_extract_prompt "$@")"
 
+  # Pump-mode TMPDIR bridge: interactive subagents execute in the PUMP session's
+  # environment — the engine's exported TMPDIR never reaches them. Relay it as a
+  # prompt instruction instead (the only lever the Task tool offers). Belt and
+  # braces: an agent may ignore it; chain_tmp_janitor sweeps whatever still
+  # lands in shared /tmp.
+  if [[ -n "${CHAIN_TMPDIR:-}" && -d "${CHAIN_TMPDIR:-}" ]]; then
+    prompt+=$'\n\n'"Environment note: this pipeline run isolates temp files. Before running tests or any command that writes temporary files, run: export TMPDIR=\"$CHAIN_TMPDIR\" TMP=\"$CHAIN_TMPDIR\" TEMP=\"$CHAIN_TMPDIR\""
+  fi
+
   # Optional per-dispatch model override (escalation ladder / two-key confirm).
   # Empty means "no override — the subagent's frontmatter tier applies".
   local model_override="${CHAIN_MODEL_OVERRIDE:-}"

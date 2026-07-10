@@ -443,6 +443,8 @@ bash scripts/automation/render-summary.sh --session-index <sid>        # re-rend
 | `runs/goal-session-<sid>/state/journey-history.json` | Per-journey pass/fail/regressed status across iterations |
 | `runs/goal-session-<sid>/telemetry.jsonl` | Structured event log for the session — see [`docs/goal-mode-telemetry.md`](docs/goal-mode-telemetry.md) |
 
+**Temp-file hygiene:** every run gets its own `/tmp/iad.<run-id>.<pid>` dir, exported as `TMPDIR`, so pytest/playwright/service-log temp files are isolated per run and removed on exit (goal mode clears the previous iteration's dir at each iteration boundary). A startup janitor sweeps strays from crashed runs, including stale `/tmp/pytest-of-$USER` entries. Knobs: `CHAIN_TMPDIR_DISABLE=true` (leave the environment alone), `CHAIN_TMP_JANITOR=false` (skip the sweep), `CHAIN_TMP_MAX_AGE_HOURS=24` (janitor age gate). See `.claude/anti-patterns.md` #21.
+
 ## Subrepo Usage
 
 This framework is designed to be added to project repos as a submodule or subtree. Framework files live under `.claude/`, `scripts/`, `config/`, and `templates/` -- directories that do not conflict with typical project layouts. Project-specific docs go in `docs/`.

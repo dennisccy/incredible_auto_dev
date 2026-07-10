@@ -5,7 +5,8 @@
 # Self-bootstrapping: if services are not running, this script can start
 # them automatically using CHAIN_START_BACKEND_CMD / CHAIN_START_FRONTEND_CMD
 # env vars, or the conventional scripts/start-backend.sh and scripts/start-frontend.sh.
-# Logs for auto-started services are written to /tmp/qa-{backend,frontend}.log.
+# Logs for auto-started services are written via _qa_log_path (per-run
+# CHAIN_TMPDIR when set, else /tmp): <dir>/qa-{backend,frontend}-<port>.log.
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

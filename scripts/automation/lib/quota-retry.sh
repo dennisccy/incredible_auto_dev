@@ -154,8 +154,38 @@ DISPATCH_UNAVAILABLE_EXIT_CODE=70
 
 # Sentinel file paths — per CLI so Claude and Codex don't trip over each other
 # on machines where both are configured.
+# INTENTIONALLY fixed names in shared /tmp, NOT ${TMPDIR}/CHAIN_TMPDIR: quota
+# exhaustion is account-global, so every concurrent pipeline job on this
+# machine must see the same sentinel. chain_tmp_janitor (lib/chain-tmp.sh)
+# never matches these names.
 _QUOTA_SENTINEL="/tmp/claude-quota-exhausted"
 _CODEX_QUOTA_SENTINEL="/tmp/codex-quota-exhausted"
+
+# Remove a telemetry usage sidecar and clear its env exports. Called on every
+# non-success return/continue path so sidecars can never leak; the success
+# paths forward the sidecar to telemetry first and remove it themselves.
+_quota_discard_sidecar() {
+  [[ -n "${1:-}" ]] && rm -f "$1" 2>/dev/null
+  unset CHAIN_CLAUDE_USAGE_SIDECAR CHAIN_CODEX_USAGE_SIDECAR
+  return 0
+}
+
+# Preserve a kept-for-debugging failure log where per-run tmp cleanup can't
+# destroy it: move into $CHAIN_TRACE_DIR (runs/<phase>/trace — beside the
+# replay trace) when tracing is on; otherwise leave it in ${TMPDIR:-/tmp}.
+# Echoes the final path for the operator-facing "saved to" message.
+_quota_preserve_failure_log() {
+  local log="$1" label="${2:-cli-failure}"
+  if [[ -f "$log" && -n "${CHAIN_TRACE_DIR:-}" && -d "${CHAIN_TRACE_DIR:-}" && -w "${CHAIN_TRACE_DIR:-}" ]]; then
+    local dest="$CHAIN_TRACE_DIR/${label}-$(date +%Y%m%d%H%M%S)-$$.log"
+    if mv -- "$log" "$dest" 2>/dev/null; then
+      printf '%s\n' "$dest"
+      return 0
+    fi
+  fi
+  printf '%s\n' "$log"
+  return 0
+}
 
 # Resolve the runtime cap for the CURRENT agent (seconds; empty = caller keeps
 # its flat global). Shared by the headless timeout and the interactive inflight
@@ -504,7 +534,7 @@ _claude_invoke() {
       _quota_run_pre_retry_hook
     fi
 
-    tmp_log=$(mktemp /tmp/claude-quota-XXXXXX.log)
+    tmp_log=$(mktemp "${TMPDIR:-/tmp}/claude-quota-XXXXXX.log")
 
     # Run claude, stream output to terminal AND capture to temp file.
     # PIPESTATUS[0] gives claude's exit code even through the pipe.
@@ -583,7 +613,7 @@ _claude_invoke() {
     if [[ "$CHAIN_TELEMETRY_TOKENS" == "true" ]]; then
       _renderer_path="$(dirname "${BASH_SOURCE[0]}")/claude_stream_renderer.py"
       if [[ -f "$_renderer_path" ]]; then
-        _sidecar=$(mktemp /tmp/claude-usage-XXXXXX.json)
+        _sidecar=$(mktemp "${TMPDIR:-/tmp}/claude-usage-XXXXXX.json")
         export CHAIN_CLAUDE_USAGE_SIDECAR="$_sidecar"
         _claude_extra_args+=(--output-format stream-json --verbose --include-partial-messages)
       else
@@ -644,6 +674,7 @@ _claude_invoke() {
           timeout_retry_count=$((timeout_retry_count + 1))
           echo "[quota-retry] $(date -Iseconds) Retrying in place (timeout retry $timeout_retry_count/${CHAIN_CLAUDE_TIMEOUT_RETRIES:-1})..." >&2
           rm -f "$tmp_log"
+          _quota_discard_sidecar "${_sidecar:-}"
           continue
         fi
         echo "[quota-retry] $(date -Iseconds) If artifacts were written before the hang, downstream steps can still proceed." >&2
@@ -690,6 +721,7 @@ _claude_invoke() {
       if [[ $stream_retry_count -gt $max_stream_retries ]]; then
         echo "[quota-retry] $(date -Iseconds) Stream-transient error persisted after $max_stream_retries retries. Giving up (exit $exit_code)." >&2
         rm -f "$tmp_log"
+        _quota_discard_sidecar "${_sidecar:-}"
         return "$exit_code"
       fi
       # Exponential-ish backoff: base * retry_count
@@ -697,6 +729,7 @@ _claude_invoke() {
       echo "[quota-retry] $(date -Iseconds) Transient stream failure detected (retry $stream_retry_count/$max_stream_retries). Sleeping ${stream_sleep}s before retry..." >&2
       sleep "$stream_sleep" || true
       rm -f "$tmp_log"
+      _quota_discard_sidecar "${_sidecar:-}"
       continue
     fi
 
@@ -715,11 +748,12 @@ _claude_invoke() {
         echo "─────────────────────────────────────────────────────────────────────" >&2
         tail -n 30 "$tmp_log" >&2
         echo "─────────────────────────────────────────────────────────────────────" >&2
-        echo "[quota-retry] $(date -Iseconds) Full output saved to: $tmp_log" >&2
+        echo "[quota-retry] $(date -Iseconds) Full output saved to: $(_quota_preserve_failure_log "$tmp_log" claude-failure)" >&2
         echo "════════════════════════════════════════════════════════════════════" >&2
       else
         rm -f "$tmp_log"
       fi
+      _quota_discard_sidecar "${_sidecar:-}"
       return "$exit_code"
     fi
 
@@ -733,8 +767,6 @@ _claude_invoke() {
     reset_str=$(_quota_extract_reset_string "$tmp_log")
     [[ -n "$reset_str" ]] && echo "[quota-retry] $(date -Iseconds) Reset indicator: '$reset_str'" >&2
 
-    echo "[quota-retry] $(date -Iseconds) Output saved to: $tmp_log" >&2
-
     # Long-duration limits (monthly / org-wide) cannot be retried in a few
     # hours — fail fast so the operator can rerun on the next billing window.
     # Without this branch, the loop burns CHAIN_CLAUDE_FALLBACK_SLEEP_SECONDS
@@ -744,17 +776,22 @@ _claude_invoke() {
       echo "[quota-retry] $(date -Iseconds) Long-duration limit detected (monthly/org). Skipping retry — limit will not reset in the retry window." >&2
       echo "[quota-retry] $(date -Iseconds) Re-run this step after the billing window resets." >&2
       rm -f "$tmp_log"
+      _quota_discard_sidecar "${_sidecar:-}"
       return $QUOTA_EXHAUSTED_EXIT_CODE
     fi
 
     if [[ "$CHAIN_DISABLE_AUTO_WAIT" == "true" ]]; then
       echo "[quota-retry] $(date -Iseconds) CHAIN_DISABLE_AUTO_WAIT=true — not retrying." >&2
+      echo "[quota-retry] $(date -Iseconds) Output saved to: $(_quota_preserve_failure_log "$tmp_log" claude-quota)" >&2
+      _quota_discard_sidecar "${_sidecar:-}"
       return $QUOTA_EXHAUSTED_EXIT_CODE
     fi
 
     retry_count=$((retry_count + 1))
     if [[ $retry_count -gt $max_retries ]]; then
       echo "[quota-retry] $(date -Iseconds) Max quota retries ($max_retries) reached. Giving up (exit $QUOTA_EXHAUSTED_EXIT_CODE)." >&2
+      echo "[quota-retry] $(date -Iseconds) Output saved to: $(_quota_preserve_failure_log "$tmp_log" claude-quota)" >&2
+      _quota_discard_sidecar "${_sidecar:-}"
       return $QUOTA_EXHAUSTED_EXIT_CODE
     fi
 
@@ -773,6 +810,12 @@ _claude_invoke() {
                   || echo "unknown")
       echo "[quota-retry] $(date -Iseconds) Parsed reset time. Wake at: $wake_time (sleep ${sleep_secs}s incl. ${CHAIN_CLAUDE_RESET_BUFFER_SECONDS}s buffer)" >&2
     fi
+
+    # Reset time parsed — this attempt's log/sidecar are done with. Without
+    # this, every quota sleep leaked one claude-quota-*.log + usage sidecar
+    # (the loop re-mints both on the next attempt).
+    rm -f "$tmp_log"
+    _quota_discard_sidecar "${_sidecar:-}"
 
     # Write sentinel so other pipeline stages can coordinate
     local reset_epoch=$(( $(date +%s) + sleep_secs ))
@@ -921,7 +964,7 @@ _codex_invoke() {
       rm -f "$_CODEX_QUOTA_SENTINEL"
     fi
 
-    tmp_log=$(mktemp /tmp/codex-quota-XXXXXX.log)
+    tmp_log=$(mktemp "${TMPDIR:-/tmp}/codex-quota-XXXXXX.log")
     local sleep_start
     sleep_start=$(date +%s)
 
@@ -942,7 +985,7 @@ _codex_invoke() {
     if [[ "$CHAIN_TELEMETRY_TOKENS" == "true" ]]; then
       _renderer_path="$(dirname "${BASH_SOURCE[0]}")/codex_stream_renderer.py"
       if [[ -f "$_renderer_path" ]]; then
-        _sidecar=$(mktemp /tmp/codex-usage-XXXXXX.json)
+        _sidecar=$(mktemp "${TMPDIR:-/tmp}/codex-usage-XXXXXX.json")
         export CHAIN_CODEX_USAGE_SIDECAR="$_sidecar"
         # Reuse the Claude env var name so telemetry.sh's existing helper picks it up
         export CHAIN_CLAUDE_USAGE_SIDECAR="$_sidecar"
@@ -1007,12 +1050,14 @@ _codex_invoke() {
       if [[ $stream_retry_count -gt $max_stream_retries ]]; then
         echo "[quota-retry/codex] Transient stream error persisted after $max_stream_retries retries. Giving up." >&2
         rm -f "$tmp_log"
+        _quota_discard_sidecar "${_sidecar:-}"
         return "$exit_code"
       fi
       local stream_sleep=$(( CHAIN_CODEX_STREAM_RETRY_SLEEP * stream_retry_count ))
       echo "[quota-retry/codex] Transient stream failure (retry $stream_retry_count/$max_stream_retries). Sleeping ${stream_sleep}s..." >&2
       sleep "$stream_sleep" || true
       rm -f "$tmp_log"
+      _quota_discard_sidecar "${_sidecar:-}"
       continue
     fi
 
@@ -1022,21 +1067,26 @@ _codex_invoke() {
         echo "[quota-retry/codex] $(date -Iseconds) *** Codex exited with code $exit_code (not quota) ***" >&2
         echo "[quota-retry/codex] Last 30 lines:" >&2
         tail -n 30 "$tmp_log" >&2
-        echo "[quota-retry/codex] Full output: $tmp_log" >&2
+        echo "[quota-retry/codex] Full output: $(_quota_preserve_failure_log "$tmp_log" codex-failure)" >&2
       else
         rm -f "$tmp_log"
       fi
+      _quota_discard_sidecar "${_sidecar:-}"
       return "$exit_code"
     fi
 
     # Quota exhaustion
     echo "[quota-retry/codex] $(date -Iseconds) *** CODEX QUOTA / RATE LIMIT DETECTED ***" >&2
     if [[ "$CHAIN_DISABLE_AUTO_WAIT" == "true" ]]; then
+      echo "[quota-retry/codex] Output saved to: $(_quota_preserve_failure_log "$tmp_log" codex-quota)" >&2
+      _quota_discard_sidecar "${_sidecar:-}"
       return $QUOTA_EXHAUSTED_EXIT_CODE
     fi
     retry_count=$((retry_count + 1))
     if [[ $retry_count -gt $max_retries ]]; then
       echo "[quota-retry/codex] Max quota retries ($max_retries) reached. Giving up." >&2
+      echo "[quota-retry/codex] Output saved to: $(_quota_preserve_failure_log "$tmp_log" codex-quota)" >&2
+      _quota_discard_sidecar "${_sidecar:-}"
       return $QUOTA_EXHAUSTED_EXIT_CODE
     fi
 
@@ -1048,6 +1098,11 @@ _codex_invoke() {
     else
       echo "[quota-retry/codex] retry-after parsed: ${sleep_secs}s" >&2
     fi
+
+    # Retry-after parsed — this attempt's log/sidecar are done with (the loop
+    # re-mints both on the next attempt; without this every quota sleep leaked one).
+    rm -f "$tmp_log"
+    _quota_discard_sidecar "${_sidecar:-}"
 
     local reset_epoch=$(( $(date +%s) + sleep_secs ))
     echo "$reset_epoch" > "$_CODEX_QUOTA_SENTINEL"

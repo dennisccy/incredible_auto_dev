@@ -218,6 +218,9 @@ _run_post_dev_fanout() {
     -- \
     Branch-QA bash "$SCRIPT_DIR/qa-phase.sh" "$PHASE" \
     || _rc=$?
+  # parallel_run ends with `trap - TERM INT`, wiping our signal handler — re-arm
+  # so a later Ctrl-C still aborts checkpoint-preservingly AND fires the EXIT trap.
+  trap _run_phase_aborted INT TERM
   # Always unset the shared-services flag so subsequent steps (ux-regression
   # below, plus anything in fail()) follow today's per-script boot semantics.
   unset CHAIN_SHARED_SERVICES
@@ -343,6 +346,35 @@ if [[ "${CHAIN_DISABLE_TRACE:-false}" != "true" && -z "${CHAIN_TRACE_DIR:-}" ]];
   mkdir -p "$REPO_ROOT/runs/$PHASE/trace"
   export CHAIN_TRACE_DIR="$REPO_ROOT/runs/$PHASE/trace"
 fi
+
+# ── Per-run tmp isolation (lib/chain-tmp.sh) ─────────────────────────────────
+# Everything this run's children write to temp files (pytest basetemp, chromium
+# profiles, claude/codex quota logs, service logs via _qa_log_path) lands under
+# one per-run dir exported as TMPDIR. Under run-goal.sh the engine's iteration
+# dir is ADOPTED (owner-guarded cleanup: the engine removes it, not us).
+chain_tmp_init "$PHASE"
+# Sweep strays from crashed/legacy runs — only when this run owns its dir
+# (top-level invocation; the goal engine already ran the janitor).
+[[ "${CHAIN_TMPDIR_OWNER_PID:-}" == "$$" ]] && chain_tmp_janitor
+
+# EXIT trap: on any exit (success, fail(), quota 75, transport 70, signal-trap
+# exits 130/143), archive bounded service-log tails for post-mortem when the
+# run did NOT succeed, then remove the tmp dir if we own it. Resumable exits
+# (75/70) also clean: the resume re-inits a fresh dir, and a still-running
+# shared service writing to an unlinked log fd is harmless.
+_run_phase_on_exit() {
+  local rc="$1"
+  if [[ "$rc" -ne 0 && -n "${CHAIN_TMPDIR:-}" && -d "${CHAIN_TMPDIR:-}" ]]; then
+    local _dest="$REPO_ROOT/runs/$PHASE/service-logs" _f
+    for _f in "$CHAIN_TMPDIR"/*.log; do
+      [[ -f "$_f" ]] || continue
+      mkdir -p "$_dest" 2>/dev/null || break
+      tail -c 200000 "$_f" > "$_dest/$(basename "$_f")" 2>/dev/null || true
+    done
+  fi
+  chain_tmp_cleanup
+}
+trap '_run_phase_on_exit $?' EXIT
 
 # ── Resume detection ────────────────────────────────────────────────────────
 if [[ "$FORCE_RESET" == "true" ]]; then
@@ -952,6 +984,15 @@ echo ""
 # ── Cleanup: remove temp files generated during the run ─────────────────────
 log "Cleanup: removing temp files..."
 cleanup_phase_artifacts "$PHASE"
+if [[ -n "${CHAIN_TMPDIR:-}" ]]; then
+  if [[ "${CHAIN_TMPDIR_OWNER_PID:-}" == "$$" ]]; then
+    # Removal itself happens in the EXIT trap — finalize (--auto-release) still
+    # runs after this block and needs a live TMPDIR for its own dispatch.
+    log "  Per-run tmp dir $CHAIN_TMPDIR will be removed on exit."
+  else
+    log "  Per-run tmp dir $CHAIN_TMPDIR is engine-owned (run-goal.sh clears it at the iteration boundary)."
+  fi
+fi
 log "  Cleanup complete."
 echo ""
 

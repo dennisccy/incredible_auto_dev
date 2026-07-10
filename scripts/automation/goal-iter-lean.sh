@@ -86,6 +86,12 @@ record_telemetry_event "iter_dispatch" "$(jq -cn --arg n "$ITER_NAME" --arg d "l
 
 ensure_phase_ports
 
+# Per-run tmp isolation: adopt the engine's CHAIN_TMPDIR (run-goal.sh sets it)
+# or create our own for standalone invocations. chain_tmp_cleanup is
+# owner-guarded, so under run-goal.sh the trap below removes nothing — the
+# engine rotates the dir at its iteration boundary instead.
+chain_tmp_init "$ITER_NAME"
+
 # ── Cleanup any stray dev server processes on exit ────────────────────────
 cleanup_iter_servers() {
   local _be_port="${CHAIN_BACKEND_PORT:-8000}"
@@ -104,7 +110,7 @@ cleanup_iter_servers() {
     fi
   fi
 }
-trap cleanup_iter_servers EXIT
+trap 'cleanup_iter_servers; chain_tmp_cleanup' EXIT
 
 # ── Step 1: Developer ─────────────────────────────────────────────────────
 run_developer() {

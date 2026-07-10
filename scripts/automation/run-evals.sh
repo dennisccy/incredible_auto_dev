@@ -119,6 +119,15 @@ else
   _fail "self-test: common.sh (kill-tree / self-heal)"
 fi
 
+# Per-run tmp isolation helpers: init/adopt, owner-guarded cleanup, rotate, and
+# the age+pid-liveness janitor (incl. never-touch-the-quota-sentinels).
+if bash scripts/automation/lib/chain-tmp.sh self-test >/dev/null 2>&1; then
+  _pass "self-test: chain-tmp.sh (tmpdir init/cleanup/rotate/janitor)"
+else
+  bash scripts/automation/lib/chain-tmp.sh self-test || true
+  _fail "self-test: chain-tmp.sh"
+fi
+
 # Parallel two-branch runner (previously had a self-test that nothing invoked).
 if bash scripts/automation/lib/parallel.sh self-test >/dev/null 2>&1; then
   _pass "self-test: parallel.sh"
@@ -147,7 +156,7 @@ fi
 
 # ── 2c. Standalone unit-test scripts (API-free by design) ────────────────────
 _log "2c. tests/automation unit tests"
-for _t in tests/automation/test-quota-retry.sh tests/automation/test-install-gate.sh tests/automation/test-goal-checkpoints.sh tests/automation/test-goal-async-tail.sh tests/automation/test-intent-checkpoint.sh tests/automation/test-doc-drift.sh tests/automation/test-github-preflight.sh; do
+for _t in tests/automation/test-quota-retry.sh tests/automation/test-install-gate.sh tests/automation/test-goal-checkpoints.sh tests/automation/test-goal-async-tail.sh tests/automation/test-intent-checkpoint.sh tests/automation/test-doc-drift.sh tests/automation/test-github-preflight.sh tests/automation/test-tmp-cleanup.sh; do
   if bash "$_t" >/dev/null 2>&1; then
     _pass "unit: $_t"
   else
