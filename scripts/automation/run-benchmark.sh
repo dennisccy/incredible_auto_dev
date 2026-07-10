@@ -53,7 +53,7 @@
 #
 # ── TEST SEAM (CHAIN_BENCH_ENGINE_CMD) ────────────────────────────────────────
 # When CHAIN_BENCH_ENGINE_CMD is set, it is run (bash -c, cwd=scratch, with
-# CHAIN_AGENT_BACKEND=headless and CHAIN_BENCH_SESSION_ID /
+# CHAIN_AGENT_BACKEND=claude and CHAIN_BENCH_SESSION_ID /
 # CHAIN_BENCH_MAX_ITER exported) INSTEAD of the real
 # `run-goal.sh --session-id <sid> --max-iter 2`. This exists ONLY so the
 # offline suite (tests/automation/test-benchmark-runner.sh) can drive stub
@@ -244,7 +244,10 @@ log "scratch repo ready (1 commit on main; origin = local bare $ORIGIN)"
 # Environment honesty: everything CHAIN_* in the engine's environment is
 # recorded in the results JSON — results are only comparable when config is
 # visible. The exports below are part of that environment on purpose.
-export CHAIN_AGENT_BACKEND=headless
+# "claude" IS the headless dispatch backend (quota-retry.sh accepts
+# interactive|claude|codex only); pinning it keeps a production pump's
+# CHAIN_AGENT_BACKEND=interactive from leaking into the benchmark engine.
+export CHAIN_AGENT_BACKEND=claude
 export CHAIN_BENCH_SESSION_ID="$SESSION_ID"
 export CHAIN_BENCH_MAX_ITER=2
 CHAIN_ENV_LINES="$(env | LC_ALL=C sort | grep '^CHAIN_' || true)"

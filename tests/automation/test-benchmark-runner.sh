@@ -108,7 +108,8 @@ TIERS_SHA="$(sha256sum "$SKEL/config/model-tiers.yaml" | awk '{print $1}')"
 
 # ── Stub engines ──────────────────────────────────────────────────────────────
 # Contract (documented in the runner header): the seam command runs with
-# cwd=scratch, CHAIN_AGENT_BACKEND=headless, and CHAIN_BENCH_SESSION_ID set.
+# cwd=scratch, CHAIN_AGENT_BACKEND=claude (the headless dispatch backend),
+# and CHAIN_BENCH_SESSION_ID set.
 # BENCH_TEST_LEDGER / BENCH_TEST_CHECKFILE are test-side envs passed through.
 STUBS="$WORK/stubs"
 mkdir -p "$STUBS"
@@ -266,9 +267,9 @@ run_runner "$STUBS/stub-ok.sh" --yes-spend --keep-scratch \
 grep -q "^pre=FOUND$" "$CHECKFILE" 2>/dev/null \
   && assert "A: PRE ledger entry existed BEFORE the engine ran (stub-asserted)" "pass" \
   || assert "A: PRE ledger entry existed BEFORE the engine ran (stub-asserted)" "fail"
-grep -q "^backend=headless$" "$CHECKFILE" 2>/dev/null \
-  && assert "A: engine launched with CHAIN_AGENT_BACKEND=headless" "pass" \
-  || assert "A: engine launched with CHAIN_AGENT_BACKEND=headless" "fail"
+grep -q "^backend=claude$" "$CHECKFILE" 2>/dev/null \
+  && assert "A: engine launched with CHAIN_AGENT_BACKEND=claude (the valid headless backend)" "pass" \
+  || assert "A: engine launched with CHAIN_AGENT_BACKEND=claude (the valid headless backend)" "fail"
 
 SCRATCH="$(find "$CTMP" -mindepth 2 -maxdepth 2 -type d -name scratch | head -n1)"
 if [[ -n "$SCRATCH" && -d "$SCRATCH" ]]; then
@@ -351,7 +352,7 @@ check("max_iter", meta.get("max_iter") == 2)
 check("hypothesis", "2/3 journeys" in str(meta.get("hypothesis")))
 check("model_tiers_sha256", meta.get("model_tiers_sha256") == tiers_sha)
 env = meta.get("chain_env", {})
-check("chain_env.backend", env.get("CHAIN_AGENT_BACKEND") == "headless")
+check("chain_env.backend", env.get("CHAIN_AGENT_BACKEND") == "claude")
 check("chain_env.seam_visible", "CHAIN_BENCH_ENGINE_CMD" in env)
 check("engine_exit_code", out.get("engine_exit_code") == 0)
 check("final_status", out.get("final_status") == "STALLED")

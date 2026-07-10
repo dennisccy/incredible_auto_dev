@@ -1,0 +1,35 @@
+{
+  "meta": {
+    "date_utc": "2026-07-10T21:10:26Z",
+    "framework_sha": "b172cea005aa8225299b1f7160ae87a946a06a20",
+    "framework_dirty": false,
+    "fixture": "todo-app",
+    "session_id": "bench-20260710-2110",
+    "max_iter": 2,
+    "hypothesis": "Baseline @ b172cea005aa: chain reaches GOAL_ACHIEVED with 3/3 journeys within --max-iter 2 on the todo-app fixture",
+    "predict": [
+      "final_status==GOAL_ACHIEVED",
+      "journeys_passing_after>=3"
+    ],
+    "chain_env": {
+      "CHAIN_AGENT_BACKEND": "headless",
+      "CHAIN_BENCH_MAX_ITER": "2",
+      "CHAIN_BENCH_SESSION_ID": "bench-20260710-2110"
+    },
+    "model_tiers_sha256": "1d096808ad8eb0b5fcc863b8c71403dced292d24c4e8021d940abda52e298896"
+  },
+  "outcome": {
+    "engine_exit_code": 2,
+    "final_status": "ABORTED",
+    "last_verdict": "unknown (last_verdict null/absent in session.json)",
+    "iterations_used": 0,
+    "journeys_passing_after": 0,
+    "journeys_total": 0,
+    "attempt1_review_fails": 0,
+    "malformed_verdicts": 0,
+    "wall_seconds": 2
+  },
+  "economics": {
+    "agents": {}
+  }
+}
