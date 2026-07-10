@@ -189,7 +189,7 @@ the system measures itself, and how it survives the next model change.
   tell the user it may be stale.
 
 ### EVO-2 · Automatic post-session retrospective
-- **Priority:** P0 · **Effort:** L (2 slices) · **Risk:** MED · **Status:** IN-PROGRESS
+- **Priority:** P0 · **Effort:** L (2 slices) · **Risk:** MED · **Status:** DONE
   *(slice (a) — deterministic collector + terminal-halt wiring — implemented 2026-07-10:
   `scripts/automation/lib/retro_collect.sh` (new) writes `state/retro-input.md` with the
   stable sections Outcome / Verdict sequence / Agent economics / Friction counters /
@@ -225,7 +225,17 @@ the system measures itself, and how it survives the next model change.
   status-enum docs (`.claude/workflow.md:305`, `skills/goal-interactive-dispatch.md:147`,
   `docs/goal-mode-telemetry.md:37/:115` — the last already omits ABORT_MALFORMED as an
   emitted halt reason today, pre-existing drift, not introduced here).
-  Fresh-session certification of slice (b) remains before DONE (G8).)*
+  Slice (b) certified DONE 2026-07-10 by a fresh non-implementer session per G8:
+  32/32 retro asserts + 93/93 evals green; agent contract (light tier, tools exactly
+  [Read, Write], digest-only input, ≤5 §4-shape items with verbatim evidence quotes,
+  PROPOSALS-ONLY banner, zero-items valid, ≤120 lines, never edits the roadmap),
+  wiring guards, the `run-goal.sh:1176` ABORTED special-case, and all three catalog
+  surfaces (CLAUDE.md list, agents.md count 20, README row) re-verified against code;
+  `sync-cli-assets --check` clean; plus one user-approved (G9) real light-tier smoke
+  dispatch (claude-haiku-4-5) against a collector-built synthetic digest — well-formed
+  4-item report, verbatim evidence quotes, product-only lesson correctly skipped, no
+  stray writes. EVO-2 complete; body archiving left to a future tidy pass (REL-1
+  precedent).)*
 - **Problem:** every session generates evidence about what hurt (halts, quota pauses,
   review-FAIL loops, wall-time spikes, lessons) — and none of it flows back into
   framework improvements. The feedback loop is the evolution engine's core.
