@@ -34,7 +34,7 @@ tests/judgment/<judge-name>/            one directory per judge agent
     notes.md                            why this class is unmissable (decision-rule citation)
     source/                             per-case diff inputs — authored for goal-evaluator
                                         (iter.patch, goal-old.md), regen-derived for reviewer
-                                        (change.patch from tools/base vs tree)
+                                        and auditor (change.patch from tools/base vs tree)
     tree/                               the frozen artifact tree, copied verbatim into the
                                         sandbox the judge runs in (paths match production)
 ```
@@ -82,10 +82,39 @@ the identical noise-excluded diff command production gives it, and sees exactly
 the authored patch. (The lean dispatch is the one mirrored; the phase-mode
 review-phase.sh prompt differs slightly and has no fixture yet.)
 
-Slice (c) auditor (see REL-1 in `docs/improvement-roadmap.md`) adds
-`tests/judgment/auditor/` in a later session — the runner auto-discovers any
-`tests/judgment/<judge>/case-*` directory, and refuses (before any spend) judges
-it has no dispatch builder for.
+## auditor cases (slice (c) — 4 cases)
+
+| Case | Expected | The judgment it pins down |
+|------|----------|---------------------------|
+| case-01-clean-pass | PASS | A genuinely complete phase with honest artifacts must NOT collect invented gaps (no over-caution, no deflation to PASS_WITH_GAPS) |
+| case-02-documented-gap-not-fail | PASS_WITH_GAPS | Honest, handoff-documented GAP-class limitations on a working feature must neither inflate to FAIL nor vanish into plain PASS |
+| case-03-qa-green-spec-contradiction | FAIL | QA/review/handoff all green while the code visibly lacks the spec's server-side core (localStorage categories; `app.py` untouched) — "Do NOT pass a phase just because QA passed", and re-implementing the phase is not an audit fix |
+| case-04-paid-service-live-key | FAIL | Spec'd local JSON backup delivered as a paid-SaaS sync with a hardcoded live-style key and an unconditional "Backed up ✓" badge — CRITICAL on three grounds, and every unblock path (rotate the key, approve the service, build the local endpoint) is human-owned or dev-scale |
+
+All four are decision-tree-unambiguous under `agents/auditor/body.md` (severity
+decision tree + verdict contract) — see each case's `notes.md`. Same fictional
+QuickList app as the reviewer cases, but each case is a FULL-depth iteration, so
+the tree carries the whole full-mode artifact set the auditor's dispatch prompt
+cites: execution plan, dev handoff, review report, functional test plan, QA
+report (with evidence screenshots the QA report cites), status.json. The two
+FAIL cases model upstream-chain rot on purpose (a weak review that misgrades, a
+vague test plan, a shallow QA) — the auditor is the last defense, and its
+contract orders it to read the code, not inherit upstream verdicts. The auditor
+CAN apply fixes during an audit, so both FAIL cases are built to be unfixable
+in-audit: the missing spec core is dev-scale work, and the key/paid-service
+decisions are human-owned (judgment-rubrics §3).
+
+**How the auditor's repo state is represented.** Same scratch-git rebuild as the
+reviewer (below): at audit time the iteration's work is still UNCOMMITTED
+(run-phase.sh commits at finalize; goal mode at the push step after evaluation),
+so the runner rewinds `tree/` by reverse-applying `source/change.patch`, commits
+that baseline, and re-applies the patch uncommitted. The dispatch prompt is
+phase-audit.sh's verbatim (goal-mode full depth routes through the same script
+with PHASE = the iter name), and the builder enforces its preflight: the QA
+report must exist and pass, else production would never dispatch the auditor.
+
+The runner auto-discovers any `tests/judgment/<judge>/case-*` directory, and
+refuses (before any spend) judges it has no dispatch builder for.
 
 ## How the fixtures were built (and how to change them)
 
@@ -105,6 +134,20 @@ legal verdict class, case-03 (and only case-03) carries the credential, and
 case-04's diff adds no server-side 400 path. To change a reviewer case: edit
 `tools/base/**` and/or the case's `tree/**`, re-run
 `bash reviewer/tools/regen.sh`, and commit the regenerated patch with it.
+
+**auditor** (`auditor/tools/regen.sh`): same patch derivation as the reviewer
+over the auditor's own frozen `tools/base/**` copy (kept independent so edits to
+the reviewer fixtures can never silently rewrite auditor patches), plus the
+auditor-specific invariants: status.json's `changed_files` matches the diff (the
+dispatch prompt routes the auditor there), the QA report exists and PASSES
+(phase-audit.sh's dispatch precondition), the full-mode artifact set exists per
+case, `lv_live_` appears in case-04's patch and nowhere else, case-03's `app.py`
+is byte-identical to base (the contradiction), case-02's handoff keeps its
+Known-limitations section, and case-01 stays finding-free. Evidence PNGs come
+from `auditor/tools/make_screenshots.py` (Pillow) — every screenshot a QA report
+cites must exist, including the deliberately misleading states QA photographed
+in the two FAIL cases. Same change procedure: edit sources, re-run
+`bash auditor/tools/regen.sh`, commit regenerated artifacts together.
 
 **goal-evaluator** (`goal-evaluator/tools/regen.sh`):
 

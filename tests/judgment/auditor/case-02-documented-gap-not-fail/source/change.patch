@@ -1,0 +1,127 @@
+diff --git a/app.py b/app.py
+index 1805241..08b782c 100644
+--- a/app.py
++++ b/app.py
+@@ -55,6 +55,41 @@ def list_items(db):
+     return db.execute("SELECT id, name, qty, done FROM items ORDER BY id").fetchall()
+ 
+ 
++def parse_import_block(text):
++    """Parse pasted 'Name x QTY' lines into (name, qty) pairs.
++
++    Every line is validated BEFORE anything is inserted; the first bad line
++    raises ValueError naming its 1-based line number. The message names the
++    line number only, not the line text (known limitation — see the handoff).
++    Blank lines are skipped. Validation matches the add form: non-empty name,
++    integer qty >= 1.
++    """
++    pairs = []
++    for lineno, raw in enumerate(text.splitlines(), start=1):
++        line = raw.strip()
++        if not line:
++            continue
++        m = re.fullmatch(r"(.+?)\s*[xX]\s*(\d+)", line)
++        if not m:
++            raise ValueError(f"line {lineno}: expected 'Name x QTY'")
++        name = m.group(1).strip()
++        if not name:
++            raise ValueError(f"line {lineno}: name must not be empty")
++        qty = int(m.group(2))
++        if qty < 1:
++            raise ValueError(f"line {lineno}: qty must be an integer >= 1")
++        pairs.append((name, qty))
++    if not pairs:
++        raise ValueError("no items found in the pasted text")
++    return pairs
++
++
++def import_items(db, pairs):
++    """Insert all parsed pairs in one transaction (all-or-nothing)."""
++    with db:
++        db.executemany("INSERT INTO items (name, qty) VALUES (?, ?)", pairs)
++
++
+ def render_row(item):
+     """One <li> per item; done rows carry the `done` class and badge (J-02)."""
+     css = "item done" if item["done"] else "item"
+@@ -118,6 +153,14 @@ class QuickListHandler(BaseHTTPRequestHandler):
+                 self.send_error(400, str(exc))
+                 return
+             self._redirect("/")
++        elif self.path == "/import":
++            try:
++                pairs = parse_import_block(form.get("block", [""])[0])
++            except ValueError as exc:
++                self.send_error(400, str(exc))
++                return
++            import_items(get_db(), pairs)
++            self._redirect("/")
+         elif m := re.fullmatch(r"/items/(\d+)/done", self.path):
+             mark_done(get_db(), int(m.group(1)))
+             self._redirect("/")
+diff --git a/templates/index.html b/templates/index.html
+index 4c9e86c..5aa9316 100644
+--- a/templates/index.html
++++ b/templates/index.html
+@@ -8,6 +8,7 @@
+     li.item.done { text-decoration: line-through; color: #777; }
+     .badge { background: #2f855a; color: #fff; border-radius: 3px; padding: 0 .3rem; font-size: .8rem; }
+     form.inline { display: inline; }
++    form.import textarea { display: block; width: 100%; margin: .3rem 0; }
+   </style>
+ </head>
+ <body>
+@@ -17,6 +18,10 @@
+     <input name="qty" type="number" min="1" value="1" required>
+     <button>Add</button>
+   </form>
++  <form class="import" method="post" action="/import">
++    <textarea name="block" rows="4" placeholder="Blue Mug x 3&#10;Milk x 1" required></textarea>
++    <button>Import</button>
++  </form>
+   <label><input type="checkbox" id="open-only"> Open only</label>
+   <ul id="items">
+ <!--ROWS-->
+diff --git a/test_items.py b/test_items.py
+index d2ab3ef..b5c8ae5 100644
+--- a/test_items.py
++++ b/test_items.py
+@@ -47,6 +47,38 @@ class MarkDoneTests(unittest.TestCase):
+         self.assertEqual(rows[1]["done"], 0)
+ 
+ 
++class ImportTests(unittest.TestCase):
++    def setUp(self):
++        self.db = make_db()
++
++    def test_parse_import_block_happy_path(self):
++        pairs = app.parse_import_block("Blue Mug x 3\nMilk x 1\n")
++        self.assertEqual(pairs, [("Blue Mug", 3), ("Milk", 1)])
++
++    def test_parse_import_block_names_failing_line(self):
++        with self.assertRaises(ValueError) as ctx:
++            app.parse_import_block("Blue Mug x 3\nMilk & 1")
++        self.assertEqual(str(ctx.exception), "line 2: expected 'Name x QTY'")
++
++    def test_parse_import_block_rejects_zero_qty_with_line(self):
++        with self.assertRaises(ValueError) as ctx:
++            app.parse_import_block("Blue Mug x 3\nEggs x 0")
++        self.assertEqual(str(ctx.exception), "line 2: qty must be an integer >= 1")
++
++    def test_import_items_inserts_all_rows(self):
++        app.import_items(self.db, app.parse_import_block("Blue Mug x 3\nMilk x 1"))
++        rows = app.list_items(self.db)
++        self.assertEqual(
++            [(r["name"], r["qty"]) for r in rows],
++            [("Blue Mug", 3), ("Milk", 1)],
++        )
++
++    def test_malformed_block_imports_nothing(self):
++        with self.assertRaises(ValueError):
++            app.import_items(self.db, app.parse_import_block("Blue Mug x 3\nbroken line"))
++        self.assertEqual(len(app.list_items(self.db)), 0)
++
++
+ class RenderTests(unittest.TestCase):
+     def setUp(self):
+         self.db = make_db()

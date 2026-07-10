@@ -19,6 +19,7 @@
 #   ./scripts/automation/run-judgment-evals.sh --list           # enumerate cases, no dispatch
 #   ./scripts/automation/run-judgment-evals.sh --yes-spend --judge goal-evaluator --case case-01-clean-goal-achieved
 #   ./scripts/automation/run-judgment-evals.sh --yes-spend --judge reviewer
+#   ./scripts/automation/run-judgment-evals.sh --yes-spend --judge auditor
 #   ./scripts/automation/run-judgment-evals.sh --yes-spend --keep-sandbox   # keep per-case sandboxes for inspection
 #
 # Model/effort/permission resolution mirrors the engine (lib/quota-retry.sh):
@@ -42,6 +43,14 @@
 #     reverse-applied), working tree = the case's post-iteration state left
 #     UNCOMMITTED — so the production `git diff HEAD` command the prompt embeds
 #     shows exactly the fixture's diff, like a live review moment.
+#   auditor — phase-audit.sh (run-phase.sh Step 9; goal-mode full depth routes
+#     through the same script with PHASE = the iter name). Same scratch-git
+#     state rebuild as the reviewer — at audit time the iteration's work is
+#     still uncommitted (commits happen at finalize / the goal push step) — so
+#     the auditor's own `git diff` and test runs see the live audit moment. The
+#     builder also enforces phase-audit.sh's preflight: the fixture's QA report
+#     must exist and carry a passing verdict, else production would never have
+#     dispatched the auditor at all.
 #
 # Each case runs in a throwaway sandbox: the fixture tree is COPIED in (judge
 # writes land there, never in the repo or the fixture) and the framework's
@@ -112,7 +121,7 @@ fi
 # (e.g. slice (c) auditor cases landing ahead of their runner support).
 for judge in "${JUDGES[@]}"; do
   case "$judge" in
-    goal-evaluator|reviewer) ;;
+    goal-evaluator|reviewer|auditor) ;;
     *) echo "judge '$judge' has cases but no dispatch builder in this runner" >&2; exit 2 ;;
   esac
 done
@@ -348,6 +357,85 @@ PROMPT_EOF
 )
 }
 
+_prepare_auditor() {
+  # Rebuild the engine-time repo state exactly like _prepare_reviewer: at audit
+  # time (run-phase.sh Step 9, before finalize; goal mode commits at the push
+  # step after evaluation) the iteration's work is still UNCOMMITTED on top of
+  # the committed baseline — so the auditor's post-fix `git diff` self-check
+  # and any test runs see a live audit moment.
+  git -C "$SANDBOX" init -q -b main
+  git -C "$SANDBOX" apply -R "$case_dir/source/change.patch"
+  git -C "$SANDBOX" add -A
+  git -C "$SANDBOX" -c user.name="goal-chain" -c user.email="goal-chain@localhost" \
+    commit -q -m "chore(goal): iter $((CURRENT_ITER - 1)) (base app, journeys J-01..J-03)"
+  git -C "$SANDBOX" apply "$case_dir/source/change.patch"
+
+  # Engine path layout (phase-audit.sh, PHASE = the iter name), rooted at the
+  # sandbox. phase_spec_path resolves docs/phases/<phase>.md first — the
+  # fixture uses that exact name.
+  SPEC="$SANDBOX/docs/phases/${ITER_NAME}.md"
+  PLAN_FILE="$SANDBOX/runs/${ITER_NAME}/plan.md"
+  DEV_HANDOFF="$SANDBOX/docs/handoffs/${ITER_NAME}-dev.md"
+  FRONTEND_HANDOFF="$SANDBOX/docs/handoffs/${ITER_NAME}-frontend.md"
+  REVIEW_REPORT="$SANDBOX/reports/reviews/${ITER_NAME}-review.md"
+  QA_REPORT="$SANDBOX/reports/qa/${ITER_NAME}-qa.md"
+  TEST_PLAN="$SANDBOX/reports/qa/${ITER_NAME}-test-plan.md"
+  STATUS_FILE="$SANDBOX/runs/${ITER_NAME}/status.json"
+  VERDICT_FILE="$SANDBOX/docs/handoffs/${ITER_NAME}-audit.md"
+
+  # phase-audit.sh's preflight, verbatim semantics: QA must exist AND pass
+  # before the auditor is ever dispatched. A fixture failing this is malformed.
+  if [[ ! -f "$QA_REPORT" ]] || ! python3 "$LIB/verdicts.py" check-verdict "$QA_REPORT"; then
+    echo "malformed auditor case (QA report missing or not passing — production never dispatches the auditor): $case_dir" >&2
+    exit 2
+  fi
+
+  # Optional context lines, built exactly like phase-audit.sh builds them.
+  HANDOFF_CONTEXT="Dev handoff: $DEV_HANDOFF"
+  if [[ -f "$FRONTEND_HANDOFF" ]]; then
+    HANDOFF_CONTEXT="$HANDOFF_CONTEXT
+Frontend handoff: $FRONTEND_HANDOFF"
+  fi
+  TEST_PLAN_CONTEXT=""
+  if [[ -f "$TEST_PLAN" ]]; then
+    TEST_PLAN_CONTEXT="Functional test plan: $TEST_PLAN"
+  fi
+
+  # The engine's auditor dispatch prompt (phase-audit.sh), verbatim.
+  PROMPT=$(cat <<PROMPT_EOF
+You are the auditor agent for phased development.
+
+Phase: $ITER_NAME
+Phase spec: $SPEC
+Execution plan: $PLAN_FILE
+$HANDOFF_CONTEXT
+Review report: $REVIEW_REPORT
+QA report: $QA_REPORT
+$TEST_PLAN_CONTEXT
+Status file: $STATUS_FILE  <-- read changed_files to know which source files to inspect
+Project template: .claude/project-template.md  <-- read for test commands and architecture rules
+Agent instructions: .claude/agents/auditor.md  <-- read this first
+(CLAUDE.md is already in your system prompt — do not Read it again.)
+
+Apply the TOKEN AND QUESTIONING POLICY from .claude/core.md strictly.
+Do not ask questions — assess from evidence in the code and artifacts.
+
+Write your audit report to: $VERDICT_FILE
+
+The report MUST begin with an Executive Verdict section containing exactly one of:
+**Verdict:** PASS
+  or
+**Verdict:** PASS_WITH_GAPS
+  or
+**Verdict:** FAIL
+
+IMPORTANT: The **Verdict:** prefix is required — scripts parse this line by machine. Do NOT use **PASS** or **PASS WITH GAPS** without the prefix.
+
+Write the audit report and STOP.
+PROMPT_EOF
+)
+}
+
 # ── Per-case dispatch ────────────────────────────────────────────────────────
 PASS=0; FAIL=0
 declare -a ROWS=()
@@ -377,6 +465,7 @@ for entry in "${CASES[@]}"; do
   case "$judge" in
     goal-evaluator) _prepare_goal_evaluator ;;
     reviewer)       _prepare_reviewer ;;
+    auditor)        _prepare_auditor ;;
   esac
 
   # claude args, resolved exactly like claude_with_quota_retry does
@@ -416,10 +505,13 @@ for entry in "${CASES[@]}"; do
   # Verdict-class extraction — each judge's ENGINE parse, verbatim:
   #   goal-evaluator: run-goal.sh's eval.md parse
   #   reviewer:       goal-iter-lean.sh's _review_verdict()
+  #   auditor:        run-phase.sh's gate is the binary verdict_passes
+  #                   (verdicts.py check-verdict) over the same **Verdict:**
+  #                   line; the class is that line's first token
   GOT="(no artifact)"
   if [[ -f "$VERDICT_FILE" ]]; then
     case "$judge" in
-      goal-evaluator)
+      goal-evaluator|auditor)
         GOT=$(grep -m1 -E '^\*\*Verdict:\*\*' "$VERDICT_FILE" | sed -E 's/^\*\*Verdict:\*\*[[:space:]]*//' | awk '{print $1}') || true ;;
       reviewer)
         GOT=$(grep -m1 -E '^\*\*Verdict:\*\*' "$VERDICT_FILE" | grep -oE 'PASS_WITH_NOTES|PASS|FAIL' | head -1) || true ;;

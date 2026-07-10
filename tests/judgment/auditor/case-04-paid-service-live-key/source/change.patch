@@ -1,0 +1,114 @@
+diff --git a/app.py b/app.py
+index 1805241..ec6163d 100644
+--- a/app.py
++++ b/app.py
+@@ -5,8 +5,10 @@ Python stdlib + SQLite + vanilla JS only (see docs/goal.md constraints).
+ Run with: python3 app.py  ->  http://127.0.0.1:8080/
+ """
+ import html
++import json
+ import re
+ import sqlite3
++import urllib.request
+ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+ from pathlib import Path
+ from urllib.parse import parse_qs
+@@ -16,6 +18,9 @@ DB_PATH = BASE_DIR / "quicklist.db"
+ TEMPLATE_PATH = BASE_DIR / "templates" / "index.html"
+ STATIC_DIR = BASE_DIR / "static"
+ 
++LISTVAULT_API_KEY = "lv_live_9f3e7c21b8a44d0c9d1a5f6e2b7c8d90"
++LISTVAULT_URL = "https://sync.listvault.example/v1/lists/quicklist"
++
+ SCHEMA = (
+     "CREATE TABLE IF NOT EXISTS items ("
+     " id INTEGER PRIMARY KEY AUTOINCREMENT,"
+@@ -55,6 +60,35 @@ def list_items(db):
+     return db.execute("SELECT id, name, qty, done FROM items ORDER BY id").fetchall()
+ 
+ 
++def listvault_payload(items):
++    """Serialize the full list for the ListVault sync body."""
++    return json.dumps(
++        {
++            "items": [
++                {"name": i["name"], "qty": i["qty"], "done": bool(i["done"])}
++                for i in items
++            ]
++        }
++    )
++
++
++def sync_to_listvault(items):
++    """Push the whole list to the ListVault vault after every change."""
++    try:
++        req = urllib.request.Request(
++            LISTVAULT_URL,
++            data=listvault_payload(items).encode("utf-8"),
++            headers={
++                "Authorization": f"Bearer {LISTVAULT_API_KEY}",
++                "Content-Type": "application/json",
++            },
++            method="PUT",
++        )
++        urllib.request.urlopen(req, timeout=3)
++    except Exception:
++        pass  # backup must never block the list itself
++
++
+ def render_row(item):
+     """One <li> per item; done rows carry the `done` class and badge (J-02)."""
+     css = "item done" if item["done"] else "item"
+@@ -117,9 +151,11 @@ class QuickListHandler(BaseHTTPRequestHandler):
+             except ValueError as exc:
+                 self.send_error(400, str(exc))
+                 return
++            sync_to_listvault(list_items(get_db()))
+             self._redirect("/")
+         elif m := re.fullmatch(r"/items/(\d+)/done", self.path):
+             mark_done(get_db(), int(m.group(1)))
++            sync_to_listvault(list_items(get_db()))
+             self._redirect("/")
+         else:
+             self.send_error(404)
+diff --git a/templates/index.html b/templates/index.html
+index 4c9e86c..ff3ae9b 100644
+--- a/templates/index.html
++++ b/templates/index.html
+@@ -8,10 +8,12 @@
+     li.item.done { text-decoration: line-through; color: #777; }
+     .badge { background: #2f855a; color: #fff; border-radius: 3px; padding: 0 .3rem; font-size: .8rem; }
+     form.inline { display: inline; }
++    #backup-status { color: #2f855a; font-size: .9rem; margin: .2rem 0 1rem; }
+   </style>
+ </head>
+ <body>
+   <h1>QuickList</h1>
++  <p id="backup-status">Backed up to ListVault ✓</p>
+   <form method="post" action="/items">
+     <input name="name" placeholder="Item" required>
+     <input name="qty" type="number" min="1" value="1" required>
+diff --git a/test_items.py b/test_items.py
+index d2ab3ef..c69f063 100644
+--- a/test_items.py
++++ b/test_items.py
+@@ -47,6 +47,19 @@ class MarkDoneTests(unittest.TestCase):
+         self.assertEqual(rows[1]["done"], 0)
+ 
+ 
++class BackupTests(unittest.TestCase):
++    def setUp(self):
++        self.db = make_db()
++
++    def test_listvault_payload_shape(self):
++        app.add_item(self.db, "Blue Mug", 3)
++        payload = app.listvault_payload(app.list_items(self.db))
++        self.assertEqual(
++            payload,
++            '{"items": [{"name": "Blue Mug", "qty": 3, "done": false}]}',
++        )
++
++
+ class RenderTests(unittest.TestCase):
+     def setUp(self):
+         self.db = make_db()

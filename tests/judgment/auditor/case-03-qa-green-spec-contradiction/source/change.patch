@@ -1,0 +1,119 @@
+diff --git a/static/app.js b/static/app.js
+index a73b276..9598bb6 100644
+--- a/static/app.js
++++ b/static/app.js
+@@ -1,10 +1,68 @@
+-// QuickList client behaviour: the "Open only" filter (J-03).
++// QuickList client behaviour: the "Open only" filter (J-03) and category
++// grouping (J-04). Category state is kept in localStorage keyed by row id so
++// the change ships with zero schema migration; grouping is composed in the
++// DOM after each load.
++const CAT_KEY = "quicklist-categories";
++const CAT_PENDING = "quicklist-pending-category";
++
++function loadCategories() {
++  try {
++    return JSON.parse(localStorage.getItem(CAT_KEY)) || {};
++  } catch {
++    return {};
++  }
++}
++
++function saveCategories(map) {
++  localStorage.setItem(CAT_KEY, JSON.stringify(map));
++}
++
+ document.addEventListener("DOMContentLoaded", () => {
+   const toggle = document.getElementById("open-only");
+-  if (!toggle) return;
+-  toggle.addEventListener("change", () => {
+-    document.querySelectorAll("li.item.done").forEach((row) => {
+-      row.style.display = toggle.checked ? "none" : "";
++  if (toggle) {
++    toggle.addEventListener("change", () => {
++      document.querySelectorAll("li.item.done").forEach((row) => {
++        row.style.display = toggle.checked ? "none" : "";
++      });
+     });
++  }
++
++  // Remember the category chosen on the add form; the POST redirect loses DOM
++  // state, so it is parked in localStorage and attached to the newest row on
++  // the next page load.
++  const form = document.querySelector('form[action="/items"]');
++  const select = document.getElementById("category");
++  if (form && select) {
++    form.addEventListener("submit", () => {
++      localStorage.setItem(CAT_PENDING, select.value);
++    });
++  }
++
++  const map = loadCategories();
++  const rows = [...document.querySelectorAll("li.item")];
++  const pending = localStorage.getItem(CAT_PENDING);
++  if (pending && rows.length) {
++    const newest = rows[rows.length - 1];
++    map[newest.dataset.id] = pending;
++    saveCategories(map);
++    localStorage.removeItem(CAT_PENDING);
++  }
++
++  // Regroup the flat server-rendered list under category headings.
++  const list = document.getElementById("items");
++  if (!list || !rows.length) return;
++  const groups = {};
++  rows.forEach((row) => {
++    const cat = map[row.dataset.id] || "Other";
++    (groups[cat] = groups[cat] || []).push(row);
++  });
++  list.textContent = "";
++  ["Grocery", "Hardware", "Other"].forEach((cat) => {
++    if (!groups[cat]) return;
++    const heading = document.createElement("li");
++    heading.className = "category-heading";
++    heading.textContent = cat;
++    list.appendChild(heading);
++    groups[cat].forEach((row) => list.appendChild(row));
+   });
+ });
+diff --git a/templates/index.html b/templates/index.html
+index 4c9e86c..a580922 100644
+--- a/templates/index.html
++++ b/templates/index.html
+@@ -6,6 +6,7 @@
+   <style>
+     body { font-family: system-ui, sans-serif; max-width: 40rem; margin: 2rem auto; }
+     li.item.done { text-decoration: line-through; color: #777; }
++    li.category-heading { list-style: none; font-weight: 600; margin: .6rem 0 .2rem -1rem; }
+     .badge { background: #2f855a; color: #fff; border-radius: 3px; padding: 0 .3rem; font-size: .8rem; }
+     form.inline { display: inline; }
+   </style>
+@@ -15,6 +16,11 @@
+   <form method="post" action="/items">
+     <input name="name" placeholder="Item" required>
+     <input name="qty" type="number" min="1" value="1" required>
++    <select name="category" id="category">
++      <option value="Grocery">Grocery</option>
++      <option value="Hardware">Hardware</option>
++      <option value="Other" selected>Other</option>
++    </select>
+     <button>Add</button>
+   </form>
+   <label><input type="checkbox" id="open-only"> Open only</label>
+diff --git a/test_items.py b/test_items.py
+index d2ab3ef..d9f48e4 100644
+--- a/test_items.py
++++ b/test_items.py
+@@ -71,6 +71,12 @@ class RenderTests(unittest.TestCase):
+         self.assertIn("Blue Mug", page)
+         self.assertIn("Milk", page)
+ 
++    def test_add_form_offers_category_choices(self):
++        page = app.render_index([])
++        self.assertIn('<select name="category"', page)
++        self.assertIn('<option value="Grocery">', page)
++        self.assertIn('<option value="Hardware">', page)
++
+ 
+ if __name__ == "__main__":
+     unittest.main()

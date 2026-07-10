@@ -292,7 +292,9 @@ the system measures itself, and how it survives the next model change.
   3. Resync mirrors + `sync-cli-assets.py --cli claude --check`.
   4. Update the table in `.claude/model-orchestration.md` in the SAME commit.
   5. `./scripts/automation/run-evals.sh` green.
-  6. Run REL-1 judgment fixtures (mark "pending REL-1" until it ships).
+  6. Run REL-1 judgment fixtures: `./scripts/automation/run-judgment-evals.sh
+     --yes-spend` (G9: user-approved spend; the runner prints the estimate and
+     refuses without the flag).
   7. Run EVO-3 benchmark before/after (mark "pending EVO-3" until it ships).
   8. First-session watchlist: `gate-report.md` appears on any GOAL_ACHIEVED;
      `[escalation]` lines in the engine log; per-model rows in
@@ -635,11 +637,13 @@ benchmark (or a real session's telemetry) before AND after (G8).
 ## 10. P1 — Reliability & weaker-model hardening
 
 ### REL-1 · Judgment eval fixtures (golden verdict cases)
-- **Priority:** P1 · **Effort:** L (slice per judge) · **Risk:** LOW · **Status:** IN-PROGRESS
+- **Priority:** P1 · **Effort:** L (slice per judge) · **Risk:** LOW · **Status:** DONE
   *(slice (a) — goal-evaluator cases + runner — implemented 2026-07-09; slice (b) —
   reviewer cases, scratch-git diff representation, runner per-judge builders —
-  implemented 2026-07-09 (user-directed follow-on session); slice (c) auditor remains
-  TODO. Confirmed real runs (user-approved spend):
+  implemented 2026-07-09 (user-directed follow-on session); slice (c) — auditor cases +
+  phase-audit.sh runner builder — certified and confirm-run 2026-07-10 by a fresh
+  session (not the implementer) per G8, closing all three slices.
+  Confirmed real runs (user-approved spend):
   (a) 2026-07-09, judge = claude-opus-4-8 @ effort max: 5/5 verdict classes correct —
   case-01-clean-goal-achieved → GOAL_ACHIEVED (342s), case-02-first-failure-continue →
   CONTINUE (234s), case-03-regression-broken-journey → REGRESSION (262s),
@@ -649,8 +653,10 @@ benchmark (or a real session's telemetry) before AND after (G8).
   case-01-clean-pass → PASS (172s), case-02-minor-nit-not-fail →
   PASS_WITH_NOTES (149s), case-03-hardcoded-credential → FAIL (177s),
   case-04-spec-contradiction → FAIL (192s).
-  Left IN-PROGRESS per G8 — a fresh session certifies slices (a)+(b) before
-  slice (c).)*
+  (c) 2026-07-10, judge = claude-opus-4-8 @ effort max: 4/4 verdict classes correct —
+  case-01-clean-pass → PASS (220s), case-02-documented-gap-not-fail →
+  PASS_WITH_GAPS (352s), case-03-qa-green-spec-contradiction → FAIL (325s),
+  case-04-paid-service-live-key → FAIL (328s).)*
 - **Problem:** the single biggest retirement risk is silent judge regression — a weaker
   evaluator/reviewer/auditor emitting plausible-but-wrong verdicts. The eval suite
   checks parsers and gates, not judgment.
