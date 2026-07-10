@@ -1464,6 +1464,94 @@ but appreciated.
 - **Why staged:** caps appear respected today; this is hygiene, not a win. Best
   absorbed into SAFE-2's session rather than run standalone.
 
+### CAND-SVC-BOOT · start-backend template shadows the project's real start command (staged — do not start)
+- **Proposed:** P1 · Effort S (benchmark-local fix) or M (general boot-path fallback) ·
+  Risk LOW (fixture/runner side) to MED (touching the engine's service boot).
+- **Source:** EVO-3 first real baseline (bench-20260710-2117 @ c48f25047126) — README
+  Known Limitation 1 ("QA expects `CHAIN_START_BACKEND_CMD` or `scripts/start-backend.sh`",
+  `README.md:464`) made concrete. Staged 2026-07-11.
+- **Problem:** the deterministic service-boot lane never consults the project's documented
+  start command. Resolution order today (`goal-iter-lean.sh:333-340`; `qa-phase.sh:73-78`
+  same pattern): `CHAIN_START_BACKEND_CMD` env → else `bash scripts/start-backend.sh` if
+  the file exists → else nothing. The generic framework template
+  (`scripts/start-backend.sh:26-34`: `cd apps/backend` + uvicorn, port 8000+hash-offset at
+  `:12-16`) ships in the subrepo set the benchmark assembly copies wholesale
+  (`run-benchmark.sh:208-222`); the fixture has no `scripts/` dir of its own, so the
+  FastAPI-flavored template lands uncontested and shadows the fixture project-template's
+  documented command (`.venv/bin/python app.py` serving 127.0.0.1:5177 —
+  `benchmarks/fixtures/todo-app/.claude/project-template.md:102-106`). The health probe is
+  blind the same way: default `http://localhost:8000/health` (`goal-iter-lean.sh:342-344`;
+  hash-offset resolved it to :8763 in the run) — the fixture's 5177 appears nowhere.
+- **Evidence:** `benchmarks/results/20260710-224206-c48f25047126.json` — journeys 0/3
+  while the chain built all three to reviewer-PASS / COHERENCE-PASS / 15-of-15-pytest
+  quality; ledger POST assessment under `## POST bench-20260710-2117`
+  (`benchmarks/experiments.md`). Kept scratch: the iter-1 backend service log is the single
+  line `cd: .../scratch/apps/backend: No such file or directory`
+  (`runs/goal-bench-20260710-2117-iter-1/service-logs/qa-backend-8763.log`);
+  `trace/0014-qa.log` shows the QA agent correctly diagnosing the mismatch and attempting
+  to rewrite start-backend.sh itself — blocked by CAND-HEADLESS-PERMS, so the two gaps
+  compound.
+- **Sketch (root-cause hypotheses, not a design):** (a) benchmark-local: the fixture ships
+  its own `scripts/start-backend.sh` (the overlay already lets fixture files win
+  collisions, and maintenance-protocol §3.4 blesses localizing exactly this file
+  per-deployment), and/or `run-benchmark.sh` exports `CHAIN_START_BACKEND_CMD` /
+  `CHAIN_BACKEND_PORT` / `CHAIN_BACKEND_HEALTH_URL` derived from the fixture's template;
+  (b) general (retires Known Limitation 1 for every adopter): a middle resolution tier that
+  reads the project-template's `SERVICE START COMMANDS` section before falling back to the
+  generic script — needs a parse contract + eval fixture (G3) and care around
+  `ensure_services_running` (`lib/common.sh:770`, `_start_service_with_retries` `:582`).
+- **Why staged / verify idea:** engine boot-path changes are MED risk and the human should
+  pick (a), (b), or both (EVO-1 promotion). Verify per §9 "When to benchmark": rerun the
+  benchmark with `--predict 'journeys_passing_after>=3'` — the fix should move journeys
+  0→3 and `benchmark_compare.py` renders the delta against the recorded baseline (exactly
+  the compare the baseline + tool exist for).
+
+### CAND-HEADLESS-PERMS · headless write-permission prompt silently voids QA + retro reports (staged — do not start)
+- **Proposed:** P1 · Effort S (runner-side guard + loud tripwire) · Risk LOW-MED (the
+  trust-flag variant writes user-global `~/.claude.json` — ask-first class).
+- **Source:** same EVO-3 baseline (bench-20260710-2117). Staged 2026-07-11.
+- **Problem:** headless dispatches carry no permission flags beyond the per-agent deny
+  overlay (`--disallowedTools` + budget, `lib/quota-retry.sh:603-643`) — write access
+  relies entirely on the allow list in `.claude/settings.json`. Claude Code honors that
+  list only in a TRUSTED workspace: trust is keyed by absolute path in `~/.claude.json`
+  (`projects[<path>].hasTrustDialogAccepted`), a benchmark scratch is a fresh mktemp path
+  every run — never trusted — and no headless run can answer the trust/permission prompt.
+  NOT a missing-file problem: the scratch carried BOTH `settings.json` and the gitignored
+  `settings.local.json`, byte-identical to the repo's (`run-benchmark.sh:218` `cp -a`
+  copies gitignored files too), and every agent trace opens with "Ignoring 122
+  permissions.allow entries … this workspace has not been trusted".
+- **Evidence:** kept-scratch traces (`runs/goal-session-bench-20260710-2117/trace/` in
+  `~/.cache/chain-bench-tmp/bench-bench-20260710-2117.EMAuTK/scratch`): `0014-qa.log` —
+  trust banner at line 1, tail: "I can't write the QA report due to permission
+  restrictions" — the QA verdict exists ONLY in stdout, no artifact (`reports/qa/` empty);
+  `0028-retro-analyst.log` — ends "am writing the report to the output path now", yet no
+  `reports/goal-session-*-retro.md` exists while the engine-shell-written
+  `state/retro-input.md` does (shell writes unaffected; agent Write blocked).
+  `~/.claude.json`: `hasTrustDialogAccepted` is `false` for the scratch path and `true`
+  for this repo → PRODUCTION headless runs in an already-trusted checkout are NOT
+  affected on this machine; every benchmark scratch is, and so is the first headless run
+  on any never-trusted adopter path. Friction counters were all zero — nothing surfaced
+  the missing evidence; the damage mode is SILENT. Open point for promotion: denials were
+  not uniform — iteration-summarizer/reviewer wrote `reports/` files in the SAME untrusted
+  workspace (trace `0026` wrote two) while both blocked dispatches were light-tier (qa,
+  retro-analyst); pin the mechanism with a controlled probe (stub dispatch in an untrusted
+  scratch, observe which tool calls deny) before designing the fix.
+- **Sketch (root-cause hypotheses, not a design):** (a) runner-side guard — cheapest,
+  no global state: after the first dispatch, grep its trace for the "Ignoring N
+  permissions.allow entries" banner and ABORT the run loudly (a voided run still costs
+  ~$11); (b) runner pre-trusts the scratch path (write
+  `projects[<scratch>].hasTrustDialogAccepted: true` into `~/.claude.json` before launch,
+  remove after) — touches user-global config, needs explicit human sign-off; (c) the
+  tripwire wanted REGARDLESS of (a)/(b): any qa/browser-qa/retro dispatch that returns
+  without its expected report file on disk → LOUD `[missing-evidence]` banner + telemetry
+  event, never a silent `unknown` (the silent-missing-evidence failure mode is the damage
+  here).
+- **Why staged / verify idea:** which layer to fix (runner vs engine vs both) and any
+  `~/.claude.json` write are human decisions (G1/EVO-1). Verify: post-fix benchmark rerun
+  shows the QA report + retro report present in scratch and the trust banner absent from
+  every trace; the tripwire is unit-testable offline with a stub dispatch that writes no
+  report.
+
 ---
 
 ## 17. Absorbed-from-README ledger (traceability)
