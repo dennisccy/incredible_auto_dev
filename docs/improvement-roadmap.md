@@ -448,7 +448,19 @@ the system measures itself, and how it survives the next model change.
   NEVER wire this into CI.
 
 ### EVO-4 · Model-cutover playbook
-- **Priority:** P0 · **Effort:** S · **Risk:** LOW · **Status:** TODO
+- **Priority:** P0 · **Effort:** S · **Risk:** LOW · **Status:** DONE
+  *(implemented 2026-07-11: `docs/model-cutover-playbook.md` — all 9 steps as exact
+  command(s) · expected evidence · failure/abort path, every command verified against
+  the scripts' own headers; three unmissable user checkpoints (step 2 tier-change
+  approval, step 6 judgment-fixture G9 gate, step 7 per-run benchmark G9 gate) with a
+  spend-class label on every step (step 1 preflight = cents but still tell the user;
+  step 6 = the runner's printed estimate; step 7 ≈ $11 + ~1.5h wall per run at baseline
+  scale); rollback section mirrors steps 2-6 around a single-commit revert; cross-links
+  landed both ways — one line in the letter's deployment section and one in
+  maintenance-protocol §6, playbook links out to §9 "When to benchmark",
+  run-judgment-evals.sh and REL-1's fixtures. Verify grep hits all three files; evals
+  96/96. S item — implementer flips DONE (G8 fresh-session certification is M/L-only);
+  body archiving left to a future tidy pass (REL-1 precedent).)*
 - **Problem:** the Fable→Opus/Sonnet cutover was done once, by a strong model, with the
   procedure living in its head and partially in the letter. The next cutover will be
   done by a weaker model.

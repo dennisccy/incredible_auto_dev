@@ -100,3 +100,4 @@ framework requirements. Other projects can ignore this section.
 - First post-cutover session should watch: `gate-report.md` appearing on any GOAL_ACHIEVED,
   `analyze_telemetry.py <session>/telemetry.jsonl` per-model rows, and whether sonnet-5
   fix-retries escalate correctly (look for `[escalation]` lines in the engine log).
+- 2026-07-11: model cutovers now have a runnable checklist — [`docs/model-cutover-playbook.md`](../docs/model-cutover-playbook.md) (EVO-4); future cutovers follow it and append their dated notes here (its step 9).

@@ -78,6 +78,7 @@ resync, update the table in `.claude/model-orchestration.md` in the same commit,
 preflight (`claude -p --model <id> 'reply OK'` per id). Never re-pin a per-agent
 `model_override` in `agent.yaml` except as a deliberate temporary exception with a comment
 saying why and when to remove it.
+The full ordered checklist — spend gates, per-step evidence, rollback — is `docs/model-cutover-playbook.md` (EVO-4); follow it for every cutover.
 
 ## 7. After every pipeline-behavior change
 
