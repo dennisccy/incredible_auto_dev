@@ -79,3 +79,14 @@ Entry format contract (grep-able; pinned by
   framework gaps this baseline exists to expose; fixing them should move journeys
   0→3 in a future compare. REFUTED stands as the recorded baseline. Kept scratch:
   ~/.cache/chain-bench-tmp/bench-bench-20260710-2117.EMAuTK
+- note 2026-07-10: main was REBASED (by the repo owner, outside this protocol) between
+  this run's completion and the close-out commit — a judgment-fixture amendment
+  (tests/judgment/goal-evaluator/case-05-secret-committed, 4 files) was inserted deep
+  in history and everything re-picked. The measured shas b172cea005aa (aborted
+  attempt) and c48f25047126 (recorded baseline) are therefore no longer reachable
+  from main; both are pinned by local tags bench-20260710-2110-framework-sha /
+  bench-20260710-2117-framework-sha so gc never prunes them. Substantively nothing
+  changes: `git diff c48f25047126 1814e24 -- .claude scripts config templates
+  CLAUDE.md benchmarks` is EMPTY (the rebased equivalent of the measured commit
+  differs only in tests/judgment/**, which the benchmark scratch never copies) — the
+  measured tree is byte-identically reproducible from the new main.
