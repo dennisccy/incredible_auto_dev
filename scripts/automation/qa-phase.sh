@@ -11,6 +11,9 @@ set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/lib/common.sh"
+# Telemetry (no-op unless GOAL_SESSION_DIR is set, i.e. goal-mode full depth):
+# needed so the missing-evidence tripwire below can record its event.
+source "$SCRIPT_DIR/lib/telemetry.sh"
 
 PHASE="${1:-}"
 require_phase_arg "$PHASE"
@@ -163,5 +166,14 @@ The report MUST contain a line matching exactly:
 **Verdict:** PASS
   or
 **Verdict:** FAIL"
+
+# REL-11 missing-evidence tripwire: this script runs under `set -e`, so a
+# nonzero dispatch already dies loudly above. The silent failure mode is
+# rc=0 with no report on disk (baseline bench-20260710-2117: every qa dispatch
+# exited 0, reports/qa/ stayed empty). Banner + telemetry, never a gate.
+QA_REPORT="$REPO_ROOT/reports/qa/${PHASE}-qa.md"
+if [[ ! -f "$QA_REPORT" ]]; then
+  warn_missing_evidence "qa" "$QA_REPORT"
+fi
 
 echo "[qa-phase] Done. Report: reports/qa/${PHASE}-qa.md"

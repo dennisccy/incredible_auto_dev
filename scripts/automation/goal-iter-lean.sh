@@ -539,8 +539,24 @@ LLM_JOURNEYS="$(echo "$_llm_set" | tr ' ' '\n' | grep -E '^J-[0-9]+$' | sort -u 
 _llm_csv="$(echo "$LLM_JOURNEYS" | tr ' ' ',' | sed 's/^,*//;s/,*$//')"
 
 _bqa_rc=0
+_bqa_dispatched="no"
 if [[ -n "$_llm_csv" || "$_use_replay" != "yes" ]]; then
+  _bqa_dispatched="yes"
   run_browser_qa_llm "$_llm_csv" "$_llm_out" "$R_REPLAY" || _bqa_rc=$?
+fi
+
+# REL-11 missing-evidence tripwire: the browser-qa dispatch returned but left
+# no results file (a quota pause, rc 75, is excluded — the engine handles it
+# loudly; a transport failure, rc 70, never reaches here because
+# _pause_if_transport exits inside run_browser_qa_llm). The SKIPPED-stub block
+# below keeps the evaluator fed; this adds the loud banner + telemetry so a
+# silently voided lane can never again read as a quiet SKIP. Note the check is
+# on the LLM lane's own output ($_llm_out), not the merged file — with the
+# replay lane active a merge fallback can leave a results file even though the
+# dispatch itself produced nothing.
+if [[ "$_bqa_dispatched" == "yes" && ! -f "$_llm_out" \
+      && "$_bqa_rc" -ne "${QUOTA_EXHAUSTED_EXIT_CODE:-75}" ]]; then
+  warn_missing_evidence "browser-qa-agent" "$_llm_out"
 fi
 
 # Merge replay + LLM into the single results file the goal-evaluator reads

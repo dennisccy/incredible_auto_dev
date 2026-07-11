@@ -1267,6 +1267,36 @@ write_failed_artifact_stub() {
   echo "[write_failed_artifact_stub] Wrote SKIPPED stub: $out_file"
 }
 
+# ── Missing-evidence tripwire (REL-11) ────────────────────────────────────────
+# A dispatch that returns rc=0 but leaves no report artifact voids downstream
+# judgment SILENTLY — the first real benchmark (bench-20260710-2117) lost its QA
+# report and retro report to exactly this (untrusted-workspace Write denial) and
+# every friction counter stayed zero. Loud stderr banner + a `missing_evidence`
+# telemetry event ({agent, path}); NEVER a gate — callers stay non-blocking.
+# The telemetry emit is guarded: in processes that don't source telemetry.sh
+# (or with GOAL_SESSION_DIR unset) only the banner fires.
+#
+# Usage: warn_missing_evidence <agent> <expected-report-path>
+warn_missing_evidence() {
+  local _agent="$1"
+  local _path="$2"
+  {
+    echo ""
+    echo "============================= [missing-evidence] ============================="
+    echo "[missing-evidence] agent '${_agent}' returned WITHOUT its expected report:"
+    echo "[missing-evidence]   ${_path}"
+    echo "[missing-evidence] The dispatch consumed tokens but left no evidence artifact;"
+    echo "[missing-evidence] downstream judges will read it as unknown/SKIPPED. Check the"
+    echo "[missing-evidence] agent trace for permission denials (untrusted workspace?)."
+    echo "==============================================================================="
+  } >&2
+  if declare -F record_telemetry_event >/dev/null 2>&1; then
+    record_telemetry_event "missing_evidence" \
+      "$(jq -cn --arg agent "$_agent" --arg path "$_path" '{agent:$agent, path:$path}' 2>/dev/null \
+         || printf '{"agent":"%s","path":"%s"}' "$_agent" "$_path")" || true
+  fi
+}
+
 # ── Self-test (only when invoked directly: `bash common.sh self-test`) ───────
 # Hermetic and fast (<10s): no real Next.js, no model, no network. Stubs `curl`
 # and uses a fake start script whose log shows the corrupt-.next signature while

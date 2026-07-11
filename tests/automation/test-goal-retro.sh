@@ -23,7 +23,16 @@
 #       summary still written, non-fatal warning logged, NO agent dispatch
 #       (no orphan retro report).
 #   W5. Retro-analyst dispatch forced to fail, STALLED → halt exit code
-#       unchanged (0), retro-input.md exists, no report, one warning logged.
+#       unchanged (0), retro-input.md exists, no report, one warning logged —
+#       plus the REL-11 [missing-evidence] banner (report absent after dispatch).
+#   W6. Retro-analyst dispatch exits 0 but writes NOTHING (the baseline's
+#       silent-void shape) → REL-11 tripwire: [missing-evidence] banner in the
+#       engine log AND a missing_evidence telemetry event ({agent, path});
+#       engine exit code still unchanged (0). W1 asserts the tripwire does NOT
+#       fire when the report exists.
+#
+# Part 1c drives lib/common.sh warn_missing_evidence directly: banner + event
+# with GOAL_SESSION_DIR set, banner-only (no crash) without telemetry sourced.
 #
 # No API calls, no network; runs in a few seconds.
 
@@ -138,6 +147,40 @@ _stray="$(find "$FIX2" -newer "$FIX2/session.json" -type f ! -path "$FIX2/state/
   && assert "1b: collector wrote nothing outside <session-dir>/state/" "pass" \
   || assert "1b: collector wrote nothing outside <session-dir>/state/ ($_stray)" "fail"
 
+# ── Part 1c: warn_missing_evidence helper (REL-11), driven directly ──────────
+HLP="$WORK/helper-sess"
+mkdir -p "$HLP"
+_hout="$(GOAL_SESSION_DIR="$HLP" GOAL_SESSION_ID="helper-test" bash -c '
+  source "'"$ENGINE_ROOT"'/scripts/automation/lib/common.sh"
+  source "'"$ENGINE_ROOT"'/scripts/automation/lib/telemetry.sh"
+  warn_missing_evidence "qa" "/expected/report.md"
+' 2>&1)" || true
+if grep -q "\[missing-evidence\] agent 'qa' returned WITHOUT its expected report" <<<"$_hout" \
+   && grep -qF "/expected/report.md" <<<"$_hout"; then
+  assert "1c: helper prints the loud banner naming agent + expected path" "pass"
+else
+  assert "1c: helper prints the loud banner naming agent + expected path" "fail"
+fi
+if [[ -f "$HLP/telemetry.jsonl" ]] \
+   && grep -q '"event":"missing_evidence"' "$HLP/telemetry.jsonl" \
+   && grep -q '"agent":"qa"' "$HLP/telemetry.jsonl" \
+   && grep -q '"path":"/expected/report.md"' "$HLP/telemetry.jsonl"; then
+  assert "1c: missing_evidence telemetry event recorded ({agent, path})" "pass"
+else
+  assert "1c: missing_evidence telemetry event recorded ({agent, path})" "fail"
+fi
+# Without telemetry.sh sourced (phase-mode shape): banner only, no crash.
+_hrc=0
+_hout2="$(bash -c '
+  source "'"$ENGINE_ROOT"'/scripts/automation/lib/common.sh"
+  warn_missing_evidence "qa" "/expected/report.md"
+' 2>&1)" || _hrc=$?
+if [[ "$_hrc" -eq 0 ]] && grep -q "\[missing-evidence\]" <<<"$_hout2"; then
+  assert "1c: telemetry-less caller still gets the banner and exits 0" "pass"
+else
+  assert "1c: telemetry-less caller still gets the banner and exits 0 (rc=$_hrc)" "fail"
+fi
+
 # ── Part 2: wiring through the REAL run-goal.sh ───────────────────────────────
 SBX="$WORK/proj"
 mkdir -p "$SBX"
@@ -175,6 +218,8 @@ cat > "$STUB_DIR/claude" <<'EOF'
 prompt="$*"
 if [[ "$prompt" == *"retro-analyst agent"* ]]; then
   [[ -n "${STUB_RETRO_RC:-}" ]] && exit "$STUB_RETRO_RC"
+  # W6: the baseline's silent-void shape — dispatch "succeeds", writes nothing.
+  [[ -n "${STUB_RETRO_SILENT:-}" ]] && exit 0
   out="$(printf '%s\n' "$prompt" | sed -n 's/^Output path (the retro report): //p' | head -n1)"
   [[ -n "$out" ]] || exit 64
   mkdir -p "$(dirname "$out")"
@@ -255,6 +300,13 @@ if ! grep -q "retro-analyst dispatch failed" "$WORK/engine-w1.log" 2>/dev/null \
 else
   assert "W1: clean dispatch — no retro-analyst warning in engine log" "fail"
 fi
+# REL-11 no-fire side: report exists → no tripwire banner, no telemetry event.
+if ! grep -q '\[missing-evidence\]' "$WORK/engine-w1.log" 2>/dev/null \
+   && ! grep -q '"event":"missing_evidence"' "$D1/telemetry.jsonl" 2>/dev/null; then
+  assert "W1: missing-evidence tripwire does NOT fire when the report exists" "pass"
+else
+  assert "W1: missing-evidence tripwire does NOT fire when the report exists" "fail"
+fi
 
 # ── W2: AWAITING_PUMP resumable pause → no retro ─────────────────────────────
 make_session w2   # no stall hashes; decomposer dispatch hits the stub's exit 70
@@ -321,6 +373,35 @@ D5="$SBX/runs/goal-session-w5"
 grep -q "retro-analyst dispatch failed (non-blocking)" "$WORK/engine-w5.log" 2>/dev/null \
   && assert "W5: non-blocking dispatch-failure warning logged" "pass" \
   || assert "W5: non-blocking dispatch-failure warning logged" "fail"
+# REL-11: a failed dispatch also left no report → tripwire fires here too.
+grep -q "\[missing-evidence\] agent 'retro-analyst'" "$WORK/engine-w5.log" 2>/dev/null \
+  && assert "W5: missing-evidence banner also fires on a failed dispatch with no report" "pass" \
+  || assert "W5: missing-evidence banner also fires on a failed dispatch with no report" "fail"
+
+# ── W6: dispatch exits 0, writes NOTHING → REL-11 tripwire fires ──────────────
+# The baseline benchmark's exact silent-void shape (rc=0, no artifact).
+make_session w6; make_stalled w6
+rc=0; run_engine w6 STUB_RETRO_SILENT=1 || rc=$?
+D6="$SBX/runs/goal-session-w6"
+[[ "$rc" -eq 0 && "$(session_status w6)" == "STALLED" ]] \
+  && assert "W6: silent retro dispatch leaves engine exit code unchanged (0)" "pass" \
+  || { assert "W6: silent retro dispatch leaves engine exit code unchanged (rc=$rc)" "fail"; sed -n '1,25p' "$WORK/engine-w6.log"; }
+[[ -f "$D6/state/retro-input.md" && ! -f "$SBX/reports/goal-session-w6-retro.md" ]] \
+  && assert "W6: digest written, no report (dispatch silently wrote nothing)" "pass" \
+  || assert "W6: digest written, no report (dispatch silently wrote nothing)" "fail"
+if grep -q "\[missing-evidence\] agent 'retro-analyst' returned WITHOUT its expected report" "$WORK/engine-w6.log" 2>/dev/null \
+   && grep -qF "reports/goal-session-w6-retro.md" "$WORK/engine-w6.log" 2>/dev/null; then
+  assert "W6: [missing-evidence] banner names retro-analyst + the expected path" "pass"
+else
+  assert "W6: [missing-evidence] banner names retro-analyst + the expected path" "fail"
+fi
+if grep -q '"event":"missing_evidence"' "$D6/telemetry.jsonl" 2>/dev/null \
+   && grep -q '"agent":"retro-analyst"' "$D6/telemetry.jsonl" 2>/dev/null \
+   && grep -qF 'goal-session-w6-retro.md' "$D6/telemetry.jsonl" 2>/dev/null; then
+  assert "W6: missing_evidence telemetry event recorded ({agent, path})" "pass"
+else
+  assert "W6: missing_evidence telemetry event recorded ({agent, path})" "fail"
+fi
 
 echo ""
 echo "=== Results: $PASS passed, $FAIL failed ==="

@@ -32,6 +32,21 @@
 #          --results-dir override: missing sources become literal
 #          "unknown (<why>)" values; framework_dirty:true + diffstat
 #          recorded; no --predict → MANUAL verdict line.
+#   E      fixture.env ABSENT: assembly + results still green, and the three
+#          REL-10 boot vars (CHAIN_START_BACKEND_CMD / CHAIN_BACKEND_PORT /
+#          CHAIN_BACKEND_HEALTH_URL) are EMPTY in the engine environment.
+#   T      Corrupt fixture-HOME claude.json: the REL-11 trust edit REFUSES and
+#          the runner exits 1 BEFORE the engine runs; the corrupt file is
+#          byte-untouched.
+#
+# REL-11 (scratch trust) coverage inside A/B/C: every case runs under an
+# OVERRIDDEN $HOME with a fixture claude.json (the suite must NEVER write the
+# real one). The stub engine records the trust state of its cwd plus the three
+# REL-10 boot vars into the checkfile; the cases assert the key was present
+# DURING the engine run, reverted after success (A/B) AND after engine failure
+# (C), sibling claude.json keys byte-preserved, and the timestamped backup kept
+# in the workspace (A). Refusal cases R1-R4 additionally assert the fixture
+# claude.json stayed byte-identical (no trust write before the gates).
 #
 # No API calls, no network; stub engines fabricate all session artifacts.
 
@@ -106,6 +121,44 @@ git -C "$SKEL" -c user.name=t -c user.email=t@t commit -qm "skeleton"
 SKEL_SHA="$(git -C "$SKEL" rev-parse HEAD)"
 TIERS_SHA="$(sha256sum "$SKEL/config/model-tiers.yaml" | awk '{print $1}')"
 
+# Fixture ~/.claude.json for the per-case HOME override (REL-11): one
+# pre-existing trusted project + a top-level key, both of which every case
+# asserts survive the runner byte-for-byte in meaning.
+FIXTURE_CJ="$WORK/fixture-claude.json"
+cat > "$FIXTURE_CJ" <<'EOF'
+{
+  "firstStartTime": "2026-01-01T00:00:00Z",
+  "projects": {
+    "/pre/existing/project": {
+      "hasTrustDialogAccepted": true,
+      "history": ["keep-me"]
+    }
+  }
+}
+EOF
+
+# Post-run claude.json invariant: no scratch key left, siblings preserved.
+home_reverted() {  # $1 = case label
+  local label="$1" out
+  out="$(python3 - "$CHOME/.claude.json" <<'PYEOF'
+import json, sys
+d = json.load(open(sys.argv[1]))
+projects = d.get("projects", {})
+bench = [k for k in projects if "/scratch" in k]
+pre = projects.get("/pre/existing/project", {})
+ok = (not bench
+      and pre.get("hasTrustDialogAccepted") is True
+      and pre.get("history") == ["keep-me"]
+      and d.get("firstStartTime") == "2026-01-01T00:00:00Z")
+print("REVERTED-OK" if ok else
+      f"BAD: bench_keys={bench} pre={pre} first={d.get('firstStartTime')}")
+PYEOF
+)"
+  [[ "$out" == "REVERTED-OK" ]] \
+    && assert "$label: trust key reverted; pre-existing claude.json keys preserved" "pass" \
+    || assert "$label: trust key reverted; pre-existing claude.json keys preserved ($out)" "fail"
+}
+
 # ── Stub engines ──────────────────────────────────────────────────────────────
 # Contract (documented in the runner header): the seam command runs with
 # cwd=scratch, CHAIN_AGENT_BACKEND=claude (the headless dispatch backend),
@@ -132,7 +185,21 @@ sid="${CHAIN_BENCH_SESSION_ID:?}"
   else
     echo "pre=MISSING"
   fi
+  echo "boot_cmd=${CHAIN_START_BACKEND_CMD:-}"
+  echo "boot_port=${CHAIN_BACKEND_PORT:-}"
+  echo "boot_health=${CHAIN_BACKEND_HEALTH_URL:-}"
 } > "${BENCH_TEST_CHECKFILE:?}"
+# REL-11: record whether THIS cwd (the scratch) is trusted in $HOME/.claude.json
+# at engine time — the runner must have pre-trusted it.
+python3 - >> "${BENCH_TEST_CHECKFILE:?}" <<'PYEOF'
+import json, os
+p = os.path.join(os.environ["HOME"], ".claude.json")
+try:
+    e = json.load(open(p)).get("projects", {}).get(os.getcwd())
+    print("trust=ABSENT" if e is None else f"trust={e.get('hasTrustDialogAccepted')}")
+except FileNotFoundError:
+    print("trust=NO-CLAUDE-JSON")
+PYEOF
 d="runs/goal-session-${sid}"
 mkdir -p "$d/state"
 cat > "$d/session.json" <<EOS
@@ -171,20 +238,25 @@ sid="${CHAIN_BENCH_SESSION_ID:?}"
   else
     echo "pre=MISSING"
   fi
+  echo "boot_cmd=${CHAIN_START_BACKEND_CMD:-}"
+  echo "boot_port=${CHAIN_BACKEND_PORT:-}"
+  echo "boot_health=${CHAIN_BACKEND_HEALTH_URL:-}"
 } > "${BENCH_TEST_CHECKFILE:?}"
 exit 0
 EOF
 chmod +x "$STUBS"/*.sh
 
 # ── Case helpers ──────────────────────────────────────────────────────────────
-CASE=""; CTMP=""; CLEDGER=""; CHECKFILE=""
+CASE=""; CTMP=""; CLEDGER=""; CHECKFILE=""; CHOME=""
 new_case() {  # $1 = case name
   local name="$1"
   CASE="$WORK/$name/repo"
   CTMP="$WORK/$name/tmp"          # TMPDIR handed to the runner: scratch lands here
+  CHOME="$WORK/$name/home"        # HOME handed to the runner: fixture claude.json
   CHECKFILE="$WORK/$name/check.txt"
-  mkdir -p "$WORK/$name" "$CTMP"
+  mkdir -p "$WORK/$name" "$CTMP" "$CHOME"
   cp -a "$SKEL" "$CASE"
+  cp "$FIXTURE_CJ" "$CHOME/.claude.json"
   CLEDGER="$CASE/benchmarks/experiments.md"
 }
 
@@ -193,12 +265,12 @@ run_runner() {  # $1 = stub engine path ('' = no seam), rest = runner args
   local ec="$1"; shift
   RC=0
   if [[ -n "$ec" ]]; then
-    OUT="$(cd "$CASE" && TMPDIR="$CTMP" \
+    OUT="$(cd "$CASE" && TMPDIR="$CTMP" HOME="$CHOME" \
              CHAIN_BENCH_ENGINE_CMD="bash $ec" \
              BENCH_TEST_LEDGER="$CLEDGER" BENCH_TEST_CHECKFILE="$CHECKFILE" \
              bash scripts/automation/run-benchmark.sh "$@" 2>&1)" || RC=$?
   else
-    OUT="$(cd "$CASE" && TMPDIR="$CTMP" \
+    OUT="$(cd "$CASE" && TMPDIR="$CTMP" HOME="$CHOME" \
              bash scripts/automation/run-benchmark.sh "$@" 2>&1)" || RC=$?
   fi
 }
@@ -210,8 +282,9 @@ no_side_effects() {  # $1 = case label for the assert message
   local results_count
   results_count="$(find "$CASE/benchmarks/results" -name '*.json' 2>/dev/null | wc -l || true)"
   if [[ "$tmp_entries" -eq 0 && "$results_count" -eq 0 ]] \
-     && cmp -s "$CLEDGER" "$SKEL/benchmarks/experiments.md"; then
-    assert "$label: refused before ANY side effect (no scratch, ledger untouched, no results)" "pass"
+     && cmp -s "$CLEDGER" "$SKEL/benchmarks/experiments.md" \
+     && cmp -s "$CHOME/.claude.json" "$FIXTURE_CJ"; then
+    assert "$label: refused before ANY side effect (no scratch, ledger + claude.json untouched, no results)" "pass"
   else
     assert "$label: refused before ANY side effect (tmp=$tmp_entries results=$results_count)" "fail"
   fi
@@ -270,6 +343,29 @@ grep -q "^pre=FOUND$" "$CHECKFILE" 2>/dev/null \
 grep -q "^backend=claude$" "$CHECKFILE" 2>/dev/null \
   && assert "A: engine launched with CHAIN_AGENT_BACKEND=claude (the valid headless backend)" "pass" \
   || assert "A: engine launched with CHAIN_AGENT_BACKEND=claude (the valid headless backend)" "fail"
+
+# REL-11: the scratch was trusted DURING the engine run…
+grep -q "^trust=True$" "$CHECKFILE" 2>/dev/null \
+  && assert "A: scratch pre-trusted during the engine run (hasTrustDialogAccepted=true)" "pass" \
+  || assert "A: scratch pre-trusted during the engine run (got: $(grep '^trust=' "$CHECKFILE" 2>/dev/null || echo none))" "fail"
+# …reverted afterwards with sibling keys intact…
+home_reverted "A"
+# …and the pre-edit backup kept in the (kept) workspace.
+_bak="$(find "$CTMP" -name 'claude.json.bak-*' 2>/dev/null | head -n1 || true)"
+if [[ -n "$_bak" ]] && cmp -s "$_bak" "$FIXTURE_CJ"; then
+  assert "A: timestamped ~/.claude.json backup kept in the workspace (pre-edit content)" "pass"
+else
+  assert "A: timestamped ~/.claude.json backup kept in the workspace (found: ${_bak:-none})" "fail"
+fi
+
+# REL-10: fixture.env boot vars present + correct in the engine environment.
+if grep -q "^boot_cmd=.venv/bin/python app.py$" "$CHECKFILE" 2>/dev/null \
+   && grep -q "^boot_port=5177$" "$CHECKFILE" 2>/dev/null \
+   && grep -q "^boot_health=http://127.0.0.1:5177/health$" "$CHECKFILE" 2>/dev/null; then
+  assert "A: fixture.env exported into the engine env (START_CMD/PORT/HEALTH_URL all correct)" "pass"
+else
+  assert "A: fixture.env exported into the engine env (got: $(grep '^boot_' "$CHECKFILE" 2>/dev/null | tr '\n' ' '))" "fail"
+fi
 
 SCRATCH="$(find "$CTMP" -mindepth 2 -maxdepth 2 -type d -name scratch | head -n1)"
 if [[ -n "$SCRATCH" && -d "$SCRATCH" ]]; then
@@ -407,6 +503,7 @@ _left="$(find "$CTMP" -mindepth 1 -maxdepth 1 | wc -l)"
 grep -q "verdict-vs-prediction: REFUTED" "$CLEDGER" \
   && assert "B: all-false predicates → REFUTED" "pass" \
   || assert "B: all-false predicates → REFUTED" "fail"
+home_reverted "B"
 
 # ── C: engine exit 3 → still a RESULT; scratch kept; true+false → MIXED ──────
 new_case c
@@ -431,6 +528,8 @@ grep -qF "$CTMP" <<<"$OUT" \
 grep -q "verdict-vs-prediction: MIXED" "$CLEDGER" \
   && assert "C: true+false predicates → MIXED" "pass" \
   || assert "C: true+false predicates → MIXED" "fail"
+# REL-11: the revert must fire on the ENGINE-FAILURE path too (trap-covered).
+home_reverted "C"
 
 # ── D: empty engine + dirty/--allow-dirty + --results-dir + MANUAL ───────────
 new_case d
@@ -478,6 +577,48 @@ grep -qF "verdict-vs-prediction: MANUAL — append CONFIRMED|REFUTED|MIXED after
 grep -q "^pre=FOUND$" "$CHECKFILE" 2>/dev/null \
   && assert "D: PRE entry preceded the engine here too" "pass" \
   || assert "D: PRE entry preceded the engine here too" "fail"
+
+# ── E: fixture.env ABSENT → assembly green, boot vars empty (REL-10) ──────────
+new_case e
+rm -f "$CASE/benchmarks/fixtures/todo-app/fixture.env"
+git -C "$CASE" add -A
+git -C "$CASE" -c user.name=t -c user.email=t@t commit -qm "e: fixture without boot manifest"
+run_runner "$STUBS/stub-ok.sh" --yes-spend \
+  --hypothesis "assembly works without a boot manifest" \
+  --predict 'journeys_passing_after>=2'
+[[ "$RC" -eq 0 ]] \
+  && assert "E: runner green without fixture.env (other fixtures someday)" "pass" \
+  || { assert "E: runner green without fixture.env (rc=$RC)" "fail"; printf '%s\n' "$OUT" | tail -10; }
+if grep -q "^boot_cmd=$" "$CHECKFILE" 2>/dev/null \
+   && grep -q "^boot_port=$" "$CHECKFILE" 2>/dev/null \
+   && grep -q "^boot_health=$" "$CHECKFILE" 2>/dev/null; then
+  assert "E: no fixture.env → the three boot vars are EMPTY in the engine env" "pass"
+else
+  assert "E: no fixture.env → boot vars empty (got: $(grep '^boot_' "$CHECKFILE" 2>/dev/null | tr '\n' ' '))" "fail"
+fi
+RESULTS_E="$(find "$CASE/benchmarks/results" -name '*.json' 2>/dev/null | head -n1 || true)"
+[[ -n "$RESULTS_E" ]] \
+  && assert "E: results JSON still written" "pass" \
+  || assert "E: results JSON still written" "fail"
+home_reverted "E"
+
+# ── T: corrupt fixture-HOME claude.json → trust edit refuses BEFORE engine ────
+new_case t
+echo '{broken json' > "$CHOME/.claude.json"
+cp "$CHOME/.claude.json" "$WORK/t/claude.json.corrupt-copy"
+run_runner "$STUBS/stub-ok.sh" --yes-spend --hypothesis "never reaches the engine"
+[[ "$RC" -eq 1 ]] \
+  && assert "T: corrupt claude.json → runner exits 1 (refuses the trust edit)" "pass" \
+  || assert "T: corrupt claude.json → runner exits 1 (rc=$RC)" "fail"
+grep -qi "REFUSING the trust edit" <<<"$OUT" \
+  && assert "T: refusal names the trust edit" "pass" \
+  || assert "T: refusal names the trust edit" "fail"
+[[ ! -f "$CHECKFILE" ]] \
+  && assert "T: engine never ran (no spend on a run whose evidence would void)" "pass" \
+  || assert "T: engine never ran (checkfile exists)" "fail"
+cmp -s "$CHOME/.claude.json" "$WORK/t/claude.json.corrupt-copy" \
+  && assert "T: corrupt claude.json byte-untouched (refusal, not repair)" "pass" \
+  || assert "T: corrupt claude.json byte-untouched" "fail"
 
 echo ""
 echo "=== Results: $PASS passed, $FAIL failed ==="

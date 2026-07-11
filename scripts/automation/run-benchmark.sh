@@ -71,6 +71,26 @@
 #   <work>/scratch-origin.git  the local bare origin (satisfies the engine's
 #                              ls-remote preflight + per-iter push, no network)
 #   <work>/engine.log          engine stdout/stderr (also streamed live)
+#   <work>/claude.json.bak-*   timestamped ~/.claude.json backup taken before the
+#                              scratch-trust edit (REL-11; disaster recovery only)
+#
+# ── SCRATCH TRUST (REL-11) ────────────────────────────────────────────────────
+# Before engine launch the runner sets
+# projects["<scratch>"].hasTrustDialogAccepted: true in ~/.claude.json (atomic
+# python edit, backup first) — an untrusted mktemp workspace makes Claude Code
+# ignore the copied settings allow list and silently voids light-tier agents'
+# report writes (probe-pinned 2026-07-11; see roadmap REL-11). Exactly that
+# projects entry is removed again right after the engine exits, with an EXIT
+# trap covering every other path; the runner refuses to exit 0 if the removal
+# failed. G5: safety mechanism — tests must keep proving the revert.
+#
+# ── FIXTURE BOOT MANIFEST (REL-10) ────────────────────────────────────────────
+# benchmarks/fixtures/<fixture>/fixture.env (optional, KEY=VALUE: START_CMD /
+# PORT / HEALTH_URL) declares how the fixture app boots. When present the
+# runner exports CHAIN_START_BACKEND_CMD / CHAIN_BACKEND_PORT /
+# CHAIN_BACKEND_HEALTH_URL into the engine environment (recorded in the results
+# chain_env block). Without it the framework's generic start-backend.sh template
+# shadows the fixture's documented start command (baseline journeys-0/3 cause).
 #
 # Ledger format contract (grep-able): PRE entries start `## PRE <session-id>`,
 # POST entries start `## POST <session-id>` — pinned by the test suite.
@@ -198,10 +218,86 @@ fi
 log "PRE entry appended to benchmarks/experiments.md (prediction registered before execution)"
 
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/bench-${SESSION_ID}.XXXXXX")"
+# Canonicalize: the scratch path doubles as the ~/.claude.json trust key
+# (REL-11), and Claude Code keys projects by the RESOLVED cwd — a symlinked
+# TMPDIR would otherwise make the pre-trusted key and the engine's key differ.
+WORK="$(cd "$WORK" && pwd -P)"
 SCRATCH="$WORK/scratch"
 ORIGIN="$WORK/scratch-origin.git"
-# From here on, any runner failure keeps the scratch for forensics.
-trap '_rc=$?; if [[ $_rc -ne 0 ]]; then echo "[benchmark] FAILED (rc=$_rc) — scratch workspace kept for forensics: '"$WORK"'" >&2; fi' EXIT
+
+# ── Scratch trust plumbing (REL-11) ───────────────────────────────────────────
+# Claude Code honors the copied .claude/settings.json allow list only in a
+# TRUSTED workspace (keyed by absolute path in ~/.claude.json); an untrusted
+# mktemp scratch silently voids light-tier agents' report writes (probe-pinned,
+# 2026-07-11: haiku Write denied untrusted, allowed trusted; see REL-11).
+# The runner therefore pre-trusts EXACTLY the scratch path before engine launch
+# and removes exactly that projects entry again on EVERY exit path. SAFETY
+# MECHANISM (G5): never weaken — a timestamped backup of ~/.claude.json is taken
+# into $WORK before the first write, the revert re-reads the CURRENT file (other
+# claude processes rewrite it concurrently — restoring the backup wholesale
+# would clobber their state; the backup is disaster recovery only), and the
+# runner refuses to exit 0 while the key may still be present.
+_TRUST_KEY_ACTIVE=false
+_TRUST_BACKUP=""
+
+_trust_revert() {
+  # Remove the whole projects[<scratch>] entry: the path is mktemp-fresh (the
+  # runner introduced it) and the engine's own claude processes may have added
+  # sibling keys under it during the run — all dangling once the scratch dies.
+  BENCH_CLAUDE_JSON="$HOME/.claude.json" BENCH_SCRATCH_KEY="$SCRATCH" python3 - <<'PYEOF'
+import json, os, sys, tempfile
+path, key = os.environ["BENCH_CLAUDE_JSON"], os.environ["BENCH_SCRATCH_KEY"]
+if not os.path.exists(path):
+    print("[benchmark] trust revert: ~/.claude.json absent — nothing to remove")
+    sys.exit(0)
+try:
+    data = json.load(open(path, encoding="utf-8"))
+except Exception as e:
+    print(f"[benchmark] trust revert FAILED: {path} unparseable ({e})", file=sys.stderr)
+    sys.exit(1)
+projects = data.get("projects")
+if not isinstance(projects, dict) or key not in projects:
+    print("[benchmark] trust revert: scratch entry already absent")
+    sys.exit(0)
+projects.pop(key)
+fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path) or ".", prefix=".claude.json.bench.")
+try:
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2)
+    os.replace(tmp, path)
+except Exception as e:
+    os.path.exists(tmp) and os.unlink(tmp)
+    print(f"[benchmark] trust revert FAILED writing {path}: {e}", file=sys.stderr)
+    sys.exit(1)
+if key in json.load(open(path, encoding="utf-8")).get("projects", {}):
+    print("[benchmark] trust revert FAILED: key still present after write", file=sys.stderr)
+    sys.exit(1)
+print(f"[benchmark] trust revert: removed projects[{key!r}] from ~/.claude.json")
+PYEOF
+}
+
+_trust_revert_or_warn() {
+  if _trust_revert; then
+    _TRUST_KEY_ACTIVE=false
+  else
+    echo "[benchmark] WARNING: could not remove the scratch trust key from ~/.claude.json." >&2
+    echo "            Remove projects[\"$SCRATCH\"] by hand; pre-run backup: ${_TRUST_BACKUP:-<none taken>}" >&2
+  fi
+}
+
+_on_runner_exit() {
+  _rc=$?
+  if $_TRUST_KEY_ACTIVE; then
+    _trust_revert_or_warn
+  fi
+  if [[ $_rc -ne 0 ]]; then
+    echo "[benchmark] FAILED (rc=$_rc) — scratch workspace kept for forensics: $WORK" >&2
+  fi
+}
+# From here on, any runner failure keeps the scratch for forensics, and the
+# trap guarantees the trust revert on every exit path (success, engine
+# failure, Ctrl-C, runner crash).
+trap _on_runner_exit EXIT
 mkdir -p "$SCRATCH"
 log "scratch workspace: $WORK"
 
@@ -240,6 +336,71 @@ git init -q --bare "$ORIGIN"
 git -C "$SCRATCH" remote add origin "$ORIGIN"
 log "scratch repo ready (1 commit on main; origin = local bare $ORIGIN)"
 
+# ── Scratch trust: pre-trust the scratch path (REL-11) ────────────────────────
+# Backup first (into $WORK: kept whenever anything fails, gone only after a
+# clean run whose revert already succeeded and was verified).
+if [[ -f "$HOME/.claude.json" ]]; then
+  _TRUST_BACKUP="$WORK/claude.json.bak-$(date -u +%Y%m%dT%H%M%SZ)"
+  cp -a "$HOME/.claude.json" "$_TRUST_BACKUP"
+  log "~/.claude.json backed up: $_TRUST_BACKUP"
+else
+  log "~/.claude.json does not exist yet — nothing to back up (it will be created)"
+fi
+_TRUST_KEY_ACTIVE=true   # set BEFORE the write: a Ctrl-C mid-write must still revert
+if ! BENCH_CLAUDE_JSON="$HOME/.claude.json" BENCH_SCRATCH_KEY="$SCRATCH" python3 - <<'PYEOF'
+import json, os, sys, tempfile
+path, key = os.environ["BENCH_CLAUDE_JSON"], os.environ["BENCH_SCRATCH_KEY"]
+data = {}
+if os.path.exists(path):
+    try:
+        data = json.load(open(path, encoding="utf-8"))
+    except Exception as e:
+        print(f"[benchmark] REFUSING the trust edit: {path} unparseable ({e}).", file=sys.stderr)
+        print("            Fix or restore ~/.claude.json first — an untrusted scratch would", file=sys.stderr)
+        print("            silently void the run's QA evidence (REL-11).", file=sys.stderr)
+        sys.exit(1)
+if not isinstance(data, dict) or not isinstance(data.get("projects", {}), dict):
+    print(f"[benchmark] REFUSING the trust edit: unexpected {path} shape.", file=sys.stderr)
+    sys.exit(1)
+data.setdefault("projects", {}).setdefault(key, {})["hasTrustDialogAccepted"] = True
+fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path) or ".", prefix=".claude.json.bench.")
+try:
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2)
+    os.replace(tmp, path)
+except Exception as e:
+    if os.path.exists(tmp):
+        os.unlink(tmp)
+    print(f"[benchmark] trust edit FAILED writing {path}: {e}", file=sys.stderr)
+    sys.exit(1)
+print(f"[benchmark] scratch pre-trusted: projects[{key!r}].hasTrustDialogAccepted = true")
+PYEOF
+then
+  # No key was written — nothing to revert; abort BEFORE spending on the engine.
+  _TRUST_KEY_ACTIVE=false
+  exit 1
+fi
+
+# ── Fixture boot manifest (REL-10) ────────────────────────────────────────────
+# Optional per-fixture KEY=VALUE manifest (START_CMD / PORT / HEALTH_URL)
+# declaring how the fixture's app boots. The engine's service lane already
+# honors these as env overrides (goal-iter-lean.sh / qa-phase.sh resolve
+# CHAIN_START_BACKEND_CMD first; common.sh auto-assigns CHAIN_BACKEND_PORT only
+# when unset) — without the manifest the generic scripts/start-backend.sh
+# template from the framework subrepo set shadows the fixture's documented
+# start command (the baseline's journeys-0/3 root cause). Absent file = prior
+# behavior. Exports happen BEFORE the CHAIN_ENV_LINES capture below, so the
+# results JSON records the boot config (environment honesty).
+if [[ -f "$FIXTURE/fixture.env" ]]; then
+  START_CMD=""; PORT=""; HEALTH_URL=""
+  # shellcheck disable=SC1091
+  source "$FIXTURE/fixture.env"
+  if [[ -n "$START_CMD" ]]; then export CHAIN_START_BACKEND_CMD="$START_CMD"; fi
+  if [[ -n "$PORT" ]]; then export CHAIN_BACKEND_PORT="$PORT"; fi
+  if [[ -n "$HEALTH_URL" ]]; then export CHAIN_BACKEND_HEALTH_URL="$HEALTH_URL"; fi
+  log "fixture.env: backend boot localized (cmd='${START_CMD}' port='${PORT}' health='${HEALTH_URL}')"
+fi
+
 # ── Engine launch ─────────────────────────────────────────────────────────────
 # Environment honesty: everything CHAIN_* in the engine's environment is
 # recorded in the results JSON — results are only comparable when config is
@@ -266,6 +427,11 @@ fi
 _t1="$(date +%s)"
 WALL_SECONDS=$(( _t1 - _t0 ))
 log "engine exit code: $ENGINE_RC (a nonzero/paused engine is a RESULT, recorded as such)"
+
+# Revert the scratch trust IMMEDIATELY after the engine — the trust window is
+# the engine runtime only. On failure the flag stays set: the EXIT trap retries
+# and the final gate below refuses to exit 0 with the key possibly present.
+_trust_revert_or_warn
 
 # ── Results extraction ────────────────────────────────────────────────────────
 if [[ -f "$REPO_ROOT/config/model-tiers.yaml" ]]; then
@@ -528,6 +694,16 @@ PYEOF
 
 log "results: $RESULTS_FILE"
 log "POST entry appended to benchmarks/experiments.md"
+
+# ── Trust-revert gate (G5: safety mechanism — never weaken) ──────────────────
+# A leaked trust key is a safety failure even when everything else succeeded:
+# refuse to exit 0, keep the scratch + the ~/.claude.json backup for recovery.
+if $_TRUST_KEY_ACTIVE; then
+  echo "[benchmark] REFUSING to exit 0: the scratch trust key could not be removed from" >&2
+  echo "            ~/.claude.json. Remove projects[\"$SCRATCH\"] by hand;" >&2
+  echo "            pre-run backup: ${_TRUST_BACKUP:-<none taken>}" >&2
+  exit 1
+fi
 
 # ── Scratch retention ─────────────────────────────────────────────────────────
 if [[ "$ENGINE_RC" -ne 0 ]]; then

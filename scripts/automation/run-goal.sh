@@ -361,6 +361,12 @@ Write the report to: $retro_report
 Write the report and STOP." \
     || { _retro_rc=$?; echo "[run-goal] Warning: retro-analyst dispatch failed (non-blocking) — no retro report." >&2; }
   record_agent_invocation_end "retro-analyst" "$_retro_start" "$_retro_rc"
+  # REL-11 missing-evidence tripwire: the dispatch returned (any rc) but the
+  # report is not on disk — the baseline benchmark's retro vanished exactly
+  # this way with rc=0 (untrusted-workspace Write denial). Non-blocking.
+  if [[ ! -f "$retro_report" ]]; then
+    warn_missing_evidence "retro-analyst" "$retro_report"
+  fi
 }
 
 # Maintain the PROJECT's README.md so it always reflects current capabilities and
