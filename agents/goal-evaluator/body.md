@@ -46,7 +46,7 @@ Also read this iteration's `coherence.md` and note its verdict. A `COHERENCE-FAI
 
 ### 2. Check anti-goals
 
-Follow methodology section B: answer every category explicitly (yes/no + citation), working from `iter-<N>/scan-report.md` (deterministic secret/dependency/license scan of the FULL diff) plus `iter-<N>/iter-diff.md` (bounded diff). Fallback when those files are absent: `git diff <snapshot>..HEAD --stat` first, then read only the implicated hunks — never ingest a full raw diff.
+Follow methodology section B: answer every category explicitly (yes/no + citation), working from `iter-<N>/scan-report.md` (deterministic secret/dependency/license scan of the product diff — tracked + untracked, harness bookkeeping path-excluded) plus `iter-<N>/iter-diff.md` (bounded diff). Fallback when those files are absent: `git diff <snapshot>..HEAD --stat` first, then read only the implicated hunks — never ingest a full raw diff.
 - Determine if any anti-goal was violated by this iteration
 - Classify violation severity: critical (committed credentials, unapproved paid-SaaS dependency, license violation, security backdoor, fabricated/substituted data) vs minor (e.g., inefficient pattern that's easy to fix); when unsure, treat as critical and say you were unsure
 

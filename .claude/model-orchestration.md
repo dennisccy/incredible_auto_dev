@@ -124,6 +124,7 @@ An agent's claim about its own work is a hypothesis, not evidence.
 | `CHAIN_GOAL_CONFIRM` | default `true`; the two-key GOAL_ACHIEVED confirm pass | `lib/goal-gates.sh` |
 | `CHAIN_SCAN_STRICT_DEPS` | `true` → new paid-SaaS dependencies become CRITICAL (block certification); default warn | `lib/scan_diff.py` |
 | `CHAIN_SCAN_DEP_ALLOWLIST` | package names (space/comma) never classified as paid-SaaS | `lib/scan_diff.py` |
+| `CHAIN_SCAN_BOOKKEEPING_EXCLUDES` | space-separated path prefixes excluded from the gate's scanned diff (default `runs reports docs/handoffs docs/phases` — the harness's own generated output; the scanner reads product changes only) | `lib/goal-gates.sh` |
 | `CHAIN_DISABLE_EFFORT_OVERRIDE` | `true` → everyone back to `--effort max` | `lib/quota-retry.sh` |
 | `CHAIN_STEP_CHECKPOINTS` | default `true`; step-level resume markers — a stall/quota kill never redoes a completed developer/reviewer/browser-qa step | `lib/checkpoint.sh` |
 | `CHAIN_AGENT_TIMEOUTS` | default `true`; per-agent runtime caps (~2.5-3× measured typicals) instead of one flat 7200s | `lib/quota-retry.sh` |

@@ -365,8 +365,10 @@ ensure_phase_ports() {
 # (push-per-iter makes runs/** tracked in consumer repos, so telemetry/report
 # churn otherwise lands in every `git diff HEAD` the reviewer runs). These trim
 # reviewer CONTEXT only — the deterministic scan_diff.py secrets/deps scan
-# (lib/goal-gates.sh) always runs on the FULL diff, package.json stays in the
-# main diff, and the hint's second command keeps dependency-file awareness.
+# (lib/goal-gates.sh) runs on the full PRODUCT diff (its own bookkeeping
+# excludes are CHAIN_SCAN_BOOKKEEPING_EXCLUDES in goal-gates.sh — the scanner
+# must never read the harness's own generated output), package.json stays in
+# the main diff, and the hint's second command keeps dependency-file awareness.
 REVIEW_DIFF_EXCLUDE_PATTERNS=(
   '*package-lock.json' '*yarn.lock' '*pnpm-lock.yaml' '*poetry.lock' '*uv.lock' '*Cargo.lock'
   '*.min.js' '*.min.css' '*.map'

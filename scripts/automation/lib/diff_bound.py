@@ -6,8 +6,10 @@ megabytes on data-heavy iterations (seed CSVs, lockfiles), degrading exactly
 the judgment the loop depends on. This filter produces `iter-diff.md`: the
 COMPLETE file list is always preserved; excluded/oversized content is
 summarized with an honest header (no silent caps); agents Read the real file
-when detail matters. The secret scanner (scan_diff.py) runs on the FULL diff
-separately — bounding never applies to gate-critical inputs.
+when detail matters. The secret scanner (scan_diff.py) runs separately on the
+same unbounded builder input (the product diff — goal-gates.sh path-excludes
+harness bookkeeping from both) — bounding never applies to gate-critical
+inputs.
 
 CLI:
     git diff <sha> | python3 diff_bound.py [--max-file-lines N] [--max-total-lines N]

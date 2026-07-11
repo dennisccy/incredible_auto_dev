@@ -8,8 +8,9 @@ your overall impression of the iteration.
 ## A. Evidence walk (do this before forming ANY opinion)
 
 1. **Deterministic reports first.** Read, if present in `runs/goal-session-<sid>/iter-<N>/`:
-   - `scan-report.md` — deterministic secret/dependency/license scan of the FULL iteration
-     diff. Findings here are facts; you do not need to re-derive them.
+   - `scan-report.md` — deterministic secret/dependency/license scan of the product
+     iteration diff (tracked + untracked; harness bookkeeping path-excluded). Findings here
+     are facts; you do not need to re-derive them.
    - `iter-diff.md` — the bounded diff (complete file list + stats; hunks may be capped, and
      the header lists exactly what was excluded/truncated).
    - `journeys-changed.md` — goal-edit drift note, present only when a recorded-passing

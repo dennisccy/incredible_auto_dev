@@ -277,9 +277,11 @@ if [[ "${CHAIN_LEAN_PARALLEL_COHERENCE:-true}" == "true" && -n "$ITER_DIR" \
     rm -f "$_COH_RC_FILE"
     # Coherence-scoped bounded diff (judge context trim): the source tree is
     # final once review settles, so build iter-diff.md NOW for the auditor to
-    # read first. The evaluator's own scan/iter-diff artifacts are still built
-    # at their original post-browser-qa point in run-goal.sh (overwriting this
-    # file), so the evaluator's inputs are byte-identical to before.
+    # read first. run-goal.sh rebuilds the scan/iter-diff artifacts at its
+    # original post-browser-qa point (overwriting these files); both builds
+    # exclude harness bookkeeping (CHAIN_SCAN_BOOKKEEPING_EXCLUDES), so the
+    # rebuild converges with this one instead of drifting CLEAN→CRITICAL as
+    # runs/ and reports/ artifacts accumulate mid-iteration.
     if declare -F goal_gate_build_diff_artifacts >/dev/null 2>&1 || source "$SCRIPT_DIR/lib/goal-gates.sh" 2>/dev/null; then
       goal_gate_build_diff_artifacts "$ITER_DIR" "$(cat "$ITER_DIR/snapshot-sha" 2>/dev/null || echo "")" "$REPO_ROOT" 2>/dev/null || true
     fi

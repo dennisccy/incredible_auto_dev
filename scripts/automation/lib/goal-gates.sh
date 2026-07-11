@@ -26,8 +26,10 @@
 #       the verdict to REGRESSION
 #
 #   goal_gate_build_diff_artifacts   writes iter-diff.md (bounded diff view)
-#       and scan-report.md (secret/dependency/license scan of the FULL diff,
-#       tracked + untracked) for the evaluator to consume. Best-effort.
+#       and scan-report.md (secret/dependency/license scan of the product diff,
+#       tracked + untracked, harness bookkeeping path-excluded via
+#       CHAIN_SCAN_BOOKKEEPING_EXCLUDES) for the evaluator to consume.
+#       Best-effort.
 #
 # Escape hatch: CHAIN_GOAL_GATES=false disables gating (filter echoes the
 # verdict through unchanged). Re-enable it in the same session — a silently
@@ -36,6 +38,15 @@
 # Self-test: bash scripts/automation/lib/goal-gates.sh --self-test
 
 _GOAL_GATES_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# Harness bookkeeping namespaces NEVER fed to the secret scanner: the gate must
+# scan product changes, not the pipeline's own generated output (scan-report /
+# iter-diff / trace / summaries quote findings → self-referential CRITICAL
+# recursion; see .claude/anti-patterns.md). Same set as CHAIN_STEP_HASH_EXCLUDES
+# (lib/checkpoint.sh). Space-separated, env-overridable; note ':=' re-applies
+# the default when the var is exported EMPTY (a single space means "no
+# exclusions").
+: "${CHAIN_SCAN_BOOKKEEPING_EXCLUDES:=runs reports docs/handoffs docs/phases}"
 
 goal_gates_enabled() {
   [[ "${CHAIN_GOAL_GATES:-true}" == "true" ]]
@@ -47,26 +58,42 @@ goal_gate_build_diff_artifacts() {
   local iter_dir="$1" snapshot_sha="$2" repo_root="$3"
   local full_diff
   full_diff="$(mktemp)" || return 0
+  # One exclusion pathspec for BOTH layers (tracked diff + untracked
+  # enumeration): the scanner must never read the harness's own output.
+  local _ex _uf _count=0
+  local _scan_pathspec=(".")
+  for _ex in $CHAIN_SCAN_BOOKKEEPING_EXCLUDES; do
+    _scan_pathspec+=(":(exclude)$_ex")
+  done
   {
     if [[ -n "$snapshot_sha" ]]; then
-      git -C "$repo_root" diff "$snapshot_sha" 2>/dev/null || true
+      git -C "$repo_root" diff "$snapshot_sha" -- "${_scan_pathspec[@]}" 2>/dev/null || true
     else
-      git -C "$repo_root" diff HEAD~1 2>/dev/null || git -C "$repo_root" diff HEAD 2>/dev/null || true
+      git -C "$repo_root" diff HEAD~1 -- "${_scan_pathspec[@]}" 2>/dev/null || \
+        git -C "$repo_root" diff HEAD -- "${_scan_pathspec[@]}" 2>/dev/null || true
     fi
     # Untracked files are the iteration's new files (work is committed only at
-    # the push step, AFTER evaluation) — the scanner must see them too.
-    local _uf _count=0
+    # the push step, AFTER evaluation) — the scanner must see them too. With
+    # bookkeeping excluded, the cap counts PRODUCT files only (bookkeeping used
+    # to be able to exhaust it and silently hide product files from the scan).
+    # Relative path on purpose: --no-index with an absolute path renders
+    # headers as a/home/... which the old sed mangled to 'bpath' — relative
+    # paths give proper a/... b/... headers for scan_diff/diff_bound to parse.
     while IFS= read -r _uf; do
       [[ -z "$_uf" ]] && continue
       _count=$((_count + 1))
       [[ $_count -gt 200 ]] && break
-      git -C "$repo_root" diff --no-index -- /dev/null "$repo_root/$_uf" 2>/dev/null | \
-        sed "s|$repo_root/||g" || true
-    done < <(git -C "$repo_root" ls-files --others --exclude-standard 2>/dev/null)
+      git -C "$repo_root" diff --no-index -- /dev/null "$_uf" 2>/dev/null || true
+    done < <(git -C "$repo_root" ls-files --others --exclude-standard -- "${_scan_pathspec[@]}" 2>/dev/null)
   } > "$full_diff" 2>/dev/null || true
 
   python3 "$_GOAL_GATES_DIR/scan_diff.py" scan --diff-file "$full_diff" \
     > "$iter_dir/scan-report.md" 2>/dev/null || true
+  # Provenance footer (must never contain a literal result-line marker): which
+  # inputs produced this report, so CLEAN/CRITICAL disagreements are debuggable.
+  printf '\n_Scan scope: changes since %s; %s untracked file(s) scanned (cap 200); bookkeeping excluded: %s_\n' \
+    "${snapshot_sha:-HEAD~1}" "$(( _count > 200 ? 200 : _count ))" "$CHAIN_SCAN_BOOKKEEPING_EXCLUDES" \
+    >> "$iter_dir/scan-report.md" 2>/dev/null || true
   python3 "$_GOAL_GATES_DIR/diff_bound.py" < "$full_diff" \
     > "$iter_dir/iter-diff.md" 2>/dev/null || true
   rm -f "$full_diff" 2>/dev/null || true
@@ -122,7 +149,11 @@ goal_gate_achievement() {
   fi
 
   # 4. Diff scan: no CRITICAL findings (secrets / paid-SaaS deps / etc.).
-  if [[ -f "$iter_dir/scan-report.md" ]]; then
+  #    A report with no result line means the scanner crashed (the build
+  #    redirect fails open to an empty file) — treat it like a missing report,
+  #    never as a pass.
+  if [[ -f "$iter_dir/scan-report.md" ]] \
+     && grep -q '^\*\*Result:\*\*' "$iter_dir/scan-report.md" 2>/dev/null; then
     if grep -q '^\*\*Result:\*\* CRITICAL' "$iter_dir/scan-report.md" 2>/dev/null; then
       lines+=("- FAIL scan: critical findings in $iter_dir/scan-report.md")
       failures=$((failures + 1))
@@ -130,7 +161,7 @@ goal_gate_achievement() {
       lines+=("- PASS scan: no critical findings ($iter_dir/scan-report.md)")
     fi
   else
-    lines+=("- WARN scan: no scan-report.md (diff artifacts were not built)")
+    lines+=("- WARN scan: scan-report.md missing or without a result line (diff artifacts were not built)")
   fi
 
   # 5. No passing→failing regressions vs the pre-iteration snapshot.
@@ -391,6 +422,18 @@ _goal_gates_self_test() {
   v="$(goal_gate_filter_verdict GOAL_ACHIEVED "$d/iter-3" "$EVALF" "$HIST_PASS" "$COH" true "$RES" "$d/session" "$d/goal.md" 2>/dev/null)"
   [[ "$v" == "CONTINUE" ]] && echo "  PASS goal-gates: critical scan finding blocks certification" || { echo "  FAIL goal-gates: scan block (got '$v')"; fails=1; }
 
+  # 9b. Empty scan-report (scanner crash fails open to an empty file) must
+  #     read as the WARN/missing branch, never as a PASS.
+  : > "$d/iter-3/scan-report.md"
+  v="$(goal_gate_filter_verdict GOAL_ACHIEVED "$d/iter-3" "$EVALF" "$HIST_PASS" "$COH" true "$RES" "$d/session" "$d/goal.md" 2>/dev/null)"
+  if [[ "$v" == "GOAL_ACHIEVED" ]] && grep -q -- '- WARN scan:' "$d/iter-3/gate-report.md" \
+     && ! grep -q -- '- PASS scan:' "$d/iter-3/gate-report.md"; then
+    echo "  PASS goal-gates: empty scan-report reads as WARN, not PASS"
+  else
+    echo "  FAIL goal-gates: empty scan-report handling (got '$v')"; fails=1
+  fi
+  printf '# scan\n\n**Result:** CLEAN — nothing.\n' > "$d/iter-3/scan-report.md"
+
   # 10. Goal-edit drift (NEED-9): the note is built by the REAL writer
   #     (hash-journeys) from a stale-hash history. A flagged journey whose
   #     spec_hash was never re-recorded blocks certification; re-recording
@@ -416,6 +459,55 @@ _goal_gates_self_test() {
   rm -f "$d/iter-3/journeys-changed.md"
   v="$(goal_gate_filter_verdict GOAL_ACHIEVED "$d/iter-3" "$EVALF" "$HIST_STALE" "$COH" true "$RES" "$d/session" "$d/goal.md" 2>/dev/null)"
   [[ "$v" == "GOAL_ACHIEVED" ]] && echo "  PASS goal-gates: no drift note → stale hash alone never blocks" || { echo "  FAIL goal-gates: drift absent-note (got '$v')"; fails=1; }
+
+  # 11. build_diff_artifacts scans the PRODUCT diff only (recursion guard):
+  #     bookkeeping quoting a credential — the harness's own prior scan
+  #     output, summaries, handoffs — must not trip the scanner, untracked OR
+  #     tracked, while the same credential in product source must. The output
+  #     iter dir lives OUTSIDE the fixture repo so the just-written report is
+  #     not itself untracked in the scanned tree. Fake key is string-split so
+  #     THIS file never contains a pattern-matching literal (see case 12).
+  CHAIN_SCAN_BOOKKEEPING_EXCLUDES="runs reports docs/handoffs docs/phases"
+  local _fk="AKIA""IOSFODNN7EXAMPLE"
+  local G="$d/case11-repo" ITER11="$d/iter-11" _git11=(git -C "$d/case11-repo" -c user.email=t@t -c user.name=t -c commit.gpgsign=false)
+  mkdir -p "$ITER11"
+  git -c init.defaultBranch=main init -q "$G"
+  "${_git11[@]}" commit -q --allow-empty -m base
+  local SNAP11; SNAP11="$("${_git11[@]}" rev-parse HEAD)"
+  mkdir -p "$G/runs/s1/iter-1" "$G/reports" "$G/docs/handoffs" "$G/apps"
+  printf 'prior finding: aws-access-key %s\n' "$_fk" > "$G/runs/s1/iter-1/scan-report.md"
+  printf 'iteration summary quoting %s\n' "$_fk" > "$G/reports/summary.md"
+  printf 'dev handoff quoting %s\n' "$_fk" > "$G/docs/handoffs/x-dev.md"
+  printf 'def ok():\n    return 1\n' > "$G/apps/app.py"
+  goal_gate_build_diff_artifacts "$ITER11" "$SNAP11" "$G"
+  grep -q '^\*\*Result:\*\* CLEAN' "$ITER11/scan-report.md" \
+    && echo "  PASS goal-gates: untracked bookkeeping quoting a credential scans CLEAN" \
+    || { echo "  FAIL goal-gates: bookkeeping exclusion, untracked ($ITER11/scan-report.md)"; fails=1; }
+  printf 'KEY = "%s"\n' "$_fk" > "$G/apps/config.py"
+  goal_gate_build_diff_artifacts "$ITER11" "$SNAP11" "$G"
+  if grep -q '^\*\*Result:\*\* CRITICAL' "$ITER11/scan-report.md" \
+     && grep -q 'apps/config.py' "$ITER11/scan-report.md"; then
+    echo "  PASS goal-gates: credential in product source still CRITICAL, path cited"
+  else
+    echo "  FAIL goal-gates: product-source detection ($ITER11/scan-report.md)"; fails=1
+  fi
+  rm -f "$G/apps/config.py"
+  "${_git11[@]}" add reports/summary.md
+  "${_git11[@]}" commit -q -m bookkeeping
+  printf 'edited summary still quoting %s\n' "$_fk" > "$G/reports/summary.md"
+  goal_gate_build_diff_artifacts "$ITER11" "$SNAP11" "$G"
+  grep -q '^\*\*Result:\*\* CLEAN' "$ITER11/scan-report.md" \
+    && echo "  PASS goal-gates: tracked bookkeeping edit quoting a credential scans CLEAN" \
+    || { echo "  FAIL goal-gates: bookkeeping exclusion, tracked ($ITER11/scan-report.md)"; fails=1; }
+
+  # 12. Structural guard: this library's own source must never contain a
+  #     secret-shaped literal (exit 3 = critical finding in scan_diff.py).
+  local _rc12=0
+  git diff --no-index -- /dev/null "$_GOAL_GATES_DIR/goal-gates.sh" 2>/dev/null | \
+    python3 "$_GOAL_GATES_DIR/scan_diff.py" scan >/dev/null 2>&1 || _rc12=$?
+  [[ "$_rc12" -ne 3 ]] \
+    && echo "  PASS goal-gates: goal-gates.sh source is free of secret-shaped literals" \
+    || { echo "  FAIL goal-gates: goal-gates.sh contains a scanner-tripping literal"; fails=1; }
 
   unset -f claude_with_quota_retry
   rm -rf "$d"

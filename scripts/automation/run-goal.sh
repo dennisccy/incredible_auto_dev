@@ -1836,7 +1836,7 @@ Agent instructions: .claude/agents/goal-evaluator.md  <-- read this first
 (CLAUDE.md is already in your system prompt — do not Read it again.)
 
 Iteration artifacts (read what exists):
-  Deterministic diff scan (FULL diff — secrets/deps/license): $ITER_DIR/scan-report.md
+  Deterministic diff scan (product diff; harness bookkeeping excluded — secrets/deps/license): $ITER_DIR/scan-report.md
   Bounded diff view (complete file list; hunks capped, header lists omissions): $ITER_DIR/iter-diff.md
   Dev handoff: docs/handoffs/${ITER_NAME}-dev.md
   Review report: reports/reviews/${ITER_NAME}-review.md
