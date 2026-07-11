@@ -1123,14 +1123,19 @@ territory).
 - **Problem:** `scan_diff.py` catches common credential shapes only (letter explicitly:
   "regex-grade… not exotic secrets").
 - **Current state:** per-iteration diff scan via `goal_gate_build_diff_artifacts`
-  (`lib/goal-gates.sh`) → `iter-<N>/scan-report.md`; CRITICAL blocks GOAL_ACHIEVED
-  (`goal-gates.sh:79-146`).
+  (`lib/goal-gates.sh:57`) → `iter-<N>/scan-report.md`; CRITICAL blocks GOAL_ACHIEVED
+  (`goal_gate_achievement`, `goal-gates.sh:107`). The scanned diff is the PRODUCT diff:
+  harness bookkeeping is path-excluded via `CHAIN_SCAN_BOOKKEEPING_EXCLUDES` (SEC-5).
 - **Change spec:** new `scripts/automation/lib/security_scan.sh`: if `gitleaks` (or
   `trufflehog`) is on PATH — run it in diff mode per iteration (append findings to
   `scan-report.md` with the same CRITICAL semantics) and full-tree on GOAL_ACHIEVED
   before the two-key confirm; if absent — one WARN line ("gitleaks not installed —
-  regex scan only") and proceed. Eval fixture: planted fake secret detected in a
-  fixture diff (skip cleanly when tool absent so CI stays green).
+  regex scan only") and proceed. Diff mode MUST consume the same bookkeeping-excluded
+  diff `goal_gate_build_diff_artifacts` builds (SEC-5) — feeding gitleaks the raw
+  tracked+untracked tree reintroduces the self-scan recursion (anti-pattern #22); the
+  full-tree pass on GOAL_ACHIEVED must likewise skip `runs/ reports/ docs/handoffs/
+  docs/phases/`. Eval fixture: planted fake secret detected in a fixture diff (skip
+  cleanly when tool absent so CI stays green).
 - **DoD:** with gitleaks installed, planted secret → CRITICAL → gate demotion; without,
   behavior unchanged + warning; evals green both ways.
 - **Verify:** `bash -n scripts/automation/lib/security_scan.sh &&
@@ -1193,6 +1198,32 @@ territory).
 - **Verify:** CI run on a branch push; `grep -n security .github/workflows/*.yml`
 - **Files:** `.github/workflows/evals.yml` (or new `security.yml`), docs.
 - **Rollback:** delete the job.
+
+### SEC-5 · Scan-input hygiene: the gate scans the product diff, never harness bookkeeping
+- **Priority:** P1 · **Effort:** S · **Risk:** LOW · **Status:** DONE
+  *(implemented 2026-07-11 from the tapeology `yahoo_fetch` handoff
+  (`upstream-scanner-recursion-fix.md`): `goal_gate_build_diff_artifacts`
+  (`lib/goal-gates.sh:57`) folded EVERY untracked file into the scanned diff with no
+  path exclusion, so the harness's own `runs/`+`reports/` artifacts — including the
+  scanner's previous `scan-report.md`, which quotes matched tokens — were re-scanned
+  each build: self-referential CRITICAL findings compounding 1 → 3 → … and blocking
+  GOAL_ACHIEVED on a clean product. Fix: `CHAIN_SCAN_BOOKKEEPING_EXCLUDES`
+  (default `runs reports docs/handoffs docs/phases`, knob table in
+  `.claude/model-orchestration.md`) applied as `:(exclude)` pathspec to BOTH the
+  tracked diff and the untracked enumeration; untracked files now diffed by relative
+  path (proper `a/… b/…` headers — the old absolute-path+sed combo mangled them to
+  `bpath`, which also defeated `diff_bound.py`'s excludes); provenance footer on
+  `scan-report.md`; empty/crashed scan-report now reads as WARN, not PASS;
+  `scan_diff.py` self-test fixtures assembled at runtime (keyword+value split) with a
+  self-scan structural guard. Deliberately PATH-based, never value-allowlisting —
+  `case-05-secret-committed` still proves a fake credential in product source stays
+  CRITICAL. Regression: `goal-gates.sh --self-test` cases 11/12 (git-backed:
+  bookkeeping quoting a credential scans CLEAN untracked AND tracked; the same
+  credential in product source stays CRITICAL). Residual accepted blind spot: a secret
+  pasted ONLY into a handoff/report/spec is no longer scanned per-iteration — SEC-1's
+  full-tree pass on GOAL_ACHIEVED is the designated cover; until then that text is
+  agent-generated prose, the same class as the traces that caused the recursion.
+  Anti-pattern #22.)*
 
 ---
 
