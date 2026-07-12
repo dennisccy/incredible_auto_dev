@@ -724,10 +724,23 @@ benchmark (or a real session's telemetry) before AND after (G8).
 - **Depends on:** SPEED-1.
 
 ### SPEED-3 · Parallel review ∥ browser-qa — stage "full" (headless only)
-- **Priority:** P1 · **Effort:** M · **Risk:** MED · **Status:** IN-PROGRESS 2026-07-13 —
-  implemented default-off; G8 fresh-session certification remains; a default flip
-  additionally requires the §9 pre-registered benchmark measurement (before =
-  `benchmarks/results/20260712-171324-5e87813077ae.json`).
+- **Priority:** P1 · **Effort:** M · **Risk:** MED · **Status:** DONE 2026-07-13 —
+  certified 2026-07-13 by a fresh non-implementer session per G8: parallel-bqa 68/68
+  green across 6 consecutive full-suite runs — the race/orphan/rc-70 scenarios (C
+  kill-ordering, G kill-mid-dispatch + zero-orphan pgrep + wasted-dispatch event, H
+  rc-70 pause parity, 28 asserts) re-run 5× with zero flakes; the join-pause tree-diff
+  claim reproduced (H: forked rc-70 pause tree file-list + step markers + developer
+  marker tree_hash IDENTICAL to the sequential pause tree; H3 resume: developer skips,
+  browser-qa re-forks, real PASS); interactive→replay backend gate re-verified (E:
+  headless-only warning, `iter_config` reason=interactive-backend, zero dispatches on
+  a checkpointed rerun); checkpoints 11/11; run-evals 98/98. Skeptical structural read
+  of the fork machinery (rc file skipped on in-fork exit-70 so `wait` carries the
+  pause to the join; marker deferred to the join behind `_BQA_IN_FULL_FORK`;
+  reap-before-invalidate ordering; recycled-PID-safe orphan guard;
+  `cleanup_iter_servers` full-fork reap) matched every implementation-note claim.
+  DONE ≠ default flip (G4): any default flip still requires the §9 pre-registered
+  benchmark measurement (before = `benchmarks/results/20260712-171324-5e87813077ae.json`);
+  default remains `off`.
   *Implementation note (2026-07-13):* backend gate at knob parse: `full` is honored only
   when `CHAIN_AGENT_BACKEND != interactive`; interactive demotes to `replay` with one
   logged warning and `iter_config` reason `interactive-backend` (`goal-iter-lean.sh:540`,
