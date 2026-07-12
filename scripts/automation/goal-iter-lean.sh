@@ -303,7 +303,7 @@ fi
 # the evaluator will treat that as ESCALATE.
 
 # Journey sets come from the spec (needed by the resume-skip check below AND by
-# the lanes inside the block). First match wins.
+# the lanes inside the function). First match wins.
 _spec_journeys() { grep -iE "$1" "$SPEC" 2>/dev/null | head -1 | grep -oE 'J-[0-9]+' | sort -u | tr '\n' ' '; }
 TARGET_JOURNEYS="$(_spec_journeys 'Target journeys:')"
 REQUIRED_JOURNEYS="$(_spec_journeys 'Required-still-passing')"
@@ -324,10 +324,12 @@ if step_done_valid browser-qa --verify-tree --dir "$ITER_DIR" "$UI_TEST_RESULTS"
   fi
 fi
 
-# NOTE: the section below is guarded, not re-indented — the guard is the only
-# change to its flow. It ends at the matching `fi` before the demo step.
-if [[ "$_bq_skip" != "yes" ]]; then
-step_invalidate_from browser-qa "$ITER_DIR"
+# The whole browser-qa section (service boot + deterministic replay lane + LLM
+# lane + merge) as ONE function — extracted verbatim for SPEED-1 (SPEED-2/3 fork
+# it later). Called from the caller's shell, NOT a subshell: every assignment
+# and `cd` inside lands globally, exactly as the previous inline block behaved.
+# Body kept un-indented from its pre-extraction guarded-block days (pure move).
+run_browser_qa_section() {
 
 QA_BACKEND_LOG=$(_qa_log_path "goal-iter-backend")
 QA_FRONTEND_LOG=$(_qa_log_path "goal-iter-frontend")
@@ -599,7 +601,15 @@ if [[ "$_bq_verdict" == "PASS" || "$_bq_verdict" == "FAIL" ]]; then
   step_mark_done browser-qa --dir "$ITER_DIR" --verdict "$_bq_verdict" --journeys "$_bq_sig" "$UI_TEST_RESULTS"
 fi
 
-fi  # end of the browser-qa resume-skip guard (_bq_skip)
+}
+
+# The resume-skip guard and the invalidation stay at the caller: a skipped
+# resume must neither invalidate the browser-qa checkpoint nor re-run the
+# section (SPEED-1 contract).
+if [[ "$_bq_skip" != "yes" ]]; then
+  step_invalidate_from browser-qa "$ITER_DIR"
+  run_browser_qa_section
+fi
 
 # ── Coherence audit join ──────────────────────────────────────────────────
 # Settle the fork BEFORE this script returns: the goal-evaluator's input set

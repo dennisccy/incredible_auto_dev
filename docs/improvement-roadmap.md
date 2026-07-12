@@ -594,12 +594,27 @@ benchmark (or a real session's telemetry) before AND after (G8).
   a fresh PRE entry.
 
 ### SPEED-1 · Refactor browser-qa into a function (no behavior change)
-- **Priority:** P1 · **Effort:** S · **Risk:** LOW · **Status:** TODO
-- **Problem:** the browser-qa section of the lean executor is a ~290-line inline block;
-  SPEED-2 needs to run it in a forked subshell.
-- **Current state:** `scripts/automation/goal-iter-lean.sh:292-578` (two-lane logic:
-  deterministic golden replay lane `~:379-460`, LLM lane + merge `~:460-576`);
-  resume-skip guard `~:309-321`.
+- **Priority:** P1 · **Effort:** S · **Risk:** LOW · **Status:** DONE 2026-07-12 —
+  extracted `run_browser_qa_section()` with the resume-skip guard AND
+  `step_invalidate_from browser-qa` kept at the caller; the function runs in the
+  caller's shell (plain call, no subshell) and the body moved verbatim
+  (un-indented pure move — zero body lines appear in the diff, which is two
+  boundary edits plus one comment word). Zero `local`s added: inventory of 44
+  body-assigned globals (QA_* exports, QA_STARTED_PIDS, FRONTEND_*/service
+  vars, lane vars, `_j`) — none is read after the call site in-file, and
+  same-shell lib consumers (ensure_services_running, the quota-retry hook) see
+  identical state. Proof: instrumented test-goal-checkpoints.sh with kept
+  sandbox, normalized artifact tree+content snapshot (noise classes
+  pre-validated by two identical-code HEAD runs) diffs EMPTY pre vs post with
+  stdout 11/11 identical; test-goal-async-tail 14/14 identical (PIDs
+  normalized); test-goal-retro 41/41 identical; bash -n + run-evals 97/97.
+- **Problem:** the browser-qa section of the lean executor was a ~270-line inline
+  block; SPEED-2 needs to run it in a forked subshell.
+- **Current state (post-refactor):** `run_browser_qa_section()` definition
+  `scripts/automation/goal-iter-lean.sh:327-604` (service boot `:334-388`;
+  two-lane logic: golden replay lane `:507-530`, LLM lane + merge `:532-580`,
+  REL-11 tripwire `:550-562`, golden coverage + checkpoint mark `:582-602`);
+  resume-skip check `:312-325`; caller guard + invalidation + call `:606-612`.
 - **Change spec:** extract into `run_browser_qa_section()` in the same file; keep the
   resume-skip guard and `step_invalidate_from browser-qa` at the caller; byte-identical
   sequential behavior.
@@ -615,9 +630,11 @@ benchmark (or a real session's telemetry) before AND after (G8).
 - **Problem:** reviewer (~21m) and browser-qa (~20m) both need only the post-dev tree
   yet run sequentially — the single biggest safe parallelism left in the lean path.
 - **Current state:** sequence is developer → review-1 → (fix → review-2) → browser-qa
-  (`goal-iter-lean.sh:142-250` review loop; `step_invalidate_from developer-fix` on
-  FAIL at `~:217`). The coherence fork is the copyable pattern: fork `~:252-290`, join
-  `~:580-602`, reap in `cleanup_iter_servers` `~:90-107`. Feasibility verified: the
+  (`goal-iter-lean.sh:185-256` review loop; `step_invalidate_from developer-fix` on
+  FAIL at `:223`; SPEED-1 landed 2026-07-12 — browser-qa is now
+  `run_browser_qa_section()` `:327-604`, guard + invalidation at the caller
+  `:606-612`). The coherence fork is the copyable pattern: fork `:258-298`, join
+  `:614-636`, reap in `cleanup_iter_servers` `:96-112`. Feasibility verified: the
   checkpoint canonical order (`lib/checkpoint.sh:40`) is an INVALIDATION order, not an
   execution order — `step_invalidate_from developer-fix` already cascades deletion of
   browser-qa/coherence/evaluator markers AND their registered artifacts
@@ -627,12 +644,12 @@ benchmark (or a real session's telemetry) before AND after (G8).
   only reads/diffs (`review_diff_hint`, `lib/common.sh:377-388`).
 - **Change spec:**
   1. Knob `CHAIN_LEAN_PARALLEL_BROWSER_QA=off|replay|full`, default `off`.
-  2. In `replay` mode: after `step_mark_done developer` (`~:187`), fork service boot +
+  2. In `replay` mode: after `step_mark_done developer` (`:193`), fork service boot +
      lane-1 deterministic replay ONLY (`demo_runner.py --mode verify` — pure python,
      cleanly killable in both backends, no pump involvement) in a subshell copying the
      coherence-fork pattern (isolate `CHAIN_CURRENT_AGENT`, rc-file, PID). Join after
      review settles; feed `REPLAY_FAILED` into the LLM lane's target set exactly as the
-     sequential path does (`~:524`).
+     sequential path does (`:534`).
   3. **On review-1 FAIL — ordering is CRITICAL:** kill the fork, `wait` for it to die,
      THEN `step_invalidate_from developer-fix`, then re-run browser-qa sequentially
      post-fix. Never let a forked write land after invalidation.
@@ -666,7 +683,7 @@ benchmark (or a real session's telemetry) before AND after (G8).
   that cancellation gap is EXP-4's problem, not this item's.
 - **Change spec:** in `full` mode AND `CHAIN_AGENT_BACKEND != interactive`: fork the
   whole `run_browser_qa_section` (LLM lane included); join handles rc 70 exactly like
-  the coherence join (`goal-iter-lean.sh:588-591`); same kill-then-invalidate FAIL
+  the coherence join (`goal-iter-lean.sh:622-625`); same kill-then-invalidate FAIL
   ordering; tripwire gains a cost dimension (a wasted full browser-qa dispatch per
   review-FAIL iteration — log it).
 - **DoD:** headless sandbox test green both paths; interactive mode ignores `full`
