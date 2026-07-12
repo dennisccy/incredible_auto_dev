@@ -1109,8 +1109,16 @@ benchmark (or a real session's telemetry) before AND after (G8).
   none beyond the ground rules.
 
 ### REL-10 · Benchmark scratch service-boot localization (fixture env manifest)
-- **Priority:** P1 · **Effort:** S · **Risk:** LOW · **Status:** IN-PROGRESS (this
-  session, 2026-07-11)
+- **Priority:** P1 · **Effort:** S · **Risk:** LOW · **Status:** DONE 2026-07-12
+  *(implemented + verified in the promoting session @ 5e87813077ae — S items may
+  self-close. Offline: test-benchmark-runner.sh 54/54 (fixture.env exported correct /
+  absent-manifest green), run-evals.sh 96/96. Live: benchmark rerun
+  bench-20260712-1536 — journeys 0/3 → 3/3, predicate journeys_passing_after>=3
+  CONFIRMED; the backend served 127.0.0.1:5177 via CHAIN_START_BACKEND_CMD and the
+  browser lane produced PASS evidence both iterations. Run record:
+  benchmarks/results/20260712-171324-5e87813077ae.json + POST bench-20260712-1536
+  in benchmarks/experiments.md — cost REGRESS +43.1% vs baseline was PRE-REGISTERED:
+  the previously-voided lane now executes and bills.)*
 - **Source:** promoted 2026-07-11 from CAND-SVC-BOOT **variant (a) ONLY** by explicit
   user decision (EVO-1 promotion; bundling with REL-11 in one session user-authorized —
   G6 satisfied by that recorded authorization). The general boot-resolution fix
@@ -1175,7 +1183,17 @@ benchmark (or a real session's telemetry) before AND after (G8).
   backup/revert safety + fake-HOME test harness + a three-site tripwire — is a full
   session for the canonical weaker-model executor. Per G8 this item does NOT
   self-certify DONE in the implementing session.) · **Risk:** MED (writes user-global
-  `~/.claude.json`) · **Status:** IN-PROGRESS (this session, 2026-07-11)
+  `~/.claude.json`) · **Status:** IN-PROGRESS — implemented + live-verified
+  2026-07-12 @ 5e87813077ae; awaiting G8 fresh-session certification (M item — the
+  implementer does not self-certify). *(Evidence for the certifier: offline —
+  test-benchmark-runner.sh 54/54 under fake HOME (trust present during engine run,
+  reverted on success AND engine-failure paths, siblings preserved, backup kept,
+  corrupt-json refusal pre-engine), test-goal-retro.sh 41/41 (tripwire fire/no-fire
+  incl. the silent rc=0 void shape), run-evals.sh 96/96. Live — rerun
+  bench-20260712-1536: 0 of 25 traces carry the trust banner (baseline: all),
+  reports/qa/ populated, retro report persisted (EVO-2's first live artifact),
+  trust key verified absent from ~/.claude.json post-run, missing-evidence tripwire
+  fired 0 times consistent with zero voids. Run record: POST bench-20260712-1536.)*
 - **Source:** promoted 2026-07-11 from CAND-HEADLESS-PERMS (fully promoted — CAND
   deleted) by explicit user decision, including explicit authorization of the
   trust-flag variant (the ask-first `~/.claude.json` write) and of bundling with

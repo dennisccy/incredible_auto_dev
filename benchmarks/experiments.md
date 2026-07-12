@@ -90,3 +90,36 @@ Entry format contract (grep-able; pinned by
   CLAUDE.md benchmarks` is EMPTY (the rebased equivalent of the measured commit
   differs only in tests/judgment/**, which the benchmark scratch never copies) — the
   measured tree is byte-identically reproducible from the new main.
+
+---
+
+## PRE bench-20260712-1536 · 2026-07-12T15:36:09Z
+- framework-sha: 5e87813077aeafc8f044c043b6c70f1b06a60c00 (dirty: false)
+- fixture: todo-app · max-iter 2
+- hypothesis: REL-10/11 @ 5e87813077ae: QA lane now produces evidence — journeys 0→3; wall and cost EXPECTED TO RISE vs baseline (the voided browser lane now executes)
+- metrics + prediction (mechanical --predict): journeys_passing_after>=3
+
+## POST bench-20260712-1536 · 2026-07-12T17:13:24Z
+- results: benchmarks/results/20260712-171324-5e87813077ae.json
+- headline: status=BUDGET_EXHAUSTED last_verdict=CONTINUE journeys=3/3 iters=2 engine_exit=0 wall=5833s cost=$15.575128
+- predicate: journeys_passing_after>=3 → true (journeys_passing_after=3)
+- verdict-vs-prediction: CONFIRMED
+- assessment 2026-07-12: GENUINE CHAIN RESULT — the fixes did exactly what the baseline
+  predicted fixing them would do. Journeys 0→3: REL-10's fixture.env put the backend on
+  127.0.0.1:5177 (`.venv/bin/python app.py` via CHAIN_START_BACKEND_CMD; the generic
+  start-backend template no longer shadows it) and REL-11's scratch pre-trust let the
+  light-tier writers persist their evidence — reports/qa/ populated (QA report +
+  test plan, empty for the whole baseline run) and 0 of 25 traces carry the
+  "Ignoring N permissions.allow entries" banner (baseline: every trace). The trust key
+  was reverted by the runner and independently verified absent from ~/.claude.json.
+  benchmark_compare vs the baseline: exit-3 REGRESS on cost (+43.1%, $10.89→$15.58;
+  wall +14.5%, tokens_out +35.9%) — PRE-REGISTERED direction, not a failure: the
+  previously-voided browser/QA lane now executes and bills. journeys_passing +3 is the
+  headline. missing-evidence tripwire (REL-11c) fired 0 times, consistent with all
+  expected artifacts present. final_status BUDGET_EXHAUSTED unchanged (max-iter 2 cap;
+  last_verdict CONTINUE — the chain wanted a third iteration, same shape as baseline).
+  EVO-2's first live artifact: reports/goal-session-bench-20260712-1536-retro.md exists
+  in the kept scratch ("PROPOSALS ONLY" header; drafts RETRO-1 glue-time
+  instrumentation + RETRO-2 concurrent-QA-lane state isolation — candidates for §16
+  triage, not scheduled work). CONFIRMED stands. Kept scratch:
+  ~/.cache/chain-bench-tmp/bench-bench-20260712-1536.ozxtwM
