@@ -498,8 +498,17 @@ the system measures itself, and how it survives the next model change.
 - **Rollback:** docs-only.
 
 ### EVO-5 · Cross-project lesson harvesting
-- **Priority:** P0 · **Effort:** M · **Risk:** LOW · **Status:** IN-PROGRESS —
-  implemented 2026-07-12; fresh-session certification per G8 remains before DONE.
+- **Priority:** P0 · **Effort:** M · **Risk:** LOW · **Status:** DONE —
+  implemented 2026-07-12; certified DONE 2026-07-12 by a fresh non-implementer
+  session per G8: skeptical read + mechanical redirect audit confirmed read-only
+  (stdout/stderr only, zero write-capable commands) and judgment-free; contracted
+  degraded paths re-exercised on a synthetic fixture (malformed / non-dict /
+  missing session.json, nonexistent repo arg → labeled `unknown (<why>)` / empty
+  sections, rc 0); dry run on this repo → clean labeled-empty digest, rc 0;
+  adopter re-run over ~/Git/tapeology + ~/Git/trendora → rc 0 and the digest
+  reproduces the §16 CAND evidence (verbatim audit-dispatch and BQA-preflight
+  quotes in the lessons tails); procedure documented in-entry and all three
+  harvest-sourced CANDs cite dated provenance; run-evals 97/97 green.
   *(Implementation note 2026-07-12: `scripts/automation/harvest-lessons.sh` ships the
   spec's digest — per-repo grouped sections for (1) session.json halt lines
   (status · last_verdict · current_iter, literal values; missing/unreadable → the
