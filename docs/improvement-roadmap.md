@@ -498,7 +498,22 @@ the system measures itself, and how it survives the next model change.
 - **Rollback:** docs-only.
 
 ### EVO-5 · Cross-project lesson harvesting
-- **Priority:** P0 · **Effort:** M · **Risk:** LOW · **Status:** TODO
+- **Priority:** P0 · **Effort:** M · **Risk:** LOW · **Status:** IN-PROGRESS —
+  implemented 2026-07-12; fresh-session certification per G8 remains before DONE.
+  *(Implementation note 2026-07-12: `scripts/automation/harvest-lessons.sh` ships the
+  spec's digest — per-repo grouped sections for (1) session.json halt lines
+  (status · last_verdict · current_iter, literal values; missing/unreadable → the
+  house `unknown (<why>)`), (2) lessons.md tails (last 20 lines each), and (3) one
+  post-spec, in-spirit EVO-2-era extension: a `reports/goal-session-*-retro.md`
+  paths section, so retro proposals surface in the digest alongside the lessons
+  they grew from. Read-only (stdout only), judgment-free, exit 0 on every content
+  condition (usage error = exit 2); covered by run-evals.sh §1's
+  scripts/automation/*.sh syntax glob (96 → 97 checks). DoD dry run on this repo:
+  clean labeled-empty digest. Degraded paths (absent runs/, missing + unreadable
+  session.json, nonexistent repo arg, multi-repo invocation) hand-verified against
+  a synthetic fixture the same day. First real harvest run the same day over
+  ~/Git/tapeology + ~/Git/trendora; recurring symptoms drafted as §16
+  CAND-AUDIT-DISPATCH / CAND-BQA-PREFLIGHT / CAND-VENDORED-SCAN-SCOPE.)*
 - **Problem:** each adopting repo accumulates `lessons.md` / `evaluator-log.md` pain the
   framework repo never learns from; anti-patterns.md only grows when someone remembers.
 - **Current state:** maintenance protocol §2 defines the lesson formats and where
@@ -512,6 +527,17 @@ the system measures itself, and how it survives the next model change.
   2. Procedure (documented in this file, here): quarterly or after each delivered
      project, run the harvester over known adopting repos; for each recurring symptom,
      draft either an anti-patterns entry (protocol §2 format) or a §16 staging item.
+- **Procedure (operational — EVO-1 source 5):** quarterly, or after each delivered
+  project, run `./scripts/automation/harvest-lessons.sh <repo>...` over the known
+  adopter repos and review the digest with the user. Known adopters (2026-07-12):
+  `~/Git/tapeology`, `~/Git/trendora` — extend this list as projects deliver. For
+  each symptom recurring across sessions or repos, the reviewing session DRAFTS
+  either a numbered `.claude/anti-patterns.md` entry (protocol §2: symptom → root
+  cause → checkable rule) or a §16 staging item carrying the digest's evidence
+  quotes; the human promotes (EVO-1). Adopters run VENDORED framework snapshots —
+  before promoting any harvested symptom, verify it still exists at framework HEAD.
+  The harvester stays judgment-free: interpretation happens in the review, never in
+  the script.
 - **DoD:** script handles missing dirs gracefully; procedure documented; one dry run on
   this repo (no sessions → clean empty output).
 - **Verify:** `bash -n scripts/automation/harvest-lessons.sh &&
@@ -1825,6 +1851,77 @@ but appreciated.
   concurrently with Branch-QA (`qa-phase.sh`) under `CHAIN_SHARED_SERVICES=true` — but
   option (a) serialization pushes against the SPEED-2/SPEED-3 parallelization chain,
   so triage should weigh (a) vs (b) against §9 before promoting.
+
+### CAND-AUDIT-DISPATCH · Full-depth audit step can be silently skipped (staged — do not start)
+- *(EVO-5 first real harvest, 2026-07-12, over ~/Git/tapeology + ~/Git/trendora —
+  cross-repo recurring symptom drafted from the digest; promotion human, EVO-1.)*
+- **Proposed:** P1 · Effort M · Risk MED (engine orchestration).
+- **Symptom (harvest evidence, cross-repo):** trendora
+  `goal-session-i_can_see_the_wealthy_future_forever_with_my_loved_ones` iter-55
+  lesson: "The audit step has silently NOT run for three consecutive iterations
+  (53/54/55) — status.json keeps stopping at current_step: qa_complete /
+  next_action: audit with no audit handoff written… This is an engine ORCHESTRATION
+  gap (the auditor agent is never dispatched between QA and coherence/evaluator)."
+  tapeology `goal-session-i_will_be_super_rich` lesson: "no `-audit.md` handoff was
+  produced (status stopped at qa_complete) — full-depth iterations can finish
+  without the audit step."
+- **Sketch:** determine whether the goal-mode full-depth path at framework HEAD can
+  still complete an iteration without dispatching the auditor (phase mode's
+  `run-phase.sh:889-941` Step 9 is fail-loud with retries; both adopters ran
+  vendored snapshots); if it can, make the dispatch mandatory-or-loud — at minimum
+  give a missing audit handoff the REL-11 missing-evidence treatment
+  (`warn_missing_evidence` banner + `missing_evidence` telemetry event).
+- **Triage note (staging session, 2026-07-12):** highest-signal harvest finding —
+  the same silent-void class REL-11 just closed for qa/browser-qa/retro-analyst,
+  observed for the auditor in BOTH adopters; trendora's evaluator had to perform
+  the audit's skeptical checks itself before declaring GOAL_ACHIEVED.
+
+### CAND-BQA-PREFLIGHT · Browser-qa dispatch lacks a services/fixture preflight gate (staged — do not start)
+- *(EVO-5 first real harvest, 2026-07-12 — cross-repo recurring symptom drafted
+  from the digest; promotion human, EVO-1.)*
+- **Proposed:** P1 · Effort M · Risk MED.
+- **Symptom (harvest evidence, cross-repo, chronic):** trendora
+  `goal-session-i_can_see_the_wealthy_future` iter-12: "the browser-qa (probes
+  `/health` not `/api/health`; tears services down pre-test) … gaps were flagged
+  every iter 3–12 via spec text and never fixed — durable fixes belong in
+  `scripts/automation/*.sh`, not spec prose." trendora
+  `goal-session-i_can_see_the_wealthy_future_forever` iter-27 (STALLED): "The
+  browser-QA runner ran against the LIVE host with the seed env unset for FIVE
+  straight iterations (23/24/25/26/27) despite an increasingly verbatim recipe."
+  tapeology `goal-session-structure_ui` iter-4: "curl-confirming `:3301`/`:8301`
+  before QA dispatch turned iter-3's SKIPPED 0/26 into iter-4's 18/18 populated
+  PASS — the precondition is now a proven, not speculative, gate."
+- **Sketch:** a deterministic services-up preflight (and, when the spec names one,
+  a fixture/env-state check) in the browser-qa dispatch path — in
+  `scripts/automation`, not spec prose — that refuses or loudly SKIPs the dispatch
+  when the preflight fails, instead of burning a full browser pass against a dead
+  or wrong-state host.
+- **Triage note (staging session, 2026-07-12):** tapeology iter-4 already proved
+  the gate live; orthogonal to CAND-QA-ISOLATION (service readiness vs concurrent
+  state mutation) — check overlap with `ensure_services_running`
+  (`lib/common.sh:770`) before promoting: the engine may have partial cover the
+  vendored snapshots lacked.
+
+### CAND-VENDORED-SCAN-SCOPE · Vendored framework subtree trips adopter secret scans (staged — do not start)
+- *(EVO-5 first real harvest, 2026-07-12 — cross-repo recurring symptom drafted
+  from the digest; SEC-5-adjacent, staged at the sanctioned drafting ceiling;
+  promotion human, EVO-1.)*
+- **Proposed:** P2 · Effort S · Risk LOW.
+- **Symptom (harvest evidence, cross-repo):** trendora `goal-session-mcp-loop`
+  iter-27: vendored `incredible_auto_dev/` judgment fixtures
+  (`tests/judgment/{auditor,reviewer,goal-evaluator}/case-*`, planted fake keys)
+  "reliably light up as CRITICAL secret-assignment/aws-access-key findings but are
+  NOT product anti-goal-#7 violations." tapeology `goal-session-yahoo_fetch`
+  iter-6: "iter-5's scan CRITICAL came from vendored `incredible_auto_dev/**`
+  judgment fixtures; the iter-6 pre-flight correctly moved those out."
+- **Sketch:** SEC-5's `CHAIN_SCAN_BOOKKEEPING_EXCLUDES` default
+  (`runs reports docs/handoffs docs/phases`) does not cover a vendored framework
+  subtree; consider adding the vendored subtree dir to the default excludes for
+  vendored deployments (or to the vendoring guidance in maintenance protocol §3.4),
+  preserving SEC-5's path-based, never-value-allowlisting principle.
+- **Triage note (staging session, 2026-07-12):** both adopters independently
+  hand-worked around it (fixture relocation; path-prefix splitting by convention) —
+  cheap to close structurally, and the scan stays CRITICAL-capable on product paths.
 
 ---
 
