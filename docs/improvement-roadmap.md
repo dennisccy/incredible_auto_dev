@@ -628,10 +628,17 @@ benchmark (or a real session's telemetry) before AND after (G8).
 - **Rollback:** revert the commit (pure refactor).
 
 ### SPEED-2 · Parallel review ∥ browser-qa — stage "replay"
-- **Priority:** P1 · **Effort:** M · **Risk:** MED · **Status:** IN-PROGRESS 2026-07-12 —
-  implemented default-off; remaining before DONE: G8 fresh-session certification;
-  before any default flip: pre-registered benchmark measurement per §9 (before =
-  `benchmarks/results/20260712-171324-5e87813077ae.json`).
+- **Priority:** P1 · **Effort:** M · **Risk:** MED · **Status:** DONE 2026-07-12 —
+  certified 2026-07-12 by a fresh non-implementer session per G8: parallel-bqa 36/36 +
+  checkpoints 11/11 + run-evals 98/98; off-mode byte-identity REPRODUCED (fresh stub
+  sandbox on pre-SPEED-2 `bb09160` vs HEAD, normalized tree+content+stdout+prompt
+  snapshot diff = exactly the one spec-mandated `iter_config` telemetry line, normalizer
+  pre-validated by a HEAD-vs-HEAD empty diff); FAIL-path kill-before-invalidate proof
+  repeated 5× with zero flakes (slow-stub TERM stamp); fork isolation, tripwire
+  persistence across invocations, and the cleanup reap re-verified by skeptical read.
+  DONE ≠ default flip (G4): any default flip still requires the pre-registered benchmark
+  measurement per §9 (before = `benchmarks/results/20260712-171324-5e87813077ae.json`);
+  default remains `off`.
   *Implementation note (2026-07-12):* knob `CHAIN_LEAN_PARALLEL_BROWSER_QA=off|replay|full`,
   default `off` (`full` warns "full is SPEED-3" and behaves as `replay`; documented in the
   `.claude/model-orchestration.md` knob table). Fork unit =
