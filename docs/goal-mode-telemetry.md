@@ -164,6 +164,14 @@ python3 scripts/automation/lib/analyze_telemetry.py runs/goal-session-<sid>/tele
 | `golden_coverage` | `goal-iter-lean.sh` | `{passing, missing_goldens, iter_name}` — PASSing journeys still lacking a replay golden |
 | `experiment_reverted` | `run-goal.sh` | `{key, value}` — the tripwire auto-reverted an experiment knob |
 
+### `missing_evidence` (REL-11 tripwire)
+Written when a dispatch returns — any exit code, including 0 — without its expected report artifact on disk: full-mode QA (`qa-phase.sh`), the lean browser-qa LLM lane (`goal-iter-lean.sh`; quota pauses excluded), and the retro-analyst (`run-goal.sh`). The telemetry counterpart of the loud `[missing-evidence]` stderr banner (`lib/common.sh` `warn_missing_evidence`). Non-blocking — a tripwire, never a gate.
+
+| Field | Type | Description |
+|---|---|---|
+| `agent` | string | Dispatching agent whose report is missing (`qa` \| `browser-qa-agent` \| `retro-analyst`) |
+| `path` | string | The expected report path that was absent |
+
 ### Wall-time report and tripwire
 
 Where do the ~2 hours of an iteration go? Per-iteration wall breakdown (per-agent

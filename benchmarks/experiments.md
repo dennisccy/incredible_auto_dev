@@ -123,3 +123,8 @@ Entry format contract (grep-able; pinned by
   instrumentation + RETRO-2 concurrent-QA-lane state isolation — candidates for §16
   triage, not scheduled work). CONFIRMED stands. Kept scratch:
   ~/.cache/chain-bench-tmp/bench-bench-20260712-1536.ozxtwM
+- retro report preserved 2026-07-12: copied verbatim (sha256-verified) from the kept
+  scratch to benchmarks/results/20260712-171324-5e87813077ae.retro.md (sibling of the
+  results JSON) before tmp cleanup can eat it; RETRO-1/RETRO-2 staged in the roadmap
+  §16 as CAND-GLUE-TIME / CAND-QA-ISOLATION the same day (user-authorized staging per
+  EVO-2's contract — promotion stays human).

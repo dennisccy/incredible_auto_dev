@@ -1183,9 +1183,9 @@ benchmark (or a real session's telemetry) before AND after (G8).
   backup/revert safety + fake-HOME test harness + a three-site tripwire — is a full
   session for the canonical weaker-model executor. Per G8 this item does NOT
   self-certify DONE in the implementing session.) · **Risk:** MED (writes user-global
-  `~/.claude.json`) · **Status:** IN-PROGRESS — implemented + live-verified
-  2026-07-12 @ 5e87813077ae; awaiting G8 fresh-session certification (M item — the
-  implementer does not self-certify). *(Evidence for the certifier: offline —
+  `~/.claude.json`) · **Status:** DONE — implemented + live-verified
+  2026-07-12 @ 5e87813077ae; certified 2026-07-12 by a fresh non-implementer
+  session per G8. *(Evidence for the certifier: offline —
   test-benchmark-runner.sh 54/54 under fake HOME (trust present during engine run,
   reverted on success AND engine-failure paths, siblings preserved, backup kept,
   corrupt-json refusal pre-engine), test-goal-retro.sh 41/41 (tripwire fire/no-fire
@@ -1194,6 +1194,29 @@ benchmark (or a real session's telemetry) before AND after (G8).
   reports/qa/ populated, retro report persisted (EVO-2's first live artifact),
   trust key verified absent from ~/.claude.json post-run, missing-evidence tripwire
   fired 0 times consistent with zero voids. Run record: POST bench-20260712-1536.)*
+  *(G8 certification 2026-07-12, fresh non-implementer session: trust write
+  re-verified atomic (mkstemp + os.replace) and single-key (setdefault chain touches
+  only projects[<scratch>]); timestamped backup precedes the first write; revert
+  re-reads the LIVE file, pops exactly the scratch entry, and self-verifies absence.
+  Exit paths enumerated from the code: clean success and engine-nonzero both hit the
+  inline revert (ENGINE_RC captured, set -e survives); trust-write failure aborts
+  pre-engine with no key written; runner crash and Ctrl-C/SIGTERM hit the EXIT trap
+  (installed before the write, flag set before the write); a failed revert leaves
+  the flag set so the final gate refuses exit 0 and prints manual-removal
+  instructions + backup path; SIGKILL is uncoverable by construction — backup is the
+  documented recovery. Test isolation confirmed: every runner invocation goes
+  through run_runner with HOME + TMPDIR forced to per-case fixtures — the suite
+  cannot address the real ~/.claude.json. All suites reproduced green (54/54, 41/41,
+  96/96). Live evidence re-verified against the kept scratch: 25 trace logs
+  (+ trace.jsonl index), 0 banner hits across all files; QA report/test-plan/
+  evidence dirs present; retro report present; no projects entry for the 1536
+  scratch in ~/.claude.json today. Observation, not residue: the 2026-07-10
+  BASELINE scratch's entry (hasTrustDialogAccepted:false + default siblings,
+  claude's own auto-creation, predates REL-11) is still present — remove it
+  whenever the kept baseline scratch is cleaned. One small defect fixed in
+  certification: `missing_evidence` was absent from docs/goal-mode-telemetry.md's
+  event catalog — section added (name/shape were already eval-pinned by
+  test-goal-retro.sh per G3).)*
 - **Source:** promoted 2026-07-11 from CAND-HEADLESS-PERMS (fully promoted — CAND
   deleted) by explicit user decision, including explicit authorization of the
   trust-flag variant (the ask-first `~/.claude.json` write) and of bundling with
@@ -1740,6 +1763,68 @@ but appreciated.
   required (EVO-1). Verify: a consumer-repo-shaped test fixture whose project-template
   documents a non-default start command boots it without any env override; the REL-10
   benchmark keeps passing with `fixture.env` deleted (the middle tier would subsume it).
+
+### CAND-GLUE-TIME · Instrument goal-loop "glue" wall time (staged — do not start)
+- *(First retro-loop harvest: drafted by the EVO-2 retro-analyst as RETRO-1 at the
+  bench-20260712-1536 terminal halt; staged verbatim 2026-07-12, user-authorized per
+  EVO-2's contract — promotion stays human, EVO-1.)*
+- **Proposed (by the retro):** P2 · Effort M · Risk LOW.
+- **Source:** retro report preserved at
+  `benchmarks/results/20260712-171324-5e87813077ae.retro.md` (sibling of the run's
+  results JSON); kept scratch `~/.cache/chain-bench-tmp/bench-bench-20260712-1536.ozxtwM`
+  (traces + telemetry).
+- **Problem (retro's words):** Iteration 1 showed 57.0m of unattributed wall time out
+  of 74.3m total (77% of iteration), labeled as "glue" in the wall-time breakdown. No
+  visibility into what synchronization, external waits, or queue delays this represents.
+- **Evidence (retro's citation):** Agent economics — "goal-bench-20260712-1536-iter-1
+  depth=full  verdict=CONTINUE  wall=74.3m ... unattributed (glue)       57.0m"
+- **Sketch (retro's):** Add instrumentation to the goal-loop pump
+  (scripts/automation/run-goal.sh and lib/goal_pump.sh) to emit telemetry events for
+  queue depth, wait-for-agent latency, and post-verdict pause durations. Surface these
+  in analyze_telemetry.py --wall output as separate line items instead of lumping them
+  as "unattributed."
+- **Verify idea (retro's):** Re-run a goal-mode session with the same budget and
+  confirm that "glue" time is now broken into named, measurable components that sum to
+  the original 57m.
+- **Triage note (staging session, 2026-07-12):** the sketch's `lib/goal_pump.sh` does
+  not exist (the digest-only retro-analyst guessed the path) and the benchmark run was
+  headless — no interactive pump — so promotion needs a fresh look at where the 57m
+  actually lives (dispatch startup, service boots, retries, sleeps) before adopting the
+  sketch's event list.
+
+### CAND-QA-ISOLATION · Isolate concurrent QA-lane state mutations (staged — do not start)
+- *(First retro-loop harvest: drafted by the EVO-2 retro-analyst as RETRO-2 at the
+  bench-20260712-1536 terminal halt; staged verbatim 2026-07-12, user-authorized per
+  EVO-2's contract — promotion stays human, EVO-1.)*
+- **Proposed (by the retro):** P1 · Effort M · Risk MED.
+- **Source:** retro report preserved at
+  `benchmarks/results/20260712-171324-5e87813077ae.retro.md`; kept scratch
+  `~/.cache/chain-bench-tmp/bench-bench-20260712-1536.ozxtwM` (the cited lessons.md
+  lives under its `scratch/runs/goal-session-bench-20260712-1536/state/`).
+- **Problem (retro's words):** Concurrent qa and browser-qa-agent lanes drive Chrome
+  against shared stateful server resources (Flask instance + todos.json). When both
+  lanes run in parallel on mutation-heavy journeys, one lane's state changes pollute
+  the other's evidence (screenshots show false negatives). The lessons tail documents
+  a case where browser evidence contradicted itself due to concurrent state mutation
+  mid-screenshot.
+- **Evidence (retro's citation):** Lessons tail — "Two lanes of the same pipeline
+  (`qa` and `browser-qa-agent`) drove Chrome against one Flask instance and one
+  `todos.json` concurrently, and the resulting screenshots make a CORRECT app look
+  BROKEN... because the other agent toggled state mid-run."
+- **Sketch (retro's):** For goal-mode sessions on stateful apps (detected: journeys
+  with mutations, or DATA_FILE persisted across runs), either (a) serialize the QA and
+  browser-qa-agent lanes (add a depends-on gate), or (b) give each lane a private
+  isolated copy of DATA_FILE (e.g., `todos-qa-lane-<uuid>.json`,
+  `todos-browser-qa-lane-<uuid>.json`) and reconcile state deterministically before
+  re-drive.
+- **Verify idea (retro's):** Re-run a goal-mode session on a stateful app with
+  mutation journeys; confirm that no screenshot contradicts its own results row, and
+  that two lanes do not produce conflicting evidence for the same journey step.
+- **Triage note (staging session, 2026-07-12):** the premise is structurally real —
+  `run-phase.sh` runs Branch A (ui-impact → ui-test-design → browser-qa → demo)
+  concurrently with Branch-QA (`qa-phase.sh`) under `CHAIN_SHARED_SERVICES=true` — but
+  option (a) serialization pushes against the SPEED-2/SPEED-3 parallelization chain,
+  so triage should weigh (a) vs (b) against §9 before promoting.
 
 ---
 
