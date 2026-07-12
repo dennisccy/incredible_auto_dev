@@ -724,7 +724,45 @@ benchmark (or a real session's telemetry) before AND after (G8).
 - **Depends on:** SPEED-1.
 
 ### SPEED-3 · Parallel review ∥ browser-qa — stage "full" (headless only)
-- **Priority:** P1 · **Effort:** M · **Risk:** MED · **Status:** TODO
+- **Priority:** P1 · **Effort:** M · **Risk:** MED · **Status:** IN-PROGRESS 2026-07-13 —
+  implemented default-off; G8 fresh-session certification remains; a default flip
+  additionally requires the §9 pre-registered benchmark measurement (before =
+  `benchmarks/results/20260712-171324-5e87813077ae.json`).
+  *Implementation note (2026-07-13):* backend gate at knob parse: `full` is honored only
+  when `CHAIN_AGENT_BACKEND != interactive`; interactive demotes to `replay` with one
+  logged warning and `iter_config` reason `interactive-backend` (`goal-iter-lean.sh:540`,
+  replacing SPEED-2's placeholder warning). Fork unit = the WHOLE
+  `run_browser_qa_section` (service boot + replay lane + LLM lane + merge) — its
+  definition moved verbatim above the developer step so the fork subshell can see it
+  (`:575`; off-mode byte-identity re-proven post-move: pre-SPEED-2 `bb09160` vs HEAD
+  normalized sandbox snapshot still diffs to exactly the one `iter_config` line). Spawn
+  right after developer settles with replay-fork isolation (subshell-contained agent
+  name, own `.bqa-full-rc`/`.bqa-full-pid`, recycled-PID-safe orphan guard, `:865`).
+  Checkpointing stays in the PARENT: the fork writes NO step markers (the review loop's
+  invalidation cascades pass through browser-qa, so a fork-written marker would race
+  them); browser-qa is invalidated BEFORE forking and the join writes the marker after
+  validating the merged results (`_BQA_IN_FULL_FORK` guard `:739`). JOIN-PAUSE
+  TRANSLATION (the hardest semantic): `_pause_if_transport` EXITS the fork subshell from
+  inside `run_browser_qa_llm` before the rc file can be written, so the join
+  (`_bqa_full_fork_consume` `:415`) reads `wait`'s status and re-raises rc 70 in the
+  parent — engine pauses resumably exactly as inline; any other fork failure falls back
+  to the inline section (the sequential path IS the fallback). Test-proven: the
+  pause-at-join sandbox tree (file list + step markers + marker tree_hash) is IDENTICAL
+  to the sequential rc-70 pause tree, and a follow-up run resumes (developer skips,
+  browser-qa re-forks, real PASS). Review-1 FAIL: `_bqa_full_fork_reap` (`:453`, called
+  `:931` beside the replay reap) kills the whole fork tree (in-flight stub dispatch
+  included), waits, sweeps ports, discards replay+LLM+merged lane files, THEN
+  `step_invalidate_from developer-fix` — post-fix browser-qa runs sequentially; pgrep
+  in the test asserts ZERO surviving fork processes (the stop-and-ask trigger). Cost
+  dimension: the reap emits `parallel_bqa_wasted_dispatch` (mode=full, wasted full
+  browser-qa dispatch fact, plus the note that the 2-of-3 tripwire spares exactly this
+  cost); the tripwire itself now gates both `replay` and `full`.
+  `cleanup_iter_servers` reaps the full-fork PID tree on every exit path (`:142`).
+  Test: `tests/automation/test-goal-parallel-bqa.sh` extended 36→68 asserts (scenarios
+  E interactive-gate/dispatch-free, F full+PASS with overlap witness + tree/rows/target
+  identity vs sequential, G kill-mid-dispatch + zero-orphan pgrep + wasted-dispatch
+  event, H rc-70 pause-tree parity + resume); suite ~24s, still in run-evals §2c
+  (98/98). Race/orphan scenarios re-run 5× — zero flakes.
 - **Problem:** replay mode only parallelizes the deterministic lane; the LLM browser-qa
   dispatch (~most of the 20m) still waits for review.
 - **Current state:** as SPEED-2. The interactive backend is EXCLUDED: killing the

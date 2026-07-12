@@ -19,6 +19,14 @@
 # developer step and joined once the review loop settles; a review-1 FAIL kills
 # the fork BEFORE any step invalidation (see the fork block below).
 #
+# SPEED-3: =full (headless backends ONLY; the interactive backend demotes to
+# replay with a warning — killing an engine-side waiter would strand the
+# pump's subagent, EXP-4's cancellation gap) forks the WHOLE browser-qa
+# section, LLM lane included. The join translates a transport exit (70) from
+# inside the fork into the same resumable engine pause the sequential path
+# takes, and a review-1 FAIL kills the fork tree (in-flight dispatch included)
+# before any invalidation.
+#
 # The outer run-goal.sh runs the goal-evaluator after this script returns.
 #
 # All Claude calls go through claude_with_quota_retry → --effort max + auto-resume on quota.
@@ -129,6 +137,15 @@ cleanup_iter_servers() {
       _kill_pid_tree "$_BQA_PID" 2>/dev/null || true
     else
       kill "$_BQA_PID" 2>/dev/null || true
+    fi
+  fi
+  # SPEED-3: reap a still-running full-section fork on every exit path (same
+  # rationale; the tree kill also takes down an in-flight LLM dispatch child).
+  if [[ -n "${_BQA_FULL_PID:-}" ]]; then
+    if declare -F _kill_pid_tree >/dev/null 2>&1; then
+      _kill_pid_tree "$_BQA_FULL_PID" 2>/dev/null || true
+    else
+      kill "$_BQA_FULL_PID" 2>/dev/null || true
     fi
   fi
 }
@@ -374,6 +391,88 @@ _bqa_fork_reap() {
   return 0
 }
 
+# ══ SPEED-3: parallel review ∥ browser-qa — stage "full" (headless only) ═══
+# Forkable unit = the WHOLE run_browser_qa_section (service boot + replay lane
+# + LLM lane + merge). Two contracts differ from the replay stage:
+#   • Checkpointing stays in the PARENT: the fork writes NO step markers — the
+#     review loop's own step_invalidate_from calls cascade through browser-qa,
+#     so a marker written concurrently from the fork could be wiped mid-write
+#     or trusted when it should not be. The spawn site invalidates browser-qa
+#     BEFORE forking (deterministic ordering vs the review loop), and the join
+#     validates the results file and writes the marker itself.
+#   • A transport pause crosses the process boundary as an EXIT STATUS:
+#     _pause_if_transport exits the SUBSHELL from inside run_browser_qa_llm
+#     (rc 70) BEFORE the fork can write its rc file, so the join reads `wait`'s
+#     status and re-raises the pause in the parent — the engine pauses
+#     resumably exactly as if the dispatch had run inline (mirror of the
+#     coherence join's rc-70 branch below).
+
+# Join the full-section fork. Returns 0 ONLY when the fork ran the section to
+# completion (rc file present and 0) — the caller then skips the inline
+# section; the checkpoint mark (the one thing the fork deferred) happens here.
+# A transport 70 pauses the engine. Any other outcome cleans up and returns 1
+# so the caller runs the section inline (the sequential path IS the fallback).
+_bqa_full_fork_consume() {
+  [[ -n "${_BQA_FULL_PID:-}" ]] || return 1
+  local _frc=0
+  wait "$_BQA_FULL_PID" 2>/dev/null || _frc=$?
+  _BQA_FULL_PID=""
+  local _file_rc
+  _file_rc="$(cat "$_BQA_FULL_RC_FILE" 2>/dev/null || echo "")"
+  rm -f "$_BQA_FULL_RC_FILE" "$_BQA_FULL_PID_FILE" 2>/dev/null || true
+  if [[ "$_frc" -eq "${DISPATCH_UNAVAILABLE_EXIT_CODE:-70}" || "$_file_rc" == "${DISPATCH_UNAVAILABLE_EXIT_CODE:-70}" ]]; then
+    # Today only wait's status can carry the 70 (the in-fork exit skips the
+    # rc-file write); the file check is belt-and-braces against a refactor.
+    # browser-qa was invalidated before the fork, so the resume re-runs the
+    # whole section and nothing certifies the fork's partial artifacts.
+    _pause_if_transport "${DISPATCH_UNAVAILABLE_EXIT_CODE:-70}" "browser-qa-agent (parallel full)"
+  fi
+  if [[ "$_file_rc" != "0" ]]; then
+    echo "[goal-iter-lean] Forked full browser-qa section unusable (wait rc=$_frc, section rc=${_file_rc:-none}) — running the section inline." >&2
+    return 1
+  fi
+  _bqa_lane_paths
+  cd "$REPO_ROOT"
+  # Checkpoint mark — verbatim the section's own tail, which the fork skipped.
+  _bq_verdict="$(grep -m1 -E '^\*\*Browser QA Verdict:\*\*' "$UI_TEST_RESULTS" 2>/dev/null | grep -oE 'PASS|FAIL|SKIPPED' | head -1)"
+  if [[ "$_bq_verdict" == "PASS" || "$_bq_verdict" == "FAIL" ]]; then
+    step_mark_done browser-qa --dir "$ITER_DIR" --verdict "$_bq_verdict" --journeys "$_bq_sig" "$UI_TEST_RESULTS"
+  fi
+  echo "[goal-iter-lean] Consumed forked full browser-qa results (verdict: ${_bq_verdict:-none})."
+  return 0
+}
+
+# Review-1 FAIL path for the full stage (same CRITICAL ORDERING as
+# _bqa_fork_reap, bigger blast radius): the fork may hold an IN-FLIGHT LLM
+# dispatch — kill the whole tree (dispatch child included), wait until dead,
+# sweep the orphaned-to-init servers, and discard every lane file the section
+# could have produced against the pre-fix tree (replay results, LLM results,
+# and the MERGED results file; none is marker-registered yet). Also emits the
+# SPEED-3 tripwire cost event: each review-FAIL iteration in full mode wastes
+# one full browser-qa dispatch — the 2-of-3 tripwire spares exactly this cost.
+_bqa_full_fork_reap() {
+  [[ -n "${_BQA_FULL_PID:-}" ]] || return 0
+  echo "[goal-iter-lean] Reaping the forked full browser-qa section (pid $_BQA_FULL_PID) before invalidation..."
+  if declare -F _kill_pid_tree >/dev/null 2>&1; then
+    _kill_pid_tree "$_BQA_FULL_PID" 2>/dev/null || true
+  else
+    kill "$_BQA_FULL_PID" 2>/dev/null || true
+  fi
+  wait "$_BQA_FULL_PID" 2>/dev/null || true
+  _BQA_FULL_PID=""
+  _bqa_kill_port_servers
+  _bqa_lane_paths
+  rm -f "$_BQA_FULL_RC_FILE" "$_BQA_FULL_PID_FILE" \
+        "${REGRESSION_RESULTS:-}" "${LLM_RESULTS:-}" "${UI_TEST_RESULTS:-}" 2>/dev/null || true
+  record_telemetry_event "parallel_bqa_wasted_dispatch" "$(jq -cn --arg n "$ITER_NAME" \
+      '{mode:"full", iter_name:$n,
+        wasted:"one full browser-qa dispatch (LLM lane included) ran against the pre-fix tree and was discarded on the attempt-1 review FAIL",
+        note:"the 2-of-3 attempt-1-FAIL tripwire also spares this cost by disabling the fork for the rest of the session"}' 2>/dev/null \
+    || printf '{"mode":"full","iter_name":"%s","wasted":"one full browser-qa dispatch"}' "$ITER_NAME")"
+  echo "[goal-iter-lean] Forked full browser-qa section is dead and its lane files are discarded — safe to invalidate."
+  return 0
+}
+
 # Read-only mirror of the resume-skip check ahead of run_browser_qa_section
 # (keep the two in sync; this one must not emit the step_skipped telemetry).
 # When the browser-qa checkpoint will be reused, a fork would boot services
@@ -426,22 +525,30 @@ _bqa_tripwire_active() {
 }
 
 # Knob: CHAIN_LEAN_PARALLEL_BROWSER_QA=off|replay|full, default off (G4).
-# "full" (forking the LLM lane too) is SPEED-3 — not implemented here; it
-# warns and behaves as "replay". Unrecognized values fall back to off.
+# "full" (SPEED-3: fork the whole section, LLM lane included) is HEADLESS-ONLY:
+# on the interactive backend, killing the engine-side waiter would strand the
+# pump's subagent against a request nobody reads (stale req/res files are only
+# cleaned at engine start) — that cancellation gap is EXP-4's, so interactive
+# demotes full → replay with a logged warning. Unrecognized values fall to off.
 _BQA_REQUESTED="${CHAIN_LEAN_PARALLEL_BROWSER_QA:-off}"
 _BQA_MODE="off"
+_BQA_OFF_REASON=""
 case "$_BQA_REQUESTED" in
   replay) _BQA_MODE="replay" ;;
   full)
-    echo "[goal-iter-lean] CHAIN_LEAN_PARALLEL_BROWSER_QA=full is SPEED-3 (not implemented); using replay." >&2
-    _BQA_MODE="replay" ;;
+    if [[ "${CHAIN_AGENT_BACKEND:-}" == "interactive" ]]; then
+      echo "[goal-iter-lean] CHAIN_LEAN_PARALLEL_BROWSER_QA=full is headless-only (an interactive fork kill would strand the pump's subagent — EXP-4); using replay." >&2
+      _BQA_MODE="replay"
+      _BQA_OFF_REASON="interactive-backend"
+    else
+      _BQA_MODE="full"
+    fi ;;
   off|"") _BQA_MODE="off" ;;
   *)
     echo "[goal-iter-lean] CHAIN_LEAN_PARALLEL_BROWSER_QA='$_BQA_REQUESTED' is not off|replay|full — using off." >&2
     _BQA_MODE="off" ;;
 esac
-_BQA_OFF_REASON=""
-if [[ "$_BQA_MODE" == "replay" ]]; then
+if [[ "$_BQA_MODE" == "replay" || "$_BQA_MODE" == "full" ]]; then
   _tw_rc=0
   _bqa_tripwire_active || _tw_rc=$?
   if [[ "$_tw_rc" -eq 0 ]]; then
@@ -454,264 +561,16 @@ fi
 # Name the knob state every iteration (mirrors run-goal.sh's iter_config event).
 record_telemetry_event "iter_config" "$(jq -cn --arg k "CHAIN_LEAN_PARALLEL_BROWSER_QA" --arg v "$_BQA_MODE" --arg req "$_BQA_REQUESTED" --arg r "$_BQA_OFF_REASON" '{key:$k, value:$v, requested:$req, reason:$r}' 2>/dev/null || printf '{"key":"CHAIN_LEAN_PARALLEL_BROWSER_QA","value":"%s"}' "$_BQA_MODE")"
 
-# ── Step 1: Developer ─────────────────────────────────────────────────────
-run_developer() {
-  local mode_label="$1"
-  local fix_context="$2"
-  cd "$REPO_ROOT"
-  local _start
-  record_agent_invocation_start "developer"   # bare call: $(...) would lose the CHAIN_CURRENT_AGENT export to a subshell
-  _start=$CHAIN_AGENT_START_EPOCH
-  local _rc=0
-  claude_with_quota_retry -p "You are the developer agent for goal-mode lean iteration.
-
-Iteration: $ITER_NAME
-Iter spec: $SPEC
-Project goal: $GOAL_FILE  <-- read Must-have user journeys and Anti-goals
-Project template: .claude/project-template.md
-Agent instructions: .claude/agents/developer.md  <-- read this first
-(CLAUDE.md is already in your system prompt — do not Read it again.)
-
-Mode: $mode_label
-$fix_context
-
-This is a LEAN goal-mode iteration. Implement only what the iter spec's IN SCOPE
-section calls for. Tighter scope than a full phase. Do NOT introduce features
-outside the iter spec's IN SCOPE list.
-
-When complete:
-- Write dev handoff to: $DEV_HANDOFF
-- Update runs/${ITER_NAME}/status.json with current_step: dev_complete
-" || _rc=$?
-  record_agent_invocation_end "developer" "$_start" "$_rc"
-  return $_rc
-}
-
-# ── Step 2: Reviewer ──────────────────────────────────────────────────────
-run_reviewer() {
-  cd "$REPO_ROOT"
-  local _start
-  record_agent_invocation_start "reviewer"   # bare call: $(...) would lose the CHAIN_CURRENT_AGENT export to a subshell
-  _start=$CHAIN_AGENT_START_EPOCH
-  local _rc=0
-  claude_with_quota_retry -p "You are the reviewer agent for goal-mode lean iteration.
-
-Iteration: $ITER_NAME
-Iter spec: $SPEC
-Dev handoff: $DEV_HANDOFF
-Project template: .claude/project-template.md
-Agent instructions: .claude/agents/reviewer.md  <-- read this first
-(CLAUDE.md is already in your system prompt — do not Read it again.)
-
-$(review_diff_hint HEAD)
-
-Apply the TOKEN AND QUESTIONING POLICY from .claude/core.md strictly.
-
-Write your review report to: $REVIEW_REPORT
-
-The report MUST start with a line matching exactly:
-**Verdict:** PASS
-  or
-**Verdict:** PASS_WITH_NOTES
-  or
-**Verdict:** FAIL
-" || _rc=$?
-  record_agent_invocation_end "reviewer" "$_start" "$_rc"
-  return $_rc
-}
-
-# Round 1: build. A transport failure (70) pauses cleanly; any other non-zero
-# aborts the iteration as before (set -e semantics, now with the code preserved).
-# Resume-skip: handoff on disk + the tree exactly where this iteration last
-# left it → the ~41-min build is already done, don't redo it.
-if step_done_valid developer --verify-tree --dir "$ITER_DIR" "$DEV_HANDOFF"; then
-  _step_skipped_event "developer"
-else
-  step_invalidate_from developer "$ITER_DIR"
-  _dev_rc=0
-  run_developer "INITIAL BUILD" "" || _dev_rc=$?
-  _pause_if_transport "$_dev_rc" "developer (initial build)"
-  if [[ "$_dev_rc" -ne 0 ]]; then exit "$_dev_rc"; fi
-  [[ -s "$DEV_HANDOFF" ]] && step_mark_done developer --dir "$ITER_DIR" "$DEV_HANDOFF"
-fi
-
-# ── SPEED-2 fork: service boot + deterministic replay ∥ review ────────────
-# Forked HERE — right after the developer step settles — because review and
-# browser-qa both need only the post-dev tree. Isolation copies the coherence
-# fork: subshell (contains CHAIN_CURRENT_AGENT + env), own rc-file, plus a PID
-# file as a cross-process orphan guard. All fork writes land under runs/ +
-# reports/, which are excluded from the checkpoint tree hash (checkpoint.sh),
-# so the fork can never churn a resume-skip decision. Joined by
-# _bqa_fork_consume once the review loop settles; reaped by _bqa_fork_reap on
-# a review-1 FAIL and by cleanup_iter_servers on every exit path.
-_BQA_PID=""
-_BQA_STATE_FILE="${ITER_DIR:+$ITER_DIR/.bqa-replay-state}"
-_BQA_RC_FILE="${ITER_DIR:+$ITER_DIR/.bqa-replay-rc}"
-_BQA_PID_FILE="${ITER_DIR:+$ITER_DIR/.bqa-replay-pid}"
-if [[ "$_BQA_MODE" == "replay" && -n "$ITER_DIR" ]] && ! _bqa_checkpoint_reusable; then
-  # Orphan guard: a hard-killed previous attempt (kill -9 skips the EXIT trap)
-  # can leave its fork alive and still writing this iteration's lane files.
-  # Reap it before forking again — but only a pid whose command line still
-  # looks like ours (PIDs recycle; never tree-kill a stranger).
-  _stale_pid="$(cat "$_BQA_PID_FILE" 2>/dev/null || true)"
-  if [[ -n "$_stale_pid" ]] && kill -0 "$_stale_pid" 2>/dev/null \
-     && ps -o args= -p "$_stale_pid" 2>/dev/null | grep -qE 'goal-iter-lean|demo_runner'; then
-    echo "[goal-iter-lean] Reaping an orphaned replay fork from a previous attempt (pid $_stale_pid)..." >&2
-    _kill_pid_tree "$_stale_pid" 2>/dev/null || true
-  fi
-  rm -f "$_BQA_STATE_FILE" "$_BQA_RC_FILE" "$_BQA_PID_FILE" 2>/dev/null || true
-  echo "[goal-iter-lean] Forking browser-qa service boot + replay lane to run concurrently with review (CHAIN_LEAN_PARALLEL_BROWSER_QA=$_BQA_REQUESTED)..."
-  (
-    _rc=0
-    record_agent_invocation_start "browser-qa-replay"   # subshell-contained: isolates CHAIN_CURRENT_AGENT so fork telemetry attributes to this name
-    _bqa_start=$CHAIN_AGENT_START_EPOCH
-    run_browser_qa_boot_and_replay || _rc=$?
-    _bqa_state_save "$_BQA_STATE_FILE" || _rc=$?
-    record_agent_invocation_end "browser-qa-replay" "$_bqa_start" "$_rc"
-    echo "$_rc" > "$_BQA_RC_FILE"
-  ) &
-  _BQA_PID=$!
-  echo "$_BQA_PID" > "$_BQA_PID_FILE"
-fi
-
-# Round 1: review. A transport failure pauses; any other review failure is
-# tolerated (the retry below / evaluator handles it), as the prior `|| true` did.
-# Resume-skip: the marker alone is never trusted — the report must live-parse
-# to a verdict (a FAIL report still routes into the fix branch below, exactly
-# as a freshly written FAIL would).
-if { step_done_valid review-1 --dir "$ITER_DIR" "$REVIEW_REPORT" \
-     || step_done_valid review-2 --dir "$ITER_DIR" "$REVIEW_REPORT"; } && _review_parses; then
-  _step_skipped_event "reviewer"
-else
-  step_invalidate_from review-1 "$ITER_DIR"
-  _rev_rc=0
-  run_reviewer || _rev_rc=$?
-  _pause_if_transport "$_rev_rc" "reviewer"
-  if _review_parses; then
-    record_telemetry_event "review_verdict" "$(jq -cn --arg v "$(_review_verdict)" --argjson a 1 --arg n "$ITER_NAME" '{verdict:$v, attempt:$a, iter_name:$n}' 2>/dev/null || printf '{"verdict":"%s","attempt":1}' "$(_review_verdict)")"
-  fi
-  if [[ "$_rev_rc" -eq 0 ]] && _review_parses; then
-    step_mark_done review-1 --dir "$ITER_DIR" --verdict "$(_review_verdict)" "$REVIEW_REPORT"
-  fi
-fi
-
-# Retry once if reviewer FAILed
-if [[ -f "$REVIEW_REPORT" ]] && ! verdict_passes "$REVIEW_REPORT"; then
-  echo "[goal-iter-lean] Review FAIL — running developer in fix mode (1 retry allowed)..."
-  # SPEED-2 CRITICAL ORDERING: kill+wait the replay fork and discard its lane
-  # files BEFORE any step_invalidate_from below — post-fix browser-qa then
-  # runs fully sequentially (the join finds no fork and runs the unit inline).
-  _bqa_fork_reap
-  if step_done_valid developer-fix --verify-tree --dir "$ITER_DIR" "$DEV_HANDOFF"; then
-    _step_skipped_event "developer-fix"
-  else
-    step_invalidate_from developer-fix "$ITER_DIR"
-    _dev_rc=0
-    escalate_model_on   # fix-mode retry runs on the strong tier (escalation ladder)
-    run_developer "FIX MODE (review failed)" "
-The review report below contains FAIL issues that must be fixed.
-Do NOT rebuild from scratch -- fix only what is listed.
-
-Review report path: $REVIEW_REPORT
-" || _dev_rc=$?
-    escalate_model_off
-    _pause_if_transport "$_dev_rc" "developer (fix-mode)"
-    if [[ "$_dev_rc" -ne 0 ]]; then exit "$_dev_rc"; fi
-    [[ -s "$DEV_HANDOFF" ]] && step_mark_done developer-fix --dir "$ITER_DIR" "$DEV_HANDOFF"
-  fi
-  if step_done_valid review-2 --dir "$ITER_DIR" "$REVIEW_REPORT" && _review_parses; then
-    _step_skipped_event "reviewer (fix-mode)"
-  else
-    step_invalidate_from review-2 "$ITER_DIR"
-    _rev_rc=0
-    run_reviewer || _rev_rc=$?
-    _pause_if_transport "$_rev_rc" "reviewer (fix-mode)"
-    if _review_parses; then
-      record_telemetry_event "review_verdict" "$(jq -cn --arg v "$(_review_verdict)" --argjson a 2 --arg n "$ITER_NAME" '{verdict:$v, attempt:$a, iter_name:$n}' 2>/dev/null || printf '{"verdict":"%s","attempt":2}' "$(_review_verdict)")"
-    fi
-    if [[ "$_rev_rc" -eq 0 ]] && _review_parses; then
-      step_mark_done review-2 --dir "$ITER_DIR" --verdict "$(_review_verdict)" "$REVIEW_REPORT"
-    fi
-  fi
-fi
-
-if [[ -f "$REVIEW_REPORT" ]] && ! verdict_passes "$REVIEW_REPORT"; then
-  echo "[goal-iter-lean] Review still FAIL after retry — proceeding to browser-qa anyway."
-  echo "[goal-iter-lean] The goal-evaluator will likely emit ESCALATE for the next iteration."
-fi
-
-# ── Coherence audit fork (runs concurrently with browser-qa) ──────────────
-# The coherence-auditor reads only the blueprint + this iteration's diff, both
-# final once review settles — nothing it needs depends on services or browser
-# results. Forking here hides its ~4 min under the ~20-min browser-qa lane.
-# The subshell isolates CHAIN_CURRENT_AGENT and the dispatch env; run-goal.sh's
-# sequential coherence step remains the automatic fallback: it reuses this
-# fork's checkpoint when valid, or re-dispatches if the fork crashed.
-# Disable with CHAIN_LEAN_PARALLEL_COHERENCE=false.
-_COH_PID=""
-_COH_RC_FILE="${ITER_DIR:+$ITER_DIR/.coherence-rc}"
-COHERENCE_OUTPUT_LEAN="${ITER_DIR:+$ITER_DIR/coherence.md}"
-if [[ "${CHAIN_LEAN_PARALLEL_COHERENCE:-true}" == "true" && -n "$ITER_DIR" \
-      && "${GOAL_ITER_INDEX:-0}" -gt 0 \
-      && -n "${GOAL_BLUEPRINT_FILE:-}" && -f "${GOAL_BLUEPRINT_FILE:-/nonexistent}" ]]; then
-  if step_done_valid coherence --verify-tree --dir "$ITER_DIR" "$COHERENCE_OUTPUT_LEAN" \
-     && grep -qE '^\*\*Verdict:\*\* COHERENCE-(PASS|WARN|FAIL)' "$COHERENCE_OUTPUT_LEAN"; then
-    _step_skipped_event "coherence-auditor"
-  else
-    step_invalidate_from coherence "$ITER_DIR"
-    rm -f "$_COH_RC_FILE"
-    # Coherence-scoped bounded diff (judge context trim): the source tree is
-    # final once review settles, so build iter-diff.md NOW for the auditor to
-    # read first. run-goal.sh rebuilds the scan/iter-diff artifacts at its
-    # original post-browser-qa point (overwriting these files); both builds
-    # exclude harness bookkeeping (CHAIN_SCAN_BOOKKEEPING_EXCLUDES), so the
-    # rebuild converges with this one instead of drifting CLEAN→CRITICAL as
-    # runs/ and reports/ artifacts accumulate mid-iteration.
-    if declare -F goal_gate_build_diff_artifacts >/dev/null 2>&1 || source "$SCRIPT_DIR/lib/goal-gates.sh" 2>/dev/null; then
-      goal_gate_build_diff_artifacts "$ITER_DIR" "$(cat "$ITER_DIR/snapshot-sha" 2>/dev/null || echo "")" "$REPO_ROOT" 2>/dev/null || true
-    fi
-    echo "[goal-iter-lean] Forking coherence-auditor to run concurrently with browser-qa..."
-    (
-      _rc=0
-      dispatch_coherence_audit "${GOAL_SESSION_ID:-unknown}" "${GOAL_ITER_INDEX}" "$ITER_NAME" \
-        "$GOAL_BLUEPRINT_FILE" "$SPEC" "$COHERENCE_OUTPUT_LEAN" \
-        "$(cat "$ITER_DIR/snapshot-sha" 2>/dev/null || echo "")" || _rc=$?
-      echo "$_rc" > "$_COH_RC_FILE"
-    ) &
-    _COH_PID=$!
-  fi
-fi
-
-# ── Step 3: Browser QA ────────────────────────────────────────────────────
-# Determine if frontend work is implied. Lean iterations always test journeys,
-# so we always try to start the frontend; if it fails we mark all SKIPPED and
-# the evaluator will treat that as ESCALATE.
-
-# (Journey sets — TARGET_JOURNEYS / REQUIRED_JOURNEYS / _bq_sig — were
-# computed at the SPEED-2 block above: the fork guard needs them before the
-# review loop, this resume-skip check and the lanes read the same values.)
-
-# Resume-skip for the WHOLE browser-qa section (service boot + replay lane +
-# LLM lane + merge): reusable only when the results file carries a real
-# PASS/FAIL verdict (a SKIPPED verdict is never reusable — a re-run may produce
-# a genuine result instead of a wasted ESCALATE), the journey sets still match
-# the spec, and the tree is exactly where this iteration last left it.
-_bq_skip="no"
-if step_done_valid browser-qa --verify-tree --dir "$ITER_DIR" "$UI_TEST_RESULTS" \
-   && [[ "$(step_field browser-qa journeys "$ITER_DIR")" == "$_bq_sig" ]]; then
-  _prior_bq_verdict="$(grep -m1 -E '^\*\*Browser QA Verdict:\*\*' "$UI_TEST_RESULTS" 2>/dev/null | grep -oE 'PASS|FAIL|SKIPPED' | head -1)"
-  if [[ "$_prior_bq_verdict" == "PASS" || "$_prior_bq_verdict" == "FAIL" ]]; then
-    _bq_skip="yes"
-    _step_skipped_event "browser-qa"
-  fi
-fi
-
 # The browser-qa section as ONE function — extracted verbatim for SPEED-1.
 # SPEED-2 carved its first half (service boot + golden partition + replay
 # lane) into run_browser_qa_boot_and_replay above so replay mode can fork it;
-# SPEED-3 would fork this whole section (LLM lane included, headless only).
-# Called from the caller's shell, NOT a subshell: every assignment and `cd`
-# inside lands globally, exactly as the previous inline block behaved.
+# SPEED-3 forks this WHOLE section (LLM lane included, headless only) — the
+# definition was moved verbatim above the developer step so the full-fork
+# subshell (spawned right after developer settles) can see it.
+# On the sequential path it is called from the caller's shell, NOT a subshell:
+# every assignment and `cd` inside lands globally, exactly as the previous
+# inline block behaved. The full fork instead runs it inside its subshell,
+# whose exit status carries any in-body transport exit (70) to the join.
 # Body kept un-indented from its pre-extraction guarded-block days (pure move).
 run_browser_qa_section() {
 
@@ -873,19 +732,320 @@ record_telemetry_event "golden_coverage" "$(jq -cn --argjson p "$_n_pass" --arg 
 
 # Checkpoint: reusable on resume only with a real PASS/FAIL verdict (never a
 # SKIPPED stub) and the journey signature this run actually covered.
+# SPEED-3: inside the full fork the mark is DEFERRED to the join
+# (_bqa_full_fork_consume) — a marker written from the fork could race the
+# review loop's invalidation cascade in the parent shell.
 _bq_verdict="$(grep -m1 -E '^\*\*Browser QA Verdict:\*\*' "$UI_TEST_RESULTS" 2>/dev/null | grep -oE 'PASS|FAIL|SKIPPED' | head -1)"
-if [[ "$_bq_verdict" == "PASS" || "$_bq_verdict" == "FAIL" ]]; then
+if [[ ( "$_bq_verdict" == "PASS" || "$_bq_verdict" == "FAIL" ) && -z "${_BQA_IN_FULL_FORK:-}" ]]; then
   step_mark_done browser-qa --dir "$ITER_DIR" --verdict "$_bq_verdict" --journeys "$_bq_sig" "$UI_TEST_RESULTS"
 fi
 
 }
 
+# ── Step 1: Developer ─────────────────────────────────────────────────────
+run_developer() {
+  local mode_label="$1"
+  local fix_context="$2"
+  cd "$REPO_ROOT"
+  local _start
+  record_agent_invocation_start "developer"   # bare call: $(...) would lose the CHAIN_CURRENT_AGENT export to a subshell
+  _start=$CHAIN_AGENT_START_EPOCH
+  local _rc=0
+  claude_with_quota_retry -p "You are the developer agent for goal-mode lean iteration.
+
+Iteration: $ITER_NAME
+Iter spec: $SPEC
+Project goal: $GOAL_FILE  <-- read Must-have user journeys and Anti-goals
+Project template: .claude/project-template.md
+Agent instructions: .claude/agents/developer.md  <-- read this first
+(CLAUDE.md is already in your system prompt — do not Read it again.)
+
+Mode: $mode_label
+$fix_context
+
+This is a LEAN goal-mode iteration. Implement only what the iter spec's IN SCOPE
+section calls for. Tighter scope than a full phase. Do NOT introduce features
+outside the iter spec's IN SCOPE list.
+
+When complete:
+- Write dev handoff to: $DEV_HANDOFF
+- Update runs/${ITER_NAME}/status.json with current_step: dev_complete
+" || _rc=$?
+  record_agent_invocation_end "developer" "$_start" "$_rc"
+  return $_rc
+}
+
+# ── Step 2: Reviewer ──────────────────────────────────────────────────────
+run_reviewer() {
+  cd "$REPO_ROOT"
+  local _start
+  record_agent_invocation_start "reviewer"   # bare call: $(...) would lose the CHAIN_CURRENT_AGENT export to a subshell
+  _start=$CHAIN_AGENT_START_EPOCH
+  local _rc=0
+  claude_with_quota_retry -p "You are the reviewer agent for goal-mode lean iteration.
+
+Iteration: $ITER_NAME
+Iter spec: $SPEC
+Dev handoff: $DEV_HANDOFF
+Project template: .claude/project-template.md
+Agent instructions: .claude/agents/reviewer.md  <-- read this first
+(CLAUDE.md is already in your system prompt — do not Read it again.)
+
+$(review_diff_hint HEAD)
+
+Apply the TOKEN AND QUESTIONING POLICY from .claude/core.md strictly.
+
+Write your review report to: $REVIEW_REPORT
+
+The report MUST start with a line matching exactly:
+**Verdict:** PASS
+  or
+**Verdict:** PASS_WITH_NOTES
+  or
+**Verdict:** FAIL
+" || _rc=$?
+  record_agent_invocation_end "reviewer" "$_start" "$_rc"
+  return $_rc
+}
+
+# Round 1: build. A transport failure (70) pauses cleanly; any other non-zero
+# aborts the iteration as before (set -e semantics, now with the code preserved).
+# Resume-skip: handoff on disk + the tree exactly where this iteration last
+# left it → the ~41-min build is already done, don't redo it.
+if step_done_valid developer --verify-tree --dir "$ITER_DIR" "$DEV_HANDOFF"; then
+  _step_skipped_event "developer"
+else
+  step_invalidate_from developer "$ITER_DIR"
+  _dev_rc=0
+  run_developer "INITIAL BUILD" "" || _dev_rc=$?
+  _pause_if_transport "$_dev_rc" "developer (initial build)"
+  if [[ "$_dev_rc" -ne 0 ]]; then exit "$_dev_rc"; fi
+  [[ -s "$DEV_HANDOFF" ]] && step_mark_done developer --dir "$ITER_DIR" "$DEV_HANDOFF"
+fi
+
+# ── SPEED-2 fork: service boot + deterministic replay ∥ review ────────────
+# Forked HERE — right after the developer step settles — because review and
+# browser-qa both need only the post-dev tree. Isolation copies the coherence
+# fork: subshell (contains CHAIN_CURRENT_AGENT + env), own rc-file, plus a PID
+# file as a cross-process orphan guard. All fork writes land under runs/ +
+# reports/, which are excluded from the checkpoint tree hash (checkpoint.sh),
+# so the fork can never churn a resume-skip decision. Joined by
+# _bqa_fork_consume once the review loop settles; reaped by _bqa_fork_reap on
+# a review-1 FAIL and by cleanup_iter_servers on every exit path.
+_BQA_PID=""
+_BQA_STATE_FILE="${ITER_DIR:+$ITER_DIR/.bqa-replay-state}"
+_BQA_RC_FILE="${ITER_DIR:+$ITER_DIR/.bqa-replay-rc}"
+_BQA_PID_FILE="${ITER_DIR:+$ITER_DIR/.bqa-replay-pid}"
+if [[ "$_BQA_MODE" == "replay" && -n "$ITER_DIR" ]] && ! _bqa_checkpoint_reusable; then
+  # Orphan guard: a hard-killed previous attempt (kill -9 skips the EXIT trap)
+  # can leave its fork alive and still writing this iteration's lane files.
+  # Reap it before forking again — but only a pid whose command line still
+  # looks like ours (PIDs recycle; never tree-kill a stranger).
+  _stale_pid="$(cat "$_BQA_PID_FILE" 2>/dev/null || true)"
+  if [[ -n "$_stale_pid" ]] && kill -0 "$_stale_pid" 2>/dev/null \
+     && ps -o args= -p "$_stale_pid" 2>/dev/null | grep -qE 'goal-iter-lean|demo_runner'; then
+    echo "[goal-iter-lean] Reaping an orphaned replay fork from a previous attempt (pid $_stale_pid)..." >&2
+    _kill_pid_tree "$_stale_pid" 2>/dev/null || true
+  fi
+  rm -f "$_BQA_STATE_FILE" "$_BQA_RC_FILE" "$_BQA_PID_FILE" 2>/dev/null || true
+  echo "[goal-iter-lean] Forking browser-qa service boot + replay lane to run concurrently with review (CHAIN_LEAN_PARALLEL_BROWSER_QA=$_BQA_REQUESTED)..."
+  (
+    _rc=0
+    record_agent_invocation_start "browser-qa-replay"   # subshell-contained: isolates CHAIN_CURRENT_AGENT so fork telemetry attributes to this name
+    _bqa_start=$CHAIN_AGENT_START_EPOCH
+    run_browser_qa_boot_and_replay || _rc=$?
+    _bqa_state_save "$_BQA_STATE_FILE" || _rc=$?
+    record_agent_invocation_end "browser-qa-replay" "$_bqa_start" "$_rc"
+    echo "$_rc" > "$_BQA_RC_FILE"
+  ) &
+  _BQA_PID=$!
+  echo "$_BQA_PID" > "$_BQA_PID_FILE"
+fi
+
+# ── SPEED-3 fork: the WHOLE browser-qa section ∥ review (headless only) ───
+# Same spawn point and isolation as the replay fork (the subshell contains the
+# LLM dispatch's CHAIN_CURRENT_AGENT export; own rc/pid files; the pid file
+# doubles as the recycled-PID-safe orphan guard). browser-qa is invalidated
+# HERE, before the fork exists: the JOIN (not the fork) writes the browser-qa
+# marker — see the _bqa_full_fork_consume contract — so ordering vs the review
+# loop's own invalidation cascades stays deterministic and a killed or paused
+# fork can never leave a marker a resume would trust. The fork writes its rc
+# file only on clean completion; an in-body transport exit (70) surfaces as
+# the subshell's exit status, which the join reads via `wait`.
+_BQA_FULL_PID=""
+_BQA_FULL_RC_FILE="${ITER_DIR:+$ITER_DIR/.bqa-full-rc}"
+_BQA_FULL_PID_FILE="${ITER_DIR:+$ITER_DIR/.bqa-full-pid}"
+if [[ "$_BQA_MODE" == "full" && -n "$ITER_DIR" ]] && ! _bqa_checkpoint_reusable; then
+  # Orphan guard: reap a previous attempt's still-alive fork before forking
+  # again — but only a pid whose command line still looks like ours (PIDs
+  # recycle; never tree-kill a stranger).
+  _stale_pid="$(cat "$_BQA_FULL_PID_FILE" 2>/dev/null || true)"
+  if [[ -n "$_stale_pid" ]] && kill -0 "$_stale_pid" 2>/dev/null \
+     && ps -o args= -p "$_stale_pid" 2>/dev/null | grep -qE 'goal-iter-lean|demo_runner'; then
+    echo "[goal-iter-lean] Reaping an orphaned full browser-qa fork from a previous attempt (pid $_stale_pid)..." >&2
+    _kill_pid_tree "$_stale_pid" 2>/dev/null || true
+  fi
+  rm -f "$_BQA_FULL_RC_FILE" "$_BQA_FULL_PID_FILE" 2>/dev/null || true
+  step_invalidate_from browser-qa "$ITER_DIR"
+  echo "[goal-iter-lean] Forking the FULL browser-qa section (LLM lane included) to run concurrently with review (CHAIN_LEAN_PARALLEL_BROWSER_QA=$_BQA_REQUESTED)..."
+  (
+    _rc=0
+    _BQA_IN_FULL_FORK=1
+    run_browser_qa_section || _rc=$?
+    echo "$_rc" > "$_BQA_FULL_RC_FILE"
+  ) &
+  _BQA_FULL_PID=$!
+  echo "$_BQA_FULL_PID" > "$_BQA_FULL_PID_FILE"
+fi
+
+# Round 1: review. A transport failure pauses; any other review failure is
+# tolerated (the retry below / evaluator handles it), as the prior `|| true` did.
+# Resume-skip: the marker alone is never trusted — the report must live-parse
+# to a verdict (a FAIL report still routes into the fix branch below, exactly
+# as a freshly written FAIL would).
+if { step_done_valid review-1 --dir "$ITER_DIR" "$REVIEW_REPORT" \
+     || step_done_valid review-2 --dir "$ITER_DIR" "$REVIEW_REPORT"; } && _review_parses; then
+  _step_skipped_event "reviewer"
+else
+  step_invalidate_from review-1 "$ITER_DIR"
+  _rev_rc=0
+  run_reviewer || _rev_rc=$?
+  _pause_if_transport "$_rev_rc" "reviewer"
+  if _review_parses; then
+    record_telemetry_event "review_verdict" "$(jq -cn --arg v "$(_review_verdict)" --argjson a 1 --arg n "$ITER_NAME" '{verdict:$v, attempt:$a, iter_name:$n}' 2>/dev/null || printf '{"verdict":"%s","attempt":1}' "$(_review_verdict)")"
+  fi
+  if [[ "$_rev_rc" -eq 0 ]] && _review_parses; then
+    step_mark_done review-1 --dir "$ITER_DIR" --verdict "$(_review_verdict)" "$REVIEW_REPORT"
+  fi
+fi
+
+# Retry once if reviewer FAILed
+if [[ -f "$REVIEW_REPORT" ]] && ! verdict_passes "$REVIEW_REPORT"; then
+  echo "[goal-iter-lean] Review FAIL — running developer in fix mode (1 retry allowed)..."
+  # SPEED-2/SPEED-3 CRITICAL ORDERING: kill+wait whichever fork is running and
+  # discard its lane files BEFORE any step_invalidate_from below — post-fix
+  # browser-qa then runs fully sequentially (the join finds no fork and runs
+  # the section/unit inline). The two reaps are mutually exclusive by mode and
+  # each no-ops when its fork was never started.
+  _bqa_fork_reap
+  _bqa_full_fork_reap
+  if step_done_valid developer-fix --verify-tree --dir "$ITER_DIR" "$DEV_HANDOFF"; then
+    _step_skipped_event "developer-fix"
+  else
+    step_invalidate_from developer-fix "$ITER_DIR"
+    _dev_rc=0
+    escalate_model_on   # fix-mode retry runs on the strong tier (escalation ladder)
+    run_developer "FIX MODE (review failed)" "
+The review report below contains FAIL issues that must be fixed.
+Do NOT rebuild from scratch -- fix only what is listed.
+
+Review report path: $REVIEW_REPORT
+" || _dev_rc=$?
+    escalate_model_off
+    _pause_if_transport "$_dev_rc" "developer (fix-mode)"
+    if [[ "$_dev_rc" -ne 0 ]]; then exit "$_dev_rc"; fi
+    [[ -s "$DEV_HANDOFF" ]] && step_mark_done developer-fix --dir "$ITER_DIR" "$DEV_HANDOFF"
+  fi
+  if step_done_valid review-2 --dir "$ITER_DIR" "$REVIEW_REPORT" && _review_parses; then
+    _step_skipped_event "reviewer (fix-mode)"
+  else
+    step_invalidate_from review-2 "$ITER_DIR"
+    _rev_rc=0
+    run_reviewer || _rev_rc=$?
+    _pause_if_transport "$_rev_rc" "reviewer (fix-mode)"
+    if _review_parses; then
+      record_telemetry_event "review_verdict" "$(jq -cn --arg v "$(_review_verdict)" --argjson a 2 --arg n "$ITER_NAME" '{verdict:$v, attempt:$a, iter_name:$n}' 2>/dev/null || printf '{"verdict":"%s","attempt":2}' "$(_review_verdict)")"
+    fi
+    if [[ "$_rev_rc" -eq 0 ]] && _review_parses; then
+      step_mark_done review-2 --dir "$ITER_DIR" --verdict "$(_review_verdict)" "$REVIEW_REPORT"
+    fi
+  fi
+fi
+
+if [[ -f "$REVIEW_REPORT" ]] && ! verdict_passes "$REVIEW_REPORT"; then
+  echo "[goal-iter-lean] Review still FAIL after retry — proceeding to browser-qa anyway."
+  echo "[goal-iter-lean] The goal-evaluator will likely emit ESCALATE for the next iteration."
+fi
+
+# ── Coherence audit fork (runs concurrently with browser-qa) ──────────────
+# The coherence-auditor reads only the blueprint + this iteration's diff, both
+# final once review settles — nothing it needs depends on services or browser
+# results. Forking here hides its ~4 min under the ~20-min browser-qa lane.
+# The subshell isolates CHAIN_CURRENT_AGENT and the dispatch env; run-goal.sh's
+# sequential coherence step remains the automatic fallback: it reuses this
+# fork's checkpoint when valid, or re-dispatches if the fork crashed.
+# Disable with CHAIN_LEAN_PARALLEL_COHERENCE=false.
+_COH_PID=""
+_COH_RC_FILE="${ITER_DIR:+$ITER_DIR/.coherence-rc}"
+COHERENCE_OUTPUT_LEAN="${ITER_DIR:+$ITER_DIR/coherence.md}"
+if [[ "${CHAIN_LEAN_PARALLEL_COHERENCE:-true}" == "true" && -n "$ITER_DIR" \
+      && "${GOAL_ITER_INDEX:-0}" -gt 0 \
+      && -n "${GOAL_BLUEPRINT_FILE:-}" && -f "${GOAL_BLUEPRINT_FILE:-/nonexistent}" ]]; then
+  if step_done_valid coherence --verify-tree --dir "$ITER_DIR" "$COHERENCE_OUTPUT_LEAN" \
+     && grep -qE '^\*\*Verdict:\*\* COHERENCE-(PASS|WARN|FAIL)' "$COHERENCE_OUTPUT_LEAN"; then
+    _step_skipped_event "coherence-auditor"
+  else
+    step_invalidate_from coherence "$ITER_DIR"
+    rm -f "$_COH_RC_FILE"
+    # Coherence-scoped bounded diff (judge context trim): the source tree is
+    # final once review settles, so build iter-diff.md NOW for the auditor to
+    # read first. run-goal.sh rebuilds the scan/iter-diff artifacts at its
+    # original post-browser-qa point (overwriting these files); both builds
+    # exclude harness bookkeeping (CHAIN_SCAN_BOOKKEEPING_EXCLUDES), so the
+    # rebuild converges with this one instead of drifting CLEAN→CRITICAL as
+    # runs/ and reports/ artifacts accumulate mid-iteration.
+    if declare -F goal_gate_build_diff_artifacts >/dev/null 2>&1 || source "$SCRIPT_DIR/lib/goal-gates.sh" 2>/dev/null; then
+      goal_gate_build_diff_artifacts "$ITER_DIR" "$(cat "$ITER_DIR/snapshot-sha" 2>/dev/null || echo "")" "$REPO_ROOT" 2>/dev/null || true
+    fi
+    echo "[goal-iter-lean] Forking coherence-auditor to run concurrently with browser-qa..."
+    (
+      _rc=0
+      dispatch_coherence_audit "${GOAL_SESSION_ID:-unknown}" "${GOAL_ITER_INDEX}" "$ITER_NAME" \
+        "$GOAL_BLUEPRINT_FILE" "$SPEC" "$COHERENCE_OUTPUT_LEAN" \
+        "$(cat "$ITER_DIR/snapshot-sha" 2>/dev/null || echo "")" || _rc=$?
+      echo "$_rc" > "$_COH_RC_FILE"
+    ) &
+    _COH_PID=$!
+  fi
+fi
+
+# ── Step 3: Browser QA ────────────────────────────────────────────────────
+# Determine if frontend work is implied. Lean iterations always test journeys,
+# so we always try to start the frontend; if it fails we mark all SKIPPED and
+# the evaluator will treat that as ESCALATE.
+
+# (Journey sets — TARGET_JOURNEYS / REQUIRED_JOURNEYS / _bq_sig — were
+# computed at the SPEED-2 block above: the fork guard needs them before the
+# review loop, this resume-skip check and the lanes read the same values.)
+
+# Resume-skip for the WHOLE browser-qa section (service boot + replay lane +
+# LLM lane + merge): reusable only when the results file carries a real
+# PASS/FAIL verdict (a SKIPPED verdict is never reusable — a re-run may produce
+# a genuine result instead of a wasted ESCALATE), the journey sets still match
+# the spec, and the tree is exactly where this iteration last left it.
+_bq_skip="no"
+if step_done_valid browser-qa --verify-tree --dir "$ITER_DIR" "$UI_TEST_RESULTS" \
+   && [[ "$(step_field browser-qa journeys "$ITER_DIR")" == "$_bq_sig" ]]; then
+  _prior_bq_verdict="$(grep -m1 -E '^\*\*Browser QA Verdict:\*\*' "$UI_TEST_RESULTS" 2>/dev/null | grep -oE 'PASS|FAIL|SKIPPED' | head -1)"
+  if [[ "$_prior_bq_verdict" == "PASS" || "$_prior_bq_verdict" == "FAIL" ]]; then
+    _bq_skip="yes"
+    _step_skipped_event "browser-qa"
+  fi
+fi
+
 # The resume-skip guard and the invalidation stay at the caller: a skipped
 # resume must neither invalidate the browser-qa checkpoint nor re-run the
 # section (SPEED-1 contract).
+# SPEED-3 join: when the full-section fork is running, consume it instead of
+# running the section inline (browser-qa was already invalidated at the spawn
+# site; a second invalidation here would wipe the marker the consume just
+# wrote). Off/replay modes have no full fork, so the consume returns 1
+# immediately and this block behaves exactly as before.
 if [[ "$_bq_skip" != "yes" ]]; then
-  step_invalidate_from browser-qa "$ITER_DIR"
-  run_browser_qa_section
+  if ! _bqa_full_fork_consume; then
+    step_invalidate_from browser-qa "$ITER_DIR"
+    run_browser_qa_section
+  fi
 fi
 
 # ── Coherence audit join ──────────────────────────────────────────────────

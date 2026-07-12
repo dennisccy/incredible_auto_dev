@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# test-goal-parallel-bqa.sh — end-to-end wiring test for SPEED-2: the parallel
-# review ∥ browser-qa "replay" fork in goal-iter-lean.sh, behind the
-# default-off knob CHAIN_LEAN_PARALLEL_BROWSER_QA.
+# test-goal-parallel-bqa.sh — end-to-end wiring test for SPEED-2 + SPEED-3:
+# the parallel review ∥ browser-qa forks in goal-iter-lean.sh ("replay" and
+# "full" stages), behind the default-off knob CHAIN_LEAN_PARALLEL_BROWSER_QA.
 #
 # Drives the REAL goal-iter-lean.sh in a sandbox repo (modeled on
 # test-goal-checkpoints.sh) with a role-aware stub `claude` on PATH, a stub
@@ -20,7 +20,23 @@
 #   D. tripwire: telemetry seeded with attempt-1 review FAILs in 2 of the last
 #      3 iterations → fork skipped, decision persisted under state/, the
 #      iter_config event says so, and the NEXT iteration stays skipped.
-#   E. knob=full → logged warning ("full is SPEED-3"), behaves as replay.
+#   E. SPEED-3 hard gate: knob=full + CHAIN_AGENT_BACKEND=interactive → logged
+#      headless-only warning, behaves as replay, iter_config records
+#      reason=interactive-backend (proven dispatch-free on a fully
+#      checkpointed rerun so no pump handshake can hang the test).
+#   F. SPEED-3 full + review PASS → the WHOLE section forked (the LLM dispatch
+#      runs inside the fork WHILE review is still pending — witnessed), join
+#      consumes + writes the browser-qa marker, final artifact tree and merged
+#      rows IDENTICAL to sequential scenario A's.
+#   G. SPEED-3 full + review-1 FAIL with the LLM dispatch IN FLIGHT → kill-
+#      then-invalidate ordering, ZERO surviving fork processes (pgrep — the
+#      SPEED-3 stop-and-ask trigger), all lane files (replay + LLM + merged)
+#      discarded and none re-lands after a settle window, and the
+#      parallel_bqa_wasted_dispatch cost event is recorded.
+#   H. SPEED-3 full + transport 70 INSIDE the forked LLM lane → the join
+#      re-raises the pause in the parent (exit 70) and the sandbox tree state
+#      (file list + step markers) is IDENTICAL to the sequential rc-70 pause
+#      tree; a follow-up run resumes: developer skips, browser-qa re-runs.
 #
 # No API calls; a few seconds per scenario.
 
@@ -176,12 +192,24 @@ case "$agent" in
   reviewer)
     if [[ -n "${STUB_REVIEW_WAIT_FOR:-}" ]]; then
       w=0; while [[ ! -f "$STUB_REVIEW_WAIT_FOR" && $w -lt 100 ]]; do sleep 0.2; w=$((w+1)); done
+      # Overlap witness: record whether the waited-for file EXISTED when the
+      # wait ended (yes = the other lane was live mid-review; a timeout in a
+      # buggy-sequential world records no).
+      if [[ -n "${STUB_REVIEW_WITNESS:-}" ]]; then
+        { [[ -f "$STUB_REVIEW_WAIT_FOR" ]] && echo yes || echo no; } > "$STUB_REVIEW_WITNESS"
+      fi
     fi
     out="$(printf '%s\n' "$prompt" | sed -n 's/^Write your review report to: //p' | head -n1)"
     [[ -n "$out" ]] || exit 64
     printf '**Verdict:** %s\n\nStub review.\n' "${STUB_REVIEW_VERDICT:-PASS}" > "$out"
     exit 0 ;;
   browser-qa-agent)
+    # SPEED-3 hooks: stamp when the dispatch STARTS (overlap/ordering proofs),
+    # optionally hang mid-dispatch (kill-tree proof), optionally die with a
+    # given rc BEFORE writing results (transport-70 pause proof).
+    if [[ -n "${STUB_BQA_STARTED_STAMP:-}" ]]; then echo "$$" > "$STUB_BQA_STARTED_STAMP"; fi
+    if [[ -n "${STUB_BQA_SLEEP:-}" ]]; then sleep "$STUB_BQA_SLEEP"; fi
+    if [[ -n "${STUB_BQA_RC:-}" ]]; then exit "$STUB_BQA_RC"; fi
     out="$(printf '%s\n' "$prompt" | sed -n 's/^Write your results to: //p' | head -n1)"
     [[ -n "$out" ]] || exit 64
     line="$(printf '%s\n' "$prompt" | sed -n 's/^GOAL-MODE LEAN MODE — test EXACTLY these journeys this run: //p' | head -n1)"
@@ -246,6 +274,10 @@ llm_journeys_line() {  # the LLM lane's exact target-set line from the captured 
 
 artifact_tree() {  # product-relative artifact list (scripts/ + .git/ excluded)
   ( cd "$SBX" && find . -type f -not -path './.git/*' -not -path './scripts/*' | sort )
+}
+
+marker_field() {  # marker_field <iter-dir> <step> <field> — from a .steps marker
+  jq -r --arg f "$3" '.[$f] // empty' "$1/.steps/$2.done" 2>/dev/null || true
 }
 
 # ══ Scenario A: knob unset (default off) — sequential, no fork artifacts ═════
@@ -419,25 +451,190 @@ grep -q "Forking browser-qa service boot" "$WORK/lean-D2.log" \
   && assert "D: no fork for the rest of the session" "fail" \
   || assert "D: no fork for the rest of the session" "pass"
 
-# ══ Scenario E: knob=full — warning, behaves as replay ═══════════════════════
+# ══ Scenario E: SPEED-3 hard gate — full + interactive backend → replay ═════
+# Seed a fully-checkpointed iteration headless first, then re-run it with
+# CHAIN_AGENT_BACKEND=interactive + knob=full: every step resume-skips, so the
+# gate's parse-time decision is observable with ZERO dispatches (nothing can
+# hang on a pump that does not exist).
 make_sandbox E
 new_capture E
 start_dummies
-export CHAIN_LEAN_PARALLEL_BROWSER_QA=full
+unset CHAIN_LEAN_PARALLEL_BROWSER_QA 2>/dev/null || true
 export STUB_REPLAY_VERDICT=PASS
+rc=0; run_lean "$WORK/lean-E-seed.log" || rc=$?
+[[ "$rc" -eq 0 ]] && assert "E: headless seed run exits 0" "pass" \
+  || { assert "E: headless seed run exits 0 (rc=$rc)" "fail"; sed -n '1,40p' "$WORK/lean-E-seed.log"; }
+new_capture E2
+start_dummies
+export CHAIN_LEAN_PARALLEL_BROWSER_QA=full
+export CHAIN_AGENT_BACKEND=interactive
 rc=0; run_lean "$WORK/lean-E.log" || rc=$?
-[[ "$rc" -eq 0 ]] && assert "E: full-mode lean iteration exits 0" "pass" \
-  || { assert "E: full-mode lean iteration exits 0 (rc=$rc)" "fail"; sed -n '1,40p' "$WORK/lean-E.log"; }
-grep -q "CHAIN_LEAN_PARALLEL_BROWSER_QA=full is SPEED-3 (not implemented); using replay" "$WORK/lean-E.log" \
-  && assert "E: full logs the SPEED-3 warning" "pass" \
-  || assert "E: full logs the SPEED-3 warning" "fail"
-grep -q "Forking browser-qa service boot + replay lane" "$WORK/lean-E.log" \
-  && grep -q "Consumed forked replay-lane results" "$WORK/lean-E.log" \
-  && assert "E: full behaves as replay (fork + join)" "pass" \
-  || assert "E: full behaves as replay (fork + join)" "fail"
-grep -q '"value":"replay","requested":"full"' "$GOAL_SESSION_DIR/telemetry.jsonl" \
-  && assert "E: iter_config records replay/requested=full" "pass" \
-  || assert "E: iter_config records replay/requested=full" "fail"
+[[ "$rc" -eq 0 ]] && assert "E: interactive+full rerun exits 0" "pass" \
+  || { assert "E: interactive+full rerun exits 0 (rc=$rc)" "fail"; sed -n '1,40p' "$WORK/lean-E.log"; }
+grep -q "CHAIN_LEAN_PARALLEL_BROWSER_QA=full is headless-only" "$WORK/lean-E.log" \
+  && assert "E: interactive backend logs the headless-only warning" "pass" \
+  || assert "E: interactive backend logs the headless-only warning" "fail"
+grep -q '"value":"replay","requested":"full","reason":"interactive-backend"' "$GOAL_SESSION_DIR/telemetry.jsonl" \
+  && assert "E: iter_config records replay/requested=full/reason=interactive-backend" "pass" \
+  || assert "E: iter_config records replay/requested=full/reason=interactive-backend" "fail"
+grep -q "Forking the FULL browser-qa section" "$WORK/lean-E.log" \
+  && assert "E: interactive backend never full-forks" "fail" \
+  || assert "E: interactive backend never full-forks" "pass"
+[[ ! -s "$CANARY" ]] \
+  && assert "E: rerun dispatched nothing (fully checkpointed — gate decision is parse-time)" "pass" \
+  || assert "E: rerun dispatched nothing (got: $(tr '\n' ' ' < "$CANARY"))" "fail"
+unset CHAIN_AGENT_BACKEND
+
+# ══ Scenario F: SPEED-3 full + review PASS — whole section forked, join marks ═
+make_sandbox F
+new_capture F
+start_dummies
+export CHAIN_LEAN_PARALLEL_BROWSER_QA=full
+export STUB_REPLAY_VERDICT=FAIL   # same inputs as A → same lane split + re-confirm
+export STUB_BQA_STARTED_STAMP="$WORK/bqa-started-F.stamp"
+export STUB_REVIEW_WAIT_FOR="$STUB_BQA_STARTED_STAMP"   # review ends only once the fork's LLM dispatch is live
+export STUB_REVIEW_WITNESS="$WORK/review-witness-F"
+rc=0; run_lean "$WORK/lean-F.log" || rc=$?
+[[ "$rc" -eq 0 ]] && assert "F: full-mode lean iteration exits 0" "pass" \
+  || { assert "F: full-mode lean iteration exits 0 (rc=$rc)" "fail"; sed -n '1,40p' "$WORK/lean-F.log"; }
+grep -q "Forking the FULL browser-qa section" "$WORK/lean-F.log" \
+  && assert "F: full fork launched" "pass" || assert "F: full fork launched" "fail"
+[[ "$(cat "$STUB_REVIEW_WITNESS" 2>/dev/null)" == "yes" ]] \
+  && assert "F: LLM dispatch ran inside the fork WHILE review was pending (witness)" "pass" \
+  || assert "F: LLM dispatch ran inside the fork WHILE review was pending (witness=$(cat "$STUB_REVIEW_WITNESS" 2>/dev/null))" "fail"
+grep -q "Consumed forked full browser-qa results (verdict: PASS)" "$WORK/lean-F.log" \
+  && assert "F: join consumed the fork's results" "pass" \
+  || assert "F: join consumed the fork's results" "fail"
+[[ ! -f "$ITER_DIR/.bqa-full-rc" && ! -f "$ITER_DIR/.bqa-full-pid" ]] \
+  && assert "F: fork rc/pid files cleaned after consume" "pass" \
+  || assert "F: fork rc/pid files cleaned after consume" "fail"
+[[ "$(marker_field "$ITER_DIR" browser-qa verdict)" == "PASS" ]] \
+  && assert "F: join wrote the browser-qa checkpoint marker (verdict PASS)" "pass" \
+  || assert "F: join wrote the browser-qa checkpoint marker (verdict PASS)" "fail"
+if [[ "$(artifact_tree)" == "$EXPECTED_TREE" ]]; then
+  assert "F: artifact tree identical to the sequential run's" "pass"
+else
+  assert "F: artifact tree identical to the sequential run's" "fail"
+  diff <(printf '%s\n' "$EXPECTED_TREE") <(artifact_tree) | sed 's/^/        /'
+fi
+F_LLM_LINE="$(llm_journeys_line "$PROMPTS_DIR")"
+[[ -n "$F_LLM_LINE" && "$F_LLM_LINE" == "$A_LLM_LINE" ]] \
+  && assert "F: LLM-lane target set identical to the sequential run's" "pass" \
+  || assert "F: LLM-lane target set identical to the sequential run's (A='$A_LLM_LINE' F='$F_LLM_LINE')" "fail"
+F_ROWS="$(grep -E '^\| UT-' "$UI_TEST_RESULTS" 2>/dev/null | sort)"
+[[ -n "$F_ROWS" && "$F_ROWS" == "$A_ROWS" ]] \
+  && assert "F: merged results rows identical to the sequential run's" "pass" \
+  || assert "F: merged results rows identical to the sequential run's" "fail"
+grep -q '"key":"CHAIN_LEAN_PARALLEL_BROWSER_QA","value":"full","requested":"full"' "$GOAL_SESSION_DIR/telemetry.jsonl" \
+  && assert "F: iter_config records full/full" "pass" \
+  || assert "F: iter_config records full/full" "fail"
+unset STUB_BQA_STARTED_STAMP STUB_REVIEW_WAIT_FOR STUB_REVIEW_WITNESS
+
+# ══ Scenario G: SPEED-3 full + review-1 FAIL — kill mid-dispatch, no orphans ═
+make_sandbox G
+new_capture G
+start_dummies
+export CHAIN_LEAN_PARALLEL_BROWSER_QA=full
+export STUB_REPLAY_VERDICT=PASS   # replay lane finishes fast → LLM dispatch starts
+export STUB_BQA_STARTED_STAMP="$WORK/bqa-started-G.stamp"
+export STUB_BQA_SLEEP=30          # LLM dispatch hangs → review FAIL lands mid-dispatch
+export STUB_REVIEW_WAIT_FOR="$STUB_BQA_STARTED_STAMP"
+export STUB_REVIEW_VERDICT=FAIL
+export STUB_DEV_FIX_RC=70         # fix-mode developer "pauses" right after the invalidation point
+rc=0; run_lean "$WORK/lean-G.log" || rc=$?
+[[ "$rc" -eq 70 ]] && assert "G: fix-mode transport pause exits 70" "pass" \
+  || { assert "G: fix-mode transport pause exits 70 (rc=$rc)" "fail"; sed -n '1,40p' "$WORK/lean-G.log"; }
+[[ -f "$STUB_BQA_STARTED_STAMP" ]] \
+  && assert "G: LLM dispatch was mid-flight inside the fork when review failed" "pass" \
+  || assert "G: LLM dispatch was mid-flight inside the fork when review failed" "fail"
+grep -q "Reaping the forked full browser-qa section" "$WORK/lean-G.log" \
+  && grep -q "Forked full browser-qa section is dead and its lane files are discarded — safe to invalidate" "$WORK/lean-G.log" \
+  && assert "G: kill+wait+discard logged before invalidation" "pass" \
+  || assert "G: kill+wait+discard logged before invalidation" "fail"
+_reap_ln="$(grep -n "Forked full browser-qa section is dead" "$WORK/lean-G.log" | head -1 | cut -d: -f1 || true)"
+_fix_ln="$(grep -n "Review FAIL — running developer in fix mode" "$WORK/lean-G.log" | head -1 | cut -d: -f1 || true)"
+[[ -n "$_reap_ln" && -n "$_fix_ln" ]] && [[ "$_fix_ln" -lt "$_reap_ln" ]] \
+  && assert "G: reap completes inside the FAIL branch (after its banner, before the fix dispatch)" "pass" \
+  || assert "G: reap completes inside the FAIL branch (banner=$_fix_ln reap=$_reap_ln)" "fail"
+sleep 2   # settle window: a survivor would land its late write here
+[[ ! -f "$UI_TEST_RESULTS" && ! -f "$REGRESSION_RESULTS" && ! -f "$SBX/reports/phase-${ITER}-ui-test-results.llm.md" ]] \
+  && assert "G: no lane/merged results file exists post-invalidation (incl. settle window)" "pass" \
+  || assert "G: no lane/merged results file exists post-invalidation" "fail"
+_orphans="$(pgrep -f -- "$STUB_DIR/claude" 2>/dev/null || true; pgrep -f -- "$SBX/scripts" 2>/dev/null || true)"
+[[ -z "$_orphans" ]] \
+  && assert "G: ZERO fork processes survive the kill (pgrep — stop-and-ask trigger)" "pass" \
+  || assert "G: ZERO fork processes survive the kill (survivors: $_orphans)" "fail"
+grep -q '"event":"parallel_bqa_wasted_dispatch"' "$GOAL_SESSION_DIR/telemetry.jsonl" \
+  && grep -q '"mode":"full".*"wasted":"one full browser-qa dispatch' "$GOAL_SESSION_DIR/telemetry.jsonl" \
+  && grep -q '2-of-3 attempt-1-FAIL tripwire also spares this cost' "$GOAL_SESSION_DIR/telemetry.jsonl" \
+  && assert "G: wasted-dispatch cost event recorded (with the tripwire-spares fact)" "pass" \
+  || assert "G: wasted-dispatch cost event recorded (with the tripwire-spares fact)" "fail"
+[[ ! -f "$ITER_DIR/.bqa-full-rc" && ! -f "$ITER_DIR/.bqa-full-pid" ]] \
+  && assert "G: fork rc/pid files discarded by the reap" "pass" \
+  || assert "G: fork rc/pid files discarded by the reap" "fail"
+[[ "$(grep -cx 'browser-qa-agent' "$CANARY")" == "1" ]] \
+  && assert "G: exactly one (killed) browser-qa dispatch — none after the pause" "pass" \
+  || assert "G: exactly one (killed) browser-qa dispatch (got: $(grep -cx 'browser-qa-agent' "$CANARY"))" "fail"
+unset STUB_BQA_SLEEP STUB_BQA_STARTED_STAMP STUB_REVIEW_WAIT_FOR STUB_REVIEW_VERDICT STUB_DEV_FIX_RC
+
+# ══ Scenario H: SPEED-3 full + rc-70 in the forked LLM lane — pause parity ═══
+# H1: the SEQUENTIAL pause tree (knob off, dispatch dies with 70 mid-section).
+make_sandbox H1
+new_capture H1
+start_dummies
+unset CHAIN_LEAN_PARALLEL_BROWSER_QA 2>/dev/null || true
+export STUB_REPLAY_VERDICT=PASS
+export STUB_BQA_RC=70
+rc=0; run_lean "$WORK/lean-H1.log" || rc=$?
+[[ "$rc" -eq 70 ]] && assert "H: sequential rc-70 pauses with exit 70" "pass" \
+  || { assert "H: sequential rc-70 pauses with exit 70 (rc=$rc)" "fail"; sed -n '1,40p' "$WORK/lean-H1.log"; }
+H1_TREE="$(artifact_tree)"
+H1_ITER_DIR="$ITER_DIR"
+# H2: the FULL-FORK pause tree (same stubs; the 70 crosses the fork boundary).
+make_sandbox H2
+new_capture H2
+start_dummies
+export CHAIN_LEAN_PARALLEL_BROWSER_QA=full
+rc=0; run_lean "$WORK/lean-H2.log" || rc=$?
+[[ "$rc" -eq 70 ]] && assert "H: full-fork rc-70 pauses the ENGINE with exit 70 (join translation)" "pass" \
+  || { assert "H: full-fork rc-70 pauses the ENGINE with exit 70 (rc=$rc)" "fail"; sed -n '1,40p' "$WORK/lean-H2.log"; }
+grep -q "browser-qa-agent (parallel full): interactive pump/dispatch unavailable (exit 70) — pausing" "$WORK/lean-H2.log" \
+  && assert "H: join re-raises the pause with the parallel-full label" "pass" \
+  || assert "H: join re-raises the pause with the parallel-full label" "fail"
+H2_TREE="$(artifact_tree)"
+if [[ "$H2_TREE" == "$H1_TREE" ]]; then
+  assert "H: pause-at-join sandbox tree IDENTICAL to the sequential pause tree" "pass"
+else
+  assert "H: pause-at-join sandbox tree IDENTICAL to the sequential pause tree" "fail"
+  diff <(printf '%s\n' "$H1_TREE") <(printf '%s\n' "$H2_TREE") | sed 's/^/        /'
+fi
+[[ ! -f "$ITER_DIR/.steps/browser-qa.done" && ! -f "$H1_ITER_DIR/.steps/browser-qa.done" ]] \
+  && assert "H: browser-qa marker absent in BOTH pause trees (resume re-runs the section)" "pass" \
+  || assert "H: browser-qa marker absent in BOTH pause trees" "fail"
+[[ -f "$REGRESSION_RESULTS" && ! -f "$UI_TEST_RESULTS" ]] \
+  && assert "H: replay results present, merged results absent (pause hit the LLM lane)" "pass" \
+  || assert "H: replay results present, merged results absent" "fail"
+[[ "$(marker_field "$ITER_DIR" developer tree_hash)" == "$(marker_field "$H1_ITER_DIR" developer tree_hash)" ]] \
+  && [[ -n "$(marker_field "$ITER_DIR" developer tree_hash)" ]] \
+  && assert "H: developer marker tree_hash identical across the two pause trees" "pass" \
+  || assert "H: developer marker tree_hash identical across the two pause trees" "fail"
+# H3: resume the paused full-mode sandbox — the pause must be genuinely resumable.
+new_capture H3
+start_dummies
+unset STUB_BQA_RC
+rc=0; run_lean "$WORK/lean-H3.log" || rc=$?
+[[ "$rc" -eq 0 ]] && assert "H: resume after the join-pause completes (exit 0)" "pass" \
+  || { assert "H: resume after the join-pause completes (rc=$rc)" "fail"; sed -n '1,40p' "$WORK/lean-H3.log"; }
+grep -q "Resume: developer already completed" "$WORK/lean-H3.log" \
+  && assert "H: resume skips the developer build (checkpoint held)" "pass" \
+  || assert "H: resume skips the developer build (checkpoint held)" "fail"
+grep -q "Forking the FULL browser-qa section" "$WORK/lean-H3.log" \
+  && assert "H: resume re-runs browser-qa (fresh full fork)" "pass" \
+  || assert "H: resume re-runs browser-qa (fresh full fork)" "fail"
+grep -q '^\*\*Browser QA Verdict:\*\* PASS' "$UI_TEST_RESULTS" 2>/dev/null \
+  && assert "H: resumed browser-qa produced a real PASS verdict" "pass" \
+  || assert "H: resumed browser-qa produced a real PASS verdict" "fail"
+unset STUB_BQA_RC 2>/dev/null || true
 
 echo ""
 echo "=== Results: $PASS passed, $FAIL failed ==="
