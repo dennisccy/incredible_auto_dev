@@ -137,7 +137,10 @@ Phase: $PHASE
 Phase spec: $SPEC
 Review report: $REVIEW
 Execution plan: $PLAN_FILE
-Project template: .claude/project-template.md  <-- read this for test commands
+Project template (relevant sections, pre-sliced):
+\`\`\`\`
+$(project_template_slice qa)
+\`\`\`\`
 Agent instructions: .claude/agents/qa.md  <-- read this first, follow MODE 2 instructions
 (CLAUDE.md is already in your system prompt — do not Read it again.)
 

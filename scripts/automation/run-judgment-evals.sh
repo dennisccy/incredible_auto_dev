@@ -329,6 +329,12 @@ _prepare_reviewer() {
   # from the same function the engine's prompt substitutes in.
   DIFF_HINT="$(bash -c "source '$LIB/common.sh' && review_diff_hint HEAD")"
 
+  # The pre-sliced project template (TOKEN-1), exactly as production inlines it:
+  # the SAME project_template_slice helper, run over the sandbox's own
+  # .claude/project-template.md (the framework template, symlinked into the
+  # sandbox with the other read-only assets) — never a duplicated slicer.
+  TEMPLATE_SLICE="$(bash -c "source '$LIB/common.sh' && project_template_slice reviewer '$SANDBOX/.claude/project-template.md'")"
+
   # The engine's reviewer dispatch prompt (goal-iter-lean.sh run_reviewer),
   # verbatim.
   PROMPT=$(cat <<PROMPT_EOF
@@ -337,7 +343,10 @@ You are the reviewer agent for goal-mode lean iteration.
 Iteration: $ITER_NAME
 Iter spec: $ITER_SPEC_PATH
 Dev handoff: $DEV_HANDOFF
-Project template: .claude/project-template.md
+Project template (relevant sections, pre-sliced):
+\`\`\`\`
+$TEMPLATE_SLICE
+\`\`\`\`
 Agent instructions: .claude/agents/reviewer.md  <-- read this first
 (CLAUDE.md is already in your system prompt — do not Read it again.)
 

@@ -798,8 +798,48 @@ benchmark (or a real session's telemetry) before AND after (G8).
   clean iterations.
 
 ### TOKEN-1 · Per-agent project-template slicing
-- **Priority:** P1 · **Effort:** M · **Risk:** LOW · **Status:** TODO  *(absorbed:
-  README Token-Opt Tier-1 polish)*
+- **Priority:** P1 · **Effort:** M · **Risk:** LOW · **Status:** IN-PROGRESS 2026-07-13 —
+  release-manager/reviewer/qa converted; developer conversion deliberately LAST per this
+  entry; auditor untouched. Remaining before DONE: G8 fresh-session certification; the
+  DoD token-telemetry before/after (plan: next benchmark run's per-agent reviewer/qa
+  input tokens vs `benchmarks/results/20260712-171324-5e87813077ae.json`;
+  release-manager is not exercised by the benchmark — a real session covers it).
+  Reviewer judgment fixtures RE-RUN post-slice (G9-approved 2026-07-13): 4/4 verdict
+  classes hold under the new pre-sliced prompt (case-01 PASS, case-02 PASS_WITH_NOTES,
+  case-03 FAIL, case-04 FAIL — 141/170/199/226s, sonnet-tier,
+  `run-judgment-evals.sh --yes-spend --judge reviewer`).
+  *Implementation note (2026-07-13):* helper `project_template_slice <agent> [template]`
+  + the AGENT→sections map beside it in `scripts/automation/lib/common.sh`. Map
+  (adjusted from this entry's initial guess after reading the bodies): release-manager →
+  GIT WORKFLOW (branch naming + PR title format + never-commit are ALL its
+  template-sourced duties); reviewer → ARCHITECTURE PRINCIPLES + DESIGN SYSTEM (its
+  UI-quality checklist verifies components/tokens/effects against it) + TEST COMMANDS;
+  qa → STACK (service URLs + frontend flag) + TEST COMMANDS + SERVICE START COMMANDS.
+  Semantics: verbatim `##`-section chunks in map order; a mapped section missing from
+  the template → loud inline `[slice: section 'X' not found …]` marker (never silent);
+  unknown agent → full file + one stderr diagnostic (safe fallback for
+  developer/auditor); missing template file → loud marker; always rc 0 (prompts embed
+  it via `$(...)` under `set -e`). Sites converted (the "read this" line → inlined
+  four-backtick-fenced slice labeled "Project template (relevant sections,
+  pre-sliced):"): `finalize-phase.sh` (release-manager; step-2 never-commit wording now
+  points at the inlined GIT WORKFLOW), `qa-phase.sh` (qa), `review-phase.sh` and
+  `goal-iter-lean.sh` `run_reviewer` (reviewer). The three `body.md`s now say the
+  pre-sliced sections in the dispatch prompt are authoritative — do not Read the full
+  file (`agent.yaml` bumps: reviewer 1.2.0, qa 1.2.0, release-manager 1.1.0; mirrors
+  re-rendered). THE MIRROR: `run-judgment-evals.sh` `_prepare_reviewer` inlines the
+  slice via the SAME helper over the sandbox's `.claude/project-template.md` — factual
+  correction to this entry: the fixture trees carry NO `.claude/`; the sandbox reaches
+  the framework's own template through the runner's read-only-asset symlink, so
+  mirroring works with fixtures untouched. NEW GATE:
+  `tests/automation/test-project-template-slice.sh` (run-evals §2c → 99/99; 18 asserts)
+  pins the slice contract (exact-match fixture slices, map order, fallback, both loud
+  markers, real-template map sufficiency incl. the never-commit canary) AND
+  extracts+normalizes the production `run_reviewer` prompt vs the judgment builder's
+  heredoc — the verbatim-mirror invariant is now a failing eval, not a convention
+  (the gate was validated green on the PRE-change prompt pair first). Benchmark
+  fixture's filled template slices clean for all three agents (release-manager 14 /
+  qa 51 / reviewer 56 lines vs the ~180-line full file), so the §9 measurement run
+  needs no fixture edits.  *(absorbed: README Token-Opt Tier-1 polish)*
 - **Problem:** every agent that reads `.claude/project-template.md` reads all of it;
   release-manager needs ~5 lines (never-commit list), developer needs most.
 - **Current state:** agents told to read the whole file; helper-slicing deferred in old

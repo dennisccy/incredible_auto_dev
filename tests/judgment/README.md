@@ -79,7 +79,14 @@ HEAD, then re-apply the patch and leave it uncommitted. The dispatch prompt is
 then the engine's lean-review prompt (goal-iter-lean.sh `run_reviewer`) verbatim,
 including the real `review_diff_hint` from `lib/common.sh` — the reviewer runs
 the identical noise-excluded diff command production gives it, and sees exactly
-the authored patch. (The lean dispatch is the one mirrored; the phase-mode
+the authored patch — and the pre-sliced project template (TOKEN-1): the builder
+inlines `project_template_slice reviewer` over the sandbox's own
+`.claude/project-template.md` (the framework template, symlinked in with the
+other read-only assets), via the same helper production substitutes — never a
+duplicated slicer. The verbatim mirror is a GATE, not a convention:
+`tests/automation/test-project-template-slice.sh` (run-evals §2c) extracts both
+prompt templates and fails on any byte difference beyond its four sanctioned
+variable renames. (The lean dispatch is the one mirrored; the phase-mode
 review-phase.sh prompt differs slightly and has no fixture yet.)
 
 ## auditor cases (slice (c) — 4 cases)

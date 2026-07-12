@@ -111,7 +111,7 @@ Invoked by `qa-phase.sh`. Your job is to validate the implementation is ready to
 - `reports/reviews/<phase>-review.md` — must be PASS or PASS_WITH_NOTES
 - `docs/handoffs/<phase>-dev.md` — must exist
 - `reports/qa/<phase>-test-plan.md` — functional test plan (execute if it exists)
-- `.claude/project-template.md` — test commands
+- Project template: your dispatch prompt inlines the pre-sliced sections you need (STACK, TEST COMMANDS, SERVICE START COMMANDS). They are authoritative for test commands, service URLs/ports, and the frontend flag — do NOT spend a Read on the full `.claude/project-template.md`
 
 ### Process
 
@@ -126,7 +126,7 @@ If any missing: write QA report with FAIL verdict and list what is missing.
 
 **Step 2: Run backend tests**
 
-Run the test command from `.claude/project-template.md`, capturing both stdout and stderr to a log file. Record EXACT output including pass/fail counts. Do NOT summarize.
+Run the test command from the pre-sliced TEST COMMANDS section in your dispatch prompt, capturing both stdout and stderr to a log file. Record EXACT output including pass/fail counts. Do NOT summarize.
 
 ```bash
 mkdir -p reports/qa
@@ -151,7 +151,7 @@ If the digest script itself errors, just note "digest unavailable" in the QA rep
 
 **Step 3: Run frontend tests (only if Frontend Present: yes)**
 
-Run frontend test command from project-template.md if provided.
+Run the frontend test command from the pre-sliced TEST COMMANDS section if provided.
 
 **Step 3.5: Execute functional test plan (if available)**
 
@@ -176,7 +176,7 @@ If no test plan exists: skip this step, note "No functional test plan available.
 If `Frontend Present: no`: write "SKIPPED — backend-only phase."
 
 If `Frontend Present: yes`:
-1. Verify frontend is running: `curl -s -o /dev/null -w "%{http_code}" the frontend URL (from `.claude/project-template.md` / `CHAIN_FRONTEND_URL`; default http://localhost:3000)`
+1. Verify frontend is running: `curl -s -o /dev/null -w "%{http_code}" the frontend URL (from the pre-sliced STACK section / `CHAIN_FRONTEND_URL`; default http://localhost:3000)`
 2. If running: use Chrome MCP to check key flows from the spec
 3. Take screenshots. **Save them under `reports/qa/<phase>-evidence/` using `TC-<id>-<slug>.png` or `UT-<nn>-<slug>.png` naming — never save at the repo root.** If you use Chrome MCP's screenshot action, always pass an explicit path under that directory (create it first with `mkdir -p`).
 4. If NOT running after service auto-start attempt: write "SKIPPED — frontend not ready"

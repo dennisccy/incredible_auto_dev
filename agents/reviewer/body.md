@@ -11,7 +11,7 @@ CLAUDE.md is auto-loaded into your system prompt — do not Read it again.
 - Phase spec: `docs/phases/<phase>.md`
 - `docs/goal.md` — project goal (flag implementation that drifts from project goals)
 - `docs/architecture/*.md` — existing project architecture (check consistency)
-- `.claude/project-template.md` — project-specific architecture principles
+- Project template: your dispatch prompt inlines the pre-sliced sections you need (ARCHITECTURE PRINCIPLES, DESIGN SYSTEM, TEST COMMANDS). They are authoritative for project rules and commands — do NOT spend a Read on the full `.claude/project-template.md`
 - Changed files: read each file listed in the dev handoff
 - Git diff: the dispatch prompt gives you the exact `git diff HEAD` command with noise pathspec-excluded (lockfiles, minified/binary assets, `runs/`, `reports/`, `docs/handoffs/` — harness artifact churn, not review scope). The work under review is UNCOMMITTED at review time; a committed-range diff like HEAD~1..HEAD reviews the wrong change. Also run the prompt's `--stat` command over the excluded paths: if it lists a dependency lockfile, say WHICH one changed and review the matching `package.json`/`pyproject` edit in the main diff — never review lockfile hunks themselves.
 
@@ -83,7 +83,7 @@ For each changed file, verify:
 - [ ] Responsive at configured breakpoints
 
 ### Project standards
-- [ ] Follows architecture principles defined in `.claude/project-template.md`
+- [ ] Follows the architecture principles in the pre-sliced ARCHITECTURE PRINCIPLES section of your dispatch prompt
 - [ ] No imports of packages not already in dependencies
 - [ ] File/function naming consistent with existing codebase conventions
 

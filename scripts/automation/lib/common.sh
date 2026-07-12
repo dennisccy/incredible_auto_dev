@@ -393,6 +393,76 @@ review_diff_hint() {
   printf '  (stat of ONLY the excluded paths: if it lists dependency lockfiles, note WHICH changed and review the matching package.json/pyproject edit in the main diff; runs/ and reports/ churn is harness bookkeeping, outside review scope)\n'
 }
 
+# ── Per-agent project-template slicing (TOKEN-1) ──────────────────────────────
+# Dispatch wrappers inline ONLY the template sections an agent's duties use,
+# instead of instructing a full-file Read (release-manager needs ~5 lines of a
+# ~200-line file). The map lives HERE, next to the helper: `## ` heading names
+# exactly as they appear in .claude/project-template.md. Keep it in sync with
+# each agent's body.md duties — an agent whose duties cite an unmapped section
+# is a map bug. developer and auditor are deliberately NOT mapped (they need
+# most of the file — the unknown-agent fallback serves them the whole thing).
+#   release-manager — GIT WORKFLOW: branch naming, PR title format, main
+#     branch, and the never-commit list are all of its template-sourced duties.
+#   reviewer — ARCHITECTURE PRINCIPLES (project-standards checklist),
+#     DESIGN SYSTEM (its UI-quality checklist verifies components/tokens/effects
+#     against it), TEST COMMANDS (verifying test quality claims).
+#   qa — STACK (service URLs/ports + frontend-enabled flag), TEST COMMANDS
+#     (backend/frontend test runs), SERVICE START COMMANDS (qa-phase boot).
+_project_template_sections_for() {
+  case "$1" in
+    release-manager) printf '%s\n' "GIT WORKFLOW" ;;
+    reviewer)        printf '%s\n' "ARCHITECTURE PRINCIPLES" "DESIGN SYSTEM" "TEST COMMANDS" ;;
+    qa)              printf '%s\n' "STACK" "TEST COMMANDS" "SERVICE START COMMANDS" ;;
+    *) return 1 ;;
+  esac
+}
+
+# Emit the mapped sections of the project template for an agent, VERBATIM
+# (heading line through the line before the next `## ` heading, the template's
+# own `---` separators included), in map order. Contract (eval-fixture-tested
+# in tests/automation/test-project-template-slice.sh):
+#   • a mapped section missing from the template → a loud inline
+#     "[slice: section 'X' not found in <path>]" marker — never a silent
+#     omission (the agent and any human reading the prompt see the gap);
+#   • unknown agent → the FULL template on stdout (safe fallback) plus one
+#     diagnostic line on stderr (stdout stays clean prompt content);
+#   • template file missing → a loud not-found marker on stdout;
+#   • ALWAYS returns 0 — dispatch prompts embed this via $(...) under set -e.
+# Section headings match case-insensitively with trailing whitespace ignored.
+# Usage: project_template_slice <agent> [template_path]
+project_template_slice() {
+  local agent="${1:-}"
+  local template="${2:-$REPO_ROOT/.claude/project-template.md}"
+  if [[ ! -f "$template" ]]; then
+    echo "[slice: template file not found: $template]"
+    return 0
+  fi
+  local sections
+  if ! sections="$(_project_template_sections_for "$agent")"; then
+    echo "[project-template-slice] no section map for agent '${agent:-?}' — emitting the full template" >&2
+    cat "$template"
+    return 0
+  fi
+  awk -v want="${sections//$'\n'/|}" -v path="$template" -v q="'" '
+    /^## / {
+      key = $0; sub(/^## /, "", key); sub(/[ \t]+$/, "", key); key = toupper(key)
+      if (key in body) body[key] = body[key] "\n" $0
+      else body[key] = $0
+      cur = key; next
+    }
+    cur != "" { body[cur] = body[cur] "\n" $0; next }
+    END {
+      n = split(want, W, /\|/)
+      for (i = 1; i <= n; i++) {
+        k = W[i]; sub(/[ \t]+$/, "", k); k = toupper(k)
+        if (k in body) print body[k]
+        else print "[slice: section " q W[i] q " not found in " path "]"
+      }
+    }
+  ' "$template"
+  return 0
+}
+
 # Dispatch the coherence-auditor agent (goal mode). ONE shared implementation
 # for both call sites so the prompt cannot drift: the parallel fork inside
 # goal-iter-lean.sh (runs concurrently with browser-qa — the audit needs only

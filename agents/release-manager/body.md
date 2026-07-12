@@ -47,7 +47,7 @@ The calling script passes `GH_AUTH_AVAILABLE: true/false`. Follow the appropriat
 
 - NEVER force-push main
 - NEVER delete remote branches unless user explicitly says so
-- NEVER commit secrets, `.env` files, or files listed in the project's never-commit list (see `.claude/project-template.md`)
+- NEVER commit secrets, `.env` files, or files listed in the project's never-commit list (in the pre-sliced GIT WORKFLOW section of your dispatch prompt — authoritative; do NOT spend a Read on the full `.claude/project-template.md`)
 - NEVER amend published commits
 - Do NOT stop just because `gh auth` is unavailable — commit and push are still possible
 

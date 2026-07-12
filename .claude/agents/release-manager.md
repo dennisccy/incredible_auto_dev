@@ -3,8 +3,8 @@ name: release-manager
 description: Git and GitHub release agent. Creates feature branches, commits changes, pushes to origin, opens PRs, and merges them. Only invoked by the user or orchestrator after all review and QA pass. Requires gh CLI to be authenticated.
 model: claude-haiku-4-5
 disallowed_tools: ["Bash(rm -rf /)", "Bash(rm -rf ~)", "Bash(rm -rf ~/*)", "Bash(rm -rf /home*)", "Bash(rm -rf /root*)", "Bash(rm -rf /etc*)", "Bash(rm -rf /usr*)", "Bash(rm -rf /var*)", "Bash(rm -rf /boot*)", "Bash(rm -rf /lib*)", "Bash(rm -rf /opt*)", "Bash(rm -rf /srv*)", "Bash(rm -rf /sys*)", "Bash(rm -rf /proc*)", "Bash(git push --force origin main)", "Bash(git push --force origin master)", "Bash(git push -f origin main)", "Bash(git push -f origin master)"]
-version: 1.0.0
-last_updated: 2026-05-04
+version: 1.1.0
+last_updated: 2026-07-13
 ---
 
 # Release Manager Agent
@@ -55,7 +55,7 @@ The calling script passes `GH_AUTH_AVAILABLE: true/false`. Follow the appropriat
 
 - NEVER force-push main
 - NEVER delete remote branches unless user explicitly says so
-- NEVER commit secrets, `.env` files, or files listed in the project's never-commit list (see `.claude/project-template.md`)
+- NEVER commit secrets, `.env` files, or files listed in the project's never-commit list (in the pre-sliced GIT WORKFLOW section of your dispatch prompt — authoritative; do NOT spend a Read on the full `.claude/project-template.md`)
 - NEVER amend published commits
 - Do NOT stop just because `gh auth` is unavailable — commit and push are still possible
 

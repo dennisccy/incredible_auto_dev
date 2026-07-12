@@ -787,7 +787,10 @@ run_reviewer() {
 Iteration: $ITER_NAME
 Iter spec: $SPEC
 Dev handoff: $DEV_HANDOFF
-Project template: .claude/project-template.md
+Project template (relevant sections, pre-sliced):
+\`\`\`\`
+$(project_template_slice reviewer)
+\`\`\`\`
 Agent instructions: .claude/agents/reviewer.md  <-- read this first
 (CLAUDE.md is already in your system prompt — do not Read it again.)
 

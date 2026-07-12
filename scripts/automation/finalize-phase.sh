@@ -145,7 +145,10 @@ Phase to finalize: $PHASE
 QA report: $QA_REPORT
 Status file: $STATUS_FILE
 Summary file: $SUMMARY_FILE (already written — read it for PR body content)
-Project template: .claude/project-template.md  <-- read for never-commit files
+Project template (relevant sections, pre-sliced):
+\`\`\`\`
+$(project_template_slice release-manager)
+\`\`\`\`
 Agent instructions: .claude/agents/release-manager.md  <-- read this first
 (CLAUDE.md is already in your system prompt — do not Read it again.)
 
@@ -156,7 +159,7 @@ Apply the TOKEN AND QUESTIONING POLICY from .claude/core.md strictly.
 Perform the release flow:
 1. Create branch: phase/$PHASE  (if not already on it)
 2. Stage and commit all phase changes (read dev handoff for file list)
-   Do NOT commit files listed in .claude/project-template.md never-commit section
+   Do NOT commit files listed in the never-commit list (GIT WORKFLOW section, pre-sliced above)
 3. Push branch to origin
 4. If GH_AUTH_AVAILABLE is true: create PR with title: feat: $PHASE -- <one-line summary>
 5. If GH_AUTH_AVAILABLE is false: skip PR creation, print a clear message showing the
