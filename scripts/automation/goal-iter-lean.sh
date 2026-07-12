@@ -14,6 +14,11 @@
 # ui-impact-analyst, ui-test-designer, qa validator, ux-regression-reviewer,
 # auditor, phase-closure-auditor, release-manager.
 #
+# SPEED-2: with CHAIN_LEAN_PARALLEL_BROWSER_QA=replay (default off), the
+# browser-qa service boot + deterministic replay lane is forked right after the
+# developer step and joined once the review loop settles; a review-1 FAIL kills
+# the fork BEFORE any step invalidation (see the fork block below).
+#
 # The outer run-goal.sh runs the goal-evaluator after this script returns.
 #
 # All Claude calls go through claude_with_quota_retry → --effort max + auto-resume on quota.
@@ -93,13 +98,20 @@ ensure_phase_ports
 chain_tmp_init "$ITER_NAME"
 
 # ── Cleanup any stray dev server processes on exit ────────────────────────
-cleanup_iter_servers() {
+# Port sweep factored out (same commands, same order) so the SPEED-2 review-FAIL
+# reap can reuse it: a finished fork's servers are orphaned to init and survive
+# a fork-tree kill, yet the post-fix boot must start servers on the FIXED tree.
+_bqa_kill_port_servers() {
   local _be_port="${CHAIN_BACKEND_PORT:-8000}"
   local _fe_port="${CHAIN_FRONTEND_PORT:-3000}"
   pkill -f "uvicorn main:app.*--port ${_be_port}" 2>/dev/null || true
   pkill -f "next dev -p ${_fe_port}" 2>/dev/null || true
   pkill -f "next-server.*:${_fe_port}" 2>/dev/null || true
   fuser -k "${_be_port}/tcp" "${_fe_port}/tcp" 2>/dev/null || true
+}
+
+cleanup_iter_servers() {
+  _bqa_kill_port_servers
   # Reap a still-running coherence fork so an aborting iteration can't leave an
   # orphaned agent racing a future resume of the same iteration.
   if [[ -n "${_COH_PID:-}" ]]; then
@@ -109,8 +121,338 @@ cleanup_iter_servers() {
       kill "$_COH_PID" 2>/dev/null || true
     fi
   fi
+  # SPEED-2: reap a still-running browser-qa replay fork on every exit path so
+  # an aborting iteration can't leave an orphan writing lane files into a
+  # future resume of the same iteration.
+  if [[ -n "${_BQA_PID:-}" ]]; then
+    if declare -F _kill_pid_tree >/dev/null 2>&1; then
+      _kill_pid_tree "$_BQA_PID" 2>/dev/null || true
+    else
+      kill "$_BQA_PID" 2>/dev/null || true
+    fi
+  fi
 }
 trap 'cleanup_iter_servers; chain_tmp_cleanup' EXIT
+
+# ══ SPEED-2: parallel review ∥ browser-qa — stage "replay" ═════════════════
+# Reviewer (~21m) and browser-qa (~20m) both need only the post-dev tree. In
+# "replay" mode the forkable unit — service boot + the deterministic replay
+# lane ONLY (demo_runner.py --mode verify: pure python, cleanly killable on
+# both backends, no pump involvement) — runs in a background subshell while
+# the review loop runs, and is joined (or reaped) before anything consumes it.
+# The unit is ONE function, run_browser_qa_boot_and_replay(): knob=off calls
+# it inline at its original position inside run_browser_qa_section() (no
+# behavior change); knob=replay forks it right after the developer step.
+
+# Journey sets come from the spec (needed by the fork guard below AND by the
+# resume-skip check and the lanes inside the section). First match wins.
+_spec_journeys() { grep -iE "$1" "$SPEC" 2>/dev/null | head -1 | grep -oE 'J-[0-9]+' | sort -u | tr '\n' ' '; }
+TARGET_JOURNEYS="$(_spec_journeys 'Target journeys:')"
+REQUIRED_JOURNEYS="$(_spec_journeys 'Required-still-passing')"
+_bq_sig="${TARGET_JOURNEYS}|${REQUIRED_JOURNEYS}"
+
+# Lane path derivations, shared by the forkable unit, the join, and the reap
+# (single source of truth — every assignment is a pure derivation, and the
+# mkdir is idempotent, so recomputing in fork and parent is safe).
+_bqa_lane_paths() {
+EVIDENCE_DIR="$REPO_ROOT/reports/qa/${ITER_NAME}-evidence"
+SID="${ITER_NAME#goal-}"; SID="${SID%-iter-*}"
+JOURNEY_SCRIPTS_DIR="$REPO_ROOT/runs/goal-session-${SID}/journey-scripts"
+mkdir -p "$JOURNEY_SCRIPTS_DIR"
+REGRESSION_RESULTS="$REPO_ROOT/reports/phase-${ITER_NAME}-regression-replay-results.md"
+LLM_RESULTS="$REPO_ROOT/reports/phase-${ITER_NAME}-ui-test-results.llm.md"
+DEMO_RUNNER="$SCRIPT_DIR/lib/demo_runner.py"
+MERGE_RESULTS="$SCRIPT_DIR/lib/merge_ui_test_results.py"
+}
+
+# The forkable unit: service boot + golden partition + deterministic replay
+# lane. Body lines moved VERBATIM from run_browser_qa_section (SPEED-1 style:
+# un-indented pure move); knob=off runs this in the caller's shell exactly
+# where the lines used to sit, so every assignment/export/cd lands globally
+# as before. It never dispatches an agent, so exit-70 transport handling
+# cannot arise inside it.
+run_browser_qa_boot_and_replay() {
+
+QA_BACKEND_LOG=$(_qa_log_path "goal-iter-backend")
+QA_FRONTEND_LOG=$(_qa_log_path "goal-iter-frontend")
+
+BACKEND_START_CMD="${CHAIN_START_BACKEND_CMD:-}"
+FRONTEND_START_CMD="${CHAIN_START_FRONTEND_CMD:-}"
+if [[ -z "$BACKEND_START_CMD" && -f "$REPO_ROOT/scripts/start-backend.sh" ]]; then
+  BACKEND_START_CMD="bash $REPO_ROOT/scripts/start-backend.sh"
+fi
+if [[ -z "$FRONTEND_START_CMD" && -f "$REPO_ROOT/scripts/start-frontend.sh" ]]; then
+  FRONTEND_START_CMD="bash $REPO_ROOT/scripts/start-frontend.sh"
+fi
+
+_BACKEND_PORT="${CHAIN_BACKEND_PORT:-8000}"
+_FRONTEND_PORT="${CHAIN_FRONTEND_PORT:-3000}"
+BACKEND_HEALTH_URL="${CHAIN_BACKEND_HEALTH_URL:-http://localhost:${_BACKEND_PORT}/health}"
+FRONTEND_URL="${CHAIN_FRONTEND_URL:-http://localhost:${_FRONTEND_PORT}}"
+
+kill_stale_next_dev_server 2>/dev/null || true
+
+QA_STARTED_PIDS=()
+export QA_BACKEND_HEALTH_URL="$BACKEND_HEALTH_URL"
+export QA_BACKEND_START_CMD="$BACKEND_START_CMD"
+export QA_BACKEND_LOG
+export QA_FRONTEND_URL="$FRONTEND_URL"
+export QA_FRONTEND_START_CMD="$FRONTEND_START_CMD"
+export QA_FRONTEND_LOG
+export QA_FRONTEND_REQUIRED="yes"
+
+ensure_services_running
+
+# Trust the retrying ensure_services_running verdict first (QA_FRONTEND_UP), then
+# a re-probe so a frontend that is merely mid-recompile isn't misread as down —
+# avoids a false SKIP right after a successful-but-still-compiling boot. The gate
+# is corruption-aware: this is the standalone (non-shared) path, so on a persistent
+# corrupt `.next` it heals once (rm -rf .next + restart). Budget is 120s (not 30s)
+# so a guaranteed-cold rebuild — including the QA_FRONTEND_UP=slow case where the
+# boot left a still-compiling server running — has room to finish.
+if [[ "${QA_FRONTEND_UP:-unknown}" == "yes" ]] || _wait_for_frontend_ready "$FRONTEND_URL" "frontend" 120 "goal-iter-lean"; then
+  FRONTEND_AVAILABLE="yes"
+  FRONTEND_SKIP_REASON=""
+else
+  FRONTEND_AVAILABLE="no"
+  echo "[goal-iter-lean] Frontend not available — browser tests will be SKIPPED."
+  # Surface the real cause (dep hint + log tail) instead of a bare "not running".
+  FRONTEND_SKIP_REASON="frontend not running"
+  _fe_hint="$(_qa_dep_hint frontend)"
+  [[ -n "$_fe_hint" ]] && FRONTEND_SKIP_REASON+=" — likely cause: $_fe_hint"
+  _fe_tail="${QA_FRONTEND_LOG_TAIL:-}"
+  [[ -z "$_fe_tail" && -n "${QA_FRONTEND_LOG:-}" && -f "${QA_FRONTEND_LOG:-}" ]] && _fe_tail="$(tail -n 15 "$QA_FRONTEND_LOG" 2>/dev/null || true)"
+  [[ -n "$_fe_tail" ]] && { echo "[goal-iter-lean] Frontend start log tail (${QA_FRONTEND_LOG:-?}):" >&2; echo "$_fe_tail" >&2; }
+fi
+
+export CHAIN_CLAUDE_PRE_RETRY_HOOK="ensure_services_running"
+cd "$REPO_ROOT"
+
+_bqa_lane_paths
+
+# Partition Required-still-passing into replay (LINTABLE golden on file) vs LLM.
+# A golden that fails validation is quarantined (renamed *.json.invalid) and its
+# journey routed to the LLM lane — previously an invalid golden produced a
+# replay SKIP that nothing re-confirmed (silently unverified journey). A lint
+# crash (no output) conservatively keeps the old file-exists behavior: the
+# verify runner re-validates at replay time anyway.
+_lint_out=""
+if [[ -n "${REQUIRED_JOURNEYS// /}" ]]; then
+  _lint_out="$(python3 "$DEMO_RUNNER" --mode lint --scripts-dir "$JOURNEY_SCRIPTS_DIR" \
+    --journeys "$(echo "$REQUIRED_JOURNEYS" | tr ' ' ',' | sed 's/^,*//;s/,*$//')" 2>/dev/null || true)"
+fi
+R_REPLAY=""; R_LLM=""
+for _j in $REQUIRED_JOURNEYS; do
+  if [[ -f "$JOURNEY_SCRIPTS_DIR/$_j.json" ]]; then
+    if printf '%s\n' "$_lint_out" | grep -q "^$_j invalid"; then
+      echo "[goal-iter-lean] Golden for $_j failed lint — quarantining ($_j.json.invalid) and routing to the LLM lane: $(printf '%s\n' "$_lint_out" | grep -m1 "^$_j invalid" | cut -d' ' -f2-)"
+      mv -f "$JOURNEY_SCRIPTS_DIR/$_j.json" "$JOURNEY_SCRIPTS_DIR/$_j.json.invalid" 2>/dev/null || true
+      R_LLM+="$_j "
+    else
+      R_REPLAY+="$_j "
+    fi
+  else
+    R_LLM+="$_j "
+  fi
+done
+
+_use_replay="no"
+if [[ "${CHAIN_REGRESSION_REPLAY:-true}" == "true" && "$FRONTEND_AVAILABLE" == "yes" && -n "${R_REPLAY// /}" ]]; then
+  _use_replay="yes"
+fi
+
+# Lane 1 — deterministic replay of the already-passing set (only if golden scripts exist).
+REPLAY_FAILED=""
+if [[ "$_use_replay" == "yes" ]]; then
+  echo "[goal-iter-lean] Regression (deterministic replay): $R_REPLAY"
+  _replay_csv="$(echo "$R_REPLAY" | tr ' ' ',' | sed 's/^,*//;s/,*$//')"
+  _replay_rc=0
+  python3 "$DEMO_RUNNER" --mode verify \
+    --scripts-dir "$JOURNEY_SCRIPTS_DIR" --journeys "$_replay_csv" \
+    --results "$REGRESSION_RESULTS" --evidence-dir "$EVIDENCE_DIR" \
+    --base-url "$FRONTEND_URL" --phase-id "$ITER_NAME" --repo-root "$REPO_ROOT" || _replay_rc=$?
+  if [[ "$_replay_rc" -eq 5 ]]; then
+    REPLAY_FAILED="$(grep -E '^\| UT-J-[0-9]+ ' "$REGRESSION_RESULTS" 2>/dev/null | grep -F '| FAIL |' | grep -oE 'J-[0-9]+' | sort -u | tr '\n' ' ')"
+    echo "[goal-iter-lean] Replay flagged possible regression(s) — re-confirming via LLM: $REPLAY_FAILED"
+  elif [[ "$_replay_rc" -ne 0 ]]; then
+    # Replay-lane infrastructure failure (rc 6 = browser launch/crash; any
+    # other rc = runner crash). The replay journeys were NOT verified — route
+    # ALL of them back to the LLM lane, byte-identical to running this
+    # iteration with CHAIN_REGRESSION_REPLAY=false. Previously a replay crash
+    # left them silently unverified for the iteration.
+    echo "[goal-iter-lean] Replay lane failed (rc=$_replay_rc) — falling back to the LLM lane for ALL regression journeys." >&2
+    _use_replay="no"
+    R_REPLAY=""
+  fi
+fi
+
+}
+
+# Serialize the fork's outward state (atomic tmp+mv, %q-quoted, sentinel-
+# terminated) so the join can adopt it wholesale. Plain assignments source as
+# globals; the export lines restore the env the LLM lane's quota-retry
+# pre-hook (ensure_services_running) needs in the parent shell.
+_bqa_state_save() {
+  local f="$1" tmp="$1.tmp.$$"
+  {
+    printf 'FRONTEND_AVAILABLE=%q\n'   "${FRONTEND_AVAILABLE:-}"
+    printf 'FRONTEND_SKIP_REASON=%q\n' "${FRONTEND_SKIP_REASON:-}"
+    printf 'FRONTEND_URL=%q\n'         "${FRONTEND_URL:-}"
+    printf '_use_replay=%q\n'          "${_use_replay:-no}"
+    printf 'R_REPLAY=%q\n'             "${R_REPLAY:-}"
+    printf 'R_LLM=%q\n'                "${R_LLM:-}"
+    printf 'REPLAY_FAILED=%q\n'        "${REPLAY_FAILED:-}"
+    printf 'export QA_BACKEND_HEALTH_URL=%q\n'       "${QA_BACKEND_HEALTH_URL:-}"
+    printf 'export QA_BACKEND_START_CMD=%q\n'        "${QA_BACKEND_START_CMD:-}"
+    printf 'export QA_BACKEND_LOG=%q\n'              "${QA_BACKEND_LOG:-}"
+    printf 'export QA_FRONTEND_URL=%q\n'             "${QA_FRONTEND_URL:-}"
+    printf 'export QA_FRONTEND_START_CMD=%q\n'       "${QA_FRONTEND_START_CMD:-}"
+    printf 'export QA_FRONTEND_LOG=%q\n'             "${QA_FRONTEND_LOG:-}"
+    printf 'export QA_FRONTEND_REQUIRED=%q\n'        "${QA_FRONTEND_REQUIRED:-yes}"
+    printf 'export CHAIN_CLAUDE_PRE_RETRY_HOOK=%q\n' "${CHAIN_CLAUDE_PRE_RETRY_HOOK:-}"
+    printf '_BQA_STATE_COMPLETE=1\n'
+  } > "$tmp" 2>/dev/null && mv -f "$tmp" "$f" 2>/dev/null || { rm -f "$tmp" 2>/dev/null; return 1; }
+  return 0
+}
+
+# Join the forked lane. Returns 0 ONLY when the fork exited 0 and left a
+# complete state file — the section then skips the inline unit. Any other
+# outcome (no fork this run, crash, incomplete state) cleans up and returns 1
+# so the section runs the unit inline (the sequential path IS the fallback).
+# Never trusts files from a previous process: _BQA_PID is set only by THIS
+# run's fork, so a stale state file on disk is ignored and overwritten.
+_bqa_fork_consume() {
+  [[ -n "${_BQA_PID:-}" ]] || return 1
+  wait "$_BQA_PID" 2>/dev/null || true
+  _BQA_PID=""
+  local _frc
+  _frc="$(cat "$_BQA_RC_FILE" 2>/dev/null || echo 1)"
+  if [[ "$_frc" != "0" || ! -s "$_BQA_STATE_FILE" ]]; then
+    echo "[goal-iter-lean] Forked replay lane unusable (rc=${_frc:-?}) — running service boot + replay inline." >&2
+    rm -f "$_BQA_STATE_FILE" "$_BQA_RC_FILE" 2>/dev/null || true
+    return 1
+  fi
+  _BQA_STATE_COMPLETE=""
+  # shellcheck source=/dev/null
+  source "$_BQA_STATE_FILE"
+  rm -f "$_BQA_STATE_FILE" "$_BQA_RC_FILE" 2>/dev/null || true
+  if [[ "${_BQA_STATE_COMPLETE:-}" != "1" ]]; then
+    echo "[goal-iter-lean] Forked replay lane left an incomplete state file — running service boot + replay inline." >&2
+    return 1
+  fi
+  _bqa_lane_paths
+  cd "$REPO_ROOT"
+  echo "[goal-iter-lean] Consumed forked replay-lane results (frontend: ${FRONTEND_AVAILABLE:-?}, replay: ${_use_replay:-no}${REPLAY_FAILED:+, re-confirming via LLM: ${REPLAY_FAILED% }})."
+  return 0
+}
+
+# Review-1 FAIL path (SPEED-2 CRITICAL ORDERING): the forked lane's results
+# were produced against the PRE-fix tree — kill the fork's whole process tree,
+# WAIT until it is dead, discard its lane files, and only then may the caller
+# run step_invalidate_from. A forked write landing after invalidation is the
+# exact stale-artifact race this design guards (roadmap SPEED-2 stop-and-ask).
+# The lane files are discarded here explicitly because step_invalidate_from
+# only deletes MARKER-registered artifacts, and the fork's outputs are not
+# registered until step_mark_done browser-qa at the end of the section.
+_bqa_fork_reap() {
+  [[ -n "${_BQA_PID:-}" ]] || return 0
+  echo "[goal-iter-lean] Reaping the forked replay lane (pid $_BQA_PID) before invalidation..."
+  if declare -F _kill_pid_tree >/dev/null 2>&1; then
+    _kill_pid_tree "$_BQA_PID" 2>/dev/null || true
+  else
+    kill "$_BQA_PID" 2>/dev/null || true
+  fi
+  wait "$_BQA_PID" 2>/dev/null || true
+  _BQA_PID=""
+  # A finished fork's servers were orphaned to init (they survive the tree
+  # kill) and would serve PRE-fix code to the post-fix browser-qa — sweep the
+  # ports so the sequential rerun boots on the fixed tree.
+  _bqa_kill_port_servers
+  _bqa_lane_paths
+  rm -f "$_BQA_STATE_FILE" "$_BQA_RC_FILE" "${REGRESSION_RESULTS:-}" 2>/dev/null || true
+  echo "[goal-iter-lean] Forked replay lane is dead and its lane files are discarded — safe to invalidate."
+  return 0
+}
+
+# Read-only mirror of the resume-skip check ahead of run_browser_qa_section
+# (keep the two in sync; this one must not emit the step_skipped telemetry).
+# When the browser-qa checkpoint will be reused, a fork would boot services
+# and replay journeys for nothing on a resumed iteration.
+_bqa_checkpoint_reusable() {
+  step_done_valid browser-qa --verify-tree --dir "$ITER_DIR" "$UI_TEST_RESULTS" || return 1
+  [[ "$(step_field browser-qa journeys "$ITER_DIR")" == "$_bq_sig" ]] || return 1
+  local _v
+  _v="$(grep -m1 -E '^\*\*Browser QA Verdict:\*\*' "$UI_TEST_RESULTS" 2>/dev/null | grep -oE 'PASS|FAIL|SKIPPED' | head -1 || true)"
+  [[ "$_v" == "PASS" || "$_v" == "FAIL" ]]
+}
+
+# SPEED-2 tripwire: if >=2 of the last 3 iterations logged an attempt-1 review
+# FAIL, the fork is a bad bet (every review FAIL wastes a forked boot+replay)
+# — skip it for the REST OF THE SESSION. The decision is persisted as a state
+# file because this script runs once per iteration (env cannot carry it).
+# Returns 0 = fork must be skipped (tripped now, or previously persisted),
+# 1 = clear, 2 = cannot evaluate (no jq — callers skip the fork: an
+# experiment whose tripwire cannot fire must not run). Reads only jq-written
+# telemetry (the no-jq writer wraps payloads as strings, invisible here —
+# consistent, since without jq this reader never runs either).
+_bqa_tripwire_active() {
+  local _sess="${GOAL_SESSION_DIR:-}"
+  [[ -z "$_sess" && -n "${ITER_DIR:-}" ]] && _sess="$(dirname "$ITER_DIR")"
+  [[ -n "$_sess" ]] || return 1
+  local _state="$_sess/state/parallel-bqa-disabled"
+  if [[ -f "$_state" ]]; then
+    echo "[goal-iter-lean] SPEED-2 tripwire state present ($_state) — parallel browser-qa fork disabled for this session."
+    return 0
+  fi
+  command -v jq >/dev/null 2>&1 || return 2
+  local _tj="$_sess/telemetry.jsonl"
+  [[ -s "$_tj" ]] || return 1
+  local _fails
+  _fails="$(jq -s '
+      [ .[] | select(.event? == "review_verdict" and .attempt? == 1) ]
+      | reduce .[] as $e ([]; map(select(.iter_name != $e.iter_name))
+                             + [{iter_name: ($e.iter_name // "unknown"), verdict: $e.verdict}])
+      | .[-3:] | map(select(.verdict == "FAIL")) | length
+    ' "$_tj" 2>/dev/null || true)"
+  [[ "$_fails" =~ ^[0-9]+$ ]] || return 1
+  [[ "$_fails" -ge 2 ]] || return 1
+  mkdir -p "$_sess/state" 2>/dev/null || true
+  { jq -cn --arg reason "attempt-1 review FAIL in >=2 of the last 3 iterations" \
+       --arg tripped_by "${ITER_NAME:-}" --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+       '{reason:$reason, tripped_by:$tripped_by, ts:$ts}' 2>/dev/null \
+    || echo '{"reason":"attempt-1 review FAIL in >=2 of the last 3 iterations"}'; } > "$_state"
+  echo "[goal-iter-lean] SPEED-2 tripwire TRIPPED: attempt-1 review FAIL in $_fails of the last 3 iterations — parallel browser-qa fork disabled for the rest of the session ($_state)."
+  return 0
+}
+
+# Knob: CHAIN_LEAN_PARALLEL_BROWSER_QA=off|replay|full, default off (G4).
+# "full" (forking the LLM lane too) is SPEED-3 — not implemented here; it
+# warns and behaves as "replay". Unrecognized values fall back to off.
+_BQA_REQUESTED="${CHAIN_LEAN_PARALLEL_BROWSER_QA:-off}"
+_BQA_MODE="off"
+case "$_BQA_REQUESTED" in
+  replay) _BQA_MODE="replay" ;;
+  full)
+    echo "[goal-iter-lean] CHAIN_LEAN_PARALLEL_BROWSER_QA=full is SPEED-3 (not implemented); using replay." >&2
+    _BQA_MODE="replay" ;;
+  off|"") _BQA_MODE="off" ;;
+  *)
+    echo "[goal-iter-lean] CHAIN_LEAN_PARALLEL_BROWSER_QA='$_BQA_REQUESTED' is not off|replay|full — using off." >&2
+    _BQA_MODE="off" ;;
+esac
+_BQA_OFF_REASON=""
+if [[ "$_BQA_MODE" == "replay" ]]; then
+  _tw_rc=0
+  _bqa_tripwire_active || _tw_rc=$?
+  if [[ "$_tw_rc" -eq 0 ]]; then
+    _BQA_MODE="off"; _BQA_OFF_REASON="tripwire"
+  elif [[ "$_tw_rc" -eq 2 ]]; then
+    echo "[goal-iter-lean] jq unavailable — the SPEED-2 tripwire cannot be evaluated, so the parallel browser-qa fork stays off." >&2
+    _BQA_MODE="off"; _BQA_OFF_REASON="no-jq"
+  fi
+fi
+# Name the knob state every iteration (mirrors run-goal.sh's iter_config event).
+record_telemetry_event "iter_config" "$(jq -cn --arg k "CHAIN_LEAN_PARALLEL_BROWSER_QA" --arg v "$_BQA_MODE" --arg req "$_BQA_REQUESTED" --arg r "$_BQA_OFF_REASON" '{key:$k, value:$v, requested:$req, reason:$r}' 2>/dev/null || printf '{"key":"CHAIN_LEAN_PARALLEL_BROWSER_QA","value":"%s"}' "$_BQA_MODE")"
 
 # ── Step 1: Developer ─────────────────────────────────────────────────────
 run_developer() {
@@ -193,6 +535,45 @@ else
   [[ -s "$DEV_HANDOFF" ]] && step_mark_done developer --dir "$ITER_DIR" "$DEV_HANDOFF"
 fi
 
+# ── SPEED-2 fork: service boot + deterministic replay ∥ review ────────────
+# Forked HERE — right after the developer step settles — because review and
+# browser-qa both need only the post-dev tree. Isolation copies the coherence
+# fork: subshell (contains CHAIN_CURRENT_AGENT + env), own rc-file, plus a PID
+# file as a cross-process orphan guard. All fork writes land under runs/ +
+# reports/, which are excluded from the checkpoint tree hash (checkpoint.sh),
+# so the fork can never churn a resume-skip decision. Joined by
+# _bqa_fork_consume once the review loop settles; reaped by _bqa_fork_reap on
+# a review-1 FAIL and by cleanup_iter_servers on every exit path.
+_BQA_PID=""
+_BQA_STATE_FILE="${ITER_DIR:+$ITER_DIR/.bqa-replay-state}"
+_BQA_RC_FILE="${ITER_DIR:+$ITER_DIR/.bqa-replay-rc}"
+_BQA_PID_FILE="${ITER_DIR:+$ITER_DIR/.bqa-replay-pid}"
+if [[ "$_BQA_MODE" == "replay" && -n "$ITER_DIR" ]] && ! _bqa_checkpoint_reusable; then
+  # Orphan guard: a hard-killed previous attempt (kill -9 skips the EXIT trap)
+  # can leave its fork alive and still writing this iteration's lane files.
+  # Reap it before forking again — but only a pid whose command line still
+  # looks like ours (PIDs recycle; never tree-kill a stranger).
+  _stale_pid="$(cat "$_BQA_PID_FILE" 2>/dev/null || true)"
+  if [[ -n "$_stale_pid" ]] && kill -0 "$_stale_pid" 2>/dev/null \
+     && ps -o args= -p "$_stale_pid" 2>/dev/null | grep -qE 'goal-iter-lean|demo_runner'; then
+    echo "[goal-iter-lean] Reaping an orphaned replay fork from a previous attempt (pid $_stale_pid)..." >&2
+    _kill_pid_tree "$_stale_pid" 2>/dev/null || true
+  fi
+  rm -f "$_BQA_STATE_FILE" "$_BQA_RC_FILE" "$_BQA_PID_FILE" 2>/dev/null || true
+  echo "[goal-iter-lean] Forking browser-qa service boot + replay lane to run concurrently with review (CHAIN_LEAN_PARALLEL_BROWSER_QA=$_BQA_REQUESTED)..."
+  (
+    _rc=0
+    record_agent_invocation_start "browser-qa-replay"   # subshell-contained: isolates CHAIN_CURRENT_AGENT so fork telemetry attributes to this name
+    _bqa_start=$CHAIN_AGENT_START_EPOCH
+    run_browser_qa_boot_and_replay || _rc=$?
+    _bqa_state_save "$_BQA_STATE_FILE" || _rc=$?
+    record_agent_invocation_end "browser-qa-replay" "$_bqa_start" "$_rc"
+    echo "$_rc" > "$_BQA_RC_FILE"
+  ) &
+  _BQA_PID=$!
+  echo "$_BQA_PID" > "$_BQA_PID_FILE"
+fi
+
 # Round 1: review. A transport failure pauses; any other review failure is
 # tolerated (the retry below / evaluator handles it), as the prior `|| true` did.
 # Resume-skip: the marker alone is never trusted — the report must live-parse
@@ -217,6 +598,10 @@ fi
 # Retry once if reviewer FAILed
 if [[ -f "$REVIEW_REPORT" ]] && ! verdict_passes "$REVIEW_REPORT"; then
   echo "[goal-iter-lean] Review FAIL — running developer in fix mode (1 retry allowed)..."
+  # SPEED-2 CRITICAL ORDERING: kill+wait the replay fork and discard its lane
+  # files BEFORE any step_invalidate_from below — post-fix browser-qa then
+  # runs fully sequentially (the join finds no fork and runs the unit inline).
+  _bqa_fork_reap
   if step_done_valid developer-fix --verify-tree --dir "$ITER_DIR" "$DEV_HANDOFF"; then
     _step_skipped_event "developer-fix"
   else
@@ -302,12 +687,9 @@ fi
 # so we always try to start the frontend; if it fails we mark all SKIPPED and
 # the evaluator will treat that as ESCALATE.
 
-# Journey sets come from the spec (needed by the resume-skip check below AND by
-# the lanes inside the function). First match wins.
-_spec_journeys() { grep -iE "$1" "$SPEC" 2>/dev/null | head -1 | grep -oE 'J-[0-9]+' | sort -u | tr '\n' ' '; }
-TARGET_JOURNEYS="$(_spec_journeys 'Target journeys:')"
-REQUIRED_JOURNEYS="$(_spec_journeys 'Required-still-passing')"
-_bq_sig="${TARGET_JOURNEYS}|${REQUIRED_JOURNEYS}"
+# (Journey sets — TARGET_JOURNEYS / REQUIRED_JOURNEYS / _bq_sig — were
+# computed at the SPEED-2 block above: the fork guard needs them before the
+# review loop, this resume-skip check and the lanes read the same values.)
 
 # Resume-skip for the WHOLE browser-qa section (service boot + replay lane +
 # LLM lane + merge): reusable only when the results file carries a real
@@ -324,67 +706,14 @@ if step_done_valid browser-qa --verify-tree --dir "$ITER_DIR" "$UI_TEST_RESULTS"
   fi
 fi
 
-# The whole browser-qa section (service boot + deterministic replay lane + LLM
-# lane + merge) as ONE function — extracted verbatim for SPEED-1 (SPEED-2/3 fork
-# it later). Called from the caller's shell, NOT a subshell: every assignment
-# and `cd` inside lands globally, exactly as the previous inline block behaved.
+# The browser-qa section as ONE function — extracted verbatim for SPEED-1.
+# SPEED-2 carved its first half (service boot + golden partition + replay
+# lane) into run_browser_qa_boot_and_replay above so replay mode can fork it;
+# SPEED-3 would fork this whole section (LLM lane included, headless only).
+# Called from the caller's shell, NOT a subshell: every assignment and `cd`
+# inside lands globally, exactly as the previous inline block behaved.
 # Body kept un-indented from its pre-extraction guarded-block days (pure move).
 run_browser_qa_section() {
-
-QA_BACKEND_LOG=$(_qa_log_path "goal-iter-backend")
-QA_FRONTEND_LOG=$(_qa_log_path "goal-iter-frontend")
-
-BACKEND_START_CMD="${CHAIN_START_BACKEND_CMD:-}"
-FRONTEND_START_CMD="${CHAIN_START_FRONTEND_CMD:-}"
-if [[ -z "$BACKEND_START_CMD" && -f "$REPO_ROOT/scripts/start-backend.sh" ]]; then
-  BACKEND_START_CMD="bash $REPO_ROOT/scripts/start-backend.sh"
-fi
-if [[ -z "$FRONTEND_START_CMD" && -f "$REPO_ROOT/scripts/start-frontend.sh" ]]; then
-  FRONTEND_START_CMD="bash $REPO_ROOT/scripts/start-frontend.sh"
-fi
-
-_BACKEND_PORT="${CHAIN_BACKEND_PORT:-8000}"
-_FRONTEND_PORT="${CHAIN_FRONTEND_PORT:-3000}"
-BACKEND_HEALTH_URL="${CHAIN_BACKEND_HEALTH_URL:-http://localhost:${_BACKEND_PORT}/health}"
-FRONTEND_URL="${CHAIN_FRONTEND_URL:-http://localhost:${_FRONTEND_PORT}}"
-
-kill_stale_next_dev_server 2>/dev/null || true
-
-QA_STARTED_PIDS=()
-export QA_BACKEND_HEALTH_URL="$BACKEND_HEALTH_URL"
-export QA_BACKEND_START_CMD="$BACKEND_START_CMD"
-export QA_BACKEND_LOG
-export QA_FRONTEND_URL="$FRONTEND_URL"
-export QA_FRONTEND_START_CMD="$FRONTEND_START_CMD"
-export QA_FRONTEND_LOG
-export QA_FRONTEND_REQUIRED="yes"
-
-ensure_services_running
-
-# Trust the retrying ensure_services_running verdict first (QA_FRONTEND_UP), then
-# a re-probe so a frontend that is merely mid-recompile isn't misread as down —
-# avoids a false SKIP right after a successful-but-still-compiling boot. The gate
-# is corruption-aware: this is the standalone (non-shared) path, so on a persistent
-# corrupt `.next` it heals once (rm -rf .next + restart). Budget is 120s (not 30s)
-# so a guaranteed-cold rebuild — including the QA_FRONTEND_UP=slow case where the
-# boot left a still-compiling server running — has room to finish.
-if [[ "${QA_FRONTEND_UP:-unknown}" == "yes" ]] || _wait_for_frontend_ready "$FRONTEND_URL" "frontend" 120 "goal-iter-lean"; then
-  FRONTEND_AVAILABLE="yes"
-  FRONTEND_SKIP_REASON=""
-else
-  FRONTEND_AVAILABLE="no"
-  echo "[goal-iter-lean] Frontend not available — browser tests will be SKIPPED."
-  # Surface the real cause (dep hint + log tail) instead of a bare "not running".
-  FRONTEND_SKIP_REASON="frontend not running"
-  _fe_hint="$(_qa_dep_hint frontend)"
-  [[ -n "$_fe_hint" ]] && FRONTEND_SKIP_REASON+=" — likely cause: $_fe_hint"
-  _fe_tail="${QA_FRONTEND_LOG_TAIL:-}"
-  [[ -z "$_fe_tail" && -n "${QA_FRONTEND_LOG:-}" && -f "${QA_FRONTEND_LOG:-}" ]] && _fe_tail="$(tail -n 15 "$QA_FRONTEND_LOG" 2>/dev/null || true)"
-  [[ -n "$_fe_tail" ]] && { echo "[goal-iter-lean] Frontend start log tail (${QA_FRONTEND_LOG:-?}):" >&2; echo "$_fe_tail" >&2; }
-fi
-
-export CHAIN_CLAUDE_PRE_RETRY_HOOK="ensure_services_running"
-cd "$REPO_ROOT"
 
 # ── Browser QA: two lanes (goal-mode lean) ────────────────────────────────
 # Late iterations accumulate many already-passing journeys; re-driving each one
@@ -400,16 +729,17 @@ cd "$REPO_ROOT"
 # set falls entirely to the LLM lane — behaviour is then identical to before, and
 # the speedup switches on by itself as golden scripts accumulate. Disable with
 # CHAIN_REGRESSION_REPLAY=false.
-EVIDENCE_DIR="$REPO_ROOT/reports/qa/${ITER_NAME}-evidence"
-SID="${ITER_NAME#goal-}"; SID="${SID%-iter-*}"
-JOURNEY_SCRIPTS_DIR="$REPO_ROOT/runs/goal-session-${SID}/journey-scripts"
-mkdir -p "$JOURNEY_SCRIPTS_DIR"
-REGRESSION_RESULTS="$REPO_ROOT/reports/phase-${ITER_NAME}-regression-replay-results.md"
-LLM_RESULTS="$REPO_ROOT/reports/phase-${ITER_NAME}-ui-test-results.llm.md"
-DEMO_RUNNER="$SCRIPT_DIR/lib/demo_runner.py"
-MERGE_RESULTS="$SCRIPT_DIR/lib/merge_ui_test_results.py"
+#
+# SPEED-2 join: when the boot+replay unit was forked after the developer step
+# and completed cleanly, consume its results (state file) instead of re-running
+# the lane; otherwise run the same unit inline — the sequential path, which is
+# also the automatic fallback when the fork crashed or was reaped.
+if ! _bqa_fork_consume; then
+  run_browser_qa_boot_and_replay
+fi
 
-# (Journey IDs were pulled from the spec above, before the resume-skip check.)
+# (Journey IDs were pulled from the spec at the SPEED-2 block, before the
+# resume-skip check; lane paths were set by _bqa_lane_paths.)
 
 # Dispatch the LLM browser-qa-agent on an explicit journey list, writing to $2.
 run_browser_qa_llm() {
@@ -473,61 +803,8 @@ Then STOP." || _rc=$?
   return $_rc
 }
 
-# Partition Required-still-passing into replay (LINTABLE golden on file) vs LLM.
-# A golden that fails validation is quarantined (renamed *.json.invalid) and its
-# journey routed to the LLM lane — previously an invalid golden produced a
-# replay SKIP that nothing re-confirmed (silently unverified journey). A lint
-# crash (no output) conservatively keeps the old file-exists behavior: the
-# verify runner re-validates at replay time anyway.
-_lint_out=""
-if [[ -n "${REQUIRED_JOURNEYS// /}" ]]; then
-  _lint_out="$(python3 "$DEMO_RUNNER" --mode lint --scripts-dir "$JOURNEY_SCRIPTS_DIR" \
-    --journeys "$(echo "$REQUIRED_JOURNEYS" | tr ' ' ',' | sed 's/^,*//;s/,*$//')" 2>/dev/null || true)"
-fi
-R_REPLAY=""; R_LLM=""
-for _j in $REQUIRED_JOURNEYS; do
-  if [[ -f "$JOURNEY_SCRIPTS_DIR/$_j.json" ]]; then
-    if printf '%s\n' "$_lint_out" | grep -q "^$_j invalid"; then
-      echo "[goal-iter-lean] Golden for $_j failed lint — quarantining ($_j.json.invalid) and routing to the LLM lane: $(printf '%s\n' "$_lint_out" | grep -m1 "^$_j invalid" | cut -d' ' -f2-)"
-      mv -f "$JOURNEY_SCRIPTS_DIR/$_j.json" "$JOURNEY_SCRIPTS_DIR/$_j.json.invalid" 2>/dev/null || true
-      R_LLM+="$_j "
-    else
-      R_REPLAY+="$_j "
-    fi
-  else
-    R_LLM+="$_j "
-  fi
-done
-
-_use_replay="no"
-if [[ "${CHAIN_REGRESSION_REPLAY:-true}" == "true" && "$FRONTEND_AVAILABLE" == "yes" && -n "${R_REPLAY// /}" ]]; then
-  _use_replay="yes"
-fi
-
-# Lane 1 — deterministic replay of the already-passing set (only if golden scripts exist).
-REPLAY_FAILED=""
-if [[ "$_use_replay" == "yes" ]]; then
-  echo "[goal-iter-lean] Regression (deterministic replay): $R_REPLAY"
-  _replay_csv="$(echo "$R_REPLAY" | tr ' ' ',' | sed 's/^,*//;s/,*$//')"
-  _replay_rc=0
-  python3 "$DEMO_RUNNER" --mode verify \
-    --scripts-dir "$JOURNEY_SCRIPTS_DIR" --journeys "$_replay_csv" \
-    --results "$REGRESSION_RESULTS" --evidence-dir "$EVIDENCE_DIR" \
-    --base-url "$FRONTEND_URL" --phase-id "$ITER_NAME" --repo-root "$REPO_ROOT" || _replay_rc=$?
-  if [[ "$_replay_rc" -eq 5 ]]; then
-    REPLAY_FAILED="$(grep -E '^\| UT-J-[0-9]+ ' "$REGRESSION_RESULTS" 2>/dev/null | grep -F '| FAIL |' | grep -oE 'J-[0-9]+' | sort -u | tr '\n' ' ')"
-    echo "[goal-iter-lean] Replay flagged possible regression(s) — re-confirming via LLM: $REPLAY_FAILED"
-  elif [[ "$_replay_rc" -ne 0 ]]; then
-    # Replay-lane infrastructure failure (rc 6 = browser launch/crash; any
-    # other rc = runner crash). The replay journeys were NOT verified — route
-    # ALL of them back to the LLM lane, byte-identical to running this
-    # iteration with CHAIN_REGRESSION_REPLAY=false. Previously a replay crash
-    # left them silently unverified for the iteration.
-    echo "[goal-iter-lean] Replay lane failed (rc=$_replay_rc) — falling back to the LLM lane for ALL regression journeys." >&2
-    _use_replay="no"
-    R_REPLAY=""
-  fi
-fi
+# (Golden partition + lane 1 — the deterministic replay — live inside
+# run_browser_qa_boot_and_replay above: they already ran, inline or forked.)
 
 # Lane 2 — LLM browser-qa-agent.
 if [[ "$_use_replay" == "yes" ]]; then

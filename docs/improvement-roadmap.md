@@ -610,11 +610,13 @@ benchmark (or a real session's telemetry) before AND after (G8).
   normalized); test-goal-retro 41/41 identical; bash -n + run-evals 97/97.
 - **Problem:** the browser-qa section of the lean executor was a ~270-line inline
   block; SPEED-2 needs to run it in a forked subshell.
-- **Current state (post-refactor):** `run_browser_qa_section()` definition
-  `scripts/automation/goal-iter-lean.sh:327-604` (service boot `:334-388`;
-  two-lane logic: golden replay lane `:507-530`, LLM lane + merge `:532-580`,
-  REL-11 tripwire `:550-562`, golden coverage + checkpoint mark `:582-602`);
-  resume-skip check `:312-325`; caller guard + invalidation + call `:606-612`.
+- **Current state (anchors refreshed after SPEED-2's 2026-07-12 renumbering):**
+  `run_browser_qa_section()` definition `scripts/automation/goal-iter-lean.sh:716-881`
+  (SPEED-2 carved service boot + golden partition + replay lane into
+  `run_browser_qa_boot_and_replay()` `:174-289`, run inline by the section's join
+  fallback `:735-738` when the knob is off; LLM lane + merge `:809-857`, REL-11
+  tripwire `:827-839`, golden coverage + checkpoint mark `:859-880`);
+  resume-skip check `:694-707`; caller guard + invalidation + call `:883-889`.
 - **Change spec:** extract into `run_browser_qa_section()` in the same file; keep the
   resume-skip guard and `step_invalidate_from browser-qa` at the caller; byte-identical
   sequential behavior.
@@ -626,22 +628,61 @@ benchmark (or a real session's telemetry) before AND after (G8).
 - **Rollback:** revert the commit (pure refactor).
 
 ### SPEED-2 · Parallel review ∥ browser-qa — stage "replay"
-- **Priority:** P1 · **Effort:** M · **Risk:** MED · **Status:** TODO
+- **Priority:** P1 · **Effort:** M · **Risk:** MED · **Status:** IN-PROGRESS 2026-07-12 —
+  implemented default-off; remaining before DONE: G8 fresh-session certification;
+  before any default flip: pre-registered benchmark measurement per §9 (before =
+  `benchmarks/results/20260712-171324-5e87813077ae.json`).
+  *Implementation note (2026-07-12):* knob `CHAIN_LEAN_PARALLEL_BROWSER_QA=off|replay|full`,
+  default `off` (`full` warns "full is SPEED-3" and behaves as `replay`; documented in the
+  `.claude/model-orchestration.md` knob table). Fork unit =
+  `run_browser_qa_boot_and_replay()` (`goal-iter-lean.sh:174-289`: service boot + golden
+  partition + replay lane, body lines moved verbatim) — knob=off calls it inline at its
+  original position via the section's join fallback (`:735-738`, byte-identity proven:
+  normalized artifact-tree+content+stdout snapshots of a stub sandbox run, HEAD vs
+  post-change, diff to EXACTLY the one spec-mandated `iter_config` telemetry line, with
+  noise classes pre-validated by two identical-code HEAD runs); knob=replay forks it right
+  after the developer step settles (`:538-575`) with coherence-style isolation
+  (subshell-contained `CHAIN_CURRENT_AGENT=browser-qa-replay`, own rc/state/pid files under
+  the iter dir; the pid file doubles as a cross-process orphan guard). The join
+  (`_bqa_fork_consume` `:324-347`) consumes an atomic sentinel-terminated state file
+  (frontend availability, QA_* env for the retry hook, partition + `REPLAY_FAILED`), so the
+  LLM lane's target set is computed EXACTLY as sequentially (test-asserted equal). FAIL-path
+  ordering (`_bqa_fork_reap` `:357-375`, called at `:604` before any invalidation):
+  `_kill_pid_tree` → `wait` until dead → port sweep (a finished fork's servers are orphaned
+  to init and would serve pre-fix code) → rm lane files explicitly (`step_invalidate_from`
+  deletes only marker-registered artifacts; the fork's outputs aren't registered until
+  `step_mark_done browser-qa`) → THEN `step_invalidate_from developer-fix` (`:608`).
+  Tripwire: attempt-1 review FAILs in ≥2 of the last 3 iterations (jq over
+  `telemetry.jsonl`, last-verdict-per-iteration) → persists
+  `runs/goal-session-<sid>/state/parallel-bqa-disabled` for the rest of the session
+  (`_bqa_tripwire_active` `:398-426`); no-jq → fork stays off (a tripwire that cannot fire
+  must not arm the experiment); an `iter_config` event (`{key,value,requested,reason}`,
+  `:455`) names the knob state every iteration — the one intentional off-mode delta.
+  Test: `tests/automation/test-goal-parallel-bqa.sh` (36 asserts — off-identity incl. exact
+  pre-change artifact tree; fork+join with LLM-target-set + merged-rows equality vs the
+  sequential run; kill-before-invalidate proven via a TERM stamp from inside a 30s-slow
+  stub demo_runner + no lane file post-invalidation after a settle window; tripwire
+  trip+persist across two iterations; full→replay warning), registered in run-evals §2c
+  (98/98; suite ~66s — the quick-start "<30s" claim was already stale at ~51s before this
+  change). NOTE: this change renumbered `goal-iter-lean.sh` below `:104` — other items
+  citing that file should re-verify anchors (standing rule).
 - **Problem:** reviewer (~21m) and browser-qa (~20m) both need only the post-dev tree
   yet run sequentially — the single biggest safe parallelism left in the lean path.
-- **Current state:** sequence is developer → review-1 → (fix → review-2) → browser-qa
-  (`goal-iter-lean.sh:185-256` review loop; `step_invalidate_from developer-fix` on
-  FAIL at `:223`; SPEED-1 landed 2026-07-12 — browser-qa is now
-  `run_browser_qa_section()` `:327-604`, guard + invalidation at the caller
-  `:606-612`). The coherence fork is the copyable pattern: fork `:258-298`, join
-  `:614-636`, reap in `cleanup_iter_servers` `:96-112`. Feasibility verified: the
+- **Current state (post-implementation anchors):** sequence is developer →
+  fork (`goal-iter-lean.sh:538-575`) → review loop (`:577-641`; reap `:604`;
+  `step_invalidate_from developer-fix` `:608`) → join at the top of
+  `run_browser_qa_section` (`:735-738`) → LLM lane + merge (`:809-857`).
+  Coherence fork `:643-683`, its join `:891-913`; both forks reaped in
+  `cleanup_iter_servers` `:113-134`. Feasibility re-verified 2026-07-12: the
   checkpoint canonical order (`lib/checkpoint.sh:40`) is an INVALIDATION order, not an
   execution order — `step_invalidate_from developer-fix` already cascades deletion of
   browser-qa/coherence/evaluator markers AND their registered artifacts
-  (`checkpoint.sh:188-225`), so an early-forked browser-qa result is auto-invalidated
-  on the FAIL path with zero checkpoint changes. Browser-qa writes land under `runs/`
+  (`checkpoint.sh:193-225`), so an early-forked browser-qa result is auto-invalidated
+  on the FAIL path with zero checkpoint changes (raw lane files are additionally
+  discarded by the reap — they are not marker-registered until the section's
+  `step_mark_done browser-qa`). Browser-qa writes land under `runs/`
   + `reports/`, which are excluded from the tree hash (`checkpoint.sh:35`). Reviewer
-  only reads/diffs (`review_diff_hint`, `lib/common.sh:377-388`).
+  only reads/diffs (`review_diff_hint`).
 - **Change spec:**
   1. Knob `CHAIN_LEAN_PARALLEL_BROWSER_QA=off|replay|full`, default `off`.
   2. In `replay` mode: after `step_mark_done developer` (`:193`), fork service boot +
@@ -661,11 +702,13 @@ benchmark (or a real session's telemetry) before AND after (G8).
      `test-goal-checkpoints.sh`): asserts fork/join on the PASS path and
      kill-then-invalidate on the FAIL path.
 - **DoD:** default-off; replay mode green in the sandbox test on both paths; telemetry
-  attributes the fork correctly; evals green.
+  attributes the fork correctly; evals green. (All met 2026-07-12 — DONE additionally
+  requires the G8 fresh-session certification, see Status.)
 - **Verify:** `bash tests/automation/test-goal-parallel-bqa.sh &&
   bash tests/automation/test-goal-checkpoints.sh && ./scripts/automation/run-evals.sh`
 - **Files:** `scripts/automation/goal-iter-lean.sh`,
-  `tests/automation/test-goal-parallel-bqa.sh` (new), docs knob table.
+  `tests/automation/test-goal-parallel-bqa.sh`, `scripts/automation/run-evals.sh`
+  (§2c registration), `.claude/model-orchestration.md` (knob table).
 - **Rollback:** knob default `off` — no rollback needed; delete the fork block if it
   misbehaves.
 - **Stop-and-ask:** any evidence of a result file appearing AFTER its invalidation
@@ -683,7 +726,7 @@ benchmark (or a real session's telemetry) before AND after (G8).
   that cancellation gap is EXP-4's problem, not this item's.
 - **Change spec:** in `full` mode AND `CHAIN_AGENT_BACKEND != interactive`: fork the
   whole `run_browser_qa_section` (LLM lane included); join handles rc 70 exactly like
-  the coherence join (`goal-iter-lean.sh:622-625`); same kill-then-invalidate FAIL
+  the coherence join (`goal-iter-lean.sh:899-902`); same kill-then-invalidate FAIL
   ordering; tripwire gains a cost dimension (a wasted full browser-qa dispatch per
   review-FAIL iteration — log it).
 - **DoD:** headless sandbox test green both paths; interactive mode ignores `full`
