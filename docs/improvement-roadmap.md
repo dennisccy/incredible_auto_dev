@@ -800,9 +800,16 @@ benchmark (or a real session's telemetry) before AND after (G8).
 ### TOKEN-1 · Per-agent project-template slicing
 - **Priority:** P1 · **Effort:** M · **Risk:** LOW · **Status:** IN-PROGRESS 2026-07-13 —
   release-manager/reviewer/qa converted; developer conversion deliberately LAST per this
-  entry; auditor untouched. Remaining before DONE: G8 fresh-session certification; the
-  DoD token-telemetry before/after (plan: next benchmark run's per-agent reviewer/qa
-  input tokens vs `benchmarks/results/20260712-171324-5e87813077ae.json`;
+  entry; auditor untouched. G8 fresh-session certification 2026-07-14 (non-implementer):
+  offline half green — slice contract test 18/18 incl. the production↔builder mirror
+  gate, full run-evals 99/99, sync --check clean, slice-sufficiency re-read of all
+  three bodies vs the map confirmed with one recorded borderline (reviewer map omits
+  DATA MODEL RULES — defensible: its checklist never cites that section; the developer,
+  who writes the data code, still gets the full file); M1 reviewer fixtures RE-RUN
+  fresh-eyes: 4/4 classes hold (PASS / PASS_WITH_NOTES / FAIL / FAIL, 99/178/131/219s,
+  sonnet-tier, `run-judgment-evals.sh --yes-spend --judge reviewer`). Remaining before
+  DONE: the DoD token-telemetry before/after (plan: next benchmark run's per-agent
+  reviewer/qa input tokens vs `benchmarks/results/20260712-171324-5e87813077ae.json`;
   release-manager is not exercised by the benchmark — a real session covers it).
   Reviewer judgment fixtures RE-RUN post-slice (G9-approved 2026-07-13): 4/4 verdict
   classes hold under the new pre-sliced prompt (case-01 PASS, case-02 PASS_WITH_NOTES,
