@@ -120,12 +120,14 @@ signal that says "do this now").
    but works without), **NEED-8**.
 4. **EVO-2** (retro), **EVO-3** (benchmark; required before any SPEED/TOKEN experiment),
    **EVO-4** (playbook), **EVO-5**. (EVO-1 ships with this file.)
-5. **SPEED-1 → SPEED-2 → SPEED-3** (strict order), **TOKEN-1…7** (TOKEN-2 requires
-   EVO-3 + REL-1 to exist; TOKEN-7 is independent of the SPEED chain).
-6. **REL-2…11, SEC-1…4, QUAL-1, REP-1…3, DOC-3…7** — as capacity allows; SEC-4 pairs
+5. **SPEED-1 → SPEED-2 → SPEED-3** (strict order), **TOKEN-1…8** (TOKEN-2 requires
+   EVO-3 + REL-1 to exist; TOKEN-7 is independent of the SPEED chain; TOKEN-8 staged
+   2026-07-14 — small, unblocks full-depth per-agent economics).
+6. **REL-2…12, SEC-1…4, QUAL-1, REP-1…3, DOC-3…7** — as capacity allows; SEC-4 pairs
    with SAFE-1; REL-8 must land before any real `CHAIN_AGENT_EFFORT` use; REL-9 is
    cheap — do it early; REL-10/REL-11 were user-promoted 2026-07-11 (one bundled
-   session) and verify together via the §9 benchmark rerun.
+   session) and verify together via the §9 benchmark rerun; REL-12 staged 2026-07-14
+   (prereq for a resolvable SPEED flip re-measurement at lean depth).
 7. **EXP-** items only with explicit human sign-off and a written design doc first.
 
 ---
@@ -639,6 +641,25 @@ benchmark (or a real session's telemetry) before AND after (G8).
   DONE ≠ default flip (G4): any default flip still requires the pre-registered benchmark
   measurement per §9 (before = `benchmarks/results/20260712-171324-5e87813077ae.json`);
   default remains `off`.
+  *Measurement note (2026-07-14, §9 runs A′+B — ledger `bench-20260714-0634` /
+  `bench-20260714-0830`):* SPEED-2's relocation of the journey-set parse exposed a
+  PRE-EXISTING silent lean-lane death on journey-less spec lines (introduced 633059a;
+  at its old mid-section position it had killed BOTH prior benchmarks' iter-0
+  browser+coherence lanes; the relocation enlarged the kill to the whole lane,
+  pre-developer) — root-caused, fixed and eval-pinned in c8bb8c0 (`|| true` guards +
+  parallel-bqa scenario I, proven red-on-prefix/green-on-fix, 74/74). Live stage-full
+  run (B, one variable vs A′): the shared fork machinery is ALL green in a real
+  session — spawn after developer, fork telemetry attribution, join settled 1s before
+  the evaluator, 0 attempt-1-review-FAIL waste, tripwire untripped, 0 orphans. Wall
+  −11.6% NOT attributable (pre-registered null: iter-0 overlap potential was ≤73s —
+  review 73s, fork LLM lane started after review ended — vs far larger agent-duration
+  variance). Stage replay itself still has no live-session run (no goldens existed at
+  iter-0). Journeys held 3/3 in both runs.
+  *Flip decision (2026-07-14, user):* default stays **off** per the pre-registered
+  null-result rule — the flip decision needs one real-session telemetry comparison
+  (sections long enough to overlap; see also REL-12, which unlocks lean browser
+  evidence on single-service projects). Tripwire stays armed. Evidence:
+  `benchmarks/experiments.md` POSTs bench-20260714-0634 / bench-20260714-0830.
   *Implementation note (2026-07-12):* knob `CHAIN_LEAN_PARALLEL_BROWSER_QA=off|replay|full`,
   default `off` (`full` warns "full is SPEED-3" and behaves as `replay`; documented in the
   `.claude/model-orchestration.md` knob table). Fork unit =
@@ -741,7 +762,28 @@ benchmark (or a real session's telemetry) before AND after (G8).
   DONE ≠ default flip (G4): any default flip still requires the §9 pre-registered
   benchmark measurement (before = `benchmarks/results/20260712-171324-5e87813077ae.json`);
   default remains `off`.
-  *Implementation note (2026-07-13):* backend gate at knob parse: `full` is honored only
+  *Measurement note (2026-07-14, §9 run B `bench-20260714-0830` vs control A′
+  `bench-20260714-0634`, one variable = `CHAIN_LEAN_PARALLEL_BROWSER_QA=full`):* FIRST
+  LIVE RUN of the full-section fork — every mechanical observable green:
+  `iter_config {value:full, requested:full}` (headless honored, no demotion), fork
+  spawned after the developer settled, review ran concurrently with the fork's boot
+  phase, the fork's browser-qa-agent dispatch attributed correctly in session
+  telemetry, join settled the fork 1s before the goal-evaluator started (input set
+  complete), 0 attempt-1 review FAILs (no wasted-dispatch path), tripwire never
+  tripped, 0 orphan processes post-run. Journeys 3/3 HOLD; benchmark_compare verdict
+  OK (wall −11.6%, cost −4.5%). The WALL delta is NOT attributable to the knob
+  (pre-registered null): the fixture's iter-0 sections are too short to overlap
+  meaningfully (review 73s; the fork's LLM lane began 61s after review ended; only
+  the ~2-min service boot overlapped) and per-agent duration variance dwarfed the
+  ≤73s overlap potential. Verdict-shape deltas across the pair (A′ GOAL_ACHIEVED vs
+  B BUDGET_EXHAUSTED/CONTINUE at 3/3; iter-0 CONTINUE vs ESCALATE on identically
+  SKIPPED browser lanes) are evaluator judgment variance, not knob effects — full
+  detail in the ledger POSTs.
+  *Flip decision (2026-07-14, user):* default stays **off** per the pre-registered
+  null-result rule — a real-session telemetry comparison (meaningful overlap windows)
+  is the prerequisite for any flip ask; `full` remains headless-gated when it comes.
+  Tripwire stays armed. Evidence: ledger POSTs bench-20260714-0634 /
+  bench-20260714-0830.
   when `CHAIN_AGENT_BACKEND != interactive`; interactive demotes to `replay` with one
   logged warning and `iter_config` reason `interactive-backend` (`goal-iter-lean.sh:540`,
   replacing SPEED-2's placeholder warning). Fork unit = the WHOLE
@@ -798,7 +840,7 @@ benchmark (or a real session's telemetry) before AND after (G8).
   clean iterations.
 
 ### TOKEN-1 · Per-agent project-template slicing
-- **Priority:** P1 · **Effort:** M · **Risk:** LOW · **Status:** IN-PROGRESS 2026-07-13 —
+- **Priority:** P1 · **Effort:** M · **Risk:** LOW · **Status:** DONE 2026-07-14 —
   release-manager/reviewer/qa converted; developer conversion deliberately LAST per this
   entry; auditor untouched. G8 fresh-session certification 2026-07-14 (non-implementer):
   offline half green — slice contract test 18/18 incl. the production↔builder mirror
@@ -807,10 +849,19 @@ benchmark (or a real session's telemetry) before AND after (G8).
   DATA MODEL RULES — defensible: its checklist never cites that section; the developer,
   who writes the data code, still gets the full file); M1 reviewer fixtures RE-RUN
   fresh-eyes: 4/4 classes hold (PASS / PASS_WITH_NOTES / FAIL / FAIL, 99/178/131/219s,
-  sonnet-tier, `run-judgment-evals.sh --yes-spend --judge reviewer`). Remaining before
-  DONE: the DoD token-telemetry before/after (plan: next benchmark run's per-agent
-  reviewer/qa input tokens vs `benchmarks/results/20260712-171324-5e87813077ae.json`;
-  release-manager is not exercised by the benchmark — a real session covers it).
+  sonnet-tier, `run-judgment-evals.sh --yes-spend --judge reviewer`). DoD telemetry
+  delivered by §9 run A′ (`bench-20260714-0634` vs the 20260712 baseline, like-for-like
+  lean iter-0 rows): CONVERTED reviewer DOWN every axis — cache_creation 45,095→43,182
+  (−4.2%, −1,913 tok ≈ the ~180-line Read replaced by the 56-line slice), cache_read
+  −15.4%, turns 22→19, cost $0.889→$0.759 (−14.6%) — while the UNCONVERTED developer
+  (falsification control) moved OPPOSITE (+26.8% cache_creation, +27.7% cost), so the
+  reviewer drop is not ambient drift. RECORDED GAP: qa telemetry INCONCLUSIVE (its
+  cache_creation reads 129.7k/96.3k/133.0k across three runs — ±25% workflow noise
+  around a ~2k mechanism; direction claim from run A did NOT replicate); release-manager
+  + full-depth reviewer/qa rows unmeasurable until the *-phase.sh telemetry blind spot
+  is closed (those scripts record no usage rows) or a real session covers them. The
+  static mechanism (slice inlined, full-file Read instruction removed) is
+  eval-pinned regardless.
   Reviewer judgment fixtures RE-RUN post-slice (G9-approved 2026-07-13): 4/4 verdict
   classes hold under the new pre-sliced prompt (case-01 PASS, case-02 PASS_WITH_NOTES,
   case-03 FAIL, case-04 FAIL — 141/170/199/226s, sonnet-tier,
@@ -1038,6 +1089,43 @@ benchmark (or a real session's telemetry) before AND after (G8).
   landed, confirm the packet build sits BEFORE the fork point and the fix-path
   rebuild happens after kill-then-invalidate (same ordering rule as SPEED-2's
   stop-and-ask).
+
+### TOKEN-8 · Usage telemetry for phase-script dispatches (full-depth economics blind spot)
+- **Priority:** P1 · **Effort:** S · **Risk:** LOW · **Status:** TODO (staged
+  2026-07-14, user-approved after the §9 measurement runs hit the gap)
+- **Problem:** the full-depth pipeline's dispatch scripts record NO `claude_usage`
+  telemetry rows — a goal-mode full iteration's developer, reviewer, orchestrator,
+  test-plan qa, UI chain, and auditor are invisible in the session's per-agent
+  economics. Proven cost: TOKEN-1's DoD could not measure the full-depth reviewer/qa
+  deltas across three benchmark runs (ledger POSTs bench-20260713-2334 / -0634 /
+  -0830), and benchmark `by_agent` totals systematically under-count full iterations.
+- **Current state:** `lib/telemetry.sh` is a guarded no-op without `GOAL_SESSION_DIR`
+  (its header: "Phase mode does not source this file"); `quota-retry.sh:706` records
+  usage only when `record_claude_usage_from_sidecar` is a defined function — i.e. only
+  in scripts that source telemetry.sh. Today that is `run-goal.sh`,
+  `goal-iter-lean.sh`, `qa-phase.sh` (which is why qa-validation rows appear) and
+  `run-evals.sh`; NOT `dev-phase.sh`, `review-phase.sh`, `generate-test-plan.sh`,
+  `phase-audit.sh`, nor the UI-chain wrappers.
+- **Change spec:** add `source "$SCRIPT_DIR/lib/telemetry.sh"` (mirroring
+  qa-phase.sh's source block) to every phase script that calls
+  `claude_with_quota_retry` — enumerate call sites with
+  `grep -l claude_with_quota_retry scripts/automation/*.sh` and skip the ones already
+  sourcing it. No other change: each script already exports `CHAIN_CURRENT_AGENT`,
+  and the `GOAL_SESSION_DIR` guard keeps standalone phase mode telemetry-free (the
+  file's documented contract — do not alter it).
+- **DoD:** a full-depth goal iteration's session telemetry carries usage rows for
+  developer + reviewer + auditor (+ orchestrator/UI chain); phase mode standalone
+  still writes nothing; run-evals green.
+- **Verify:** extend `tests/automation/test-benchmark-runner.sh`'s stub engine or a
+  small unit test: run one converted script with `GOAL_SESSION_DIR` set + stub
+  sidecar → row appears with the right agent; with it unset → no file. Then
+  `./scripts/automation/run-evals.sh`.
+- **Files:** `scripts/automation/dev-phase.sh`, `review-phase.sh`,
+  `generate-test-plan.sh`, `phase-audit.sh`, UI-chain dispatch scripts (enumerate by
+  grep), matching test.
+- **Rollback:** remove the source lines (each is one line).
+- **Trigger:** hit live 2026-07-14 — the §9 measurement runs could not read
+  full-depth per-agent tokens.
 
 ---
 
@@ -1537,6 +1625,48 @@ benchmark (or a real session's telemetry) before AND after (G8).
   exit path; the trust banner appears in ANY post-fix rerun trace (that is a RESULT to
   report, not to patch mid-run); anything that would weaken the spend gate or the
   revert trap (G5 — both are safety mechanisms; tests must prove the revert).
+
+### REL-12 · Single-service frontend resolution for the lean browser lane
+- **Priority:** P1 · **Effort:** S · **Risk:** LOW-MED · **Status:** TODO (staged
+  2026-07-14, user-approved; REL-10 family)
+- **Problem:** on a single-service project (frontend server-rendered by the backend —
+  the todo-app fixture, any Flask/Django app), the lean browser-qa lane boots the
+  generic Next.js frontend template, fails twice, and tells browser-qa
+  "Frontend available: no" → every journey SKIPPED, zero lean browser evidence.
+  Proven live 2026-07-14: BOTH §9 runs' iter-0 lanes skipped all three journeys for
+  exactly this (A′ probed :3822, B :3247 — derived defaults; ledger POSTs
+  bench-20260714-0634 / -0830). Until fixed, lean iter-0 evidence is structurally
+  impossible on such projects, and any future SPEED-2/3 flip re-measurement stays
+  unresolvable at lean depth.
+- **Current state:** REL-10's `fixture.env` localizes the BACKEND
+  (`CHAIN_START_BACKEND_CMD`, port 5177) but nothing points the frontend at the same
+  service; `run_browser_qa_boot_and_replay` (goal-iter-lean.sh) defaults
+  `FRONTEND_URL=http://localhost:${CHAIN_FRONTEND_PORT:-3000}` and requires a
+  frontend boot + health check before setting `FRONTEND_AVAILABLE=yes`.
+- **Change spec:** two halves, both small. (a) ENGINE: in
+  `run_browser_qa_boot_and_replay`, before attempting a frontend boot, probe
+  `$FRONTEND_URL` directly; if it already answers (single service, server-rendered —
+  e.g. `CHAIN_FRONTEND_URL` set to the backend URL), set `FRONTEND_AVAILABLE=yes`
+  and skip the boot entirely. (b) FIXTURE: `benchmarks/fixtures/todo-app` env
+  manifest adds `CHAIN_FRONTEND_URL=http://127.0.0.1:5177` (and the fixture's
+  project-template STACK already names that URL — keep them consistent). Never
+  silently skip: when the direct probe is what enabled the lane, log one line
+  naming the URL.
+- **DoD:** benchmark iter-0 browser-qa EXECUTES journeys on the todo-app fixture
+  (SKIP-for-boot gone; failing-journey evidence recorded instead of `unknown`);
+  parallel-bqa evals green (scenario with FRONTEND_URL pointing at the dummy backend
+  port asserts "Frontend available: yes" reaches the prompt); run-evals green.
+- **Verify:** `bash tests/automation/test-goal-parallel-bqa.sh` (new scenario) +
+  `./scripts/automation/run-evals.sh`; live proof rides the next approved benchmark.
+- **Files:** `scripts/automation/goal-iter-lean.sh` (boot short-circuit),
+  `benchmarks/fixtures/todo-app` env manifest (REL-10's mechanism),
+  `tests/automation/test-goal-parallel-bqa.sh`.
+- **Rollback:** remove the probe short-circuit (boot path unchanged otherwise).
+- **Stop-and-ask:** if the short-circuit would also fire on genuinely two-service
+  projects whose frontend happens to answer on the backend URL (misconfig), prefer
+  a loud log + proceed — but ask before adding any template-parsing heuristics.
+- **Trigger:** hit live 2026-07-14; also the prerequisite for a resolvable
+  SPEED-2/3 flip re-measurement at lean depth.
 
 ---
 
