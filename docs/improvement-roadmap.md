@@ -660,6 +660,13 @@ benchmark (or a real session's telemetry) before AND after (G8).
   (sections long enough to overlap; see also REL-12, which unlocks lean browser
   evidence on single-service projects). Tripwire stays armed. Evidence:
   `benchmarks/experiments.md` POSTs bench-20260714-0634 / bench-20260714-0830.
+  *Control update (2026-07-14, §9 run C `bench-20260714-1539` @ 39e2a79de68a,
+  knob off):* REL-12 is DONE — run C's iter-0 lean browser lane EXECUTES journeys
+  on the single-service fixture (SKIP-for-boot gone), so run C is the new
+  lean-capable control and the flip re-measurement at lean depth is now
+  RESOLVABLE: one future knob-on run vs C settles it. Fresh G9 approval required;
+  one variable (the knob) only. Compare against C, not A′/B — run C is also the
+  TOKEN-8 comparability baseline for cost reads.
   *Implementation note (2026-07-12):* knob `CHAIN_LEAN_PARALLEL_BROWSER_QA=off|replay|full`,
   default `off` (`full` warns "full is SPEED-3" and behaves as `replay`; documented in the
   `.claude/model-orchestration.md` knob table). Fork unit =
@@ -784,6 +791,12 @@ benchmark (or a real session's telemetry) before AND after (G8).
   is the prerequisite for any flip ask; `full` remains headless-gated when it comes.
   Tripwire stays armed. Evidence: ledger POSTs bench-20260714-0634 /
   bench-20260714-0830.
+  *Control update (2026-07-14, §9 run C `bench-20260714-1539` @ 39e2a79de68a,
+  knob off):* run C is the new lean-capable control (REL-12 DONE: iter-0 lean
+  browser lane executes journeys on the single-service fixture) — a stage-full
+  flip re-measurement at lean depth is now RESOLVABLE as one future knob-on run
+  vs C (fresh G9 approval; one variable only; compare against C, not A′/B — run
+  C is also the TOKEN-8 comparability baseline).
   when `CHAIN_AGENT_BACKEND != interactive`; interactive demotes to `replay` with one
   logged warning and `iter_config` reason `interactive-backend` (`goal-iter-lean.sh:540`,
   replacing SPEED-2's placeholder warning). Fork unit = the WHOLE
@@ -1091,8 +1104,10 @@ benchmark (or a real session's telemetry) before AND after (G8).
   stop-and-ask).
 
 ### TOKEN-8 · Usage telemetry for phase-script dispatches (full-depth economics blind spot)
-- **Priority:** P1 · **Effort:** S · **Risk:** LOW · **Status:** TODO (staged
-  2026-07-14, user-approved after the §9 measurement runs hit the gap)
+- **Priority:** P1 · **Effort:** S · **Risk:** LOW · **Status:** IN-PROGRESS (code +
+  tests landed 2026-07-14 @ 39e2a79de68a; live full-depth DoD pending — see the
+  measurement note; staged 2026-07-14, user-approved after the §9 measurement runs
+  hit the gap)
 - **Problem:** the full-depth pipeline's dispatch scripts record NO `claude_usage`
   telemetry rows — a goal-mode full iteration's developer, reviewer, orchestrator,
   test-plan qa, UI chain, and auditor are invisible in the session's per-agent
@@ -1126,6 +1141,23 @@ benchmark (or a real session's telemetry) before AND after (G8).
 - **Rollback:** remove the source lines (each is one line).
 - **Trigger:** hit live 2026-07-14 — the §9 measurement runs could not read
   full-depth per-agent tokens.
+  *Measurement note (2026-07-14, §9 run C `bench-20260714-1539` @ 39e2a79de68a):*
+  code shipped to 15 scripts (grep enumeration; run-judgment-evals.sh EXCLUDED —
+  its grep hit is a comment, no real dispatch; update-docs.sh exports no
+  CHAIN_CURRENT_AGENT so its rows land agent-less). Offline DoD half GREEN:
+  `tests/automation/test-phase-telemetry.sh` (converted script + GOAL_SESSION_DIR
+  + stub sidecar → claude_usage row attributed to `qa`; unset → no file written)
+  + run-evals 100/100. Live full-depth half UNRESOLVED BY RUN C — a composition
+  effect, not a code failure: REL-12 fixed lean-lane evidence, the evaluator
+  therefore kept iter-1 lean ("the lean pipeline still runs browser QA over all
+  three journeys") and NO full-depth iteration ran, so
+  dev-phase/review-phase/phase-audit never executed and the named
+  developer/reviewer/auditor rows could not exist (engine's own close-out said
+  "next depth: full" for the iteration that never ran). Mechanism live-proven
+  where a converted script DID run: demo-phase.sh's demo-narrator row appears in
+  run C iter-0 ($0.247) — A′'s same-class demo dispatch left NO row. REMAINING TO
+  DONE: one full-depth iteration in any approved run/session (e.g. --max-iter 3,
+  or the SPEED-2/3 flip control) → name the developer/reviewer/auditor rows.
 
 ---
 
@@ -1627,8 +1659,9 @@ benchmark (or a real session's telemetry) before AND after (G8).
   revert trap (G5 — both are safety mechanisms; tests must prove the revert).
 
 ### REL-12 · Single-service frontend resolution for the lean browser lane
-- **Priority:** P1 · **Effort:** S · **Risk:** LOW-MED · **Status:** TODO (staged
-  2026-07-14, user-approved; REL-10 family)
+- **Priority:** P1 · **Effort:** S · **Risk:** LOW-MED · **Status:** DONE
+  2026-07-14 (live evidence: §9 run C `bench-20260714-1539` — see the measurement
+  note; staged 2026-07-14, user-approved; REL-10 family)
 - **Problem:** on a single-service project (frontend server-rendered by the backend —
   the todo-app fixture, any Flask/Django app), the lean browser-qa lane boots the
   generic Next.js frontend template, fails twice, and tells browser-qa
@@ -1667,6 +1700,21 @@ benchmark (or a real session's telemetry) before AND after (G8).
   a loud log + proceed — but ask before adding any template-parsing heuristics.
 - **Trigger:** hit live 2026-07-14; also the prerequisite for a resolvable
   SPEED-2/3 flip re-measurement at lean depth.
+  *Measurement note (2026-07-14, §9 run C `bench-20260714-1539` @ 39e2a79de68a,
+  knobs off):* DoD landed in full. Engine: the short-circuit fired in BOTH
+  iterations, one loud line each naming the URL ("Frontend already answering at
+  http://127.0.0.1:5177 (HTTP 200) — direct probe enabled the browser lane;
+  skipping the frontend boot"). Iter-0 browser-qa EXECUTED all three journeys —
+  verdict "FAIL (0/3 passed, 0 skipped)" with per-journey DOM diagnostics and
+  three PNG evidence files (A′/B iter-0: SKIP ×3, empty evidence dir, unknown ×3)
+  — failing evidence recorded instead of unknown, exactly the DoD. Composition
+  bonus: with real iter-0 evidence the chain stayed lean and reached
+  GOAL_ACHIEVED at −36.6% wall vs A′. Fixture: run-benchmark.sh needed one extra
+  manifest mapping (CHAIN_FRONTEND_URL export — REL-10's mechanism extended);
+  fixture project-template STACK's "Frontend URL" row now names
+  http://127.0.0.1:5177 explicitly (was "N/A — same Flask server..."). Offline:
+  parallel-bqa scenario J (80/80) + run-evals green. Evidence: ledger PRE/POST
+  bench-20260714-1539; scratch kept at /tmp/bench-bench-20260714-1539.5Ro0t7.
 
 ---
 

@@ -1,0 +1,230 @@
+{
+  "meta": {
+    "date_utc": "2026-07-14T15:39:20Z",
+    "framework_sha": "39e2a79de68a577c67b70f4d20e4676e336c4827",
+    "framework_dirty": false,
+    "fixture": "todo-app",
+    "session_id": "bench-20260714-1539",
+    "max_iter": 2,
+    "hypothesis": "TOKEN-8+REL-12 @ 39e2a79de68a: full-depth usage rows appear (developer, reviewer, auditor visible in by_agent); iter-0 lean browser-qa EXECUTES journeys on the fixture (SKIP-for-boot gone \u2014 failing evidence beats no evidence); journeys HOLD 3/3; cost totals rise from VISIBILITY, not regression; status not predicated",
+    "predict": [
+      "journeys_passing_after>=3"
+    ],
+    "chain_env": {
+      "CHAIN_AGENT_BACKEND": "claude",
+      "CHAIN_BACKEND_HEALTH_URL": "http://127.0.0.1:5177/health",
+      "CHAIN_BACKEND_PORT": "5177",
+      "CHAIN_BENCH_MAX_ITER": "2",
+      "CHAIN_BENCH_SESSION_ID": "bench-20260714-1539",
+      "CHAIN_FRONTEND_URL": "http://127.0.0.1:5177",
+      "CHAIN_START_BACKEND_CMD": ".venv/bin/python app.py"
+    },
+    "model_tiers_sha256": "1d096808ad8eb0b5fcc863b8c71403dced292d24c4e8021d940abda52e298896"
+  },
+  "outcome": {
+    "engine_exit_code": 0,
+    "final_status": "GOAL_ACHIEVED",
+    "last_verdict": "GOAL_ACHIEVED",
+    "iterations_used": 2,
+    "journeys_passing_after": 3,
+    "journeys_total": 3,
+    "attempt1_review_fails": 0,
+    "malformed_verdicts": 0,
+    "wall_seconds": 4297
+  },
+  "economics": {
+    "agents": {
+      "bench-20260714-1539": {
+        "sources": [
+          "/tmp/bench-bench-20260714-1539.5Ro0t7/scratch/runs/goal-session-bench-20260714-1539/telemetry.jsonl"
+        ],
+        "total": {
+          "invocations": 18,
+          "errors": 0,
+          "gen_ai.usage.input_tokens": 176564,
+          "gen_ai.usage.output_tokens": 297682,
+          "gen_ai.usage.cache_read_input_tokens": 16528817,
+          "gen_ai.usage.cache_creation_input_tokens": 1148048,
+          "gen_ai.usage.total_cost_usd": 20.84373,
+          "duration_ms": 3785007,
+          "duration_api_ms": 3662349,
+          "num_turns": 374,
+          "cache_hit_ratio": 0.9894
+        },
+        "by_agent": {
+          "goal-decomposer": {
+            "invocations": 2,
+            "errors": 0,
+            "gen_ai.usage.input_tokens": 25493,
+            "gen_ai.usage.output_tokens": 56705,
+            "gen_ai.usage.cache_read_input_tokens": 1240581,
+            "gen_ai.usage.cache_creation_input_tokens": 142568,
+            "gen_ai.usage.total_cost_usd": 3.59106,
+            "duration_ms": 752460,
+            "duration_api_ms": 747370,
+            "num_turns": 37,
+            "cache_hit_ratio": 0.9799
+          },
+          "developer": {
+            "invocations": 2,
+            "errors": 0,
+            "gen_ai.usage.input_tokens": 20350,
+            "gen_ai.usage.output_tokens": 66455,
+            "gen_ai.usage.cache_read_input_tokens": 6063843,
+            "gen_ai.usage.cache_creation_input_tokens": 254167,
+            "gen_ai.usage.total_cost_usd": 4.40203,
+            "duration_ms": 753779,
+            "duration_api_ms": 724816,
+            "num_turns": 101,
+            "cache_hit_ratio": 0.9967
+          },
+          "reviewer": {
+            "invocations": 2,
+            "errors": 0,
+            "gen_ai.usage.input_tokens": 18918,
+            "gen_ai.usage.output_tokens": 30701,
+            "gen_ai.usage.cache_read_input_tokens": 1255410,
+            "gen_ai.usage.cache_creation_input_tokens": 104938,
+            "gen_ai.usage.total_cost_usd": 1.52352,
+            "duration_ms": 339117,
+            "duration_api_ms": 338248,
+            "num_turns": 30,
+            "cache_hit_ratio": 0.9852
+          },
+          "browser-qa-agent": {
+            "invocations": 1,
+            "errors": 0,
+            "gen_ai.usage.input_tokens": 9714,
+            "gen_ai.usage.output_tokens": 15251,
+            "gen_ai.usage.cache_read_input_tokens": 1449737,
+            "gen_ai.usage.cache_creation_input_tokens": 105036,
+            "gen_ai.usage.total_cost_usd": 1.323044,
+            "duration_ms": 232623,
+            "duration_api_ms": 197169,
+            "num_turns": 40,
+            "cache_hit_ratio": 0.9933
+          },
+          "goal-evaluator": {
+            "invocations": 3,
+            "errors": 0,
+            "gen_ai.usage.input_tokens": 36262,
+            "gen_ai.usage.output_tokens": 83097,
+            "gen_ai.usage.cache_read_input_tokens": 4002942,
+            "gen_ai.usage.cache_creation_input_tokens": 244690,
+            "gen_ai.usage.total_cost_usd": 6.707106,
+            "duration_ms": 1160909,
+            "duration_api_ms": 1113575,
+            "num_turns": 83,
+            "cache_hit_ratio": 0.991
+          },
+          "demo-narrator": {
+            "invocations": 1,
+            "errors": 0,
+            "gen_ai.usage.input_tokens": 9285,
+            "gen_ai.usage.output_tokens": 1101,
+            "gen_ai.usage.cache_read_input_tokens": 157829,
+            "gen_ai.usage.cache_creation_input_tokens": 25952,
+            "gen_ai.usage.total_cost_usd": 0.247431,
+            "duration_ms": 16156,
+            "duration_api_ms": 16075,
+            "num_turns": 8,
+            "cache_hit_ratio": 0.9444
+          },
+          "iteration-summarizer": {
+            "invocations": 3,
+            "errors": 0,
+            "gen_ai.usage.input_tokens": 28193,
+            "gen_ai.usage.output_tokens": 15457,
+            "gen_ai.usage.cache_read_input_tokens": 1094133,
+            "gen_ai.usage.cache_creation_input_tokens": 127103,
+            "gen_ai.usage.total_cost_usd": 1.407292,
+            "duration_ms": 182971,
+            "duration_api_ms": 178653,
+            "num_turns": 36,
+            "cache_hit_ratio": 0.9749
+          },
+          "readme-maintainer": {
+            "invocations": 2,
+            "errors": 0,
+            "gen_ai.usage.input_tokens": 18740,
+            "gen_ai.usage.output_tokens": 5579,
+            "gen_ai.usage.cache_read_input_tokens": 534413,
+            "gen_ai.usage.cache_creation_input_tokens": 56280,
+            "gen_ai.usage.total_cost_usd": 0.637909,
+            "duration_ms": 77989,
+            "duration_api_ms": 77766,
+            "num_turns": 20,
+            "cache_hit_ratio": 0.9661
+          },
+          "coherence-auditor": {
+            "invocations": 1,
+            "errors": 0,
+            "gen_ai.usage.input_tokens": 9587,
+            "gen_ai.usage.output_tokens": 22124,
+            "gen_ai.usage.cache_read_input_tokens": 655492,
+            "gen_ai.usage.cache_creation_input_tokens": 64729,
+            "gen_ai.usage.total_cost_usd": 0.945643,
+            "duration_ms": 253239,
+            "duration_api_ms": 253019,
+            "num_turns": 15,
+            "cache_hit_ratio": 0.9856
+          },
+          "retro-analyst": {
+            "invocations": 1,
+            "errors": 0,
+            "gen_ai.usage.input_tokens": 22,
+            "gen_ai.usage.output_tokens": 1212,
+            "gen_ai.usage.cache_read_input_tokens": 74437,
+            "gen_ai.usage.cache_creation_input_tokens": 22585,
+            "gen_ai.usage.total_cost_usd": 0.058696,
+            "duration_ms": 15764,
+            "duration_api_ms": 15658,
+            "num_turns": 4,
+            "cache_hit_ratio": 0.9997
+          }
+        },
+        "by_model": {
+          "claude-opus-4-8": {
+            "invocations": 5,
+            "errors": 0,
+            "gen_ai.usage.input_tokens": 61755,
+            "gen_ai.usage.output_tokens": 139802,
+            "gen_ai.usage.cache_read_input_tokens": 5243523,
+            "gen_ai.usage.cache_creation_input_tokens": 387258,
+            "gen_ai.usage.total_cost_usd": 10.298166,
+            "duration_ms": 1913369,
+            "duration_api_ms": 1860945,
+            "num_turns": 120,
+            "cache_hit_ratio": 0.9884
+          },
+          "claude-sonnet-5": {
+            "invocations": 12,
+            "errors": 0,
+            "gen_ai.usage.input_tokens": 114787,
+            "gen_ai.usage.output_tokens": 156668,
+            "gen_ai.usage.cache_read_input_tokens": 11210857,
+            "gen_ai.usage.cache_creation_input_tokens": 738205,
+            "gen_ai.usage.total_cost_usd": 10.486868,
+            "duration_ms": 1855874,
+            "duration_api_ms": 1785746,
+            "num_turns": 250,
+            "cache_hit_ratio": 0.9899
+          },
+          "claude-haiku-4-5": {
+            "invocations": 1,
+            "errors": 0,
+            "gen_ai.usage.input_tokens": 22,
+            "gen_ai.usage.output_tokens": 1212,
+            "gen_ai.usage.cache_read_input_tokens": 74437,
+            "gen_ai.usage.cache_creation_input_tokens": 22585,
+            "gen_ai.usage.total_cost_usd": 0.058696,
+            "duration_ms": 15764,
+            "duration_api_ms": 15658,
+            "num_turns": 4,
+            "cache_hit_ratio": 0.9997
+          }
+        }
+      }
+    }
+  }
+}

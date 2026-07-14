@@ -418,3 +418,104 @@ Entry format contract (grep-able; pinned by
 - retro report preserved 2026-07-14: copied verbatim (sha256
   b135495f224e9967e79123b3101c4fe82248422a6dad64dac4f78ab68240ae31 verified match)
   to benchmarks/results/20260714-101019-76b8225ee14f.retro.md.
+
+---
+
+## PRE bench-20260714-1539 · 2026-07-14T15:39:20Z
+- framework-sha: 39e2a79de68a577c67b70f4d20e4676e336c4827 (dirty: false)
+- fixture: todo-app · max-iter 2
+- hypothesis: TOKEN-8+REL-12 @ 39e2a79de68a: full-depth usage rows appear (developer, reviewer, auditor visible in by_agent); iter-0 lean browser-qa EXECUTES journeys on the fixture (SKIP-for-boot gone — failing evidence beats no evidence); journeys HOLD 3/3; cost totals rise from VISIBILITY, not regression; status not predicated
+- metrics + prediction (mechanical --predict): journeys_passing_after>=3
+- attribution 2026-07-14 (appended at launch, engine running; run "C" of the
+  user-approved TOKEN-8+REL-12 session). COMPARABILITY BREAK, PRE-REGISTERED
+  FIRST: TOKEN-8 makes previously-INVISIBLE full-depth dispatch usage VISIBLE
+  — developer/reviewer/auditor/orchestrator/UI-chain rows now land in
+  telemetry, so by_agent totals and estimated cost vs A′ (bench-20260714-0634)
+  and B (bench-20260714-0830) RISE from measurement COVERAGE alone; any
+  benchmark_compare cost-REGRESS verdict against pre-TOKEN-8 runs is EXPECTED
+  and MEANINGLESS; run C is the NEW COMPARABILITY BASELINE for all future
+  runs. Sha proof: 39e2a79de68a = B's engine sha 76b8225 + two docs/results-
+  only commits (a71e724, b49392e — `git diff 76b8225 b49392e -- scripts
+  .claude config templates CLAUDE.md agents skills commands hooks policy`
+  verified EMPTY at launch) + exactly the TOKEN-8/REL-12 feature commit
+  (39e2a79). Engine-visible delta vs A′/B is therefore: telemetry sourcing in
+  15 phase scripts (TOKEN-8), the lean lane's single-service frontend
+  short-circuit (REL-12), and fixture.env CHAIN_FRONTEND_URL=127.0.0.1:5177.
+  chain_env note, pre-registered: this run's block gains CHAIN_FRONTEND_URL
+  (the runner's fixture-manifest exports are now seven vars, not six) —
+  fixture boot config, not an experiment knob. Launch env verified empty of
+  CHAIN_* (knobs off; CHAIN_LEAN_PARALLEL_BROWSER_QA unset → sequential lean
+  lane, one variable set vs A′: the feature commit itself). Decisive
+  observables, mechanical: (1) TOKEN-8 DoD — session telemetry.jsonl carries
+  claude_usage rows for the full-depth iteration's developer + reviewer +
+  auditor (rows named in the POST); (2) REL-12 DoD — iter-0 lean browser-qa
+  EXECUTES journeys (the REL-12 short-circuit log line present, naming
+  127.0.0.1:5177; SKIP-for-boot gone; failing-journey evidence acceptable —
+  it beats no evidence); (3) journeys HOLD 3/3 (the mechanical predicate);
+  (4) topline wall/cost vs A′/B NOT graded (visibility rise pre-registered
+  above); (5) final status (GOAL_ACHIEVED vs CONTINUE at the max-iter cap) is
+  evaluator judgment variance on near-identical inputs (A′-vs-B precedent)
+  and is NOT a pass/fail observable — hypothesis says "status not predicated".
+
+## POST bench-20260714-1539 · 2026-07-14T16:50:58Z
+- results: benchmarks/results/20260714-165058-39e2a79de68a.json
+- headline: status=GOAL_ACHIEVED last_verdict=GOAL_ACHIEVED journeys=3/3 iters=2 engine_exit=0 wall=4297s cost=$20.84373
+- predicate: journeys_passing_after>=3 → true (journeys_passing_after=3)
+- verdict-vs-prediction: CONFIRMED
+- assessment 2026-07-14: GENUINE CHAIN RESULT, the series' second GOAL_ACHIEVED and
+  its fastest (wall 6,778→4,297s vs A′, −36.6%). Run C is the NEW COMPARABILITY
+  BASELINE per the PRE. Grading the free-text hypothesis clause by clause:
+  (1) REL-12 CONFIRMED, fully — the short-circuit fired in BOTH iterations
+  ("[goal-iter-lean] Frontend already answering at http://127.0.0.1:5177 (HTTP
+  200) — direct probe enabled the browser lane; skipping the frontend boot
+  (REL-12 single-service short-circuit)"), and iter-0 browser-qa EXECUTED all
+  three journeys instead of SKIP-for-boot: verdict "FAIL (0/3 passed, 0
+  skipped)" with per-journey DOM diagnostics ("0 inputs, 0 buttons, 0 links")
+  and three PNG evidence files (A′/B iter-0: SKIP ×3, evidence dir EMPTY,
+  journeys unknown ×3). Failing evidence beat no evidence exactly as
+  hypothesized — the iter-0 evaluator: "all three Must-have journeys were
+  executed in a real browser and all three failed. This is a clean starting
+  line, not a defect."
+  (2) TOKEN-8 clause NOT RESOLVED BY THIS RUN — pre-registered observable
+  missing for a composition reason, not a code failure: NO full-depth iteration
+  ran, so dev-phase.sh/review-phase.sh/phase-audit.sh never executed and the
+  full-depth developer/reviewer/auditor rows cannot exist. The by_agent
+  developer/reviewer rows present are the LEAN lane's (visible since
+  pre-TOKEN-8); no auditor row. Root cause is REL-12's own success: iter-0
+  produced real browser evidence, so the evaluator recommended lean for iter-1
+  ("the lean pipeline still runs browser QA over all three journeys") and the
+  session achieved goal without a full iteration — the engine's own close-out
+  even declared "next depth: full" for the iteration that never ran. The
+  MECHANISM did prove itself live where a converted script DID run:
+  demo-phase.sh (converted) dispatched demo-narrator in iter-0 and its usage
+  row appears ($0.247) — A′'s same-class demo dispatch (iter-1 Branch-UI) left
+  NO row. TOKEN-8 therefore stays IN-PROGRESS; any future full-depth iteration
+  (e.g. a --max-iter 3 run or the SPEED-2/3 flip control) resolves its live DoD.
+  (3) journeys HOLD 3/3 — mechanical predicate true.
+  (4) cost topline $17.45→$20.84 (+19.4%) NOT graded per the PRE; honest
+  attribution note: with no full iteration, TOKEN-8's new visibility added only
+  ~$0.25 of previously-invisible rows this run (demo-narrator), so this rise is
+  DOMINATED BY RUN VARIANCE (iter-1 evaluator ×2 dispatches $5.09 total,
+  developer $3.08, decomposer $2.24), consistent with the ±25% agent-level
+  noise band A′↔B established — the PRE's "cost rises from visibility" framing
+  applies to future FULL-depth runs, only weakly here.
+  INTEGRITY NOTE (G7 stop-and-ask honored, user-reviewed disposition): iter-1's
+  missing-evidence tripwire fired once — an Anthropic API server error cut
+  browser-qa's FINAL report write AFTER all three journeys had passed with
+  screenshots + golden replay scripts already on disk (missing_evidence
+  telemetry event 16:33:56Z; SKIPPED crash-stub on file). REL-11's honesty
+  machinery worked as designed (loud banner, stub kept the evaluator fed) and
+  the evaluator verified from the evidence itself (methodology A.3,
+  screenshots outrank prose) before declaring GOAL_ACHIEVED through the
+  deterministic gates — environmental blip absorbed, not a framework defect.
+  FRAMEWORK GAP flagged by that evaluator for triage (retro drafted it):
+  goal-gates' cmd_results passes VACUOUSLY on a crash-stub (searches for
+  "| FAIL |" cells; a stub with no table at all reads as pass) — it cannot
+  tell "all journeys passed" from "the report is missing". chain_env: exactly
+  the seven pre-registered vars incl. CHAIN_FRONTEND_URL — one-variable claim
+  holds. benchmark_compare vs A′/B: not run for the topline verdict (the PRE
+  pre-registered its cost-REGRESS as meaningless across the TOKEN-8 visibility
+  break). Kept scratch: /tmp/bench-bench-20260714-1539.5Ro0t7
+- retro report preserved 2026-07-14: copied verbatim (sha256
+  325923a3f0789faa8a6c69d73d35d758330e6e8dbadf6173701e6fe60a772d9d verified
+  match) to benchmarks/results/20260714-165058-39e2a79de68a.retro.md.
