@@ -249,3 +249,75 @@ Entry format contract (grep-able; pinned by
   Both benchmark iter-0s silently losing their browser lane ALSO means: neither run
   ever exercised a live lean browser-qa section — the SPEED-2/3 fork code has still
   never run against a real iteration, reinforcing the run-B implication above.
+
+---
+
+## PRE bench-20260714-0634 · 2026-07-14T06:34:02Z
+- framework-sha: c8bb8c068a1118fba6dc72e79d5ec19e55745bf1 (dirty: false)
+- fixture: todo-app · max-iter 2
+- hypothesis: TOKEN-1 @ 25ee855de7ec on fixed engine c8bb8c0: lean iter-0 lane ALIVE (iter_config event + developer/reviewer usage rows recorded); like-for-like lean reviewer input tokens DOWN vs baseline 20260712 (was 9,627 in / 45,095 cache-create); unconverted developer ≈ flat as falsification control; journeys HOLD 3/3
+- metrics + prediction (mechanical --predict): journeys_passing_after>=3
+- attribution 2026-07-14 (appended at launch, engine running; run "A′" of the
+  user-approved fix → A′ → B sequence; CONTROL, knob off, launch env verified empty
+  of CHAIN_*): sha c8bb8c0 = run A's b89a4d5 + the lean-lane pipefail fix (c8bb8c0,
+  three `|| true` guards + scenario-I eval) + run A's results/ledger commit
+  (edbe175, docs-only). vs the 20260712 baseline the engine-visible delta is
+  TOKEN-1 + the fix; the fix's composition effect is pre-registered and DESIRED:
+  iter-0's lean lane now survives its journey-less spec, so iter-0 runs
+  developer+reviewer (as baseline did) AND continues into browser-qa + coherence
+  (which baseline's iter-0 never reached — it died at the parse's pre-SPEED-2
+  mid-section position). TOPLINE wall/cost vs baseline is therefore NOT the metric
+  and a rise is expected, pre-registered, and not a strike. The metrics are the
+  like-for-like per-agent rows: (a) lean iter-0 reviewer — baseline 9,627 in /
+  45,095 cache-create / $0.889 / 198s under the full-file-read prompt vs A′ under
+  the TOKEN-1 pre-sliced prompt → predicted DOWN; (b) lean iter-0 developer —
+  UNCONVERTED by TOKEN-1, predicted ≈ flat (falsification control: if the
+  developer's tokens drop like the reviewer's, the drop is ambient variance, not
+  TOKEN-1); (c) qa-phase validation row IF both runs' iter-1 goes full depth
+  (baseline's did; A′'s depth is the decomposer's choice — if lean, the qa pair
+  comes from run A instead and A′ contributes the reviewer pair). Verdict shape
+  expectations (not failures if different, but read the composition): iter-0 with
+  real browser evidence of a bare scaffold likely CONTINUE (baseline's evidence-less
+  iter-0 was ESCALATE); iter-1 depth may therefore differ from baseline's
+  forced-full. B (knob=full, SAME sha — to be proven by empty results-only diff in
+  B's PRE) compares against THIS run one-variable.
+
+## POST bench-20260714-0634 · 2026-07-14T08:27:00Z
+- results: benchmarks/results/20260714-082700-c8bb8c068a11.json
+- headline: status=GOAL_ACHIEVED last_verdict=GOAL_ACHIEVED journeys=3/3 iters=2 engine_exit=0 wall=6778s cost=$17.452364
+- predicate: journeys_passing_after>=3 → true (journeys_passing_after=3)
+- verdict-vs-prediction: CONFIRMED
+- assessment 2026-07-14: GENUINE CHAIN RESULT and the series' first GOAL_ACHIEVED
+  (baseline + run A both capped out BUDGET_EXHAUSTED/CONTINUE): iter-0's resurrected
+  lean lane produced real bare-scaffold browser evidence (verdict CONTINUE, not the
+  evidence-less ESCALATE of both prior runs), iter-1 (full) built + verified all
+  three journeys, evaluator declared GOAL_ACHIEVED through the deterministic gates.
+  Every part of the free-text hypothesis lands: (1) lean lane ALIVE — iter_config
+  event present (value=off), iter-0 dispatched developer → reviewer →
+  browser-qa-agent, developer+reviewer usage rows recorded (all absent in run A);
+  (2) like-for-like lean iter-0 REVIEWER (converted by TOKEN-1) DOWN on every axis
+  vs baseline: input 9,627→9,604 (flat), cache_creation 45,095→43,182 (−4.2%,
+  −1,913 tok — right order for the ~180-line Read replaced by the 56-line inlined
+  slice), cache_read 1,299,005→1,098,587 (−15.4%), turns 22→19, cost $0.889→$0.759
+  (−14.6%), 198s→159s; (3) falsification control DECISIVE: the UNCONVERTED
+  developer moved the OPPOSITE way (input 9,924→10,078 flat; cache_creation
+  208,213→263,951 +26.8%; cache_read +38.7%; turns 55→60; cost $2.42→$3.09 +27.7%)
+  — ambient drift this run pushed agents UP, so the reviewer's across-the-board
+  drop is not ambient. Prompt-shape attribution rests on the code pins at the
+  measured sha (TOKEN-1 mirror gate + scenario-I dispatch-order eval), not on trace
+  narration (too terse to corroborate either way). NON-REPLICATION recorded
+  honestly: the qa-phase validation row (converted agent, full-depth iter-1 in all
+  three runs) reads cache_creation 129,713 (baseline) / 96,327 (run A, −25.7%) /
+  133,006 (A′, +2.5%) — a ±25% noise band around an expected ~2k-token mechanism;
+  run A's qa-direction claim does NOT replicate and qa telemetry is INCONCLUSIVE
+  for TOKEN-1 on this fixture. The reviewer pair + control is TOKEN-1's DoD
+  telemetry evidence. Topline wall 5,833→6,778s (+16.2%) and cost $15.58→$17.45
+  (+12.1%) vs baseline are the PRE-REGISTERED rise (iter-0's browser lane executes
+  work baseline's dead lane never did) — not graded. chain_env clean (runner's six
+  vars only; knob unset). benchmark_compare vs baseline: not run for the topline
+  verdict — its REGRESS rule would mechanically flag the pre-registered
+  composition rise; per-agent deltas above are the registered metrics. Kept
+  scratch: /tmp/bench-bench-20260714-0634.8Bsppc
+- retro report preserved 2026-07-14: copied verbatim (sha256
+  b0c8b134296d967ae12b3c2e9479d3f83c3ca9e4ce20aeb4927f62a60884a901 verified match)
+  to benchmarks/results/20260714-082700-c8bb8c068a11.retro.md.
