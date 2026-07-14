@@ -28,6 +28,10 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/lib/common.sh"
 source "$SCRIPT_DIR/lib/parallel.sh"
+# Telemetry (no-op unless GOAL_SESSION_DIR is set, i.e. goal-mode full depth):
+# lets claude_with_quota_retry forward each dispatch's usage sidecar into the
+# session's per-agent economics (TOKEN-8).
+source "$SCRIPT_DIR/lib/telemetry.sh"
 
 # Pull --cli (and --force-cli) out of the args BEFORE the existing parse loop,
 # so the loop below sees only its known flags. CHAIN_CLI defaults to claude.

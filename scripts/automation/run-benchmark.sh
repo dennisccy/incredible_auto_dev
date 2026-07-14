@@ -86,11 +86,13 @@
 #
 # ── FIXTURE BOOT MANIFEST (REL-10) ────────────────────────────────────────────
 # benchmarks/fixtures/<fixture>/fixture.env (optional, KEY=VALUE: START_CMD /
-# PORT / HEALTH_URL) declares how the fixture app boots. When present the
-# runner exports CHAIN_START_BACKEND_CMD / CHAIN_BACKEND_PORT /
-# CHAIN_BACKEND_HEALTH_URL into the engine environment (recorded in the results
-# chain_env block). Without it the framework's generic start-backend.sh template
-# shadows the fixture's documented start command (baseline journeys-0/3 cause).
+# PORT / HEALTH_URL / CHAIN_FRONTEND_URL) declares how the fixture app boots.
+# When present the runner exports CHAIN_START_BACKEND_CMD / CHAIN_BACKEND_PORT /
+# CHAIN_BACKEND_HEALTH_URL — plus CHAIN_FRONTEND_URL for single-service fixtures
+# (REL-12: points the lean browser lane's direct probe at the server-rendered
+# app) — into the engine environment (recorded in the results chain_env block).
+# Without it the framework's generic start-backend.sh template shadows the
+# fixture's documented start command (baseline journeys-0/3 cause).
 #
 # Ledger format contract (grep-able): PRE entries start `## PRE <session-id>`,
 # POST entries start `## POST <session-id>` — pinned by the test suite.
@@ -392,13 +394,17 @@ fi
 # behavior. Exports happen BEFORE the CHAIN_ENV_LINES capture below, so the
 # results JSON records the boot config (environment honesty).
 if [[ -f "$FIXTURE/fixture.env" ]]; then
-  START_CMD=""; PORT=""; HEALTH_URL=""
+  START_CMD=""; PORT=""; HEALTH_URL=""; CHAIN_FRONTEND_URL=""
   # shellcheck disable=SC1091
   source "$FIXTURE/fixture.env"
   if [[ -n "$START_CMD" ]]; then export CHAIN_START_BACKEND_CMD="$START_CMD"; fi
   if [[ -n "$PORT" ]]; then export CHAIN_BACKEND_PORT="$PORT"; fi
   if [[ -n "$HEALTH_URL" ]]; then export CHAIN_BACKEND_HEALTH_URL="$HEALTH_URL"; fi
-  log "fixture.env: backend boot localized (cmd='${START_CMD}' port='${PORT}' health='${HEALTH_URL}')"
+  # REL-12: a single-service fixture names its server-rendered frontend URL
+  # directly (CHAIN_FRONTEND_URL=<backend URL>) so the lean browser lane's
+  # direct probe can enable itself instead of booting a frontend template.
+  if [[ -n "$CHAIN_FRONTEND_URL" ]]; then export CHAIN_FRONTEND_URL; fi
+  log "fixture.env: backend boot localized (cmd='${START_CMD}' port='${PORT}' health='${HEALTH_URL}'${CHAIN_FRONTEND_URL:+ frontend='${CHAIN_FRONTEND_URL}'})"
 fi
 
 # ── Engine launch ─────────────────────────────────────────────────────────────

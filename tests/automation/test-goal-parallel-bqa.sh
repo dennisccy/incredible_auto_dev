@@ -46,6 +46,11 @@
 #      1 on a journey-less line and, unguarded, the bare top-level assignment
 #      kills the whole script before the developer step (pre-SPEED-2 position:
 #      after review, killing browser-qa + coherence instead).
+#   J. REL-12 single-service short-circuit: CHAIN_FRONTEND_URL pointing at the
+#      dummy BACKEND port (the server-rendered-frontend case) → the direct
+#      probe answers, ONE loud log line names the URL, the frontend boot and
+#      readiness gate never run, and the dispatch prompt carries
+#      "Frontend available: yes".
 #
 # No API calls; a few seconds per scenario.
 
@@ -705,6 +710,42 @@ rc=0; run_lean "$WORK/lean-I2.log" || rc=$?
 [[ "$(tr '\n' ' ' < "$CANARY")" == "developer reviewer browser-qa-agent " ]] \
   && assert "I2: lean lane survived an entirely journey-less parse" "pass" \
   || assert "I2: lean lane survived an entirely journey-less parse (got: '$(tr '\n' ' ' < "$CANARY")')" "fail"
+
+# ══ Scenario J: REL-12 single-service short-circuit — no frontend boot ═══════
+# CHAIN_FRONTEND_URL points at the DUMMY BACKEND port (the "frontend is
+# server-rendered by the backend" case): the direct probe must answer, enable
+# the lane loudly, skip the frontend boot + readiness gate entirely, and the
+# dispatch prompt must carry "Frontend available: yes".
+make_sandbox J
+new_capture J
+start_dummies
+unset CHAIN_LEAN_PARALLEL_BROWSER_QA 2>/dev/null || true
+export STUB_REPLAY_VERDICT=PASS
+export STUB_REVIEW_VERDICT=PASS
+export CHAIN_FRONTEND_URL="http://localhost:${BE_PORT}"
+rc=0; run_lean "$WORK/lean-J.log" || rc=$?
+[[ "$rc" -eq 0 ]] && assert "J: single-service lean iteration exits 0" "pass" \
+  || { assert "J: single-service lean iteration exits 0 (rc=$rc)" "fail"; sed -n '1,40p' "$WORK/lean-J.log"; }
+grep -q "Frontend already answering at http://localhost:${BE_PORT}" "$WORK/lean-J.log" \
+  && grep -q "direct probe enabled the browser lane; skipping the frontend boot (REL-12 single-service short-circuit)" "$WORK/lean-J.log" \
+  && assert "J: loud short-circuit line names the URL" "pass" \
+  || assert "J: loud short-circuit line names the URL" "fail"
+_j_prompt="$(ls "$PROMPTS_DIR"/prompt-*-browser-qa-agent.txt 2>/dev/null | head -n1)"
+if [[ -n "$_j_prompt" ]] && grep -q '^Frontend available: yes' "$_j_prompt"; then
+  assert "J: 'Frontend available: yes' reaches the dispatch prompt" "pass"
+else
+  assert "J: 'Frontend available: yes' reaches the dispatch prompt (got: $(grep -h '^Frontend available:' "$_j_prompt" 2>/dev/null))" "fail"
+fi
+grep -q "\[ensure_services_running\] frontend not healthy" "$WORK/lean-J.log" \
+  && assert "J: no frontend boot attempted" "fail" \
+  || assert "J: no frontend boot attempted" "pass"
+grep -q "Waiting for frontend at" "$WORK/lean-J.log" \
+  && assert "J: readiness gate skipped (probe hit decides alone)" "fail" \
+  || assert "J: readiness gate skipped (probe hit decides alone)" "pass"
+[[ "$(tr '\n' ' ' < "$CANARY")" == "developer reviewer browser-qa-agent " ]] \
+  && assert "J: dispatch order unchanged (developer→reviewer→browser-qa)" "pass" \
+  || assert "J: dispatch order unchanged (got: $(tr '\n' ' ' < "$CANARY"))" "fail"
+unset CHAIN_FRONTEND_URL
 
 echo ""
 echo "=== Results: $PASS passed, $FAIL failed ==="

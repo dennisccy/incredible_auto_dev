@@ -50,7 +50,7 @@ Database:
 
 Services:
   Backend URL:  http://127.0.0.1:5177
-  Frontend URL: N/A — same Flask server serves the page and static assets
+  Frontend URL: http://127.0.0.1:5177 — same Flask server serves the page and static assets
   Health check: http://127.0.0.1:5177/health
 ```
 

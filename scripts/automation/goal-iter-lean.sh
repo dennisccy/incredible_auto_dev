@@ -226,28 +226,60 @@ export QA_FRONTEND_START_CMD="$FRONTEND_START_CMD"
 export QA_FRONTEND_LOG
 export QA_FRONTEND_REQUIRED="yes"
 
+# ── REL-12: single-service frontend short-circuit ───────────────────────────
+# Boot the backend first (frontend deferred), then probe $FRONTEND_URL once,
+# directly. On a single-service project the frontend is server-rendered by the
+# backend (CHAIN_FRONTEND_URL points at it), so the URL answers as soon as the
+# backend is up — while booting the generic frontend template could only fail
+# twice and skip every journey (proven live: both 20260714 benchmark iter-0
+# lanes; experiments.md POSTs bench-20260714-0634/-0830). A probe hit skips
+# the frontend boot LOUDLY (never silently): the log line names the URL, so a
+# two-service project misconfigured onto its backend URL stays visible rather
+# than quietly mistested. A probe miss restores the env and runs the frontend
+# boot + readiness gate below exactly as before.
+export QA_FRONTEND_REQUIRED="no"
 ensure_services_running
-
-# Trust the retrying ensure_services_running verdict first (QA_FRONTEND_UP), then
-# a re-probe so a frontend that is merely mid-recompile isn't misread as down —
-# avoids a false SKIP right after a successful-but-still-compiling boot. The gate
-# is corruption-aware: this is the standalone (non-shared) path, so on a persistent
-# corrupt `.next` it heals once (rm -rf .next + restart). Budget is 120s (not 30s)
-# so a guaranteed-cold rebuild — including the QA_FRONTEND_UP=slow case where the
-# boot left a still-compiling server running — has room to finish.
-if [[ "${QA_FRONTEND_UP:-unknown}" == "yes" ]] || _wait_for_frontend_ready "$FRONTEND_URL" "frontend" 120 "goal-iter-lean"; then
+_fe_probe_code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 "$FRONTEND_URL" 2>/dev/null || true)"
+export QA_FRONTEND_REQUIRED="yes"
+if [[ "$_fe_probe_code" =~ ^[23] ]]; then
   FRONTEND_AVAILABLE="yes"
   FRONTEND_SKIP_REASON=""
+  # Single service: LLM-lane retries (the quota-retry pre-hook re-runs
+  # ensure_services_running) must keep skipping the frontend boot too.
+  export QA_FRONTEND_REQUIRED="no"
+  echo "[goal-iter-lean] Frontend already answering at $FRONTEND_URL (HTTP $_fe_probe_code) — direct probe enabled the browser lane; skipping the frontend boot (REL-12 single-service short-circuit)."
 else
-  FRONTEND_AVAILABLE="no"
-  echo "[goal-iter-lean] Frontend not available — browser tests will be SKIPPED."
-  # Surface the real cause (dep hint + log tail) instead of a bare "not running".
-  FRONTEND_SKIP_REASON="frontend not running"
-  _fe_hint="$(_qa_dep_hint frontend)"
-  [[ -n "$_fe_hint" ]] && FRONTEND_SKIP_REASON+=" — likely cause: $_fe_hint"
-  _fe_tail="${QA_FRONTEND_LOG_TAIL:-}"
-  [[ -z "$_fe_tail" && -n "${QA_FRONTEND_LOG:-}" && -f "${QA_FRONTEND_LOG:-}" ]] && _fe_tail="$(tail -n 15 "$QA_FRONTEND_LOG" 2>/dev/null || true)"
-  [[ -n "$_fe_tail" ]] && { echo "[goal-iter-lean] Frontend start log tail (${QA_FRONTEND_LOG:-?}):" >&2; echo "$_fe_tail" >&2; }
+  # Frontend half of the boot. The backend half already ran above and must not
+  # re-run its retry ladder here (matters when the backend is DOWN) — blank its
+  # inputs for this call and restore its verdict afterwards.
+  _relbe_health="${QA_BACKEND_HEALTH_URL:-}"; _relbe_cmd="${QA_BACKEND_START_CMD:-}"
+  _relbe_up="${QA_BACKEND_UP:-unknown}";      _relbe_tail="${QA_BACKEND_LOG_TAIL:-}"
+  export QA_BACKEND_HEALTH_URL="" QA_BACKEND_START_CMD=""
+  ensure_services_running
+  export QA_BACKEND_HEALTH_URL="$_relbe_health" QA_BACKEND_START_CMD="$_relbe_cmd"
+  export QA_BACKEND_UP="$_relbe_up" QA_BACKEND_LOG_TAIL="$_relbe_tail"
+
+  # Trust the retrying ensure_services_running verdict first (QA_FRONTEND_UP), then
+  # a re-probe so a frontend that is merely mid-recompile isn't misread as down —
+  # avoids a false SKIP right after a successful-but-still-compiling boot. The gate
+  # is corruption-aware: this is the standalone (non-shared) path, so on a persistent
+  # corrupt `.next` it heals once (rm -rf .next + restart). Budget is 120s (not 30s)
+  # so a guaranteed-cold rebuild — including the QA_FRONTEND_UP=slow case where the
+  # boot left a still-compiling server running — has room to finish.
+  if [[ "${QA_FRONTEND_UP:-unknown}" == "yes" ]] || _wait_for_frontend_ready "$FRONTEND_URL" "frontend" 120 "goal-iter-lean"; then
+    FRONTEND_AVAILABLE="yes"
+    FRONTEND_SKIP_REASON=""
+  else
+    FRONTEND_AVAILABLE="no"
+    echo "[goal-iter-lean] Frontend not available — browser tests will be SKIPPED."
+    # Surface the real cause (dep hint + log tail) instead of a bare "not running".
+    FRONTEND_SKIP_REASON="frontend not running"
+    _fe_hint="$(_qa_dep_hint frontend)"
+    [[ -n "$_fe_hint" ]] && FRONTEND_SKIP_REASON+=" — likely cause: $_fe_hint"
+    _fe_tail="${QA_FRONTEND_LOG_TAIL:-}"
+    [[ -z "$_fe_tail" && -n "${QA_FRONTEND_LOG:-}" && -f "${QA_FRONTEND_LOG:-}" ]] && _fe_tail="$(tail -n 15 "$QA_FRONTEND_LOG" 2>/dev/null || true)"
+    [[ -n "$_fe_tail" ]] && { echo "[goal-iter-lean] Frontend start log tail (${QA_FRONTEND_LOG:-?}):" >&2; echo "$_fe_tail" >&2; }
+  fi
 fi
 
 export CHAIN_CLAUDE_PRE_RETRY_HOOK="ensure_services_running"

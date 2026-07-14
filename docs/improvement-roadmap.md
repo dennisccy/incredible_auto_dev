@@ -916,9 +916,9 @@ benchmark (or a real session's telemetry) before AND after (G8).
 - **Trigger:** telemetry shows template reads are a measurable share of input tokens.
 
 ### TOKEN-2 · Tier experiment: goal-decomposer strong→standard
-- **Priority:** P1 · **Effort:** S · **Risk:** MED · **Status:** BLOCKED (needs EVO-3 +
-  REL-1) *(absorbed: README Token-Opt Tier-2; the orchestrator half is already DONE —
-  see §17 ledger)*
+- **Priority:** P1 · **Effort:** S · **Risk:** MED · **Status:** TODO (unblocked
+  2026-07-14 — EVO-3 + REL-1 DONE; deferred by user ordering) *(absorbed: README
+  Token-Opt Tier-2; the orchestrator half is already DONE — see §17 ledger)*
 - **Problem:** the decomposer runs on the strong tier every iteration; spec-writing may
   be within standard-tier reach now that it receives the goal slice + journey digest.
 - **Current state:** `agents/goal-decomposer/agent.yaml` `model_tier: strong`;
