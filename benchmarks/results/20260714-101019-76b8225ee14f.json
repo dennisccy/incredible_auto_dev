@@ -1,0 +1,230 @@
+{
+  "meta": {
+    "date_utc": "2026-07-14T08:30:24Z",
+    "framework_sha": "76b8225ee14f8cfa94ef84206f2e46c0aad4d2fd",
+    "framework_dirty": false,
+    "fixture": "todo-app",
+    "session_id": "bench-20260714-0830",
+    "max_iter": 2,
+    "hypothesis": "SPEED-2/3 flip evidence @ engine c8bb8c0, knob CHAIN_LEAN_PARALLEL_BROWSER_QA=full, ONE variable vs run A' bench-20260714-0634: lean iter-0 forks the FULL browser-qa section concurrent with review (iter_config value=full, fork spawn logged, review/browser-qa overlap in time); journeys HOLD 3/3; cost \u2248 flat (no attempt-1 review FAILs \u2192 no wasted fork); wall DOWN by roughly the iter-0 review\u2225browser-qa overlap \u2014 pre-registered sensitivity: overlap \u2248 2-5 min vs \u00b110% wall noise on this fixture, so a null wall delta means 'fixture cannot resolve it; flip decision needs real-session telemetry', NOT 'feature worthless'; wall INCREASE beyond noise or journey drop or tripwire/orphan = genuine strike against flipping",
+    "predict": [
+      "journeys_passing_after>=3"
+    ],
+    "chain_env": {
+      "CHAIN_AGENT_BACKEND": "claude",
+      "CHAIN_BACKEND_HEALTH_URL": "http://127.0.0.1:5177/health",
+      "CHAIN_BACKEND_PORT": "5177",
+      "CHAIN_BENCH_MAX_ITER": "2",
+      "CHAIN_BENCH_SESSION_ID": "bench-20260714-0830",
+      "CHAIN_LEAN_PARALLEL_BROWSER_QA": "full",
+      "CHAIN_START_BACKEND_CMD": ".venv/bin/python app.py"
+    },
+    "model_tiers_sha256": "1d096808ad8eb0b5fcc863b8c71403dced292d24c4e8021d940abda52e298896"
+  },
+  "outcome": {
+    "engine_exit_code": 0,
+    "final_status": "BUDGET_EXHAUSTED",
+    "last_verdict": "CONTINUE",
+    "iterations_used": 2,
+    "journeys_passing_after": 3,
+    "journeys_total": 3,
+    "attempt1_review_fails": 0,
+    "malformed_verdicts": 0,
+    "wall_seconds": 5995
+  },
+  "economics": {
+    "agents": {
+      "bench-20260714-0830": {
+        "sources": [
+          "/tmp/bench-bench-20260714-0830.1jHzAr/scratch/runs/goal-session-bench-20260714-0830/telemetry.jsonl"
+        ],
+        "total": {
+          "invocations": 15,
+          "errors": 0,
+          "gen_ai.usage.input_tokens": 122053,
+          "gen_ai.usage.output_tokens": 228539,
+          "gen_ai.usage.cache_read_input_tokens": 10142176,
+          "gen_ai.usage.cache_creation_input_tokens": 869267,
+          "gen_ai.usage.total_cost_usd": 16.664435,
+          "duration_ms": 2965157,
+          "duration_api_ms": 3239361,
+          "num_turns": 254,
+          "cache_hit_ratio": 0.9881
+        },
+        "by_agent": {
+          "goal-decomposer": {
+            "invocations": 2,
+            "errors": 0,
+            "gen_ai.usage.input_tokens": 18192,
+            "gen_ai.usage.output_tokens": 52385,
+            "gen_ai.usage.cache_read_input_tokens": 1620875,
+            "gen_ai.usage.cache_creation_input_tokens": 150279,
+            "gen_ai.usage.total_cost_usd": 3.713812,
+            "duration_ms": 714849,
+            "duration_api_ms": 709018,
+            "num_turns": 40,
+            "cache_hit_ratio": 0.9889
+          },
+          "developer": {
+            "invocations": 1,
+            "errors": 0,
+            "gen_ai.usage.input_tokens": 9908,
+            "gen_ai.usage.output_tokens": 20470,
+            "gen_ai.usage.cache_read_input_tokens": 1926604,
+            "gen_ai.usage.cache_creation_input_tokens": 63537,
+            "gen_ai.usage.total_cost_usd": 1.295977,
+            "duration_ms": 274296,
+            "duration_api_ms": 251762,
+            "num_turns": 36,
+            "cache_hit_ratio": 0.9949
+          },
+          "reviewer": {
+            "invocations": 1,
+            "errors": 0,
+            "gen_ai.usage.input_tokens": 9458,
+            "gen_ai.usage.output_tokens": 5903,
+            "gen_ai.usage.cache_read_input_tokens": 531282,
+            "gen_ai.usage.cache_creation_input_tokens": 36127,
+            "gen_ai.usage.total_cost_usd": 0.493066,
+            "duration_ms": 72499,
+            "duration_api_ms": 70819,
+            "num_turns": 16,
+            "cache_hit_ratio": 0.9825
+          },
+          "browser-qa-agent": {
+            "invocations": 1,
+            "errors": 0,
+            "gen_ai.usage.input_tokens": 9449,
+            "gen_ai.usage.output_tokens": 6453,
+            "gen_ai.usage.cache_read_input_tokens": 224050,
+            "gen_ai.usage.cache_creation_input_tokens": 31995,
+            "gen_ai.usage.total_cost_usd": 0.384327,
+            "duration_ms": 74806,
+            "duration_api_ms": 74683,
+            "num_turns": 9,
+            "cache_hit_ratio": 0.9595
+          },
+          "goal-evaluator": {
+            "invocations": 3,
+            "errors": 0,
+            "gen_ai.usage.input_tokens": 27414,
+            "gen_ai.usage.output_tokens": 95112,
+            "gen_ai.usage.cache_read_input_tokens": 2497794,
+            "gen_ai.usage.cache_creation_input_tokens": 233775,
+            "gen_ai.usage.total_cost_usd": 6.101517,
+            "duration_ms": 1253160,
+            "duration_api_ms": 1239295,
+            "num_turns": 58,
+            "cache_hit_ratio": 0.9891
+          },
+          "iteration-summarizer": {
+            "invocations": 2,
+            "errors": 0,
+            "gen_ai.usage.input_tokens": 19042,
+            "gen_ai.usage.output_tokens": 19964,
+            "gen_ai.usage.cache_read_input_tokens": 1273025,
+            "gen_ai.usage.cache_creation_input_tokens": 160389,
+            "gen_ai.usage.total_cost_usd": 1.700827,
+            "duration_ms": 213891,
+            "duration_api_ms": 209587,
+            "num_turns": 41,
+            "cache_hit_ratio": 0.9853
+          },
+          "readme-maintainer": {
+            "invocations": 2,
+            "errors": 0,
+            "gen_ai.usage.input_tokens": 18908,
+            "gen_ai.usage.output_tokens": 5456,
+            "gen_ai.usage.cache_read_input_tokens": 693587,
+            "gen_ai.usage.cache_creation_input_tokens": 57931,
+            "gen_ai.usage.total_cost_usd": 0.694226,
+            "duration_ms": 84236,
+            "duration_api_ms": 83850,
+            "num_turns": 23,
+            "cache_hit_ratio": 0.9735
+          },
+          "qa": {
+            "invocations": 1,
+            "errors": 0,
+            "gen_ai.usage.input_tokens": 52,
+            "gen_ai.usage.output_tokens": 3926,
+            "gen_ai.usage.cache_read_input_tokens": 558281,
+            "gen_ai.usage.cache_creation_input_tokens": 51064,
+            "gen_ai.usage.total_cost_usd": 1.347047,
+            "duration_ms": 52744,
+            "duration_api_ms": 376049,
+            "num_turns": 9,
+            "cache_hit_ratio": 0.9999
+          },
+          "coherence-auditor": {
+            "invocations": 1,
+            "errors": 0,
+            "gen_ai.usage.input_tokens": 9608,
+            "gen_ai.usage.output_tokens": 16562,
+            "gen_ai.usage.cache_read_input_tokens": 741657,
+            "gen_ai.usage.cache_creation_input_tokens": 61620,
+            "gen_ai.usage.total_cost_usd": 0.869471,
+            "duration_ms": 194881,
+            "duration_api_ms": 194604,
+            "num_turns": 18,
+            "cache_hit_ratio": 0.9872
+          },
+          "retro-analyst": {
+            "invocations": 1,
+            "errors": 0,
+            "gen_ai.usage.input_tokens": 22,
+            "gen_ai.usage.output_tokens": 2308,
+            "gen_ai.usage.cache_read_input_tokens": 75021,
+            "gen_ai.usage.cache_creation_input_tokens": 22550,
+            "gen_ai.usage.total_cost_usd": 0.064164,
+            "duration_ms": 29795,
+            "duration_api_ms": 29694,
+            "num_turns": 4,
+            "cache_hit_ratio": 0.9997
+          }
+        },
+        "by_model": {
+          "claude-opus-4-8": {
+            "invocations": 5,
+            "errors": 0,
+            "gen_ai.usage.input_tokens": 45606,
+            "gen_ai.usage.output_tokens": 147497,
+            "gen_ai.usage.cache_read_input_tokens": 4118669,
+            "gen_ai.usage.cache_creation_input_tokens": 384054,
+            "gen_ai.usage.total_cost_usd": 9.81533,
+            "duration_ms": 1968009,
+            "duration_api_ms": 1948313,
+            "num_turns": 98,
+            "cache_hit_ratio": 0.989
+          },
+          "claude-sonnet-5": {
+            "invocations": 8,
+            "errors": 0,
+            "gen_ai.usage.input_tokens": 76373,
+            "gen_ai.usage.output_tokens": 74808,
+            "gen_ai.usage.cache_read_input_tokens": 5390205,
+            "gen_ai.usage.cache_creation_input_tokens": 411599,
+            "gen_ai.usage.total_cost_usd": 5.437894,
+            "duration_ms": 914609,
+            "duration_api_ms": 885305,
+            "num_turns": 143,
+            "cache_hit_ratio": 0.986
+          },
+          "claude-haiku-4-5": {
+            "invocations": 2,
+            "errors": 0,
+            "gen_ai.usage.input_tokens": 74,
+            "gen_ai.usage.output_tokens": 6234,
+            "gen_ai.usage.cache_read_input_tokens": 633302,
+            "gen_ai.usage.cache_creation_input_tokens": 73614,
+            "gen_ai.usage.total_cost_usd": 1.411211,
+            "duration_ms": 82539,
+            "duration_api_ms": 405743,
+            "num_turns": 13,
+            "cache_hit_ratio": 0.9999
+          }
+        }
+      }
+    }
+  }
+}

@@ -321,3 +321,100 @@ Entry format contract (grep-able; pinned by
 - retro report preserved 2026-07-14: copied verbatim (sha256
   b0c8b134296d967ae12b3c2e9479d3f83c3ca9e4ce20aeb4927f62a60884a901 verified match)
   to benchmarks/results/20260714-082700-c8bb8c068a11.retro.md.
+- correction 2026-07-14 (found while analyzing run B): the assessment above
+  OVERCLAIMS iter-0's browser outcome. "iter-0's resurrected lean lane produced real
+  bare-scaffold browser evidence" is WRONG — iter-0's browser-qa SKIPPED all three
+  journeys (ui-test-results: UT-J-01/02/03 = SKIP, evidence dir EMPTY; eval.md:
+  "The baseline produced zero journey evidence ... QA boot lane tried to start a
+  Next.js frontend at apps/frontend on port 3822 — a stack that does not exist —
+  instead of the Flask app at 127.0.0.1:5177"; journeys recorded unknown ×3). What
+  IS true and verified: the lean lane RAN (developer+reviewer+browser-qa dispatched,
+  iter_config present — the fix's claim), the reviewer pair stands unaffected, and
+  the iter-0 verdict was CONTINUE because the evaluator credited the lane's honest
+  SKIP diagnosis as agent-fixable ("not STALLED"). The 3/3 journeys + GOAL_ACHIEVED
+  came from iter-1's full-depth lane entirely. NEW ISOLATED GAP (knob-independent,
+  present in A′ AND B, pre-existing): on a single-service Flask fixture the lean
+  lane's generic frontend boot (start-frontend.sh template, Next.js/apps-frontend
+  assumptions) fails and browser-qa is told "Frontend available: no" — the fixture
+  sets CHAIN_START_BACKEND_CMD but nothing points CHAIN_FRONTEND_URL at the Flask
+  app itself, so lean iter-0 browser evidence is structurally impossible on this
+  fixture until that env gap is closed (candidate fix: fixture.env
+  CHAIN_FRONTEND_URL=http://127.0.0.1:5177; same family as REL-10's backend fix).
+
+---
+
+## PRE bench-20260714-0830 · 2026-07-14T08:30:24Z
+- framework-sha: 76b8225ee14f8cfa94ef84206f2e46c0aad4d2fd (dirty: false)
+- fixture: todo-app · max-iter 2
+- attribution 2026-07-14 (appended at launch, engine running; run "B" of the
+  user-approved fix → A′ → B sequence): ONE VARIABLE vs run A′ bench-20260714-0634.
+  Sha proof: 76b8225 = A′'s engine sha c8bb8c0 + A′'s results/ledger commit only —
+  `git diff c8bb8c0 HEAD -- .claude scripts config templates CLAUDE.md` verified
+  EMPTY (0 lines) at launch. Launch environment verified to contain EXACTLY
+  `CHAIN_LEAN_PARALLEL_BROWSER_QA=full` and no other CHAIN_ var (the launch guard
+  aborts otherwise; this run's chain_env block records the knob alongside the
+  runner's own six). Comparison target: A′ (journeys 3/3, GOAL_ACHIEVED, wall
+  6,778s, cost $17.45; iter-0 lean sequential browser-qa, iter-1 full). Decisive
+  observables are MECHANICAL, pre-registered here: iter_config value=full with
+  empty reason; the "Forking the FULL browser-qa section" spawn line; fork
+  telemetry attribution (browser-qa usage inside the fork); review and browser-qa
+  wall-clock overlap in iter-0; journeys HOLD; no SPEED-2 tripwire trip; no orphan
+  processes. The WALL delta is pre-registered as likely UNRESOLVABLE on this
+  fixture (expected overlap saving ≈ min(review 159s, browser section boot+replay+
+  LLM ≈ 2-5 min) ≈ 2-4 min against ±10% ≈ ±700s run noise) — a null wall delta
+  means "fixture cannot resolve it; flip decision needs real-session telemetry",
+  NOT "the feature is worthless"; a wall INCREASE beyond noise, a journey drop, a
+  tripwire trip, or an orphaned fork process is a genuine strike against flipping.
+  iter-1's depth is the chain's own choice; if it goes full (as in A′ and both
+  prior runs), only iter-0 exercises the knob — that too is a pre-registered
+  fixture limit, not a feature failure.
+- hypothesis: SPEED-2/3 flip evidence @ engine c8bb8c0, knob CHAIN_LEAN_PARALLEL_BROWSER_QA=full, ONE variable vs run A' bench-20260714-0634: lean iter-0 forks the FULL browser-qa section concurrent with review (iter_config value=full, fork spawn logged, review/browser-qa overlap in time); journeys HOLD 3/3; cost ≈ flat (no attempt-1 review FAILs → no wasted fork); wall DOWN by roughly the iter-0 review∥browser-qa overlap — pre-registered sensitivity: overlap ≈ 2-5 min vs ±10% wall noise on this fixture, so a null wall delta means 'fixture cannot resolve it; flip decision needs real-session telemetry', NOT 'feature worthless'; wall INCREASE beyond noise or journey drop or tripwire/orphan = genuine strike against flipping
+- metrics + prediction (mechanical --predict): journeys_passing_after>=3
+
+## POST bench-20260714-0830 · 2026-07-14T10:10:19Z
+- results: benchmarks/results/20260714-101019-76b8225ee14f.json
+- headline: status=BUDGET_EXHAUSTED last_verdict=CONTINUE journeys=3/3 iters=2 engine_exit=0 wall=5995s cost=$16.664435
+- predicate: journeys_passing_after>=3 → true (journeys_passing_after=3)
+- verdict-vs-prediction: CONFIRMED
+- assessment 2026-07-14: FORK MECHANICS FULLY VERIFIED LIVE, WALL QUESTION NULL —
+  the pre-registered split lands exactly. Mechanical observables, all green:
+  iter_config {value:full, requested:full, reason:""} (no headless demotion);
+  "Forking the FULL browser-qa section (LLM lane included)" spawned after the
+  developer settled (08:39:07); reviewer ran 08:39:08–08:40:21 WHILE the fork
+  booted services beside it; fork's browser-qa-agent dispatch attributed correctly
+  in telemetry (08:41:22–08:42:38, inside the fork); join settled the fork BEFORE
+  the evaluator started (08:42:39, 1s after the lane finished — evaluator input set
+  complete); attempt-1 review FAILs 0 (no wasted-dispatch path taken;
+  parallel_bqa_wasted_dispatch events: 0); SPEED-2 tripwire never tripped (no state
+  file); ZERO orphaned fork processes post-run (pgrep clean). One-variable held:
+  chain_env = the runner's six vars + exactly CHAIN_LEAN_PARALLEL_BROWSER_QA=full.
+  benchmark_compare A′→B: wall 6,778→5,995s (−11.6%), cost $17.45→$16.66 (−4.5%),
+  journeys 3/3→3/3, verdict OK. THE WALL DELTA IS NOT ATTRIBUTABLE TO THE KNOB —
+  pre-registered sensitivity caveat fires. Decomposition: the actual overlap
+  potential in iter-0 was ≤73s (review took only 73s this run vs A′'s 159s, and the
+  fork's LLM lane started 61s AFTER review already ended — only the fork's boot
+  phase overlapped review), while individual agent durations swung far larger than
+  any overlap: developer 385→274s (cache_create 263,951→63,537), qa-phase 404→52s,
+  evaluator total 854→1,253s. −783s is run variance around a ≤73s mechanism.
+  VERDICT-SHAPE differences are evaluator judgment variance, not knob effects, on
+  near-identical inputs: BOTH runs' iter-0 browser lanes SKIPPED all journeys for
+  the SAME pre-existing infra reason (generic Next.js frontend boot fails on the
+  single-service Flask fixture; A′ probed :3822, B :3247 — each run's derived
+  default; see the correction under A′'s POST) — A′'s evaluator graded that
+  CONTINUE ("honest SKIP, agent-fixable"), B's graded it ESCALATE ("lane produced
+  nothing") — both defensible readings of the same rubric boundary; and at iter-1
+  both runs reached 3/3 with full-depth evidence, where A′'s evaluator declared
+  GOAL_ACHIEVED and B's held CONTINUE at the max-iter cap (the two-key gate is
+  deliberately conservative; 3/3 passing is identical in both journey histories).
+  No quality regression is attributable to the fork: journeys held, evidence set
+  complete at the join, review verdict PASS in both. FLIP-DECISION INPUT (grading
+  the free-text hypothesis MIXED — mechanics CONFIRMED, wall NULL as
+  pre-registered): the feature is live-proven SAFE on this fixture but its wall
+  win is UNRESOLVED here (review 73–159s vs a browser section whose LLM lane runs
+  ~75s after a ~2-min boot — the fixture's sections are too short to overlap
+  meaningfully). Per the PRE's interpretation rule this reads "fixture cannot
+  resolve it; flip decision needs real-session telemetry", NOT "feature
+  worthless". Kept scratch: /tmp/bench-bench-20260714-0830.1jHzAr
+- retro report preserved 2026-07-14: copied verbatim (sha256
+  b135495f224e9967e79123b3101c4fe82248422a6dad64dac4f78ab68240ae31 verified match)
+  to benchmarks/results/20260714-101019-76b8225ee14f.retro.md.
