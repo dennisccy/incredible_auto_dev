@@ -1219,6 +1219,10 @@ benchmark (or a real session's telemetry) before AND after (G8).
   `timeout`, `jq`, stale pump heartbeat, stale engine lock (REL-4). Standalone command +
   called at engine start warn-only (`CHAIN_DOCTOR=true` default; `--strict-doctor` to
   fail on FAIL rows).
+  *Partial delivery (2026-07-14, REL-13):* the disk-space row exists now as
+  `chain_tmp_disk_guard` (engine preflight + per-iteration, `AWAITING_DISK`
+  pause) plus `scripts/automation/tmp-doctor.sh --status`. The remaining rows
+  (playwright/Chrome-MCP/gh/timeout/jq/pump/lock) are still TODO.
 - **DoD:** runs clean on a healthy machine; each check individually testable
   (`--only <check>`); engine wiring warn-only; evals green.
 - **Verify:** `bash scripts/automation/doctor.sh && bash -n
@@ -1716,6 +1720,53 @@ benchmark (or a real session's telemetry) before AND after (G8).
   parallel-bqa scenario J (80/80) + run-evals green. Evidence: ledger PRE/POST
   bench-20260714-1539; scratch kept at /tmp/bench-bench-20260714-1539.5Ro0t7.
 
+### REL-13 · Chain temp off the quota'd tmpfs + disk-pressure automation (never interrupt on ENOSPC)
+- **Priority:** P0 · **Effort:** M · **Risk:** LOW · **Status:** DONE
+  *(implemented 2026-07-14: goal-mode chains kept halting mid-run on
+  `Disk quota exceeded` — `/tmp` on the reference machine is a 13.3G tmpfs
+  mounted `usrquota`, so EDQUOT fires long before the fs looks full, and one
+  product pytest run wrote a 744MB basetemp under a live `iad.` dir while
+  concurrent projects (tapeology, trendora) stacked theirs on top; leaked
+  `bench-*` scratch (kept-on-failure, never in any janitor pattern) and
+  `judgment-*` sandboxes accumulated for days, and interactive-mode subagents
+  ignored the engine TMPDIR entirely (advisory prompt relay only). Fix, four
+  layers. (1) Relocation: `chain_tmp_init` root default `/tmp` →
+  `~/.cache/iad` (206G un-quota'd ext4), TMPDIR capped at 62 chars for
+  Chromium's 108-char unix-socket limit (long ids → `<prefix>-<sha256[:8]>`,
+  raw id in `.chain-run-id`), adoption now liveness-checked (a dead engine's
+  inherited dir mints fresh instead), `bench-*`/`judgment-*` scratch moved
+  under the root with `.owner-pid` liveness files; the user-global
+  `~/.claude/settings.json` gained `env.TMPDIR=~/.cache/iad/shared` so
+  interactive/dispatched agents in ALL projects write to disk too (probe
+  verified: settings-env OVERRIDES a parent-exported TMPDIR for `claude -p`
+  children, so agent-side writes age out via the 72h `shared/` sweep rather
+  than per-iteration rotation — both lanes land on the big disk). (2)
+  Multi-root janitor: sweeps `CHAIN_TMP_ROOT` + `CHAIN_TMP_LEGACY_ROOTS`
+  (default `/tmp`; tests MUST pass `""`), new patterns `bench-*`
+  (keep-newest-`CHAIN_BENCH_KEEP=2`), `judgment-*`, `shared/`
+  (`CHAIN_TMP_SHARED_MAX_AGE_HOURS=72`); `--aggressive` reaps dead-pid run
+  dirs at ANY age. (3) `chain_tmp_disk_guard`: statvfs on the root + a WRITE
+  PROBE on /tmp (statvfs cannot see tmpfs user quotas; EDQUOT/ENOSPC on a
+  32MB probe is the honest signal) → aggressive sweep under pressure; wired
+  at engine preflight (`preflight_disk_space`, beside the GitHub preflight),
+  the top of every iteration (halt-check block, never mid-iteration), and
+  soft-mode in run-phase.sh/goal-iter-lean.sh; only a still-critical ROOT fs
+  after sweeping pauses as resumable `AWAITING_DISK` (resume tuple, showcase
+  tail kill, header, skill runbook all updated; `AWAITING_GITHUB_AUTH` also
+  added to the resume tuple — pre-existing gap). (4) Agent self-service:
+  `scripts/automation/tmp-doctor.sh` (`--status`/`--clean`/`--aggressive`,
+  sources only chain-tmp.sh, zero permission prompts via the `scripts/*`
+  allow) + the standing rule in core.md "Environment Errors" and
+  anti-pattern #21: on ENOSPC/EDQUOT run tmp-doctor --aggressive, retry once,
+  never rm arbitrary /tmp files, never ask the user. `~/.cache/iad` added to
+  `additionalDirectories` (rm containment parity with /tmp). Regression:
+  chain-tmp self-test 20→31 assertions (stale-adopt, socket budget,
+  legacy-root sweep, bench retention, judgment reap, shared sweep, guard rc
+  semantics), test-tmp-cleanup.sh 7→9 (default-root derivation, engine guard
+  pathway), test-benchmark-runner.sh 54/54 (TMPDIR kept in the bench root
+  fallback chain for harness compat). Delivers REL-2's disk-space row;
+  rest of the doctor remains TODO.)*
+
 ---
 
 ## 11. P1 — Security
@@ -1833,6 +1884,54 @@ territory).
   full-tree pass on GOAL_ACHIEVED is the designated cover; until then that text is
   agent-generated prose, the same class as the traces that caused the recursion.
   Anti-pattern #22.)*
+
+### SEC-6 · Near-zero permission prompts without gutting the gates (interactive goal mode)
+- **Priority:** P0 · **Effort:** M · **Risk:** MED (accepted, bounded) · **Status:** DONE
+  *(implemented 2026-07-14: interactive goal mode was interrupted constantly by
+  two distinct approval sources. (a) Claude Code's permission evaluator — any
+  Bash segment not prefix-matching `permissions.allow` prompts; gaps were shell
+  control flow (`for`/`do`/`done`/`if`…), ~50 common dev binaries (make,
+  timeout, sqlite3, rg, tar, du, df…), path-qualified venv commands
+  (`apps/backend/.venv/bin/python -m pytest` — the canonical project-template
+  test command; `.venv/bin/*` does not match it), and scoped `rm -rf` of
+  common dev artifacts (.venv, .mypy_cache, htmlcov, playwright-report…).
+  (b) the install gate hard-blocking (exit 1 → "APPROVAL REQUIRED", confirmed
+  in transcripts) every unpinned or non-allowlisted `pip/npm install` — the
+  python allowlist was `["anthropic"]`, so agents building products halted on
+  nearly every new dependency (tapeology needed yfinance/alpaca-py/mcp
+  hand-added). Fix: (1) `policy/permissions.yaml` +~100 allow entries in five
+  commented blocks (control flow, curated binaries, venv/pytest variants,
+  scoped rm -rf artifacts, ss/netstat/wait/jobs; duplicate `pstree` removed)
+  — re-rendered to 223 allow entries; deny hardened with the missing system
+  dirs (/mnt /media /dev /bin /sbin) plus EMBEDDED-pattern guards
+  (`Bash(* rm -rf /etc*)`, `* sudo rm*`, `*~/.ssh/id_*`, …) because
+  keyword-prefixed segments (`do rm -rf /etc`) dodge prefix denies — deny
+  beats allow and leading-glob matches anywhere; NEVER a bare `* rm -rf /*`
+  (the /tmp-cleanup-swallowing bug). `guard-dangerous-commands.sh` mirrors
+  both (patterns + a keyword-wrapped rm regex keeping the `(?!tmp)`
+  carve-out; run-evals 2d gained the loop-wrapped block/allow smoke pair).
+  (2) install gate: new policy knobs `on_unpinned_decision` /
+  `on_unknown_decision` (install-gate.py `rule_decision`/`stricter` helpers,
+  five `require_approval` sites now policy-tunable; absent knobs ⇒
+  `require_approval`, so sibling copies that re-sync code but keep their JSON
+  see zero change; invalid values fail closed; denylist always wins). Policy
+  set to `warn` (proceed + banner + JSONL log) with ~30 python + ~35 npm
+  common packages seeded into the allowlists; direct-URL/tarball/custom-index
+  installs, curl|bash, denylist hits, unknown requirements files, and
+  unpinned git clones ALL still hard-block. What is genuinely given up: human
+  pre-approval of first-use registry names (typosquat exposure) — compensated
+  by the seeded lists, the audit trail, and (3) the evidence loop:
+  `scripts/automation/suggest-allowlist.sh` mines
+  `reports/security/install-decisions.jsonl` (+ `--transcripts` banner scan)
+  into ready-to-paste allowlist additions; wired into run-evals as a
+  self-test. (4) User-global `~/.claude/settings.json` (machine-wide, covers
+  tapeology/trendora immediately without a framework re-sync): generic allow
+  additions + embedded-deny backstops + `env.TMPDIR` (REL-13) +
+  `additionalDirectories` for the tmp root; backup kept at
+  `settings.json.bak-sec6-rel13`. test-install-gate.sh rewritten: 16
+  assertions incl. fixture-policy proofs (defaults stay require_approval;
+  denylist beats warn; invalid knob fails closed). Sibling propagation
+  deliberately deferred — their engines keep the strict gate until re-synced.)*
 
 ---
 

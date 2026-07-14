@@ -219,7 +219,14 @@ fi
 } >> "$LEDGER"
 log "PRE entry appended to benchmarks/experiments.md (prediction registered before execution)"
 
-WORK="$(mktemp -d "${TMPDIR:-/tmp}/bench-${SESSION_ID}.XXXXXX")"
+# Scratch root: CHAIN_TMP_ROOT (big unquota'd disk), with TMPDIR kept in the
+# fallback chain — the test harness points TMPDIR at its own scratch and
+# locates the kept-on-failure dir through it. .owner-pid lets the janitor
+# distinguish a live benchmark from a leaked one.
+BENCH_TMP_ROOT="${CHAIN_TMP_ROOT:-${TMPDIR:-$HOME/.cache/iad}}"
+mkdir -p "$BENCH_TMP_ROOT"
+WORK="$(mktemp -d "$BENCH_TMP_ROOT/bench-${SESSION_ID}.XXXXXX")"
+echo "$$" > "$WORK/.owner-pid"
 # Canonicalize: the scratch path doubles as the ~/.claude.json trust key
 # (REL-11), and Claude Code keys projects by the RESOLVED cwd — a symlinked
 # TMPDIR would otherwise make the pre-trusted key and the engine's key differ.

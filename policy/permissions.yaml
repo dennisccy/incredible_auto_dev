@@ -11,6 +11,14 @@ allow:
 - Bash(uv *)
 - Bash(~/.local/bin/uv *)
 - Bash(.venv/bin/*)
+# Path-qualified venv binaries (monorepo layout: apps/backend/.venv/bin/python -m
+# pytest — the canonical test command in .claude/project-template.md). `python *`
+# does not match `.venv/bin/python`, and `.venv/bin/*` does not match
+# `apps/backend/.venv/bin/python`.
+- Bash(*/.venv/bin/*)
+- Bash(venv/bin/*)
+- Bash(pytest)
+- Bash(pytest *)
 - Bash(bash *)
 - Bash(sh *)
 - Bash(source *)
@@ -18,6 +26,32 @@ allow:
 - Bash(./scripts/*)
 - Bash(scripts/*)
 - Bash(bash .claude/*)
+# Shell control flow: the evaluator segments compound commands and prefix-matches
+# each segment INCLUDING the leading keyword, so one-liner loops/conditionals
+# prompt without these (already endorsed in settings.local.json.example).
+# Residual risk: `do rm -rf /etc` no longer prefix-matches the deny entries —
+# closed by the embedded-pattern deny entries below; same class as the
+# long-standing `bash *`/`env *`/`xargs *` allows.
+- Bash(for *)
+- Bash(while *)
+- Bash(until *)
+- Bash(do *)
+- Bash(done)
+- Bash(done *)
+- Bash(if *)
+- Bash(then *)
+- Bash(elif *)
+- Bash(else *)
+- Bash(fi)
+- Bash(fi *)
+- Bash(case *)
+- Bash(esac)
+- Bash(esac *)
+- Bash(time *)
+- Bash([ *)
+- Bash([[ *)
+- Bash(true)
+- Bash(false)
 - Bash(ls *)
 - Bash(ls)
 - Bash(pwd)
@@ -40,6 +74,65 @@ allow:
 - Bash(xargs *)
 - Bash(diff *)
 - Bash(test *)
+# Curated dev/read-only binaries observed prompting in goal mode. NOTE:
+# `timeout *` and `make *` are command wrappers / arbitrary-target runners —
+# same accepted class as `env *` and `xargs *`; the embedded deny entries below
+# and the built-in rm containment bound the damage. Deliberately excluded:
+# nc, nohup, watch, yes, bare `command *` (wrapper/exfil/interactive risk with
+# no pipeline need).
+- Bash(make)
+- Bash(make *)
+- Bash(timeout *)
+- Bash(sleep *)
+- Bash(date)
+- Bash(date *)
+- Bash(stat *)
+- Bash(file *)
+- Bash(du *)
+- Bash(df *)
+- Bash(tree)
+- Bash(tree *)
+- Bash(rg *)
+- Bash(sqlite3 *)
+- Bash(tar *)
+- Bash(unzip *)
+- Bash(zip *)
+- Bash(gzip *)
+- Bash(gunzip *)
+- Bash(zcat *)
+- Bash(cut *)
+- Bash(tr *)
+- Bash(seq *)
+- Bash(paste *)
+- Bash(comm *)
+- Bash(join *)
+- Bash(nl *)
+- Bash(tac *)
+- Bash(column *)
+- Bash(expr *)
+- Bash(realpath *)
+- Bash(readlink *)
+- Bash(basename *)
+- Bash(dirname *)
+- Bash(md5sum *)
+- Bash(sha1sum *)
+- Bash(sha256sum *)
+- Bash(base64 *)
+- Bash(od *)
+- Bash(hexdump *)
+- Bash(uname)
+- Bash(uname *)
+- Bash(id)
+- Bash(whoami)
+- Bash(hostname)
+- Bash(nproc)
+- Bash(free)
+- Bash(free *)
+- Bash(uptime)
+- Bash(getent *)
+- Bash(printenv)
+- Bash(printenv *)
+- Bash(command -v *)
 - Bash(mkdir *)
 - Bash(touch *)
 - Bash(cp *)
@@ -54,6 +147,29 @@ allow:
 - Bash(rm -rf .pytest_cache*)
 - Bash(rm -rf *.egg-info*)
 - Bash(rm -rf coverage*)
+- Bash(rm -rf .venv*)
+- Bash(rm -rf venv*)
+- Bash(rm -rf .tox*)
+- Bash(rm -rf .mypy_cache*)
+- Bash(rm -rf .ruff_cache*)
+- Bash(rm -rf htmlcov*)
+- Bash(rm -rf playwright-report*)
+- Bash(rm -rf test-results*)
+- Bash(rm -rf .turbo*)
+- Bash(rm -rf .cache*)
+- Bash(rm -rf .parcel-cache*)
+- Bash(rm -rf .nuxt*)
+- Bash(rm -rf .svelte-kit*)
+- Bash(rm -rf .vite*)
+# Path-qualified artifact deletes from repo root (apps/<app>/ layout). Bounded by
+# Claude Code's built-in rm containment (session working dirs only) + deny rules.
+- Bash(rm -rf apps/*/node_modules*)
+- Bash(rm -rf apps/*/.next*)
+- Bash(rm -rf apps/*/dist*)
+- Bash(rm -rf apps/*/build*)
+- Bash(rm -rf apps/*/.venv*)
+- Bash(rm -rf */__pycache__*)
+- Bash(rm -rf */.pytest_cache*)
 - Bash(rm -rf /tmp/*)
 - Bash(rm /tmp/*)
 - Bash(rm -f /tmp/*)
@@ -91,9 +207,13 @@ allow:
 - Bash(curl -s -H * http://localhost*)
 - Bash(curl -sv http://localhost*)
 - Bash(ss -tlnp *)
+- Bash(ss *)
+- Bash(netstat *)
+- Bash(wait)
+- Bash(wait *)
+- Bash(jobs)
 - Bash(curl -s -o /dev/null -w *)
 - Bash(curl -sL http://localhost*)
-- Bash(pstree *)
 - Bash(docker build *)
 - Bash(docker compose *)
 - Bash(docker-compose *)
@@ -141,6 +261,42 @@ deny:
 - Bash(rm -rf /srv*)
 - Bash(rm -rf /sys*)
 - Bash(rm -rf /proc*)
+# System dirs missing from the enumeration above.
+- Bash(rm -rf /mnt*)
+- Bash(rm -rf /media*)
+- Bash(rm -rf /dev*)
+- Bash(rm -rf /bin*)
+- Bash(rm -rf /sbin*)
+# Embedded-pattern hardening: control-flow/wrapper allows (do/then/env/timeout/
+# xargs) put destructive commands mid-segment where prefix denies never match
+# (`do rm -rf /etc`). Leading-glob entries match ANYWHERE in a segment; deny
+# beats allow. NEVER add a bare `* rm -rf /*` (would swallow /tmp cleanup —
+# see header note above). These may false-positive on commands merely quoting
+# the strings; acceptable for this catastrophic class.
+- Bash(* rm -rf /etc*)
+- Bash(* rm -rf /usr*)
+- Bash(* rm -rf /home*)
+- Bash(* rm -rf /root*)
+- Bash(* rm -rf /var*)
+- Bash(* rm -rf /boot*)
+- Bash(* rm -rf /lib*)
+- Bash(* rm -rf /opt*)
+- Bash(* rm -rf /srv*)
+- Bash(* rm -rf /mnt*)
+- Bash(* rm -rf /media*)
+- Bash(* rm -rf /dev*)
+- Bash(* rm -rf ~*)
+- Bash(* dd if=/dev/*)
+- Bash(* mkfs*)
+- Bash(* sudo rm*)
+- Bash(* sudo dd*)
+- Bash(* sudo mkfs*)
+- Bash(* sudo mount*)
+- Bash(* sudo chown*)
+- Bash(* sudo chmod*)
+- Bash(*~/.ssh/id_*)
+- Bash(*~/.aws/credentials*)
+- Bash(*/etc/shadow*)
 - Bash(dd *)
 - Bash(mkfs*)
 - Bash(fdisk*)
@@ -191,5 +347,10 @@ deny:
 # not sufficient. Rendered into settings permissions.additionalDirectories.
 additionalDirectories:
 - /tmp
+# Chain temp root (REL-13): TMPDIR now defaults to ~/.cache/iad — the same rm
+# containment reasoning as /tmp applies (agents create files there via
+# mktemp/pytest and must be able to remove them). `~` is expanded by Claude Code
+# at load time; the user-global settings carry the absolute path as backstop.
+- ~/.cache/iad
 codex_default_sandbox: workspace-write
 codex_default_approval: on-request

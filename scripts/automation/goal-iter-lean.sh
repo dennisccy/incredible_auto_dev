@@ -104,6 +104,12 @@ ensure_phase_ports
 # owner-guarded, so under run-goal.sh the trap below removes nothing — the
 # engine rotates the dir at its iteration boundary instead.
 chain_tmp_init "$ITER_NAME"
+# Standalone parity with run-phase.sh: janitor + soft disk guard only when this
+# invocation owns its dir (under run-goal.sh the engine already ran both).
+if [[ "${CHAIN_TMPDIR_OWNER_PID:-}" == "$$" ]]; then
+  chain_tmp_janitor
+  chain_tmp_disk_guard || true
+fi
 
 # ── Cleanup any stray dev server processes on exit ────────────────────────
 # Port sweep factored out (same commands, same order) so the SPEED-2 review-FAIL

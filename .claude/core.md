@@ -63,6 +63,16 @@ Every piece of code produced MUST meet all of the following before the phase is 
 
 ---
 
+## Environment Errors
+
+On `No space left on device` / `Disk quota exceeded`: run
+`bash scripts/automation/tmp-doctor.sh --aggressive`, retry the failed command
+ONCE, and continue. Never `rm` arbitrary `/tmp` files (concurrent sessions own
+some of them) and never halt to ask the user about disk space — the doctor
+only removes temp dirs proven dead or stale (`.claude/anti-patterns.md` #21).
+
+---
+
 ## Visual Quality Checklist
 
 Every UI change MUST meet all of the following (applies when `Frontend Present: yes`):

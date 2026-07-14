@@ -5,7 +5,10 @@
 #   2. success exit removes the dir WITHOUT archiving
 #   3. a NESTED script adopts the dir and its cleanup is a no-op
 #   4. rotate at an iteration boundary swaps dirs (the run-goal.sh contract)
-# Offline, no model, <5s.
+#   5. default root derives from $HOME (~/.cache/iad — the REL-13 relocation)
+#   6. engine-style disk-guard pathway (aggressive sweep + rc 2 enforce)
+# Offline, no model, <5s. Janitor/guard subtests pass CHAIN_TMP_LEGACY_ROOTS=""
+# so the REAL /tmp is never swept from a test.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -23,7 +26,10 @@ assert() {
   fi
 }
 
-T=$(mktemp -d)
+# Pin the scratch to a SHORT path: the session TMPDIR may point at a deep dir
+# (settings env → ~/.cache/iad/shared), which would push test dirs past the
+# 62-char socket budget and hash-shorten the names asserted verbatim below.
+T=$(TMPDIR=/tmp mktemp -d)
 trap 'rm -rf "$T"' EXIT
 
 # ── 1. Owner + failure exit → archive + removal (run-phase.sh trap contract) ──
@@ -120,6 +126,40 @@ CHAIN_TMP_ROOT="$T" bash -c '
 [[ $rc -eq 0 ]] \
   && assert "rotate: previous dir cleared, fresh dir exported" "pass" \
   || assert "rotate: previous dir cleared, fresh dir exported (subtest exit $rc)" "fail"
+
+# ── 5. Default root derives from $HOME (REL-13 relocation off quota'd /tmp) ───
+rc=0
+bash -c '
+  set -euo pipefail
+  unset CHAIN_TMP_ROOT CHAIN_TMPDIR CHAIN_TMPDIR_OWNER_PID
+  export HOME="'"$T"'/fakehome"
+  source "'"$LIB"'"
+  chain_tmp_init "x"
+  [[ "$CHAIN_TMPDIR" == "'"$T"'/fakehome/.cache/iad/iad.x."* ]] || exit 30
+  [[ -d "'"$T"'/fakehome/.cache/iad/shared" ]] || exit 31   # interactive target self-heals
+  chain_tmp_cleanup' || rc=$?
+[[ $rc -eq 0 ]] \
+  && assert "default root: \$HOME/.cache/iad (+ shared/ self-heal)" "pass" \
+  || assert "default root: \$HOME/.cache/iad (subtest exit $rc)" "fail"
+
+# ── 6. Engine-style disk-guard pathway (run-goal.sh contract) ─────────────────
+# Forced-impossible thresholds → aggressive sweep runs (fresh dead-pid stray
+# reaped despite zero age) and --enforce reports rc 2; healthy thresholds → 0.
+rc=0
+bash -c '
+  set -euo pipefail
+  source "'"$LIB"'"
+  export CHAIN_TMP_ROOT="'"$T"'" CHAIN_TMP_LEGACY_ROOTS="" CHAIN_TMP_PROBE_MB=0
+  mkdir -p "'"$T"'/iad.guardstray.999999994"
+  g=0
+  CHAIN_TMP_MIN_FREE_MB=999999999 CHAIN_TMP_HARD_MIN_FREE_MB=999999999 \
+    chain_tmp_disk_guard --enforce 2>/dev/null || g=$?
+  [[ "$g" -eq 2 ]] || exit 40
+  [[ ! -d "'"$T"'/iad.guardstray.999999994" ]] || exit 41
+  chain_tmp_disk_guard --enforce 2>/dev/null || exit 42' || rc=$?
+[[ $rc -eq 0 ]] \
+  && assert "disk guard: enforce rc 2 under pressure, sweep ran, healthy rc 0" "pass" \
+  || assert "disk guard: engine pathway (subtest exit $rc)" "fail"
 
 echo ""
 echo "=== Results: $PASS passed, $FAIL failed ==="

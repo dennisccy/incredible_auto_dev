@@ -25,6 +25,11 @@ DANGEROUS_PATTERNS=(
   "rm -rf /var"
   "rm -rf /boot"
   "rm -rf /lib"
+  "rm -rf /opt"
+  "rm -rf /srv"
+  "rm -rf /mnt"
+  "rm -rf /media"
+  "rm -rf /dev"
   # Disk/filesystem operations
   "dd if="
   "mkfs"
@@ -84,6 +89,12 @@ DANGEROUS_REGEXES=(
   # start OR after a shell chain separator (;, &&, ||, |, &), so `x && rm -rf /etc`
   # is caught while `rm -rf /tmp/...` cleanup stays permitted.
   "(^|[;&|][[:space:]]*)rm -rf /(?!tmp)"
+  # Keyword/wrapper-prefixed rm -rf of absolute paths (other than /tmp): the
+  # shell-control-flow allow entries (for/do/then/...) put destructive commands
+  # mid-segment where the anchored regex above never fires — e.g.
+  # `for i in 1; do rm -rf /etc; done` or `timeout 30 rm -rf /usr`. Same /tmp
+  # carve-out as above so tmp cleanup inside loops stays permitted.
+  "(^|[;&|][[:space:]]*)(do|then|else|env|nohup|timeout[[:space:]]+[0-9]+[a-z]*)[[:space:]]+(sudo[[:space:]]+)?rm -rf /(?!tmp)"
   # chown with absolute path targets
   "^(sudo )?chown .+ /(etc|usr|home|root|var|boot)"
   # docker run mounting host filesystem sensitive directories

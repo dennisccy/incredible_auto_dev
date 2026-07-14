@@ -141,6 +141,7 @@ is authoritative:
 - `GOAL_ACHIEVED` — the goal is done; point to the session summary and the delivered wrap.
 - `AWAITING_BLUEPRINT_APPROVAL` — ask the user to review `state/blueprint.md`, then `/goal-resume`.
 - `AWAITING_GITHUB_AUTH` — ask the user to run `gh auth login`, then `/goal-resume`.
+- `AWAITING_DISK` — free disk still under the hard floor after automatic cleanup; run `bash scripts/automation/tmp-doctor.sh --aggressive` yourself (no user approval needed), then `/goal-resume`. Only involve the user if the doctor exits 2 (the machine is genuinely out of disk).
 - `AWAITING_PUMP` — the pump/session went away mid-iteration; re-open it and `/goal-resume` (it re-runs that iteration).
 - `REGRESSION_HALT` — report the regression; resuming requires `--acknowledge-regression`.
 - `STALLED` or `BUDGET_EXHAUSTED` — report it and suggest editing `docs/goal.md` or raising `--max-iter`.

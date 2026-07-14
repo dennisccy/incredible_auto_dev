@@ -1,26 +1,48 @@
 {
   "_comment": "Pre-install security policy for the automation pipeline.",
-  "_doc": "Add your project's packages to the allowlists. Keep denylists for known-bad versions only.",
+  "_doc": "Allowlisted+pinned installs are silent. Unknown/unpinned REGISTRY installs WARN (proceed, logged, banner in transcript) instead of interrupting the chain - direct URLs, tarballs, custom indexes, denylist hits and curl|bash remain hard blocks. Add product-specific SDKs (e.g. alpaca-py, yfinance) to the PRODUCT copy's allowlist, not the framework baseline.",
 
   "python": {
-    "allowlist": ["anthropic"],
+    "allowlist": [
+      "anthropic", "mcp",
+      "fastapi", "uvicorn", "starlette", "flask", "gunicorn",
+      "sqlalchemy", "sqlmodel", "alembic",
+      "pydantic", "pydantic-settings",
+      "httpx", "requests", "aiohttp", "websockets",
+      "jinja2", "python-dotenv", "pyyaml", "python-multipart", "email-validator", "orjson",
+      "pandas", "numpy", "apscheduler",
+      "pytest", "pytest-asyncio", "pytest-cov", "ruff", "black", "mypy"
+    ],
     "denylist": [],
     "rules": {
       "require_pinned_version": true,
       "block_direct_url": true,
       "allow_requirements_file": true,
+      "on_unpinned_decision": "warn",
+      "on_unknown_decision": "warn",
       "check_pypi_age": false,
       "min_release_age_days": 3
     }
   },
 
   "npm": {
-    "allowlist": [],
+    "allowlist": [
+      "react", "react-dom", "next", "vite", "typescript",
+      "tailwindcss", "postcss", "autoprefixer", "tailwindcss-animate",
+      "tailwind-merge", "class-variance-authority", "clsx", "lucide-react",
+      "lightweight-charts", "recharts", "zustand", "zod", "axios", "date-fns",
+      "express", "cors", "dotenv", "better-sqlite3",
+      "@types/node", "@types/react", "@types/react-dom",
+      "eslint", "prettier", "vitest", "jest", "playwright", "@playwright/test",
+      "tsx", "nodemon", "concurrently"
+    ],
     "denylist": [],
     "rules": {
       "require_pinned_version": true,
       "block_direct_url": true,
-      "allow_package_json_install": true
+      "allow_package_json_install": true,
+      "on_unpinned_decision": "warn",
+      "on_unknown_decision": "warn"
     }
   },
 

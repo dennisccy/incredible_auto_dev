@@ -360,6 +360,10 @@ chain_tmp_init "$PHASE"
 # Sweep strays from crashed/legacy runs — only when this run owns its dir
 # (top-level invocation; the goal engine already ran the janitor).
 [[ "${CHAIN_TMPDIR_OWNER_PID:-}" == "$$" ]] && chain_tmp_janitor
+# Disk guard (REL-13), soft mode: sweep aggressively under pressure and warn.
+# run-phase has no session.json authority, so it never pauses here — the goal
+# engine's --enforce checks own the AWAITING_DISK pause.
+chain_tmp_disk_guard || true
 
 # EXIT trap: on any exit (success, fail(), quota 75, transport 70, signal-trap
 # exits 130/143), archive bounded service-log tails for post-mortem when the

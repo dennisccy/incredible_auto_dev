@@ -62,6 +62,9 @@
 #                            product you wanted?"); resume with --resume (counts as acknowledgment)
 #   AWAITING_PUMP    - interactive pump/dispatch was unavailable mid-iteration (the foreground
 #                      session/pump went away); resumable — /goal-resume re-runs the same iteration
+#   AWAITING_GITHUB_AUTH - preflight found no GitHub push access; fix auth, then --resume
+#   AWAITING_DISK    - free disk under the hard floor even after automatic aggressive cleanup;
+#                      free space or run scripts/automation/tmp-doctor.sh --aggressive, then --resume
 #
 # Quota exhaustion is NOT a halt: claude_with_quota_retry transparently sleeps
 # until the quota resets and resumes.
@@ -730,6 +733,38 @@ PY
   exit 0
 }
 
+# ── Disk-space preflight (REL-13) ─────────────────────────────────────────
+# An autonomous loop must never die mid-run on ENOSPC/EDQUOT. The guard sweeps
+# aggressively first (dead-pid run dirs, stale bench/judgment scratch, old
+# pytest basetemps); only a CHAIN_TMP_ROOT filesystem that is STILL under the
+# hard floor after sweeping pauses the session — resumable, like the GitHub
+# preflight above. /tmp quota pressure alone never pauses (chain temp is
+# relocated; leftovers there may be foreign files we cannot remove).
+preflight_disk_space() {
+  local rc=0
+  chain_tmp_disk_guard --enforce || rc=$?
+  [[ $rc -eq 2 ]] || return 0
+  echo "[run-goal] Disk free below hard floor after automatic cleanup — pausing (AWAITING_DISK)."
+  python3 - <<PY
+import json, datetime
+d = json.load(open("$SESSION_JSON"))
+d["status"] = "AWAITING_DISK"
+d["updated_at"] = datetime.datetime.now(datetime.UTC).isoformat().replace('+00:00','Z')
+import os as _os, tempfile as _tf
+_fd, _tmp = _tf.mkstemp(dir=_os.path.dirname("$SESSION_JSON") or ".", suffix=".sjtmp")
+with _os.fdopen(_fd, "w") as _f:
+    json.dump(d, _f, indent=2)
+    _f.write("\n")
+_os.replace(_tmp, "$SESSION_JSON")
+PY
+  record_telemetry_event "halt" '{"reason":"AWAITING_DISK","detected_at_step":"preflight"}'
+  echo ""
+  echo "Free disk space (or: ./scripts/automation/tmp-doctor.sh --aggressive), then resume:"
+  echo "  ./scripts/automation/run-goal.sh --resume --session-id $SESSION_ID"
+  echo "════════════════════════════════════════════════════════════════════"
+  exit 0
+}
+
 # ── Intent checkpoint review packet (NEED-7) ──────────────────────────────
 # Assembles runs/goal-session-<sid>/intent-review.md DETERMINISTICALLY — pure
 # read/format of existing artifacts, no model dispatch. Every section fails
@@ -983,7 +1018,7 @@ if $( [[ "$AUTO_RELEASE" == "true" ]] && echo "True" || echo "False" ):
 d["push_per_iter"] = $( [[ "$PUSH_PER_ITER" == "true" ]] && echo "True" || echo "False" )
 d["push_branch"] = "$PUSH_BRANCH"
 d["agent_backend"] = "$AGENT_BACKEND"
-if "$RUN_MODE" == "resume" and d.get("status") in ("REGRESSION_HALT", "AWAITING_BLUEPRINT_APPROVAL", "AWAITING_PUMP", "AWAITING_INTENT_REVIEW"):
+if "$RUN_MODE" == "resume" and d.get("status") in ("REGRESSION_HALT", "AWAITING_BLUEPRINT_APPROVAL", "AWAITING_PUMP", "AWAITING_INTENT_REVIEW", "AWAITING_GITHUB_AUTH", "AWAITING_DISK"):
   d["status"] = "in_progress"
 import os as _os, tempfile as _tf
 _fd, _tmp = _tf.mkstemp(dir=_os.path.dirname("$SESSION_JSON") or ".", suffix=".sjtmp")
@@ -1179,8 +1214,8 @@ write_session_summary() {
   # Ctrl-C (ABORTED), the group's own agent dispatches cannot succeed — reap it
   # immediately instead of waiting out its bounded join.
   case "$final_verdict" in
-    AWAITING_PUMP|ABORTED) _join_showcase_tail --kill ;;
-    *)                     _join_showcase_tail ;;
+    AWAITING_PUMP|ABORTED|AWAITING_DISK) _join_showcase_tail --kill ;;
+    *)                                   _join_showcase_tail ;;
   esac
   local now_epoch=$(date +%s)
   local wall_time=$(( now_epoch - SESSION_START_EPOCH ))
@@ -1314,6 +1349,10 @@ trap on_abort INT TERM
 chain_tmp_init "goal-${SESSION_ID}"
 chain_tmp_janitor
 
+# Disk-space preflight (REL-13): sweep aggressively under pressure; pause
+# (AWAITING_DISK) only when the tmp root's filesystem is still critically low.
+preflight_disk_space
+
 # Verify we can push to GitHub before the loop starts (once; fresh + resume).
 # Fails fast / pauses here rather than stalling on a credential prompt mid-run.
 preflight_github_access
@@ -1332,6 +1371,17 @@ while true; do
     echo "[run-goal] STALLED — last $STALL_WINDOW iterations made no journey progress."
     record_telemetry_event "halt" '{"reason":"STALLED","detected_at_step":"pre_decomposer"}'
     write_session_summary "STALLED" "$CURRENT_ITER"
+    exit 0
+  fi
+
+  # 1c. Disk guard (REL-13) — top of the loop, never mid-iteration (blueprint-
+  # gate convention): sweeps aggressively under pressure and pauses only when
+  # the tmp root's filesystem is still under the hard floor afterwards.
+  if ! chain_tmp_disk_guard --enforce; then
+    echo "[run-goal] AWAITING_DISK — free space under the hard floor after aggressive cleanup."
+    echo "[run-goal]   Free space (or run ./scripts/automation/tmp-doctor.sh --aggressive), then: /goal-resume $SESSION_ID"
+    record_telemetry_event "halt" '{"reason":"AWAITING_DISK","detected_at_step":"pre_decomposer"}'
+    write_session_summary "AWAITING_DISK" "$CURRENT_ITER"
     exit 0
   fi
 

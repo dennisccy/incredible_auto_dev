@@ -142,6 +142,13 @@ else
   _fail "self-test: install-git-hooks.sh (run: bash scripts/automation/install-git-hooks.sh --self-test)"
 fi
 
+# Install-gate evidence loop (SEC-6): decisions-log → allowlist suggestions.
+if bash scripts/automation/suggest-allowlist.sh --self-test >/dev/null 2>&1; then
+  _pass "self-test: suggest-allowlist.sh"
+else
+  _fail "self-test: suggest-allowlist.sh (run: bash scripts/automation/suggest-allowlist.sh --self-test)"
+fi
+
 # Goal-mode deterministic gates (verdict cross-checks, diff scan/bounding).
 _run_self_test scripts/automation/lib/goal_gate.py self-test
 _run_self_test scripts/automation/lib/goal_lint.py self-test
@@ -190,6 +197,19 @@ if bash .claude/hooks/guard-dangerous-commands.sh "cd /x && rm -rf /etc" >/dev/n
   _fail "hook: guard-dangerous-commands FAILED to block chained 'rm -rf /etc'"
 else
   _pass "hook: guard-dangerous-commands blocks chained 'rm -rf /etc'"
+fi
+# SEC-6 regression pair: the control-flow allow entries (for/do/...) put
+# destructive commands mid-segment — the keyword-wrapped regex must catch them
+# while keyword-wrapped /tmp cleanup stays permitted.
+if bash .claude/hooks/guard-dangerous-commands.sh "for i in 1; do rm -rf /etc; done" >/dev/null 2>&1; then
+  _fail "hook: guard-dangerous-commands FAILED to block loop-wrapped 'rm -rf /etc'"
+else
+  _pass "hook: guard-dangerous-commands blocks loop-wrapped 'rm -rf /etc'"
+fi
+if bash .claude/hooks/guard-dangerous-commands.sh "for d in x; do rm -rf /tmp/iad.stale.1; done" >/dev/null 2>&1; then
+  _pass "hook: guard-dangerous-commands allows loop-wrapped /tmp cleanup"
+else
+  _fail "hook: guard-dangerous-commands wrongly blocks loop-wrapped /tmp cleanup"
 fi
 _lint_tmp=$(mktemp /tmp/eval-lint-XXXX.py); echo "x = 1" > "$_lint_tmp"
 if bash .claude/hooks/post-edit-lint.sh "$_lint_tmp" >/dev/null 2>&1; then

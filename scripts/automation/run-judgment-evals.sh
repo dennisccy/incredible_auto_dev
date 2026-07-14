@@ -462,7 +462,10 @@ for entry in "${CASES[@]}"; do
   ITER_NAME="goal-${SESSION_ID}-iter-${CURRENT_ITER}"   # run-goal.sh convention
   EXPECTED="$(head -n1 "$case_dir/expected.txt" | tr -d '[:space:]')"
 
-  SANDBOX="$(mktemp -d "${TMPDIR:-/tmp}/judgment-${judge}-${cname}-XXXXXX")"
+  JTMP_ROOT="${CHAIN_TMP_ROOT:-${TMPDIR:-$HOME/.cache/iad}}"
+  mkdir -p "$JTMP_ROOT"
+  SANDBOX="$(mktemp -d "$JTMP_ROOT/judgment-${judge}-${cname}-XXXXXX")"
+  echo "$$" > "$SANDBOX/.owner-pid"
   cp -a "$case_dir/tree/." "$SANDBOX/"
   for asset in CLAUDE.md .claude scripts config agents; do
     [[ -e "$REPO_ROOT/$asset" ]] && ln -s "$REPO_ROOT/$asset" "$SANDBOX/$asset"
