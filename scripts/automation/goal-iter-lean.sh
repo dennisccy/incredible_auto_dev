@@ -163,7 +163,15 @@ trap 'cleanup_iter_servers; chain_tmp_cleanup' EXIT
 
 # Journey sets come from the spec (needed by the fork guard below AND by the
 # resume-skip check and the lanes inside the section). First match wins.
-_spec_journeys() { grep -iE "$1" "$SPEC" 2>/dev/null | head -1 | grep -oE 'J-[0-9]+' | sort -u | tr '\n' ' '; }
+# The `|| true` is load-bearing: a journey-less line ("Required-still-passing
+# journeys: none — ..." — every iteration-0 baseline spec) makes the inner grep
+# exit 1, and this script runs under set -e (line 34) PLUS pipefail inherited
+# from sourcing lib/telemetry.sh — without the guard the bare assignment below
+# kills the whole lean lane SILENTLY before the developer step (and, at the
+# pre-SPEED-2 position of these lines, killed browser-qa + coherence after
+# review: both 20260710/20260712 benchmark iter-0s died exactly there).
+# Empty is a legitimate parse result; it must never be an exit.
+_spec_journeys() { grep -iE "$1" "$SPEC" 2>/dev/null | head -1 | grep -oE 'J-[0-9]+' | sort -u | tr '\n' ' ' || true; }
 TARGET_JOURNEYS="$(_spec_journeys 'Target journeys:')"
 REQUIRED_JOURNEYS="$(_spec_journeys 'Required-still-passing')"
 _bq_sig="${TARGET_JOURNEYS}|${REQUIRED_JOURNEYS}"
@@ -673,7 +681,7 @@ else
   _llm_set="$TARGET_JOURNEYS $REQUIRED_JOURNEYS"       # replay off → LLM covers everything (prior behaviour)
   _llm_out="$UI_TEST_RESULTS"
 fi
-LLM_JOURNEYS="$(echo "$_llm_set" | tr ' ' '\n' | grep -E '^J-[0-9]+$' | sort -u | tr '\n' ' ')"
+LLM_JOURNEYS="$(echo "$_llm_set" | tr ' ' '\n' | grep -E '^J-[0-9]+$' | sort -u | tr '\n' ' ' || true)"   # same pipefail guard as _spec_journeys: an all-replay iteration has an empty LLM set
 _llm_csv="$(echo "$LLM_JOURNEYS" | tr ' ' ',' | sed 's/^,*//;s/,*$//')"
 
 _bqa_rc=0
@@ -719,7 +727,7 @@ fi
 # the replay lane keeps growing (browser-qa LLM time decays iteration over
 # iteration). A gap is loud but non-gating — those journeys simply return to
 # the LLM lane next iteration.
-_pass_j="$(grep -E '^\| UT-J-[0-9]+ ' "$UI_TEST_RESULTS" 2>/dev/null | grep -F '| PASS |' | grep -oE 'J-[0-9]+' | sort -u | tr '\n' ' ')"
+_pass_j="$(grep -E '^\| UT-J-[0-9]+ ' "$UI_TEST_RESULTS" 2>/dev/null | grep -F '| PASS |' | grep -oE 'J-[0-9]+' | sort -u | tr '\n' ' ' || true)"   # same pipefail guard as _spec_journeys: zero PASS rows is a legitimate result ("non-gating" must include the parse)
 _n_pass=0; _missing_golden=""
 for _j in $_pass_j; do
   _n_pass=$((_n_pass + 1))

@@ -226,3 +226,26 @@ Entry format contract (grep-able; pinned by
   6ba59532aded9bbe87978d013046339535310d9942aead424318a1ceef7c3580 verified match)
   from the kept scratch to benchmarks/results/20260714-004257-b89a4d506f5e.retro.md.
   Kept scratch: /tmp/bench-bench-20260713-2334.xLVVzP
+- correction 2026-07-14 (to the REGRESSION paragraph above; discovered while scoping
+  the fix): the journey-parsing death is NOT SPEED-2-introduced — `_spec_journeys` +
+  both assignments exist at the BASELINE sha too (5e878130
+  goal-iter-lean.sh:307-309, introduced by 633059a, deterministic-replay), positioned
+  MID-SECTION (after dev+review, before browser-qa). SPEED-2 (24af735) RELOCATED the
+  parsing before the developer step, enlarging the blast radius from "browser-qa +
+  coherence lanes die" to "entire lean lane dies". Proof from the baseline kept
+  scratch: its iter-0 traces show developer (0002) + reviewer (0003) then NO
+  browser-qa/coherence dispatch, iter-0 verdict ESCALATE next_depth=full, no
+  coherence.md in iter-0/ — the same silent death on the same journey-less
+  "Required-still-passing: none" line, one pipeline stage later. CONSEQUENCE FOR THE
+  COMPARISON ABOVE: baseline and run A compositions differ ONLY by baseline's iter-0
+  bootstrap developer ($2.42/319s recorded) + reviewer ($0.89/198s recorded) — both
+  runs lost their iter-0 browser lane and ESCALATEd identically. Composition-
+  normalized (run A cost + baseline's iter-0 dev+review ≈ $14.98 vs $15.58), cost is
+  ≈ FLAT (−3.9%) exactly as the hypothesis predicted; wall remains lower
+  (4099+~517=~4616s vs 5833s, −21%) but within plausible evaluator/browser variance
+  (e.g. evaluator 1037s vs 942s, qa 216s vs 876s swings). The "SPEED-2/3 knob-off
+  inert" attribution claim stays falsified (the relocation IS a knob-off behavior
+  change), but the delta it injected is the small dev+review skip, not an unknown.
+  Both benchmark iter-0s silently losing their browser lane ALSO means: neither run
+  ever exercised a live lean browser-qa section — the SPEED-2/3 fork code has still
+  never run against a real iteration, reinforcing the run-B implication above.

@@ -37,6 +37,15 @@
 #      re-raises the pause in the parent (exit 70) and the sandbox tree state
 #      (file list + step markers) is IDENTICAL to the sequential rc-70 pause
 #      tree; a follow-up run resumes: developer skips, browser-qa re-runs.
+#   I. journey-less spec lines (every iteration-0 baseline spec says
+#      "Required-still-passing journeys: none — ...") → the lean lane must
+#      SURVIVE the journey-set parse and dispatch developer→reviewer→browser-qa.
+#      Regression pin for the silent set -e + inherited-pipefail death that
+#      killed BOTH benchmark iter-0 lean lanes (experiments.md POST
+#      bench-20260713-2334): _spec_journeys' inner `grep -oE 'J-[0-9]+'` exits
+#      1 on a journey-less line and, unguarded, the bare top-level assignment
+#      kills the whole script before the developer step (pre-SPEED-2 position:
+#      after review, killing browser-qa + coherence instead).
 #
 # No API calls; a few seconds per scenario.
 
@@ -635,6 +644,67 @@ grep -q '^\*\*Browser QA Verdict:\*\* PASS' "$UI_TEST_RESULTS" 2>/dev/null \
   && assert "H: resumed browser-qa produced a real PASS verdict" "pass" \
   || assert "H: resumed browser-qa produced a real PASS verdict" "fail"
 unset STUB_BQA_RC 2>/dev/null || true
+
+# ══ Scenario I: journey-less spec lines — the lean lane must survive the parse ═
+# I1 uses the exact decomposer baseline shape ("none — ..." in
+# Required-still-passing); I2 hardens further with BOTH lines journey-less.
+# Knob off: this is plain sequential mode — the parse runs top-level either way.
+make_sandbox I
+new_capture I1
+start_dummies
+unset CHAIN_LEAN_PARALLEL_BROWSER_QA 2>/dev/null || true
+unset STUB_REPLAY_VERDICT STUB_REPLAY_SLEEP STUB_DEV_FIX_RC 2>/dev/null || true
+unset STUB_REVIEW_WAIT_FOR STUB_REVIEW_WITNESS 2>/dev/null || true
+unset STUB_BQA_STARTED_STAMP STUB_BQA_SLEEP STUB_BQA_RC 2>/dev/null || true
+export STUB_REVIEW_VERDICT=PASS
+cat > "$SBX/docs/phases/goal-pbtest-iter-1.md" <<'EOF'
+# Iteration spec
+## Goal Mode Metadata
+- **Mode:** baseline
+- **Depth:** lean
+- **Target journeys:** J-01, J-02
+- **Required-still-passing journeys:** none — no journey has been verified passing yet (iteration 0).
+## IN SCOPE
+- verify-only baseline (journey-less-parse regression pin)
+EOF
+rc=0; run_lean "$WORK/lean-I1.log" || rc=$?
+[[ "$rc" -eq 0 ]] && assert "I1: journey-less Required-still-passing spec exits 0" "pass" \
+  || { assert "I1: journey-less Required-still-passing spec exits 0 (rc=$rc)" "fail"; sed -n '1,40p' "$WORK/lean-I1.log"; }
+[[ "$(tr '\n' ' ' < "$CANARY")" == "developer reviewer browser-qa-agent " ]] \
+  && assert "I1: lean lane survived the parse (developer→reviewer→browser-qa dispatched)" "pass" \
+  || assert "I1: lean lane survived the parse (got: '$(tr '\n' ' ' < "$CANARY")')" "fail"
+_i_prompt="$(ls "$PROMPTS_DIR"/prompt-*-browser-qa-agent.txt 2>/dev/null | head -n1)"
+if [[ -n "$_i_prompt" ]] && grep -q 'test EXACTLY these journeys this run: J-01,J-02' "$_i_prompt"; then
+  assert "I1: LLM lane still targets the parsed Target journeys (J-01,J-02)" "pass"
+else
+  assert "I1: LLM lane still targets the parsed Target journeys (got: $(grep -h 'test EXACTLY' "$_i_prompt" 2>/dev/null))" "fail"
+fi
+# The field signature of the death was iter_dispatch WITHOUT iter_config —
+# assert the parse-survival marker directly.
+jq -e 'select(.event=="iter_config")' "$GOAL_SESSION_DIR/telemetry.jsonl" >/dev/null 2>&1 \
+  && assert "I1: iter_config telemetry event recorded (script got past the parse)" "pass" \
+  || assert "I1: iter_config telemetry event recorded (script got past the parse)" "fail"
+
+# I2: BOTH journey lines journey-less — parse yields empty sets, lane still runs.
+new_capture I2
+start_dummies
+cat > "$SBX/docs/phases/goal-pbtest-iter-1.md" <<'EOF'
+# Iteration spec
+## Goal Mode Metadata
+- **Mode:** baseline
+- **Depth:** lean
+- **Target journeys:** none yet — journeys are defined but this spec targets scaffold verification only
+- **Required-still-passing journeys:** none — no journey has been verified passing yet (iteration 0).
+## IN SCOPE
+- verify-only baseline (both-lines journey-less regression pin)
+EOF
+step_dir="$GOAL_SESSION_DIR/iter-1"; rm -rf "$step_dir/.steps" 2>/dev/null || true
+rc=0; run_lean "$WORK/lean-I2.log" || rc=$?
+[[ "$rc" -eq 0 ]] && assert "I2: both-lines journey-less spec exits 0" "pass" \
+  || { assert "I2: both-lines journey-less spec exits 0 (rc=$rc)" "fail"; sed -n '1,40p' "$WORK/lean-I2.log"; }
+[[ "$(tr '\n' ' ' < "$CANARY")" == "developer reviewer browser-qa-agent " ]] \
+  && assert "I2: lean lane survived an entirely journey-less parse" "pass" \
+  || assert "I2: lean lane survived an entirely journey-less parse (got: '$(tr '\n' ' ' < "$CANARY")')" "fail"
 
 echo ""
 echo "=== Results: $PASS passed, $FAIL failed ==="
