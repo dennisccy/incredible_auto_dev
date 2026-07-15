@@ -983,6 +983,12 @@ benchmark (or a real session's telemetry) before AND after (G8).
   (effort stays `max`). goal-evaluator/auditor/goal-proposer/reviewer unchanged at their
   tiers; D4 intact (goal-decomposer remains in `JUDGE_AGENTS`, so `CHAIN_AGENT_EFFORT`
   still refuses it; `agent_permissions.py` untouched by the flip). Evals 111/111 post-flip.
+- **REL-1 fixtures on the flipped branch (2026-07-15): 5/5 PASS** — goal-evaluator
+  judge resolved unchanged (claude-opus-4-8 @ max) and every verdict class landed
+  exact (GOAL_ACHIEVED/CONTINUE/REGRESSION/CONTINUE/REGRESSION, 244–316s/case, in
+  line with the 2026-07-09 baseline timings). Config-surface regression insurance
+  green; no revert trigger. (Runner does not instrument case cost by design;
+  pre-estimate $11.90 ±3x, durations match the in-band 07-09 run.)
 - **Change spec:** flip `model_tier` to `standard` on a branch; run EVO-3 benchmark +
   REL-1 judgment fixtures before/after; adopt only if spec quality (fixture pass +
   benchmark journeys/iteration) holds. Model-spend class → user approval first (G1).
