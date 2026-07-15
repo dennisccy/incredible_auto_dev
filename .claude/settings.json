@@ -350,7 +350,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/install-security-gate.sh\" \"$CLAUDE_TOOL_INPUT_COMMAND\""
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/install-security-gate.sh\" || true"
           }
         ]
       },
@@ -359,7 +359,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/guard-dangerous-commands.sh\" \"$CLAUDE_TOOL_INPUT_COMMAND\" 2>/dev/null || true"
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/guard-dangerous-commands.sh\" 2>/dev/null || true"
           }
         ]
       }

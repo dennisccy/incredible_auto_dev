@@ -23,12 +23,12 @@ Hooks are shell scripts triggered by Claude Code at specific lifecycle points. T
 ### guard-dangerous-commands.sh
 - **Trigger:** PreToolUse (Bash tool)
 - **Purpose:** Secondary safety layer for dangerous command patterns (rm -rf, dd, force-push main, credential reads). Primary protection is deny rules in `.claude/settings.json`.
-- **Behavior:** Exits non-zero if a dangerous pattern is detected, blocking the command.
+- **Behavior (SEC-7 two-mode):** argv mode (command as `$1` — test harness/Codex): GUARD lines on stderr + exit 1. Claude mode (PreToolUse JSON on stdin, `.tool_input.command`): emits `permissionDecision:"deny"` JSON on stdout with exit 0 — the settings wrapper is `|| true`, so the stdout JSON is the enforcement channel and the exit code carries no signal.
 
 ### install-security-gate.sh
 - **Trigger:** PreToolUse (Bash tool)
-- **Purpose:** Supply-chain security gate. Intercepts `pip install`, `npm install`, `git clone`, and `curl | bash` commands before execution.
-- **Behavior:** Checks against `config/install-security-policy.json`. Returns allow, review_required, or deny. Logs all decisions to `reports/security/install-decisions.jsonl`.
+- **Purpose:** Supply-chain security gate. Intercepts `pip install`, `npm install`, `git clone`, and real (unquoted) `curl | bash` commands before execution.
+- **Behavior (SEC-7 two-mode):** decisions come from `scripts/automation/lib/install-gate.py` + `config/install-security-policy.json`: allow / warn (registry packages, SEC-6 — proceed with a logged banner) / block / require_approval. argv mode: banners on stdout, block/require_approval exit 1. Claude mode (stdin JSON): block/require_approval → agent-visible `permissionDecision:"deny"` with remediation, exit 0; warn → banner on stderr only. All decisions log to `reports/security/install-decisions.jsonl`.
 - **Bypass:** Set `CHAIN_INSTALL_GATE_BYPASS=true` environment variable.
 
 ### post-edit-lint.sh

@@ -3,11 +3,48 @@
 # Primary protection is the deny rules in .claude/settings.json
 # This hook provides a redundant safety layer for critical patterns
 #
-# Note: called with || true in settings.json so hook errors never block normal work.
-# Deny rules in settings.json are what require user approval.
+# Two input/output modes (SEC-7):
+#   argv mode  — command as $1 (run-evals 2d, test harness, Codex): GUARD
+#     lines on stderr + exit 1 on match (the historical contract).
+#   stdin mode — the Claude Code PreToolUse protocol: JSON on stdin
+#     (.tool_input.command; $CLAUDE_TOOL_INPUT_COMMAND never existed). On
+#     match the hook emits permissionDecision "deny" JSON on stdout and exits
+#     0 — the settings wrapper is `|| true`, so the exit code carries no
+#     signal on Claude and the stdout JSON is the enforcement channel. This
+#     makes the guard genuinely enforcing on Claude for these catastrophic
+#     patterns. Fail-open on missing/unparseable input.
 
 CMD="${1:-}"
+INPUT_MODE="argv"
+if [ -z "$CMD" ] && [ ! -t 0 ]; then
+  _payload=$(cat 2>/dev/null || true)
+  if [ -n "$_payload" ]; then
+    if command -v jq >/dev/null 2>&1; then
+      CMD=$(printf '%s' "$_payload" | jq -r '.tool_input.command // empty' 2>/dev/null) || CMD=""
+    else
+      CMD=$(printf '%s' "$_payload" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("tool_input",{}).get("command") or "")' 2>/dev/null) || CMD=""
+    fi
+    if [ -n "$CMD" ]; then INPUT_MODE="stdin"; fi
+  fi
+fi
 [ -z "$CMD" ] && exit 0
+
+# On match: argv mode → GUARD stderr + exit 1; stdin mode → deny JSON on
+# stdout + exit 0 (Claude decision protocol).
+_deny() {
+  echo "GUARD: $1" >&2
+  echo "GUARD: command was: $CMD" >&2
+  if [ "$INPUT_MODE" = "stdin" ]; then
+    _reason="guard-dangerous-commands: $1. Command: $CMD. This pattern is categorically denied (secondary safety layer mirroring the settings deny list). Use a narrower, safer command instead."
+    if command -v jq >/dev/null 2>&1; then
+      jq -cn --arg r "$_reason" '{hookSpecificOutput:{hookEventName:"PreToolUse",permissionDecision:"deny",permissionDecisionReason:$r}}'
+    else
+      python3 -c 'import json,sys; print(json.dumps({"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":sys.argv[1]}}, separators=(",",":")))' "$_reason"
+    fi
+    exit 0
+  fi
+  exit 1
+}
 
 DANGEROUS_PATTERNS=(
   # Destructive recursive deletes — system and home paths.
@@ -75,9 +112,7 @@ DANGEROUS_PATTERNS=(
 
 for pattern in "${DANGEROUS_PATTERNS[@]}"; do
   if echo "$CMD" | grep -qF "$pattern"; then
-    echo "GUARD: dangerous pattern detected: '$pattern'" >&2
-    echo "GUARD: command was: $CMD" >&2
-    exit 1
+    _deny "dangerous pattern detected: '$pattern'"
   fi
 done
 
@@ -103,9 +138,7 @@ DANGEROUS_REGEXES=(
 
 for regex in "${DANGEROUS_REGEXES[@]}"; do
   if echo "$CMD" | grep -qP "$regex" 2>/dev/null; then
-    echo "GUARD: dangerous pattern detected (regex): '$regex'" >&2
-    echo "GUARD: command was: $CMD" >&2
-    exit 1
+    _deny "dangerous pattern detected (regex): '$regex'"
   fi
 done
 

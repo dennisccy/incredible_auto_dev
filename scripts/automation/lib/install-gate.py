@@ -562,7 +562,15 @@ def classify_and_evaluate(cmd, policy, repo_root):
 
     cmd_stripped = cmd.strip()
 
-    if re.search(r"(curl|wget)\s+.*\|\s*(bash|sh)\b", cmd_stripped, re.IGNORECASE):
+    # Quote-stripped view for the curl|shell test: a command that merely QUOTES
+    # a "curl … | bash" string (test fixtures, echo, commit messages) is not a
+    # remote-code-execution attempt — only an unquoted, executable pipe is.
+    # The pip/npm/git dispatch tests below don't need this: their evaluators
+    # re-anchor at the command start and skip quoted mentions on their own.
+    cmd_unquoted = re.sub(r"'[^']*'", "", cmd_stripped)
+    cmd_unquoted = re.sub(r'"[^"]*"', "", cmd_unquoted)
+
+    if re.search(r"(curl|wget)\s+.*\|\s*(bash|sh)\b", cmd_unquoted, re.IGNORECASE):
         return evaluate_curl_pipe(cmd_stripped, policy, repo_root)
 
     if re.search(

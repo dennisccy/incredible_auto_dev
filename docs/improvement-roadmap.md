@@ -1931,7 +1931,59 @@ territory).
   `settings.json.bak-sec6-rel13`. test-install-gate.sh rewritten: 16
   assertions incl. fixture-policy proofs (defaults stay require_approval;
   denylist beats warn; invalid knob fails closed). Sibling propagation
-  deliberately deferred — their engines keep the strict gate until re-synced.)*
+  deliberately deferred — their engines keep the strict gate until re-synced.
+  CORRECTION (2026-07-15, SEC-7 forensics): the "confirmed in transcripts"
+  install-gate hard-blocks were a misattribution — on the Claude backend the
+  hook had been inert end-to-end (settings passed the nonexistent
+  `$CLAUDE_TOOL_INPUT_COMMAND`, so `$1` was always empty; and its exit 1 is a
+  NON-blocking PreToolUse error anyway). Zero live fires exist in any
+  transcript; the matched strings were source-quoting. The live interrupters
+  were the permission evaluator plus the user-level curl guard. SEC-6's policy
+  work stands (it defines what the gate enforces); SEC-7 made the enforcement
+  real.)*
+
+### SEC-7 · Hook protocol fix: the Bash guards never received commands on Claude (+ curl-guard v2)
+- **Priority:** P0 · **Effort:** S · **Risk:** LOW · **Status:** DONE
+  *(implemented 2026-07-15, triggered by the user seeing a curl-guard "ask"
+  interrupt mid-session. Forensics: (a) the ONLY "piped into a shell" fire in
+  the corpus was a QUOTED fixture string inside a SEC-6 smoke-test for-loop —
+  the user-level `~/.claude/hooks/guard-curl-exfil.sh` grepped the whole
+  command line, needed no actual curl for its pipe branch (`cat x | bash`
+  matched) and asked on any `-d`-ish flag with an unrecognized target
+  (`docker run -d`, `curl -d "$API_URL"` → 9 asks in the tapeology/trendora
+  goal sessions on 2026-07-14 alone); the settings `if: Bash(curl *)` gate
+  fails open on unparseable commands (documented), so curl-less commands
+  reached it too. (b) Docs-verified: hook input is JSON on stdin
+  (`.tool_input.command`); `$CLAUDE_TOOL_INPUT_COMMAND` does not exist; exit 1
+  is NON-blocking; the decision channel is stdout
+  `hookSpecificOutput.permissionDecision` (deny = blocked, reason shown to the
+  MODEL — no user prompt) — so BOTH repo Bash guards were inert on Claude
+  (empty `$1` → instant exit 0; zero live fires in any transcript). Fixes:
+  (1) user-level curl-guard v2 (machine-local, backup at
+  `guard-curl-exfil.sh.bak-sec7`): quote-strips before matching, self-gates on
+  a command-position curl invocation (anchored ERE with VAR=/sudo/env/timeout/
+  do|then|else wrappers), scopes pipe/data patterns to the curl pipeline
+  segment, passes variable-URL and RFC1918/localhost upload targets, and
+  DENIES (never asks — user decision) real pipe-to-shell + literal-external
+  uploads with an agent-readable reason; deliberate override
+  `CURL_GUARD_ALLOW=1` prefix (logged); 12-case stdin matrix green incl. the
+  verbatim offending fixture command. (2) Repo hooks two-mode protocol: argv
+  (`$1`, byte-identical legacy contract for run-evals/Codex: banners + exit 1)
+  vs stdin (Claude: block/require_approval → deny JSON exit 0 with remediation
+  as the reason; warn → stderr banner, stdout reserved for JSON; fail-open on
+  parse failure — secondary layer, availability beats strictness). Renderer
+  templates drop the fake env var (`… install-security-gate.sh" || true`,
+  guard keeps `2>/dev/null || true`; stdout JSON survives `|| true`);
+  PostToolUse hooks share the argv bug via `$CLAUDE_TOOL_INPUT_FILE_PATH` —
+  advisory-only, follow-up FIXME in `_hooks_block_for_claude`. (3) Same
+  quoted-substring hardening in the gate itself: `install-gate.py` dispatcher
+  tests curl|shell against a quote-stripped view (a quoted "curl … | bash"
+  mention — fixture, echo, commit message — passes; live-proven when the
+  freshly-rendered hook denied THIS session's own quoted-fixture verification
+  command), and the hook fast-path mirrors it. Regression: run-evals 105→111
+  (6 stdin-protocol smokes: guard deny/silent, gate deny/warn-no-JSON/silent/
+  quoted-mention-pass); test-install-gate.sh 16→17 (quoted-mention case).
+  Enforcement is now real on Claude: first-ever live deny observed in-session.)*
 
 ---
 
