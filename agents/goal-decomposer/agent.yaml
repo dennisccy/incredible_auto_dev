@@ -3,13 +3,13 @@ description: 'Goal-mode iteration planner. Reads docs/goal.md (with Must-have us
   the journey-history, and codebase state, then writes the next iteration spec to docs/phases/goal-<sid>-iter-<N>.md.
   Picks lean or full depth. Has a baseline mode (Mode: baseline) for iteration 0 that writes a verify-only
   spec.'
-model_tier: strong
+model_tier: standard
 tools_allowed:
 - Read
 - Glob
 - Grep
 - Bash
 - Write
-version: 1.3.0
-last_updated: '2026-07-07'
+version: 2.0.0
+last_updated: '2026-07-15'
 body: body.md

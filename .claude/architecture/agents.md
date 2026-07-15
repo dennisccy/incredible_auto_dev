@@ -123,7 +123,7 @@ These agents are invoked only by the goal-mode pipeline (`run-goal.sh` and `goal
 
 ### goal-decomposer
 - **File:** `.claude/agents/goal-decomposer.md`
-- **Model:** strong (claude-opus-4-8)
+- **Model:** standard (claude-sonnet-5) — TOKEN-2 tier experiment 2026-07-15; effort stays max and the D4 judge-effort guard still covers it
 - **Pipeline step:** Goal-mode iteration step 1 (planning)
 - **Inputs:** CLAUDE.md, project-template.md, `docs/goal.md` (especially Must-have user journeys + Anti-goals), `runs/goal-session-<sid>/state/journey-history.json`, last 3 entries of `runs/goal-session-<sid>/state/evaluator-log.md`, prior iteration's `eval.md`, codebase state via Glob/Grep/Read
 - **Output:** `docs/phases/goal-<sid>-iter-<N>.md` — a phase-spec-shaped iter spec with Goal Mode Metadata (Mode: baseline|next, Depth: lean|full, Target journeys, Required-still-passing journeys, Anti-goal reminders)

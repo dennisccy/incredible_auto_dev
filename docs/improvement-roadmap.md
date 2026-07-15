@@ -967,14 +967,22 @@ benchmark (or a real session's telemetry) before AND after (G8).
 - **Trigger:** telemetry shows template reads are a measurable share of input tokens.
 
 ### TOKEN-2 · Tier experiment: goal-decomposer strong→standard
-- **Priority:** P1 · **Effort:** S · **Risk:** MED · **Status:** TODO (unblocked
-  2026-07-14 — EVO-3 + REL-1 DONE; deferred by user ordering) *(absorbed: README
+- **Priority:** P1 · **Effort:** S · **Risk:** MED · **Status:** IN-PROGRESS
+  (experiment launched 2026-07-15 on branch `experiment/token-2-decomposer-standard`,
+  user-approved G1 spend session; the 2026-07-14 deferred-by-user-ordering note is
+  closed — blockers EVO-3 + REL-1 were already DONE) *(absorbed: README
   Token-Opt Tier-2; the orchestrator half is already DONE — see §17 ledger)*
 - **Problem:** the decomposer runs on the strong tier every iteration; spec-writing may
   be within standard-tier reach now that it receives the goal slice + journey digest.
 - **Current state:** `agents/goal-decomposer/agent.yaml` `model_tier: strong`;
   goal-evaluator MUST stay strong (adversarial judgment — old README said the same);
   judge-effort guard (D4) stays regardless of tier.
+- **Blast-radius proof (2026-07-15, on the experiment branch):**
+  `agent_permissions.py model/effort` across all 20 agents, before vs after the flip
+  + resync — exactly one row changed: goal-decomposer `claude-opus-4-8 → claude-sonnet-5`
+  (effort stays `max`). goal-evaluator/auditor/goal-proposer/reviewer unchanged at their
+  tiers; D4 intact (goal-decomposer remains in `JUDGE_AGENTS`, so `CHAIN_AGENT_EFFORT`
+  still refuses it; `agent_permissions.py` untouched by the flip). Evals 111/111 post-flip.
 - **Change spec:** flip `model_tier` to `standard` on a branch; run EVO-3 benchmark +
   REL-1 judgment fixtures before/after; adopt only if spec quality (fixture pass +
   benchmark journeys/iteration) holds. Model-spend class → user approval first (G1).

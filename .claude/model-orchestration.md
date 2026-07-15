@@ -21,8 +21,8 @@ from it). Update this table in the same commit that changes the tier map.
 
 | Tier | Claude model | Used for | Why |
 |------|--------------|----------|-----|
-| strong | `claude-opus-4-8` | goal-evaluator, goal-decomposer, auditor, goal-proposer, two-key confirms, escalated retries | Judgment: verdicts, scoping, skeptical audit. Mistakes here mis-certify or mis-direct whole sessions |
-| standard | `claude-sonnet-5` | developer, orchestrator, product-manager, reviewer, browser-qa, coherence-auditor, all showcase agents | Building and structured review. High volume — this tier dominates token spend |
+| strong | `claude-opus-4-8` | goal-evaluator, auditor, goal-proposer, two-key confirms, escalated retries | Judgment: verdicts, scoping, skeptical audit. Mistakes here mis-certify or mis-direct whole sessions |
+| standard | `claude-sonnet-5` | goal-decomposer (TOKEN-2 experiment 2026-07-15; effort stays max, D4 guard still covers it), developer, orchestrator, product-manager, reviewer, browser-qa, coherence-auditor, all showcase agents | Building and structured review. High volume — this tier dominates token spend |
 | light | `claude-haiku-4-5` | qa (procedural mode), release-manager | Fully proceduralized tasks with exact steps and output formats |
 
 Effort: headless dispatches get `--effort` from `scripts/automation/lib/agent_permissions.py`
