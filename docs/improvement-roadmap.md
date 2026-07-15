@@ -667,6 +667,26 @@ benchmark (or a real session's telemetry) before AND after (G8).
   RESOLVABLE: one future knob-on run vs C settles it. Fresh G9 approval required;
   one variable (the knob) only. Compare against C, not A′/B — run C is also the
   TOKEN-8 comparability baseline for cost reads.
+  *Flip decision FINAL (2026-07-15, user — §9 run D `bench-20260715-0924` @
+  fd378ca276a9, knob=full, lean-depth control C):* default stays **off**; the
+  flip question is CLOSED as DONE-knob-off — the default is a recorded product
+  decision, not pending work. Run D's fork mechanics were 100% green (knob
+  honored ×2 iterations with no demotion, spawn + clean joins, tripwire 0,
+  wasted dispatches 0, orphans 0) and it delivered the first LIVE
+  realized-overlap witness on a lean-capable lane: ~392s of a ~399s cap —
+  review fully covered by the forked browser lane in BOTH iterations. But its
+  journeys predicate REFUTED 0/3 for an environmental reason orthogonal to the
+  knob: Chrome MCP DevTools-port contention from ~50 foreign Chrome processes
+  on the shared host (diagnosed independently in both iterations, corroborated
+  live post-run; the browser lane SKIPPED honestly and the evaluator STALLED
+  correctly at the 2nd no-evidence iteration), so wall (−34.2%) and cost
+  (−23.5%) vs C are composition-broken and ungraded. Per the pre-committed
+  decision matrix: quality strike → stay off, no further fixture runs — the
+  fixture has failed to price the flip three times (A′/B pre-registered null,
+  D confounded); any future flip ask requires REAL-SESSION telemetry with
+  meaningful overlap windows and its own G9/G4 approval. Tripwire stays armed.
+  Evidence: ledger PRE/POST bench-20260715-0924,
+  benchmarks/results/20260715-101135-fd378ca276a9.json.
   *Implementation note (2026-07-12):* knob `CHAIN_LEAN_PARALLEL_BROWSER_QA=off|replay|full`,
   default `off` (`full` warns "full is SPEED-3" and behaves as `replay`; documented in the
   `.claude/model-orchestration.md` knob table). Fork unit =
@@ -797,6 +817,24 @@ benchmark (or a real session's telemetry) before AND after (G8).
   flip re-measurement at lean depth is now RESOLVABLE as one future knob-on run
   vs C (fresh G9 approval; one variable only; compare against C, not A′/B — run
   C is also the TOKEN-8 comparability baseline).
+  *Flip decision FINAL (2026-07-15, user — §9 run D `bench-20260715-0924` @
+  fd378ca276a9):* default stays **off**; CLOSED as DONE-knob-off (recorded
+  product decision). Run D was stage-full's second live run and its first on a
+  lean-capable control: every mechanical observable green (iter_config
+  value=full ×2, fork spawn + clean join ×2, tripwire 0, wasted dispatches 0,
+  orphans 0) and the review ∥ browser-qa overlap REALIZED at ~98% of its
+  theoretical cap (iter-0: 207s of a 211s review; iter-1: 185s of 188s) —
+  first live proof the full-section fork actually buys its min(review,
+  browser-qa) saving. Journeys REFUTED 0/3 on host Chrome-MCP DevTools-port
+  contention (~50 foreign Chrome processes; orthogonal to the knob; the
+  SKIP → STALLED honesty path worked as designed), leaving wall/cost vs C
+  ungraded. Matrix: quality strike → stay off; the flip is parked on
+  real-session telemetry (the fixture failed to price it 3×). Expected saving
+  on real sessions remains ≈ min(review, browser-qa) — the mechanism is
+  live-proven; only its price on real workloads is unknown. Evidence: ledger
+  PRE/POST bench-20260715-0924,
+  benchmarks/results/20260715-101135-fd378ca276a9.json + SPEED-2's note.
+  *Implementation note (2026-07-13):* backend gate at knob parse: `full` is honored only
   when `CHAIN_AGENT_BACKEND != interactive`; interactive demotes to `replay` with one
   logged warning and `iter_config` reason `interactive-backend` (`goal-iter-lean.sh:540`,
   replacing SPEED-2's placeholder warning). Fork unit = the WHOLE
@@ -1158,6 +1196,11 @@ benchmark (or a real session's telemetry) before AND after (G8).
   run C iter-0 ($0.247) — A′'s same-class demo dispatch left NO row. REMAINING TO
   DONE: one full-depth iteration in any approved run/session (e.g. --max-iter 3,
   or the SPEED-2/3 flip control) → name the developer/reviewer/auditor rows.
+  *Run D check (2026-07-15, §9 `bench-20260715-0924` @ fd378ca276a9):* no
+  full-depth iteration occurred (both iterations dispatched lean; iter-1 was a
+  one-journey lean build that STALLED on host browser contention) — TOKEN-8
+  live DoD still pending; status unchanged. The standing resolution path (any
+  approved full-depth iteration) remains.
 
 ---
 

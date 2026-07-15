@@ -519,3 +519,109 @@ Entry format contract (grep-able; pinned by
 - retro report preserved 2026-07-14: copied verbatim (sha256
   325923a3f0789faa8a6c69d73d35d758330e6e8dbadf6173701e6fe60a772d9d verified
   match) to benchmarks/results/20260714-165058-39e2a79de68a.retro.md.
+
+---
+
+## PRE bench-20260715-0924 · 2026-07-15T09:24:28Z
+- framework-sha: fd378ca276a932e3509b1120bffd7da4d00bf25b (dirty: false)
+- fixture: todo-app · max-iter 2
+- hypothesis: Run D @ fd378ca276a9, knob=full, ONE variable vs run C bench-20260714-1539: fork spawns at iter-0 (iter_config value=full, spawn logged), review ∥ browser-qa overlap visible in timings; journeys HOLD 3/3; cost ≈ flat vs C (same visibility baseline); wall DOWN by ~100s (iter-0 overlap cap, review 100s fully covered by the 237s browser section) plus ~242s more if iter-1 stays lean (its review cap) — sensitivity pre-registered: prior runs show ±10%-class wall noise (±430s on C) and GOAL_ACHIEVED/CONTINUE-at-cap variance, so a sub-noise delta = "still fixture-bound; flip waits for real-session telemetry", while wall INCREASE beyond noise, journey drop, tripwire fire, or orphan process = genuine strike against flipping; final status NOT predicated
+- metrics + prediction (mechanical --predict): journeys_passing_after>=3
+- attribution 2026-07-15 (appended at launch, engine running; run "D" of the
+  user-approved SPEED-2/3 flip re-measurement, G9 approval this session): ONE
+  VARIABLE AT THE KNOB LEVEL vs run C bench-20260714-1539. Sha context:
+  fd378ca276a9 = C's engine sha 39e2a79de68a + 31ba8fb (run C results/docs) +
+  d0f9896 (REL-13 tmp lifecycle + SEC-6 allowlist) + fd378ca (SEC-7 hook fix +
+  curl-guard v2). UNLIKE B-vs-A′, the engine-visible diff is NOT empty —
+  characterized hunk-by-hunk at launch: goal-iter-lean.sh +6 is an
+  owner-guarded standalone-only janitor block (CHAIN_TMPDIR_OWNER_PID==$$ —
+  false under run-goal.sh, so a NO-OP in this run); run-goal.sh +56 is the
+  REL-13 disk preflight/AWAITING_DISK pause (acts only under disk pressure);
+  run-benchmark.sh +9 relocates the scratch root (this run: ~/.cache/iad/shared,
+  off quota'd /tmp); core.md +10 is dormant disk-error recovery guidance
+  (activates only on ENOSPC/EDQUOT); settings.json/SEC-6+SEC-7 widen the Bash
+  allowlist + fix guard hooks (direction: FEWER permission denials in dispatched
+  agents, no dispatch-structure change). No change to iteration structure,
+  section order, agent bodies, or model routing. Launch env verified: zero
+  ambient CHAIN_ vars; exactly CHAIN_LEAN_PARALLEL_BROWSER_QA=full exported —
+  expected chain_env = C's seven vars + the knob. Comparison target: C
+  (GOAL_ACHIEVED, journeys 3/3, wall 4,297s, cost $20.84; BOTH iterations lean,
+  knob off; the TOKEN-8 cost-visibility baseline). Decisive observables,
+  mechanical, pre-registered: (1) iter_config {value:full, requested:full} at
+  iter-0 — headless, no demotion; (2) the full-section fork spawn line after
+  the developer settles; (3) review ∥ browser-qa OVERLAP VISIBLE IN TIMINGS
+  (browser-qa invocation_start BEFORE reviewer invocation_end) — the witness D
+  adds over B: C proved the lean lane executes journeys (REL-12 short-circuit,
+  LLM dispatch starts ~3s into the section), so the forked lane can genuinely
+  cover review's window for the first time; (4) journeys HOLD 3/3 (the
+  mechanical predicate); (5) tripwire trips 0; (6) zero orphan processes in the
+  kept scratch; (7) cost ≈ flat vs C. Wall sensitivity, computed FROM C's
+  telemetry at plan time: overlap cap = min(review 100s, browser 237s) = ~100s
+  at iter-0, plus min(review 242s, browser 888s) = ~242s IF iter-1 stays lean —
+  best case ~342s (−8.0%) vs a ±10%-class noise band (±430s on C's wall), so
+  the predicted saving is SUB-NOISE even best-case; per the pre-committed
+  decision matrix a sub-noise delta with quality held reads "second
+  fixture-bound null → stay off, close SPEED-2/3 as DONE-knob-off, flip waits
+  on real-session telemetry". iter-1 depth is the chain's own choice: if it
+  goes FULL, only iter-0 exercises the knob (pre-registered fixture limit) and
+  the TOKEN-8 live DoD resolves opportunistically (developer/reviewer/auditor
+  usage rows from the converted phase scripts); if lean, TOKEN-8 stays pending
+  — neither outcome is forced (G7). Ambient-load note, accepted by the user at
+  approval: two idle interactive goal sessions parked on this box (trendora
+  mcp-loop, tapeology tradable_wall; both pump-waiting, hours stale) — a
+  wake-up mid-run would add wall noise.
+
+## POST bench-20260715-0924 · 2026-07-15T10:11:35Z
+- results: benchmarks/results/20260715-101135-fd378ca276a9.json
+- headline: status=STALLED last_verdict=STALLED journeys=0/3 iters=2 engine_exit=0 wall=2827s cost=$15.952902
+- predicate: journeys_passing_after>=3 → false (journeys_passing_after=0)
+- verdict-vs-prediction: REFUTED
+- assessment 2026-07-15 (G7 STOP-AND-ASK FIRED — journeys 0/3 < 3; run graded,
+  disposition presented to the user, NO flip, NO further runs today):
+  FORK MECHANICS 100% GREEN, QUALITY STRIKE ENVIRONMENTAL. Every pre-registered
+  mechanical observable landed: iter_config {value:full, requested:full} in BOTH
+  iterations (headless honored, no demotion); the full-section fork spawn line
+  after the developer settled in both (engine.log:84,:312); the OVERLAP WITNESS
+  realized — iter-0 browser-qa invocation_start 09:32:33 preceded reviewer end
+  09:36:00 by 207s (review wall 211s), iter-1 09:56:55 vs 10:00:00 = 185s of a
+  188s review — the fork realized ~392s of its ~399s theoretical cap (98%),
+  first live proof of the review ∥ browser-qa mechanism on a lean-capable lane
+  (REL-12 short-circuit fired both iters, frontend HTTP 200; engine wall report
+  prints "overlap saved 3.5m"/"8.4m", the iter-1 figure also counting coherence
+  + showcase parallelism that C had too); joins consumed cleanly ("Consumed
+  forked full browser-qa results" ×2); attempt-1 review FAILs 0;
+  parallel_bqa_wasted_dispatch events 0; tripwire never tripped (no state
+  file); ZERO orphan processes in the kept scratch (pgrep clean; ports
+  5177/9224 free post-run). THE STRIKE — journeys 0/3, prediction REFUTED — is
+  ENVIRONMENTAL, not knob-attributable: in BOTH iterations the forked
+  browser-qa agent ran fine (570s/393s), confirmed the frontend healthy, then
+  Chrome's DevTools port (9224) never opened within the 15s window; the agents'
+  in-run diagnosis (both iterations, independently): ~50-53 foreign Chrome
+  processes on this shared host with debug ports 9222/9223 claimed by OTHER
+  sessions; stale profile lock ruled out (cleaned + retried), OOM ruled out,
+  CPU load ruled out; identical signature reproduced 2×. Post-run host check
+  corroborates LIVE: 47 chrome processes still running, 9222/9223 still
+  foreign-claimed at assessment time. The ambient-load risk pre-registered at
+  approval materialized as browser-infrastructure contention rather than API
+  contention. The honesty machinery worked as designed: SKIP-with-reason (never
+  a fake pass), journeys held at unknown, iter-0 CONTINUE (transient bet) →
+  iter-1 STALLED at the second consecutive no-evidence iteration (operator-
+  owned infra blocker — correct escalation, and the halt is itself evidence
+  the C.2 stall test works). benchmark_compare C→D: REGRESS (journeys 3→0);
+  wall −34.2% and cost −23.5% are UNREADABLE as knob evidence — composition
+  broke comparability exactly as the sensitivity language anticipated (D's
+  browser lanes did ~6min of Chrome diagnosis then SKIP instead of journey
+  execution; D iter-1 targeted J-01 only vs C's three journeys; D iter-1 ran a
+  single evaluator pass vs C's two-key GOAL_ACHIEVED confirm ×2) — no wall or
+  cost clause is graded. PRE-COMMITTED MATRIX APPLIED: quality strike → STAY
+  OFF, strike recorded, no further runs today. Context for the disposition:
+  quality-hold under knob=full was already demonstrated by run B (3/3 HOLD);
+  what D uniquely adds is the realized-overlap witness — the mechanism works
+  end-to-end live; the fixture still cannot price the flip, and a rerun today
+  would hit the same contended host. OPPORTUNISTIC TOKEN-8 CHECK: both
+  iterations ran LEAN (iter_dispatch depth=lean ×2) — no full-depth iteration
+  occurred — TOKEN-8 live DoD still pending; its status untouched. Kept
+  scratch: /home/dennis-chan/.cache/iad/shared/bench-bench-20260715-0924.ifaR4T
+- retro report preserved 2026-07-15: copied verbatim (sha256
+  80a208fd7f7e0d381ab0fe4953b6636ea6025877d7808dd71a177894edc9af64 verified match)
+  to benchmarks/results/20260715-101135-fd378ca276a9.retro.md.
