@@ -36,6 +36,12 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/lib/common.sh"
 source "$SCRIPT_DIR/lib/telemetry.sh"
+# Deterministic regression-replay lane — ONE implementation shared with the
+# FULL pipeline's browser-qa step (browser-qa-phase.sh). The tag keeps this
+# script's lane log lines byte-identical to their pre-extraction text.
+source "$SCRIPT_DIR/lib/replay-lane.sh"
+# shellcheck disable=SC2034  # consumed by lib/replay-lane.sh's log helpers
+REPLAY_LANE_TAG="goal-iter-lean"
 
 # A transport/dispatch-unavailable exit (70) from the interactive backend means
 # the pump/session went away — a transport failure, not an agent-quality failure.
@@ -188,33 +194,19 @@ trap 'cleanup_iter_servers; chain_tmp_cleanup' EXIT
 # behavior change); knob=replay forks it right after the developer step.
 
 # Journey sets come from the spec (needed by the fork guard below AND by the
-# resume-skip check and the lanes inside the section). First match wins.
-# The `|| true` is load-bearing: a journey-less line ("Required-still-passing
-# journeys: none — ..." — every iteration-0 baseline spec) makes the inner grep
-# exit 1, and this script runs under set -e (line 34) PLUS pipefail inherited
-# from sourcing lib/telemetry.sh — without the guard the bare assignment below
-# kills the whole lean lane SILENTLY before the developer step (and, at the
-# pre-SPEED-2 position of these lines, killed browser-qa + coherence after
-# review: both 20260710/20260712 benchmark iter-0s died exactly there).
-# Empty is a legitimate parse result; it must never be an exit.
-_spec_journeys() { grep -iE "$1" "$SPEC" 2>/dev/null | head -1 | grep -oE 'J-[0-9]+' | sort -u | tr '\n' ' ' || true; }
-TARGET_JOURNEYS="$(_spec_journeys 'Target journeys:')"
-REQUIRED_JOURNEYS="$(_spec_journeys 'Required-still-passing')"
+# resume-skip check and the lanes inside the section). First match wins; the
+# journey-less-line pipefail guard is load-bearing and lives in
+# replay_lane_spec_journeys — see lib/replay-lane.sh (both 20260710/20260712
+# benchmark iter-0s died on exactly that parse before the guard existed).
+TARGET_JOURNEYS="$(replay_lane_spec_journeys 'Target journeys:' "$SPEC")"
+REQUIRED_JOURNEYS="$(replay_lane_spec_journeys 'Required-still-passing' "$SPEC")"
 _bq_sig="${TARGET_JOURNEYS}|${REQUIRED_JOURNEYS}"
 
-# Lane path derivations, shared by the forkable unit, the join, and the reap
-# (single source of truth — every assignment is a pure derivation, and the
-# mkdir is idempotent, so recomputing in fork and parent is safe).
-_bqa_lane_paths() {
-EVIDENCE_DIR="$REPO_ROOT/reports/qa/${ITER_NAME}-evidence"
-SID="${ITER_NAME#goal-}"; SID="${SID%-iter-*}"
-JOURNEY_SCRIPTS_DIR="$REPO_ROOT/runs/goal-session-${SID}/journey-scripts"
-mkdir -p "$JOURNEY_SCRIPTS_DIR"
-REGRESSION_RESULTS="$REPO_ROOT/reports/phase-${ITER_NAME}-regression-replay-results.md"
-LLM_RESULTS="$REPO_ROOT/reports/phase-${ITER_NAME}-ui-test-results.llm.md"
-DEMO_RUNNER="$SCRIPT_DIR/lib/demo_runner.py"
-MERGE_RESULTS="$SCRIPT_DIR/lib/merge_ui_test_results.py"
-}
+# Lane path derivations (EVIDENCE_DIR, JOURNEY_SCRIPTS_DIR, REGRESSION_RESULTS,
+# LLM_RESULTS, DEMO_RUNNER, MERGE_RESULTS) are replay_lane_paths in
+# lib/replay-lane.sh — shared by the forkable unit, the join, and the reap;
+# every assignment is a pure derivation and the mkdir is idempotent, so
+# recomputing in fork and parent stays safe.
 
 # The forkable unit: service boot + golden partition + deterministic replay
 # lane. Body lines moved VERBATIM from run_browser_qa_section (SPEED-1 style:
@@ -311,63 +303,16 @@ fi
 export CHAIN_CLAUDE_PRE_RETRY_HOOK="ensure_services_running"
 cd "$REPO_ROOT"
 
-_bqa_lane_paths
+replay_lane_paths "$ITER_NAME"
 
-# Partition Required-still-passing into replay (LINTABLE golden on file) vs LLM.
-# A golden that fails validation is quarantined (renamed *.json.invalid) and its
-# journey routed to the LLM lane — previously an invalid golden produced a
-# replay SKIP that nothing re-confirmed (silently unverified journey). A lint
-# crash (no output) conservatively keeps the old file-exists behavior: the
-# verify runner re-validates at replay time anyway.
-_lint_out=""
-if [[ -n "${REQUIRED_JOURNEYS// /}" ]]; then
-  _lint_out="$(python3 "$DEMO_RUNNER" --mode lint --scripts-dir "$JOURNEY_SCRIPTS_DIR" \
-    --journeys "$(echo "$REQUIRED_JOURNEYS" | tr ' ' ',' | sed 's/^,*//;s/,*$//')" 2>/dev/null || true)"
-fi
-R_REPLAY=""; R_LLM=""
-for _j in $REQUIRED_JOURNEYS; do
-  if [[ -f "$JOURNEY_SCRIPTS_DIR/$_j.json" ]]; then
-    if printf '%s\n' "$_lint_out" | grep -q "^$_j invalid"; then
-      echo "[goal-iter-lean] Golden for $_j failed lint — quarantining ($_j.json.invalid) and routing to the LLM lane: $(printf '%s\n' "$_lint_out" | grep -m1 "^$_j invalid" | cut -d' ' -f2-)"
-      mv -f "$JOURNEY_SCRIPTS_DIR/$_j.json" "$JOURNEY_SCRIPTS_DIR/$_j.json.invalid" 2>/dev/null || true
-      R_LLM+="$_j "
-    else
-      R_REPLAY+="$_j "
-    fi
-  else
-    R_LLM+="$_j "
-  fi
-done
-
-_use_replay="no"
-if [[ "${CHAIN_REGRESSION_REPLAY:-true}" == "true" && "$FRONTEND_AVAILABLE" == "yes" && -n "${R_REPLAY// /}" ]]; then
-  _use_replay="yes"
-fi
-
-# Lane 1 — deterministic replay of the already-passing set (only if golden scripts exist).
-REPLAY_FAILED=""
-if [[ "$_use_replay" == "yes" ]]; then
-  echo "[goal-iter-lean] Regression (deterministic replay): $R_REPLAY"
-  _replay_csv="$(echo "$R_REPLAY" | tr ' ' ',' | sed 's/^,*//;s/,*$//')"
-  _replay_rc=0
-  python3 "$DEMO_RUNNER" --mode verify \
-    --scripts-dir "$JOURNEY_SCRIPTS_DIR" --journeys "$_replay_csv" \
-    --results "$REGRESSION_RESULTS" --evidence-dir "$EVIDENCE_DIR" \
-    --base-url "$FRONTEND_URL" --phase-id "$ITER_NAME" --repo-root "$REPO_ROOT" || _replay_rc=$?
-  if [[ "$_replay_rc" -eq 5 ]]; then
-    REPLAY_FAILED="$(grep -E '^\| UT-J-[0-9]+ ' "$REGRESSION_RESULTS" 2>/dev/null | grep -F '| FAIL |' | grep -oE 'J-[0-9]+' | sort -u | tr '\n' ' ')"
-    echo "[goal-iter-lean] Replay flagged possible regression(s) — re-confirming via LLM: $REPLAY_FAILED"
-  elif [[ "$_replay_rc" -ne 0 ]]; then
-    # Replay-lane infrastructure failure (rc 6 = browser launch/crash; any
-    # other rc = runner crash). The replay journeys were NOT verified — route
-    # ALL of them back to the LLM lane, byte-identical to running this
-    # iteration with CHAIN_REGRESSION_REPLAY=false. Previously a replay crash
-    # left them silently unverified for the iteration.
-    echo "[goal-iter-lean] Replay lane failed (rc=$_replay_rc) — falling back to the LLM lane for ALL regression journeys." >&2
-    _use_replay="no"
-    R_REPLAY=""
-  fi
-fi
+# Golden partition + lane 1 (deterministic replay) — shared implementation in
+# lib/replay-lane.sh: stale-artifact hygiene, lint-quarantine of invalid
+# goldens, rc=5 → REPLAY_FAILED re-confirm via the LLM lane, any other failure
+# → ALL regression journeys fall back to the LLM lane, and the
+# CHAIN_REGRESSION_REPLAY=false hatch. Sets R_REPLAY, R_LLM, _use_replay,
+# REPLAY_FAILED — the exact globals _bqa_state_save ships across the SPEED-2
+# fork boundary.
+replay_lane_partition_and_verify "$ITER_NAME"
 
 }
 
@@ -423,7 +368,7 @@ _bqa_fork_consume() {
     echo "[goal-iter-lean] Forked replay lane left an incomplete state file — running service boot + replay inline." >&2
     return 1
   fi
-  _bqa_lane_paths
+  replay_lane_paths "$ITER_NAME"
   cd "$REPO_ROOT"
   echo "[goal-iter-lean] Consumed forked replay-lane results (frontend: ${FRONTEND_AVAILABLE:-?}, replay: ${_use_replay:-no}${REPLAY_FAILED:+, re-confirming via LLM: ${REPLAY_FAILED% }})."
   return 0
@@ -451,7 +396,7 @@ _bqa_fork_reap() {
   # kill) and would serve PRE-fix code to the post-fix browser-qa — sweep the
   # ports so the sequential rerun boots on the fixed tree.
   _bqa_kill_port_servers
-  _bqa_lane_paths
+  replay_lane_paths "$ITER_NAME"
   rm -f "$_BQA_STATE_FILE" "$_BQA_RC_FILE" "${REGRESSION_RESULTS:-}" 2>/dev/null || true
   echo "[goal-iter-lean] Forked replay lane is dead and its lane files are discarded — safe to invalidate."
   return 0
@@ -497,7 +442,7 @@ _bqa_full_fork_consume() {
     echo "[goal-iter-lean] Forked full browser-qa section unusable (wait rc=$_frc, section rc=${_file_rc:-none}) — running the section inline." >&2
     return 1
   fi
-  _bqa_lane_paths
+  replay_lane_paths "$ITER_NAME"
   cd "$REPO_ROOT"
   # Checkpoint mark — verbatim the section's own tail, which the fork skipped.
   _bq_verdict="$(grep -m1 -E '^\*\*Browser QA Verdict:\*\*' "$UI_TEST_RESULTS" 2>/dev/null | grep -oE 'PASS|FAIL|SKIPPED' | head -1)"
@@ -527,7 +472,7 @@ _bqa_full_fork_reap() {
   wait "$_BQA_FULL_PID" 2>/dev/null || true
   _BQA_FULL_PID=""
   _bqa_kill_port_servers
-  _bqa_lane_paths
+  replay_lane_paths "$ITER_NAME"
   rm -f "$_BQA_FULL_RC_FILE" "$_BQA_FULL_PID_FILE" \
         "${REGRESSION_RESULTS:-}" "${LLM_RESULTS:-}" "${UI_TEST_RESULTS:-}" 2>/dev/null || true
   record_telemetry_event "parallel_bqa_wasted_dispatch" "$(jq -cn --arg n "$ITER_NAME" \
@@ -664,7 +609,7 @@ if ! _bqa_fork_consume; then
 fi
 
 # (Journey IDs were pulled from the spec at the SPEED-2 block, before the
-# resume-skip check; lane paths were set by _bqa_lane_paths.)
+# resume-skip check; lane paths were set by replay_lane_paths.)
 
 # Dispatch the LLM browser-qa-agent on an explicit journey list, writing to $2.
 run_browser_qa_llm() {
@@ -739,7 +684,7 @@ else
   _llm_set="$TARGET_JOURNEYS $REQUIRED_JOURNEYS"       # replay off → LLM covers everything (prior behaviour)
   _llm_out="$UI_TEST_RESULTS"
 fi
-LLM_JOURNEYS="$(echo "$_llm_set" | tr ' ' '\n' | grep -E '^J-[0-9]+$' | sort -u | tr '\n' ' ' || true)"   # same pipefail guard as _spec_journeys: an all-replay iteration has an empty LLM set
+LLM_JOURNEYS="$(echo "$_llm_set" | tr ' ' '\n' | grep -E '^J-[0-9]+$' | sort -u | tr '\n' ' ' || true)"   # same pipefail guard as replay_lane_spec_journeys: an all-replay iteration has an empty LLM set
 _llm_csv="$(echo "$LLM_JOURNEYS" | tr ' ' ',' | sed 's/^,*//;s/,*$//')"
 
 _bqa_rc=0
@@ -765,12 +710,11 @@ fi
 
 # Merge replay + LLM into the single results file the goal-evaluator reads
 # (LLM listed last → wins on any journey both lanes touched, e.g. a re-confirm).
+# Shared implementation in lib/replay-lane.sh — includes the reconciliation
+# footer on the raw replay artifact when the LLM lane overturned a replay FAIL,
+# so no stale FAIL survives the iteration on disk.
 if [[ "$_use_replay" == "yes" ]]; then
-  if ! python3 "$MERGE_RESULTS" "$UI_TEST_RESULTS" "$REGRESSION_RESULTS" "$_llm_out"; then
-    echo "[goal-iter-lean] results merge failed — falling back to a lane output." >&2
-    if [[ -f "$_llm_out" ]]; then cp "$_llm_out" "$UI_TEST_RESULTS" 2>/dev/null || true
-    elif [[ -f "$REGRESSION_RESULTS" ]]; then cp "$REGRESSION_RESULTS" "$UI_TEST_RESULTS" 2>/dev/null || true; fi
-  fi
+  replay_lane_merge_results "$UI_TEST_RESULTS" "$_llm_out"
 fi
 
 # If no results artifact exists at all (and it was not a quota pause), leave a
@@ -781,20 +725,11 @@ if [[ ! -f "$UI_TEST_RESULTS" && "$_bqa_rc" -ne "${QUOTA_EXHAUSTED_EXIT_CODE:-75
     "goal-iter-lean.sh browser-qa produced no results file (exit $_bqa_rc). The evaluator will likely emit ESCALATE for the next iteration."
 fi
 
-# Golden coverage: every PASSing journey should now have a lintable golden so
-# the replay lane keeps growing (browser-qa LLM time decays iteration over
-# iteration). A gap is loud but non-gating — those journeys simply return to
-# the LLM lane next iteration.
-_pass_j="$(grep -E '^\| UT-J-[0-9]+ ' "$UI_TEST_RESULTS" 2>/dev/null | grep -F '| PASS |' | grep -oE 'J-[0-9]+' | sort -u | tr '\n' ' ' || true)"   # same pipefail guard as _spec_journeys: zero PASS rows is a legitimate result ("non-gating" must include the parse)
-_n_pass=0; _missing_golden=""
-for _j in $_pass_j; do
-  _n_pass=$((_n_pass + 1))
-  [[ -f "$JOURNEY_SCRIPTS_DIR/$_j.json" ]] || _missing_golden+="$_j "
-done
-if [[ -n "${_missing_golden// /}" ]]; then
-  echo "[goal-iter-lean] Golden coverage gap: PASSing journey(s) without a replay script: ${_missing_golden}— the browser-qa agent should write a golden per PASS (they fall back to the slower LLM lane next iteration)."
-fi
-record_telemetry_event "golden_coverage" "$(jq -cn --argjson p "$_n_pass" --arg m "${_missing_golden% }" --arg n "$ITER_NAME" '{passing:$p, missing_goldens:$m, iter_name:$n}' 2>/dev/null || printf '{"passing":%d,"missing_goldens":"%s"}' "$_n_pass" "${_missing_golden% }")"
+# Golden coverage (loud, non-gating; shared implementation in
+# lib/replay-lane.sh): every PASSing journey should now have a lintable golden
+# so the replay lane keeps growing (browser-qa LLM time decays iteration over
+# iteration) — gaps simply return to the LLM lane next iteration.
+replay_lane_golden_coverage "$UI_TEST_RESULTS" "$ITER_NAME"
 
 # Checkpoint: reusable on resume only with a real PASS/FAIL verdict (never a
 # SKIPPED stub) and the journey signature this run actually covered.
