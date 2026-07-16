@@ -1200,10 +1200,20 @@ benchmark (or a real session's telemetry) before AND after (G8).
 - **Rollback:** knob; archives are additive.
 
 ### TOKEN-7 · Pre-baked review packet (reviewer stops running git)
-- **Priority:** P1 · **Effort:** M · **Risk:** MED · **Status:** TODO
+- **Priority:** P1 · **Effort:** M · **Risk:** MED · **Status:** IN-PROGRESS
+  (implemented + fixtures 4/4 + measured 2026-07-16 @ 13668f305963 — see the
+  measurement note; G8 fresh-session certification remains, per M-effort rule G8)
 - **Source:** Superpowers 6 release notes (primeradiant.com/blog/2026/superpowers-6.html):
   pre-generated diff packages cut review tokens + wall ≈10% on THEIR benchmark — treat
   as hypothesis here, measure per G8. Anchors verified 2026-07-07 @ `eb5c8f9`.
+  *Replication verdict (2026-07-16, `bench-20260716-1436` vs run E, full POST in
+  benchmarks/experiments.md):* their number REPLICATED in direction with the metric
+  RELOCATED — the packet does not cut reviewer OUTPUT tokens (≈ flat; null vs their
+  ~10% at this fixture's noise band) but collapses TURNS (37→24 session, −35%) and
+  therefore BILLED INPUT (cache-read −67% on the real review round) and COST
+  (reviewer −24.3% session, −27.1% real review); real-review wall −15.5% (in line
+  with their ~10%), session reviewer wall ≈ flat. Their claim, our data: direction
+  right; size understated on billed input, overstated on output tokens.
 - **Problem:** the reviewer (~21 min, 2nd-longest lean step) receives only a two-command
   HINT and shells out to git itself — every review pays tool-call round trips for a
   diff the engine could pre-build deterministically.
@@ -1272,12 +1282,37 @@ benchmark (or a real session's telemetry) before AND after (G8).
   landed, confirm the packet build sits BEFORE the fork point and the fix-path
   rebuild happens after kill-then-invalidate (same ordering rule as SPEED-2's
   stop-and-ask).
+  *Implementation + measurement note (2026-07-16 @ 13668f305963, commit
+  `feat(token): TOKEN-7`):* both stop-and-asks CONFIRMED before code — (1) every
+  committer on both backends runs outside the developer→review window
+  (push-per-iter + WIP-park are post-evaluation `run-goal.sh:2117/:2159`; the
+  showcase commit joins pre-dispatch `:1754`; finalize is phase Step 11 and goal
+  mode passes `--no-finalize`; `stash create` `:1547` moves no HEAD) ⇒ packet base
+  = HEAD; (2) anchors: build 1 after the developer block `goal-iter-lean.sh:873`,
+  BEFORE the fork spawns (`:901`/`:940`); fix-path rebuild after the developer-fix
+  block (`:997`), i.e. after `_bqa_fork_reap`/`_bqa_full_fork_reap` (`:979-980`) +
+  `escalate_model_off`, before the round-2 dispatch. All 7 change-spec points
+  shipped in one commit (helper is atomic + fail-closed; absent packet degrades to
+  hint-only; reviewer 1.2.0→1.2.1 — the 1.1.2 anchor in this entry predated
+  TOKEN-1-era bumps); judgment-runner mirror builds the packet per-sandbox with
+  the SAME helper ($REVIEW_PACKET spelled identically both sides — the TOKEN-1
+  byte-gate stayed green with no new sanctioned rename); G3 fixture
+  `tests/automation/test-review-packet.sh` registered (run-evals 116/116);
+  parallel-bqa expected tree gains the packet in both modes (80/80). G9 gate 1:
+  reviewer judgment fixtures 4/4, every class exact, packet observed per sandbox.
+  G9 gate 2: benchmark `bench-20260716-1436` (GOAL_ACHIEVED, journeys 3/3
+  CONFIRMED, zero review FAILs) — reviewer economics vs run E in the Source
+  replication verdict above; packet present + consumed in BOTH depths (lean
+  iter-0 + phase-mode full iter-1 — the run also resolved TOKEN-8's live DoD);
+  fix-path rebuild not exercised live (zero FAILs) — covered by the offline
+  scenario tests. First launch was harness-killed at ~4 min (annotated in the
+  ledger; detached relaunch measured). DoD met on every clause; remaining for
+  DONE: G8 fresh-session certification.
 
 ### TOKEN-8 · Usage telemetry for phase-script dispatches (full-depth economics blind spot)
-- **Priority:** P1 · **Effort:** S · **Risk:** LOW · **Status:** IN-PROGRESS (code +
-  tests landed 2026-07-14 @ 39e2a79de68a; live full-depth DoD pending — see the
-  measurement note; staged 2026-07-14, user-approved after the §9 measurement runs
-  hit the gap)
+- **Priority:** P1 · **Effort:** S · **Risk:** LOW · **Status:** DONE (code + tests
+  landed 2026-07-14 @ 39e2a79de68a; live full-depth DoD resolved 2026-07-16 by the
+  TOKEN-7 benchmark's natural full iter-1 — see the final measurement note)
 - **Problem:** the full-depth pipeline's dispatch scripts record NO `claude_usage`
   telemetry rows — a goal-mode full iteration's developer, reviewer, orchestrator,
   test-plan qa, UI chain, and auditor are invisible in the session's per-agent
@@ -1341,6 +1376,16 @@ benchmark (or a real session's telemetry) before AND after (G8).
   natural full-depth iteration keeps not occurring, the standing alternative is
   an explicitly approved `--max-iter 3`-style run or a real session's full
   iteration.
+  *LIVE DoD RESOLVED (2026-07-16, TOKEN-7 benchmark `bench-20260716-1436` @
+  18d639c17ac2):* the decomposer sent iter-1 FULL on its own (fourth run's
+  composition finally landed), the converted phase scripts dispatched, and the
+  session telemetry carries named per-agent usage rows for orchestrator
+  ($0.854), qa ×2 (test-plan $0.085 + validation $0.583), ui-impact-analyst,
+  ui-test-designer, ux-regression-reviewer, phase-closure-auditor, reviewer
+  (via review-phase.sh) and auditor ($1.578), all attributed `iter=1` — the
+  exact rows this entry's three prior run-checks could not produce. Offline
+  half was already green (test-phase-telemetry.sh; standalone phase mode
+  writes nothing). DoD met in full → DONE.
 
 ---
 

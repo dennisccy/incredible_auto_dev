@@ -851,3 +851,89 @@ Entry format contract (grep-able; pinned by
   13668f3059638cb7f8fa739004e4f70f3bee3584, same hypothesis re-registered
   verbatim, same environment (preflight re-verified at relaunch); the
   attribution paragraph above carries over to the relaunch unchanged.
+
+---
+
+## PRE bench-20260716-1436 · 2026-07-16T14:36:30Z
+- framework-sha: 18d639c17ac21db0936295485c4f5a04a34bbf36 (dirty: false)
+- fixture: todo-app · max-iter 2
+- hypothesis: TOKEN-7 @ 13668f305963 (launch sha 18d639c = +ledger-docs only; relaunch of killed bench-20260716-1430): reviewer per-agent wall + output tokens DOWN vs run E bench-20260716-0626 (hypothesis ~10% per Superpowers-6, direction certain, size uncertain); packet present in scratch for every review round incl. any fix rounds; journeys HOLD 3/3; other agents ≈ flat; status not predicated
+- metrics + prediction (mechanical --predict): journeys_passing_after>=3
+
+## POST bench-20260716-1436 · 2026-07-16T16:17:41Z
+- results: benchmarks/results/20260716-161741-18d639c17ac2.json
+- headline: status=GOAL_ACHIEVED last_verdict=GOAL_ACHIEVED journeys=3/3 iters=2 engine_exit=0 wall=6070s cost=$28.245694
+- predicate: journeys_passing_after>=3 → true (journeys_passing_after=3)
+- verdict-vs-prediction: CONFIRMED
+- assessment 2026-07-16 (TOKEN-7 after-measurement; grading the hypothesis
+  clause by clause, honest sizes vs the source's ~10% claim):
+  (1) JOURNEYS 3/3 HOLD — mechanical predicate CONFIRMED. GOAL_ACHIEVED passed
+  the deterministic gates + two-key confirm; COHERENCE-PASS; attempt-1 review
+  fails 0; zero friction counters (retro: no quota pauses, no malformed
+  verdicts). Same final status as control run E (not predicated either way).
+  (2) DEPTH FLIP — the one structural difference vs E: the decomposer sent
+  iter-1 FULL (E ran lean×2). Named consequences: (a) the reviewer comparison
+  crosses modes — E iter-1 lean reviewer vs this run's phase-mode reviewer
+  (review-phase.sh, richer required inputs incl. the execution plan), a
+  conservative confound since the packet won anyway (below); (b) the session
+  topline is NOT comparable — $21.15 → $28.25 (+33.5%) and wall 3648 → 6070s
+  are EXPLAINED by the full chain's 8 extra agent rows (orchestrator $0.85 +
+  qa test-plan/validation $0.67 + ui-impact $0.43 + ui-test-designer $0.44 +
+  ux-regression $0.40 + phase-closure $0.60 + auditor $1.58 ≈ $4.97, plus a
+  heavier browser-qa and 4 summarizer calls), so the 'other agents ≈ flat'
+  clause is UNGRADEABLE at the session level — the depth choice is documented
+  decomposer variance, not a TOKEN-7 effect (packet code paths are identical
+  in both depths and were exercised in both).
+  (3) REVIEWER PER-AGENT — THE GRADED CLAUSE (E: 2 inv, 24,080 out-tok,
+  $1.574, 300.5s, 37 turns → T7: 2 inv, 24,181 out-tok, $1.192, 292.4s, 24
+  turns), per-invocation from both kept scratches:
+    · iter-1 REAL review (E lean vs T7 full+packet): turns 21→16 (−23.8%),
+      billed cache-read input 1,366,695→452,357 (−66.9%), cost $1.069→$0.780
+      (−27.1%), wall 220.6→186.9s (−15.5%), out-tok 17,521→16,361 (−6.6%).
+    · iter-0 baseline review (near-empty diff both runs): turns 16→8 (−50%),
+      cache-read 522,503→272,774 (−47.8%), cost $0.505→$0.412 (−18.4%),
+      out-tok +19% (small absolute), wall 79.9→105.5s (+33% — sub-noise on an
+      ~80s dispatch; the reviewer's own report cites reading 'the empty
+      review packet' as its zero-change evidence).
+  MECHANISM CONFIRMED, METRIC RELOCATED: the packet does NOT cut what the
+  reviewer WRITES (out-tok ≈ flat session-total, −6.6% real review — the
+  ~10% 'review tokens' claim is a NULL on output tokens at this fixture's
+  noise band) — it cuts TURNS (−35% session) and therefore BILLED INPUT
+  (cache-read −48%/−67% per round: every eliminated git round-trip stops
+  re-reading the whole accumulated context) and COST (reviewer −24.3%
+  session, −27.1% real review). Wall: −15.5% on the real review (in line
+  with the source's ~10%), ≈ flat session-total (the baseline round's +26s
+  absorbs it). Superpowers-6's number REPLICATES on billed-input/cost/turns
+  and on real-review wall — their claim, our data: direction right, their
+  size understated on input (−67%) and overstated on output (null).
+  (4) PACKET PRESENT EVERY ROUND — CONFIRMED: engine.log shows exactly 2
+  'review packet built' lines (one per review round: lean iter-0 412B
+  near-empty packet 15:43; phase-mode iter-1 11,424B packet 16:11, 4 files
+  all shown in full) and 0 'build failed' lines; both files verified in the
+  kept scratch; 2 reviewer dispatches total. Zero review FAILs occurred, so
+  the fix-path REBUILD was not exercised live — that path stays covered by
+  the offline scenario tests (test-goal-parallel-bqa C/G ordering + the
+  rebuild call after fork-reap; run-evals 116/116 at launch).
+  (5) OPPORTUNISTIC TOKEN-8 CHECK — LIVE DoD RESOLVED: iter-1's FULL dispatch
+  ran the converted phase scripts and the session telemetry carries per-agent
+  usage rows for orchestrator/qa(×2: test-plan + validation)/ui-impact/
+  ui-test-designer/ux-regression/phase-closure/auditor, all attributed
+  iter=1 — the exact rows TOKEN-8's measurement note has been waiting for
+  since bench-20260714-1539. TOKEN-3 confirmed inert in-run (knob off, Step 2
+  generated the test plan; 0 skip lines); TOKEN-4 confirmed inert (audit
+  passed clean; 0 rerun-cap lines).
+  ENVIRONMENT: preflight held at relaunch (zero CDP/automation consumers,
+  ports free, env clean; desktop Chrome + idle parked UIs = the accepted
+  C/E baseline). First launch (bench-20260716-1430) was killed by the
+  session harness ~4 min in — annotated above, superseded by this detached
+  relaunch; ~<$1 of its spend is outside this run's books. POST-RUN ORPHANS
+  (honesty; the run-D observable class RECURRED): two automation Chrome trees
+  from THIS run were alive at close-out — pid 2348846 (CDP 9222, profile
+  superpowers-chrome-3; the browser-qa browser) and pid 2371948 (CDP 9223,
+  profile superpowers-chrome-4; started later in the run). No app.py orphan;
+  5177 free. Cleanup NOT attempted from this session (the permission
+  classifier is known to deny these kills — bench-orphan precedent); kill
+  one-liner reported to the operator in the session report. Same
+  framework-gap candidate as run E flagged: the forked/scripted browser-qa
+  Chrome outlives the engine. Kept scratch:
+  /home/dennis-chan/.cache/iad/shared/bench-bench-20260716-1436.dNHg0w
