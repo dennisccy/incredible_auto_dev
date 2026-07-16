@@ -625,3 +625,165 @@ Entry format contract (grep-able; pinned by
 - retro report preserved 2026-07-15: copied verbatim (sha256
   80a208fd7f7e0d381ab0fe4953b6636ea6025877d7808dd71a177894edc9af64 verified match)
   to benchmarks/results/20260715-101135-fd378ca276a9.retro.md.
+
+---
+
+## PRE bench-20260716-0626 · 2026-07-16T06:26:04Z
+- framework-sha: d41a38bcfb4f59b2257b825a8e20d9355eb7903b (dirty: false)
+- fixture: todo-app · max-iter 2
+- hypothesis: TOKEN-2 @ d41a38bcfb4f: standard-tier decomposer holds spec quality — journeys 3/3 within cap; decomposer per-agent cost DOWN materially vs control (run C decomposer: 2 calls, $3.591, 56,705 out-tok); wall/cost otherwise ≈ flat at the TOKEN-8 visibility baseline; final status NOT predicated (GOAL_ACHIEVED/CONTINUE/STALLED variance is documented)
+- metrics + prediction (mechanical --predict): journeys_passing_after>=3
+- attribution 2026-07-16 (appended at launch, engine running; the TOKEN-2
+  user-approved G1 spend session, prompt of 2026-07-15): ONE VARIABLE AT THE
+  ROUTING LEVEL vs run C bench-20260714-1539 — goal-decomposer model_tier
+  strong→standard (claude-opus-4-8 → claude-sonnet-5; flip commit 869c338,
+  launch sha d41a38bcfb4f = flip + docs/fixture-evidence commits only). Blast
+  radius proven at flip time: agent_permissions model/effort across all 20
+  agents changed exactly ONE row (goal-decomposer); all judges (goal-evaluator,
+  auditor, goal-proposer, reviewer) unchanged; decomposer effort stays max; D4
+  judge-effort guard still covers it (JUDGE_AGENTS membership untouched).
+  REL-1 FIXTURES MEASURED PRE-LAUNCH ON THIS BRANCH: goal-evaluator 5/5, all
+  verdict classes exact, 244–316s/case (judge resolved opus-4-8 @ max —
+  config-surface regression insurance green). COMPARABILITY AUDIT vs run C
+  (intervening commits 31ba8fb, d0f9896, fd378ca, fd18b9b): 31ba8fb and fd18b9b
+  verified EMPTY over the scratch copy set (.claude scripts config templates
+  CLAUDE.md); d0f9896+fd378ca engine-visible deltas partition into (a)
+  dormant-by-construction paths — run-goal.sh disk preflight acts only under
+  disk pressure; goal-iter-lean.sh janitor block is owner-guarded
+  standalone-only (NO-OP under run-goal.sh); core.md +10 disk-recovery lines
+  activate only on ENOSPC/EDQUOT; (b) REL-13 tmp/scratch relocation off quota'd
+  /tmp tmpfs to ~/.cache/iad disk — I/O location only, applies identically to
+  ANY run at today's runner (a fresh control could not undo it); run D executed
+  the full engine on these paths cleanly; (c) SEC-6/SEC-7 permission+hook
+  surface — EMPIRICALLY NIL on this fixture in BOTH directions: run C's 16
+  agent traces contain ZERO permission denials (grep across granted/approval/
+  denied/blocked phrasings — nothing for SEC-6's wider allowlist to smooth) and
+  run D's 17 post-SEC-6/7 traces also ZERO (newly-live guards never fired on
+  fixture-class commands; flask is allowlisted in install-security-policy.json;
+  unpinned registry installs WARN-and-proceed by design; run D's fixture built
+  and served HTTP 200 in both iterations); (d) eval/runner-only files
+  (run-evals.sh, run-judgment-evals.sh, tmp-doctor.sh, suggest-allowlist.sh)
+  never execute inside an engine iteration; the interactive-dispatch skill line
+  is pump-only (headless run). NAMED RESIDUALS, confined to the non-criterial
+  wall/cost topline: tmpfs→disk I/O for engine tmp files, and ~24 added
+  agent-readable doc lines (core.md+anti-patterns) — cost direction UP, i.e.
+  conservative against the "decomposer cost DOWN" claim; both sub-noise class
+  (±10% wall / ±25% per-agent bands established A′↔B↔C). ENVIRONMENT PREFLIGHT
+  (run D's lesson, mandatory — findings stated): at first check (2026-07-15)
+  the box was DISQUALIFYING — two active goal engines (tradable_wall resumed,
+  mcp-loop mid-iteration) + 3 CDP Chrome profiles, 9222/9223 foreign-claimed,
+  one stray --remote-debugging-port=9224 flag-holder; STOPPED per protocol and
+  presented to the user, who chose to clear the box. At launch (2026-07-16):
+  both engines gone (user-stopped); this session killed the two orphaned
+  automation Chrome trees left behind (goal-mcp-loop-iter-40-qa QA browser +
+  the parked sessions' superpowers-chrome plugin browser — ephemeral, owners
+  reboot them on demand); final state ZERO CDP/automation Chrome consumers,
+  9222/9223/9224 + 5177 free, env clean of CHAIN_* (knob off). Remaining
+  ambient load, accepted as BASELINE-EQUIVALENT: the user's ordinary desktop
+  Chrome (no debug port, personal profile, up 2d7h — demonstrably already
+  running during green control run C, so removing it would CHANGE the
+  environment vs control) and 4 idle parked claude UIs whose superpowers MCP
+  servers currently hold no browser. ADOPT CRITERIA (pre-committed): fixtures
+  5/5 (done) · journeys 3/3 (the mechanical predicate) · decomposer per-agent
+  cost DOWN materially vs run C's 2-call/$3.591/56.7k-out row · comparative
+  spec-quality reading (branch iter specs vs run C's kept-scratch specs:
+  structure, journey targeting, acceptance concreteness — quoted lines, since
+  journeys alone can mask sloppier specs on a tiny fixture) NO WORSE. Wall/cost
+  topline NOT an adopt criterion (hedged "≈ flat", reduced confidence per the
+  named residuals). OPPORTUNISTIC TOKEN-8: if any iteration dispatches
+  full-depth, the converted phase scripts' developer/reviewer/auditor usage
+  rows resolve TOKEN-8's live DoD — scratch telemetry grepped post-run either
+  way. Final status NOT predicated (GOAL_ACHIEVED vs CONTINUE-at-cap is
+  documented evaluator variance on near-identical inputs, A′/B/C precedent).
+  ADOPT/REVERT decision gets a final user confirm before any merge (branch
+  protocol; STALE-with-evidence is a fully successful outcome).
+
+## POST bench-20260716-0626 · 2026-07-16T07:26:53Z
+- results: benchmarks/results/20260716-072653-d41a38bcfb4f.json
+- headline: status=GOAL_ACHIEVED last_verdict=GOAL_ACHIEVED journeys=3/3 iters=2 engine_exit=0 wall=3648s cost=$21.152457
+- predicate: journeys_passing_after>=3 → true (journeys_passing_after=3)
+- verdict-vs-prediction: CONFIRMED
+- assessment 2026-07-16 (TOKEN-2 after-measurement B; adopt decision pending the
+  user's confirm, recorded under the roadmap entry): GENUINE CHAIN RESULT — the
+  series' third GOAL_ACHIEVED and its fastest (wall 4,297→3,648s vs C, −15.1%).
+  Grading the hypothesis clause by clause:
+  (1) JOURNEYS 3/3 HOLD — mechanical predicate CONFIRMED. attempt1_review_fails
+  0, malformed_verdicts 0, coherence.md **COHERENCE-PASS**, GOAL_ACHIEVED passed
+  the deterministic gates + two-key confirm (evaluator ×3, all opus). Browser
+  evidence per journey (distinct PNGs; evaluator's table cites post-reload
+  frames).
+  (2) DECOMPOSER COST DOWN MATERIALLY — CONFIRMED: $3.591 → $2.184 (−39.2%);
+  output tokens 56,705 → 45,629 (−19.5%); duration 752 → 523s (−30%); 2 calls
+  both runs. ROUTING PROOF: engine.log Step-1 dispatch line reads
+  "model=claude-sonnet-5"; results by_model shows claude-opus-4-8 billed for
+  EXACTLY 3 invocations = the goal-evaluator's 3 calls ($3.808 matches its
+  by_agent row to the cent) — the only opus consumer was the judge, as designed.
+  (3) WALL/COST ≈ FLAT AT THE TOKEN-8 VISIBILITY BASELINE — cost CONFIRMED:
+  $20.84 → $21.15 (+1.5%), and like-for-like E is flat-to-BETTER because E's
+  coverage is more complete than C's (C's iter-1 browser-qa dispatch crashed
+  before its report — its usage row never landed — and C's iter-1 demo row is
+  likewise missing; E records browser-qa ×2 and demo ×2). Notable per-agent
+  moves inside the flat total: decomposer −39%, evaluator −43%, coherence −33%;
+  developer +64% ($4.40→$7.23) — read as PART ±25%-band noise (A′↔B precedent),
+  part plausible COST SHIFT DOWNSTREAM of a leaner spec (E's 88-line iter-1 spec
+  leaves DOM/test design to the developer, and its client-side-JS architecture
+  is simply more code than C's server-rendered forms); the fixture cannot
+  decompose noise vs shift further (pre-registered). Wall −15.1% is favorable-
+  direction but NOT graded (PRE-named residuals: tmpfs→disk relocation + doc
+  lines; the decomposer's own −229s accounts for ~35% of the −649s delta).
+  (4) SPEC QUALITY (the adopt criterion — comparative reading, branch scratch
+  specs vs run C's kept-scratch specs, quotes not vibes):
+  EQUAL — structure/metadata complete in both; identical journey bundle with the
+  same one-feature rationale (E: "together they're the entire remaining
+  Must-have scope … all three share one canonical store"; C: "they are not
+  three independent risky changes — they are one feature"); both argue the lean
+  depth call against the same rubric trigger (E: "this does cross the
+  backend/frontend boundary, but that crossing is intrinsic to every possible
+  journey in this single-page app"; C: budget + evaluator recommendation +
+  pinned data model); both carry the 2-lean-iteration budget awareness.
+  THINNER (E) — no DOM-contract selector table (C pinned #add-form/#todo-list/
+  li.todo.done…; E's developer invented selectors); no per-journey evidence
+  naming or store-reset mandate — C DETECTED goal.md's own J-02→J-03 state
+  contradiction ("J-02 leaves 'buy milk' done, but J-03's acceptance requires
+  the Open view to show 'buy milk'") and mandated per-journey resets, where E
+  restates goal.md's sequence unexamined and the executor's pragmatics absorbed
+  it; softer persistence-test phrasing (E: "persists the new todo to the JSON
+  store"; C: "re-read the JSON file from disk and assert done is True").
+  DIVERGENT INTERPRETATION, JUDGED CONFORMANT — goal.md IA line: "The only
+  other route is /health." C ledgered a navigable-pages reading at iter-0 and
+  still forbade any JSON read-API; E shipped GET/POST /api/todos +
+  /api/todos/<id>/toggle with client-side filtering WITHOUT ledgering that
+  reading (its one ledger entry covers the smaller default-All-view call). The
+  UNCHANGED opus evaluator examined the endpoints explicitly ("three endpoints
+  only, client filters one fetched array; all UI on the existing / page, no new
+  route/duplicate home") and coherence passed the canonical-store rule — so NOT
+  a goal violation, but C's interpretation-logging depth is absent in E.
+  NET: outcome-equal on every observable (verdicts, journeys, zero attempt-1
+  review fails, distinct evidence), artifact-thinner on defensive spec
+  engineering; the thinness plausibly surfaces as the developer +64% row inside
+  a flat total.
+  (5) FINAL STATUS GOAL_ACHIEVED — not predicated; consistent with C.
+  ENVIRONMENT: mandatory preflight HELD at launch — first check (07-15) was
+  disqualifying (two active goal engines + 3 CDP profiles; stop-and-ask fired;
+  user cleared the engines); at launch zero CDP/automation Chrome consumers,
+  922x/5177 free; only the user's desktop Chrome (no debug port; demonstrably
+  already running during green control C) plus 4 idle parked claude UIs
+  remained. REL-12 short-circuit fired in BOTH iterations (as in C); knob
+  unset; fixture manifest exports same family as C. POST-RUN ORPHAN NOTE
+  (honesty, new observable class from run D's standard): two processes from
+  THIS run were found alive post-run with cwd = this scratch — the browser-qa
+  Chrome (port 9222, superpowers-chrome-3 profile, started mid-run) and the
+  session-demo's `.venv/bin/python app.py` (started ~3 min before close-out).
+  This session's cleanup attempt was BLOCKED by the permission layer
+  (classifier read them as possibly-foreign workloads) — left running, flagged
+  to the operator in the session report. Framework-gap candidate for triage:
+  the demo/close-out step does not reap the service it boots, and the forked
+  browser-qa Chrome outlives the engine.
+  OPPORTUNISTIC TOKEN-8 CHECK: both iterations dispatched LEAN (iter_dispatch
+  depth=lean ×2) — no full-depth iteration, so the live DoD did not resolve;
+  TOKEN-8 status untouched (note added to its entry).
+  ADOPT SCORECARD (pre-committed): fixtures 5/5 ✓ · journeys 3/3 ✓ · decomposer
+  cost down materially ✓ · spec quality: outcome-equal / artifact-thinner
+  (quoted above) — recommendation ADOPT presented to the user; decision +
+  confirm recorded in the TOKEN-2 roadmap entry. Kept scratch:
+  /home/dennis-chan/.cache/iad/shared/bench-bench-20260716-0626.PmMupK

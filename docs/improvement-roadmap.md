@@ -989,6 +989,24 @@ benchmark (or a real session's telemetry) before AND after (G8).
   line with the 2026-07-09 baseline timings). Config-surface regression insurance
   green; no revert trigger. (Runner does not instrument case cost by design;
   pre-estimate $11.90 ±3x, durations match the in-band 07-09 run.)
+- **EVO-3 benchmark on the flipped branch (2026-07-16, `bench-20260716-0626` @
+  d41a38bcfb4f vs control run C `bench-20260714-1539`): all pre-committed adopt
+  criteria measured.** GOAL_ACHIEVED, journeys 3/3 (predicate CONFIRMED), zero
+  attempt-1 review fails, COHERENCE-PASS, two-key confirm passed. Decomposer
+  per-agent: $3.591 → **$2.184 (−39.2%)**, out-tok −19.5%, duration −30%;
+  routing proven (engine.log "model=claude-sonnet-5" on Step 1; by_model: opus
+  billed exactly the evaluator's 3 calls). Session total $20.84 → $21.15
+  (+1.5% ≈ flat, with E's telemetry coverage MORE complete than C's); wall
+  −15.1%. Spec-quality comparative reading: outcome-equal, artifact-thinner
+  (no DOM-contract table; goal.md's J-02→J-03 state contradiction left to
+  executor pragmatics where C defused it in-spec; the /api-routes IA reading
+  shipped unledgered — though the unchanged opus evaluator + coherence audit
+  examined and passed that architecture explicitly). Developer row +64% inside
+  the flat total — part noise (±25% band), part plausible spec-thinness cost
+  shift; fixture cannot decompose further. Full graded assessment: the POST in
+  `benchmarks/experiments.md`. **Awaiting the user's ADOPT/REVERT confirm**
+  (branch merges only on confirm; STALE-with-evidence remains a fully
+  successful outcome).
 - **Change spec:** flip `model_tier` to `standard` on a branch; run EVO-3 benchmark +
   REL-1 judgment fixtures before/after; adopt only if spec quality (fixture pass +
   benchmark journeys/iteration) holds. Model-spend class → user approval first (G1).
@@ -1215,6 +1233,14 @@ benchmark (or a real session's telemetry) before AND after (G8).
   one-journey lean build that STALLED on host browser contention) — TOKEN-8
   live DoD still pending; status unchanged. The standing resolution path (any
   approved full-depth iteration) remains.
+  *Run E check (2026-07-16, TOKEN-2 benchmark `bench-20260716-0626` @
+  d41a38bcfb4f):* both iterations dispatched lean again (REL-12 keeps the lean
+  lane evidence-sufficient; the evaluator recommended lean and the session
+  achieved goal at the 2-iteration cap) — no full-depth iteration, live DoD
+  still pending, status unchanged. Third consecutive composition miss; if a
+  natural full-depth iteration keeps not occurring, the standing alternative is
+  an explicitly approved `--max-iter 3`-style run or a real session's full
+  iteration.
 
 ---
 
