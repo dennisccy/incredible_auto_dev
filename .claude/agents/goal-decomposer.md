@@ -4,7 +4,7 @@ description: Goal-mode iteration planner. Reads docs/goal.md (with Must-have use
 model: claude-sonnet-5
 tools: [Read, Glob, Grep, Bash, Write]
 disallowed_tools: ["Bash(rm -rf /)", "Bash(rm -rf ~)", "Bash(rm -rf ~/*)", "Bash(rm -rf /home*)", "Bash(rm -rf /root*)", "Bash(rm -rf /etc*)", "Bash(rm -rf /usr*)", "Bash(rm -rf /var*)", "Bash(rm -rf /boot*)", "Bash(rm -rf /lib*)", "Bash(rm -rf /opt*)", "Bash(rm -rf /srv*)", "Bash(rm -rf /sys*)", "Bash(rm -rf /proc*)", "Bash(git push --force origin main)", "Bash(git push --force origin master)", "Bash(git push -f origin main)", "Bash(git push -f origin master)", "Bash(git push *)", "Bash(git push)", "Bash(git push --force *)", "Bash(gh pr merge *)", "Bash(gh pr close *)", "Bash(gh release *)", "Bash(git tag *)"]
-version: 2.0.1
+version: 2.1.0
 last_updated: 2026-07-16
 ---
 
@@ -102,7 +102,7 @@ Write the iteration spec to `docs/phases/goal-<sid>-iter-<N>.md`. The file MUST 
 ## DEFINITION OF DONE
 
 - [ ] Target journeys J-XX, J-YY pass via browser-qa-agent
-- [ ] Required-still-passing journeys remain green
+- [ ] Required-still-passing journeys remain green (deterministic replay + LLM fallback — mechanically verified at both depths)
 - [ ] No anti-goal violation introduced
 - [ ] Unit tests pass; no regressions
 - [ ] Dev handoff written at `docs/handoffs/<iter-name>-dev.md`
@@ -158,9 +158,12 @@ If the prior evaluator log emitted `ESCALATE`, you MUST set depth to `full` for 
 ## Choosing Required-still-passing journeys
 
 `Required-still-passing journeys` is the regression set the executor re-verifies to
-catch breakage. In goal mode this set is now re-verified by **deterministic replay**
-of stored golden scripts (fast, no per-journey model), so choose by *relevance*
-rather than listing every passing journey:
+catch breakage. In goal mode this set is re-verified by **deterministic replay** of
+stored golden scripts (fast, no per-journey model) at BOTH depths — the lean
+executor and the full pipeline's browser-qa step; a required journey without a
+golden on file falls to the LLM browser-qa lane that same iteration, so the set is
+mechanically covered either way. Choose by *relevance* rather than listing every
+passing journey:
 
 - Always include journeys that share a **blueprint Data-Contract value** with this
   iteration's work — changing a value's computing module or serving endpoint can

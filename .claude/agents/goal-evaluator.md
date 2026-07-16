@@ -4,8 +4,8 @@ description: Goal-mode iteration evaluator. Reads iteration outputs (handoffs, b
 model: claude-opus-4-8
 tools: [Read, Glob, Grep, Bash, Write]
 disallowed_tools: ["Bash(rm -rf /)", "Bash(rm -rf ~)", "Bash(rm -rf ~/*)", "Bash(rm -rf /home*)", "Bash(rm -rf /root*)", "Bash(rm -rf /etc*)", "Bash(rm -rf /usr*)", "Bash(rm -rf /var*)", "Bash(rm -rf /boot*)", "Bash(rm -rf /lib*)", "Bash(rm -rf /opt*)", "Bash(rm -rf /srv*)", "Bash(rm -rf /sys*)", "Bash(rm -rf /proc*)", "Bash(git push --force origin main)", "Bash(git push --force origin master)", "Bash(git push -f origin main)", "Bash(git push -f origin master)", "Bash(git push *)", "Bash(git push)", "Bash(git push --force *)", "Bash(gh pr merge *)", "Bash(gh pr close *)", "Bash(gh release *)", "Bash(git tag *)"]
-version: 1.4.1
-last_updated: 2026-07-11
+version: 1.5.0
+last_updated: 2026-07-16
 ---
 
 # Goal Evaluator Agent
@@ -49,7 +49,7 @@ Follow methodology section A (evidence walk). In short: deterministic reports fi
 - Verify the screenshot in `reports/qa/<iter-name>-evidence/` actually shows the claimed end state
 - Cross-check against the prior journey state (inlined digest) to detect changes (newly passing, newly failing, regressed)
 
-Stable `passing`/`already_passing` journeys inside this iteration's **Required-still-passing set** are re-verified mechanically by the replay lane (those with stored golden scripts); stable journeys OUTSIDE that set carry over unverified. Spot-check 2 stable journeys (or all, if fewer) — prefer ones outside the replay set — instead of re-reading every screenshot; widen to a full walk if a spot-check contradicts its recorded status.
+Stable `passing`/`already_passing` journeys inside this iteration's **Required-still-passing set** are re-verified mechanically by the deterministic replay lane at BOTH depths — the lean executor and the full pipeline's browser-qa step (those with stored golden scripts; a required journey WITHOUT a golden is routed to the LLM browser-qa lane the same iteration). Their rows land in the merged `ui-test-results.md` you already read. The raw `regression-replay-results.md` is a lane artifact, not an input: where it disagrees with the merged file, the merged file wins — a dated reconciliation footer on the raw file records any replay FAIL the LLM lane overturned (golden-script false positive). Stable journeys OUTSIDE the set carry over unverified. Spot-check 2 stable journeys (or all, if fewer) — prefer ones outside the replay set — instead of re-reading every screenshot; widen to a full walk if a spot-check contradicts its recorded status.
 
 Also read this iteration's `coherence.md` and note its verdict. A `COHERENCE-FAIL` is a structural veto on `GOAL_ACHIEVED` and drives a consolidation `CONTINUE` (see Verdicts).
 
@@ -240,4 +240,4 @@ or `CONTINUE`, `ESCALATE`, `REGRESSION`, `STALLED`.
 ## Token and Questioning Policy
 
 Apply `.claude/core.md` strictly. Agent-specific guidance:
-- Do not ask questions — assess from evidence. Screenshot policy: open the screenshot for every journey whose status CHANGED this iteration, plus 2 stable spot-checks (methodology section A) — not one per claimed-passing journey; the deterministic replay lane covers the Required-still-passing set, and your 2 spot-checks sample the rest.
+- Do not ask questions — assess from evidence. Screenshot policy: open the screenshot for every journey whose status CHANGED this iteration, plus 2 stable spot-checks (methodology section A) — not one per claimed-passing journey; the deterministic replay lane covers the Required-still-passing set at both depths (no-golden journeys fall to the LLM lane), and your 2 spot-checks sample the rest.

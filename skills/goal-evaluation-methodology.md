@@ -36,7 +36,12 @@ your overall impression of the iteration.
      status is `unknown`, and you say so.**
 4. **Stable-journey spot-check.** Journeys with unchanged `passing`/`already_passing` status
    that are in this iteration's **Required-still-passing set** (and have a stored golden
-   script) are re-verified mechanically by the replay lane (`demo_runner.py --mode verify`).
+   script) are re-verified mechanically by the replay lane (`demo_runner.py --mode verify`)
+   at BOTH depths — the lean executor and the full pipeline's browser-qa step; a required
+   journey without a golden rides the LLM browser-qa lane the same iteration. Their rows
+   are already merged into `ui-test-results.md` (the raw `regression-replay-results.md` is
+   a lane artifact — the merged file wins where they disagree, and a reconciliation footer
+   records any overturned replay FAIL).
    Stable journeys OUTSIDE that set carry over unverified this iteration. Do NOT re-read
    every screenshot: spot-check 2 stable journeys (or all, if fewer than 2 exist),
    preferring ones outside the replay set; if either spot-check contradicts its recorded
