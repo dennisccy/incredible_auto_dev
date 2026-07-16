@@ -111,8 +111,14 @@ programmatic path with an API key** (`run-goal.sh` without `--interactive`).
   tier's model is unavailable, set an interactive tier override (see Troubleshooting).
   Do **not** set
   `CLAUDE_CODE_SUBAGENT_MODEL` — it overrides every subagent and flattens the tiers.
-- **Fidelity gaps vs headless.** The per-agent `--effort` downgrade and the
-  token-usage telemetry sidecar are **not** carried into interactive mode. The
+- **Fidelity gaps vs headless.** The per-agent `--effort` downgrade is **not**
+  carried into interactive mode. Token-usage telemetry now *is* (pump protocol
+  v2): the pump extracts each dispatch's token counts from its own session
+  transcript and hands them back via an optional usage sidecar, so `claude_usage`
+  events appear in interactive sessions too — best-effort (a dispatch whose
+  extraction fails records no event) and without `total_cost_usd` (interactive
+  dispatches have no per-call USD price). Requires a pump session started AFTER
+  the v2 skill landed (`skills/goal-interactive-dispatch.md`). The
   per-call hard timeout now *does* have an interactive equivalent —
   `CHAIN_DISPATCH_INFLIGHT_TIMEOUT` bounds a single claimed subagent (defaulting to
   `CHAIN_CLAUDE_MAX_RUNTIME_SECONDS`). Per-agent tool/permission isolation and
@@ -194,9 +200,10 @@ timestamped chain log is always at `runs/goal-session-<sid>/engine.log`.
 - **`SubagentStop` hook binding** — the advisory `on-stop-check-artifacts` hook
   fires on main-session stop but not on subagent completion; bind it to
   `SubagentStop` for parity if the reminder is wanted.
-- **Richer in-session telemetry** — the stream-json usage sidecar is absent in
-  interactive mode, so per-agent token/cost capture is reduced; a pump-side
-  accounting could restore it.
+- **Richer in-session telemetry** — ~~the stream-json usage sidecar is absent in
+  interactive mode~~ done (pump protocol v2 usage sidecar, TOKEN-5): per-agent
+  token capture works interactively. Still reduced vs headless: no
+  `total_cost_usd` and no per-call `--effort` attribution.
 - **`.claude/` git retirement** — if the generated `.claude/` tree is later
   removed from git, ensure `.claude/commands/` is regenerated on setup (the
   runtime auto-sync keys on a single agent marker and will not create

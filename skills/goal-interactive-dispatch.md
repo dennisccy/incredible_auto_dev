@@ -1,5 +1,7 @@
 # Goal Mode — Interactive Dispatch (Pump Protocol)
 
+version: 2.0.0 (protocol v2 — usage sidecar; bump with every change to this file)
+
 This skill defines how the foreground Claude Code session (the "pump") runs the
 existing goal-mode engine so that every agent executes as an interactive
 subagent — billed to the interactive plan allowance — instead of a headless
@@ -7,6 +9,14 @@ subagent — billed to the interactive plan allowance — instead of a headless
 all follow this protocol. The engine's loop, stop rules, resume, and state are
 unchanged; only the model invocation is redirected through a file channel
 (`scripts/automation/lib/interactive-dispatch.sh`).
+
+**Protocol version 2** adds the optional per-dispatch usage sidecar (token
+telemetry — see "Usage sidecar" below). Every field it adds is optional: a pump
+that ignores it behaves exactly like protocol v1. **A RUNNING pump predates any
+protocol change** — pump behavior comes from this file as loaded at pump start,
+so after upgrading it, restart the pump session before resuming
+(`.claude/letter-to-future-sessions.md`, "How this system degrades": *"The pump
+protocol changes but a running pump predates it"*).
 
 ## When this runs
 
@@ -62,8 +72,9 @@ calls only, no narration.
    periodically so you make ONE clean blocking call per cycle instead of polling a
    background job (which is what caused the "updates very frequently" churn).
 2. For each returned request path, read the request file. It is JSON with the
-   fields `agent`, `prompt`, `cwd`, `res_path`, and `out`, plus an optional
-   `model`. (Older engines may omit `out`/`model` — both are optional.)
+   fields `agent`, `prompt`, `cwd`, `res_path`, `out`, and `usage_path`, plus an
+   optional `model`. (Older engines may omit `out`/`usage_path`/`model` — all
+   three are optional.)
 3. Dispatch every returned request together: issue one Agent tool call per
    request in a single message, with `subagent_type` set to the request's
    `agent` and the request's `prompt` passed verbatim.
@@ -78,13 +89,17 @@ calls only, no narration.
      dispatch with this exact wrapper as the subagent prompt:
      `Read <that path> IN FULL (paginate past any truncation if it is long) and follow its contents verbatim as your task instructions.`
      Delete that prompt file after you write the request's `.res`.
-4. After each subagent returns: first write the subagent's final message
-   VERBATIM to the request's `out` path (Write tool; skip if the request has no
-   `out` field) — the engine captures it into the session trace for
-   measurement. THEN write its exit code (0 on success, a non-zero number if it
-   clearly failed) to that request's `res_path`, which equals the request path
-   with `.ready` replaced by `.res`. The `.res` write is the completion signal,
-   so it must come last.
+4. After each subagent returns, write the result files in this order:
+   1. the subagent's final message VERBATIM to the request's `out` path (Write
+      tool; skip if the request has no `out` field) — the engine captures it
+      into the session trace for measurement;
+   2. optionally, the usage sidecar to the request's `usage_path` (see "Usage
+      sidecar" below; best-effort — on ANY extraction failure just skip this
+      step, never write guesses);
+   3. its exit code (0 on success, a non-zero number if it clearly failed) to
+      the request's `res_path`, which equals the request path with `.ready`
+      replaced by `.res`. The `.res` write is the completion signal, so it must
+      come LAST — the engine reads `out`/`usage_path` only after it appears.
 5. Loop back to step 1, silently. When step 1 prints `ENGINE_DONE`, leave the loop.
 
 ## Mapping a request to a subagent
@@ -114,6 +129,77 @@ request can be ready in a single cycle. Always dispatch the full set returned by
 one `goal-await-dispatch.sh` call together (multiple Agent calls in one message),
 then write all of their `.res` files. Request file names are unique, so two
 concurrent requests never collide.
+
+## Usage sidecar (token telemetry — protocol v2, optional, best-effort)
+
+Headless dispatches record per-invocation token usage (`claude_usage` telemetry
+events); interactive dispatches historically recorded none. Protocol v2 closes
+that gap: after a subagent returns, the pump MAY write a JSON sidecar to the
+request's `usage_path` (before `.res`). When present and well-formed, the engine
+emits the same `claude_usage` telemetry event the headless sidecar produces
+(same keys, agent attribution included) and enriches the session trace. When
+absent, engine behavior is byte-identical to protocol v1.
+
+Sidecar shape (`usage` object required, all four fields non-negative numbers;
+the rest optional passthrough):
+
+```json
+{"model": "<resolvedModel>", "num_turns": 18, "duration_ms": 318100,
+ "usage": {"input_tokens": 4879, "output_tokens": 54996,
+           "cache_read_input_tokens": 969645, "cache_creation_input_tokens": 89317}}
+```
+
+HONESTY RULE: the numbers must come from the transcript extraction below. If any
+step fails — file missing, ambiguous match, jq error — write NO sidecar (the
+engine treats absence as "unknown", which is the correct answer). NEVER estimate
+or fabricate counts. Do not put a `total_cost_usd` in the sidecar: the transcript
+does not expose cost, and interactive-plan dispatches have no per-call USD price.
+
+Extraction recipe (one Bash call per dispatch, after the subagent returns and
+before writing `.res`; run it QUIETLY per the output discipline). Substitute
+`<AGENT_TYPE>` with the `subagent_type` you dispatched and `<USAGE_PATH>` with
+the request's `usage_path`:
+
+```bash
+sid="${CLAUDE_CODE_SESSION_ID:?}"   # exported to every Bash tool call
+t="$(ls -t "$HOME"/.claude/projects/*/"$sid".jsonl 2>/dev/null | head -1)"
+[ -s "$t" ] || exit 0
+# Newest completed dispatch of this agent type in the pump's own transcript.
+row="$(jq -c --arg a "<AGENT_TYPE>" \
+  'select(.toolUseResult.agentType? == $a) | .toolUseResult | {agentId, resolvedModel, totalDurationMs}' \
+  "$t" 2>/dev/null | tail -1)"
+[ -n "$row" ] || exit 0
+id="$(printf '%s' "$row" | jq -r '.agentId // empty')"
+a="${t%.jsonl}/subagents/agent-$id.jsonl"
+[ -s "$a" ] || exit 0
+# Per-dispatch totals = per-message usage summed over the subagent transcript,
+# deduplicated by message.id (streaming snapshots repeat ids; keep each id's
+# LAST row). This matches the run-cumulative semantics of the headless sidecar.
+jq -s --argjson meta "$row" '
+  [.[] | select(.type=="assistant" and .message.usage != null)]
+  | group_by(.message.id) | map(.[-1].message.usage)
+  | {model: ($meta.resolvedModel // null), num_turns: length,
+     duration_ms: ($meta.totalDurationMs // 0),
+     usage: {input_tokens:                (map(.input_tokens // 0) | add // 0),
+             output_tokens:               (map(.output_tokens // 0) | add // 0),
+             cache_read_input_tokens:     (map(.cache_read_input_tokens // 0) | add // 0),
+             cache_creation_input_tokens: (map(.cache_creation_input_tokens // 0) | add // 0)}}
+' "$a" > "<USAGE_PATH>" 2>/dev/null || rm -f "<USAGE_PATH>"
+```
+
+Caveats:
+- Do NOT use the parent transcript's `toolUseResult.usage` / `totalTokens` as
+  the counts — they are a final-API-call snapshot, not the dispatch total
+  (verified: they equal the subagent transcript's last row and under-report
+  earlier calls).
+- If you dispatched two or more concurrent requests with the SAME agent type,
+  `tail -1` may mis-attribute. Disambiguate by also comparing
+  `.toolUseResult.prompt` against the prompt you dispatched (first ~120 chars);
+  if it stays ambiguous, skip the sidecar for those dispatches.
+- This reads the Claude Code transcript format observed on CLI 2.1.205/2.1.206
+  (`~/.claude/projects/<project-slug>/<session>.jsonl` +
+  `<session>/subagents/agent-<id>.jsonl`). If a future CLI changes it, the
+  recipe fails closed (no sidecar, dispatch unaffected).
 
 ## Heartbeat & in-flight claims
 

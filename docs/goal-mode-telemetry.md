@@ -129,8 +129,8 @@ Written by `run-goal.sh` after each iteration when `--push-per-iter` is enabled.
 
 To enable: pass `--push-per-iter` (and optionally `--push-branch <name>`) to `run-goal.sh`. See [goal-mode-quickstart.md](goal-mode-quickstart.md) for the full flow.
 
-### `claude_usage` (default-on, headless)
-Written by `claude_with_quota_retry` after a successful Claude invocation when `CHAIN_TELEMETRY_TOKENS=true` — which is the **default** for the headless backend (`lib/quota-retry.sh`). Captures Claude API usage from the stream-json `result` event via `lib/claude_stream_renderer.py`. Set `CHAIN_TELEMETRY_TOKENS=false` to opt out. **Interactive-pump limitation:** the pump protocol carries no usage field, so sessions run through the interactive backend record no `claude_usage` events (durations and all other events are unaffected).
+### `claude_usage` (default-on headless; best-effort interactive)
+Written by `claude_with_quota_retry` after a successful Claude invocation when `CHAIN_TELEMETRY_TOKENS=true` — which is the **default** for the headless backend (`lib/quota-retry.sh`). Captures Claude API usage from the stream-json `result` event via `lib/claude_stream_renderer.py`. Set `CHAIN_TELEMETRY_TOKENS=false` to opt out. **Interactive-pump path (protocol v2, TOKEN-5):** the pump extracts each dispatch's token totals from its own Claude Code session transcript (`~/.claude/projects/<project>/<session>/subagents/agent-<id>.jsonl`, per-message usage summed — the recipe lives in `skills/goal-interactive-dispatch.md`) and writes them to the request's `usage_path` sidecar; `lib/interactive-dispatch.sh` validates it and emits the same event through the same telemetry helper. Best-effort: a pre-v2 pump, a failed extraction, or a malformed sidecar (skipped with one warning) records no event for that dispatch — absence means "unknown", never estimated. Interactive events omit `total_cost_usd` (no per-call USD price on the interactive plan; the analyzer's cost column reads 0 for them).
 
 | Field | Type | Description |
 |---|---|---|

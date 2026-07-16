@@ -1098,26 +1098,56 @@ benchmark (or a real session's telemetry) before AND after (G8).
 - **Trigger:** telemetry shows the audit-fail full-rerun firing more than rarely.
 
 ### TOKEN-5 · Interactive pump token-usage telemetry
-- **Priority:** P1 · **Effort:** M · **Risk:** MED · **Status:** TODO
+- **Priority:** P1 · **Effort:** M · **Risk:** MED · **Status:** IN-PROGRESS *(2026-07-16:
+  contract + engine parse + extraction recipe shipped, evals green; remaining: G8
+  fresh-session certification + first REAL pump session showing `claude_usage` rows —
+  requires a pump started after this change, per the restart rule)*
+- **Feasibility finding (2026-07-16 — Outcome A, a real path EXISTS):** a pump session
+  CAN obtain per-dispatch token counts zero-spend from its own Claude Code transcript
+  (verified live on CLI 2.1.205/2.1.206): `CLAUDE_CODE_SESSION_ID` is exported to Bash
+  tool calls, and `~/.claude/projects/*/<sid>.jsonl` exists for the running session.
+  Each Task dispatch leaves a parent-transcript `toolUseResult` row (`{agentId,
+  agentType, resolvedModel, totalDurationMs, ...}`) plus a subagent transcript
+  `<sid>/subagents/agent-<agentId>.jsonl`; summing its per-message `usage` rows
+  deduped by `message.id` (streaming snapshots repeat ids) yields the dispatch totals
+  — recipe output cross-checked by an independent Python sum (agent af4c552: 16 msgs →
+  input 4,915 / output 44,823 / cache-read 563,877 / cache-create 67,486) and accepted
+  by the engine validator. CAUTION (encoded in the skill): `toolUseResult.usage` /
+  `totalTokens` is a final-API-call snapshot — verified equal to the subagent
+  transcript's LAST row — NOT the dispatch total; headless sidecar semantics are
+  run-cumulative (real rows: 46 turns → 90,865 output; 556 turns → 149,017 output), so
+  the transcript SUM is the matching semantics. Other surfaces: OTEL env unset, no
+  `~/.claude` cost files, Task tool_result text carries no counts — the transcript is
+  the ONLY pump-accessible surface. Interactive dispatches expose no USD cost → events
+  omit `total_cost_usd` (absence = unknown; never estimated).
 - **Problem:** interactive (pump) sessions record NO token usage — documented gap
   (`docs/goal-mode-telemetry.md:133`) — so all cost work is blind in interactive mode.
-- **Current state:** headless gets `claude_usage` events from the stream renderer
-  sidecar (`lib/quota-retry.sh:583-593`, `lib/telemetry.sh:139-159`); the pump protocol
-  result files carry no usage field (`skills/goal-interactive-dispatch.md`).
-- **Change spec:** extend the pump result contract with an optional usage object
-  (input/output/cache tokens if the pump session can obtain them); engine side parses
-  and emits `claude_usage` telemetry when present; absent field = today's behavior.
-  Bump the skill's `version:`. Document: a RUNNING pump predates the protocol — restart
-  the pump session after this change (letter's rule).
+- **Current state (shipped by this item):** pump protocol v2 — request JSON carries
+  `usage_path` (idiom of `out`); pump writes a sidecar-shaped usage JSON before `.res`;
+  `_interactive_invoke` validates it (all four token fields non-negative numbers;
+  malformed → ONE warn + skip, never fatal) and reuses `record_claude_usage_from_sidecar`
+  → byte-identical `claude_usage` event shape, `analyze_telemetry.py` UNCHANGED (proved
+  by dispatch self-test 12's mixed pump+headless fixture); the validated sidecar also
+  enriches `trace.jsonl` via the existing recorder sidecar arg. Absent sidecar =
+  byte-identical v1 flow. Skill `version: 2.0.0` + recipe + running-pump-restart rule
+  (letter). Additive protocol composes with REL-3 (pid/host live in heartbeat/claim
+  files, not the usage sidecar).
 - **DoD:** with a stub pump writing the field, telemetry shows usage events; without
-  it, no errors; evals green.
-- **Verify:** stub-pump test + `./scripts/automation/run-evals.sh`
+  it, no errors; evals green — met (dispatch self-tests 9–12). NOT yet stub-free: a
+  real `/goal` pump session must show usage rows before DONE (G8).
+- **Verify:** `bash scripts/automation/lib/interactive-dispatch.sh --self-test` +
+  `./scripts/automation/run-evals.sh`; then live: any post-restart `/goal` session →
+  `python3 scripts/automation/lib/analyze_telemetry.py runs/goal-session-<sid>/telemetry.jsonl`
+  shows per-agent token rows.
 - **Files:** `skills/goal-interactive-dispatch.md` (+ mirror + version),
   `scripts/automation/lib/interactive-dispatch.sh`,
-  `scripts/automation/goal-await-dispatch.sh`, telemetry docs.
+  `scripts/automation/goal-await-dispatch.sh`, `docs/goal-mode-telemetry.md`,
+  `docs/goal-mode-interactive.md`, `.claude/architecture/goal-mode.md`.
 - **Rollback:** engine tolerates the field's absence by design; revert engine parse.
 - **Stop-and-ask:** if the pump genuinely cannot access its own usage numbers, record
-  that finding here and mark STALE — do not fake estimates.
+  that finding here and mark STALE — do not fake estimates. *(Probed 2026-07-16: it
+  can — see Feasibility finding. The no-fabrication rule is now enforced in the skill's
+  HONESTY RULE and the engine's skip-on-invalid.)*
 
 ### TOKEN-6 · Condensation helper for append-only state files
 - **Priority:** P1 · **Effort:** M · **Risk:** LOW · **Status:** TODO

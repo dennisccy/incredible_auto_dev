@@ -15,13 +15,17 @@
 #
 # Channel protocol (one request per agent call):
 #   _interactive_invoke writes   <dir>/req.XXXXXX.ready = {agent, prompt, cwd, res_path,
-#                                out, model?}
+#                                out, usage_path, model?}
 #   the pump reads it, dispatches subagent_type=<agent> (passing `model` as the
 #   Agent tool's model param when present), writes the subagent's final message
-#   verbatim to `out` (best-effort), then writes
+#   verbatim to `out` (best-effort), optionally writes a usage sidecar JSON to
+#   `usage_path` (protocol v2 — token counts for the dispatch, shaped like the
+#   headless stream renderer's sidecar; see skills/goal-interactive-dispatch.md),
+#   then writes
 #                                <dir>/req.XXXXXX.res   = <exit-code>
-#   _interactive_invoke returns that exit code. `out` and `model` are optional
-#   for older pumps — a pump that ignores them still works (no trace captured).
+#   _interactive_invoke returns that exit code. `out`, `usage_path`, and `model`
+#   are optional for older pumps — a pump that ignores them still works (no
+#   trace / token telemetry captured, byte-identical pre-v2 behavior).
 #
 # Request filenames are unique (mktemp), so the concurrent calls produced by
 # run-phase.sh's post-dev fanout never collide. This backend never sleeps until
@@ -94,6 +98,34 @@ _interactive_dispatch_wait_event() {
          "${agent:-unattributed}" "$_status" "$_wait" "$_run")"
 }
 
+# A pump usage sidecar is valid when its `.usage` is an object whose four token
+# fields are ALL non-negative numbers (strings/negatives/missing keys, or a file
+# that isn't JSON at all, are invalid — the caller warns once and skips). Extra
+# fields (model, num_turns, duration_ms, ...) are passed through unvalidated,
+# mirroring what the headless stream-renderer sidecar carries. jq primary,
+# python3 fallback, matching the request-builder's tooling policy.
+_interactive_usage_valid() {
+  local f="$1"
+  if command -v jq >/dev/null 2>&1; then
+    jq -e '.usage | type == "object" and
+      ([.input_tokens, .output_tokens, .cache_read_input_tokens, .cache_creation_input_tokens]
+       | all(type == "number" and . >= 0))' "$f" >/dev/null 2>&1
+    return $?
+  fi
+  python3 - "$f" <<'PYEOF' >/dev/null 2>&1
+import json, sys
+try:
+    u = json.load(open(sys.argv[1])).get("usage")
+except Exception:
+    sys.exit(1)
+ok = isinstance(u, dict) and all(
+    isinstance(u.get(k), (int, float)) and not isinstance(u.get(k), bool) and u.get(k) >= 0
+    for k in ("input_tokens", "output_tokens",
+              "cache_read_input_tokens", "cache_creation_input_tokens"))
+sys.exit(0 if ok else 1)
+PYEOF
+}
+
 # Echo the value following -p / --print in the args (the agent prompt). Empty if absent.
 _interactive_extract_prompt() {
   while [[ $# -gt 0 ]]; do
@@ -150,7 +182,7 @@ _interactive_invoke() {
     [[ -n "$_agent_cap" ]] && _inflight_cap="$_agent_cap"
   fi
 
-  local req res out
+  local req res out usage_f
   local _requeued=""
   local _dispatch_start _claim_epoch hb started _now _ref _age _busy _s
   # Dispatch-attempt loop: normally one pass; a Tier B inflight timeout may
@@ -161,17 +193,18 @@ _interactive_invoke() {
     req="$(mktemp "$dir/req.XXXXXX")"
     res="$req.res"
     out="$req.out"
+    usage_f="$req.usage"
 
     # Build the request JSON. jq handles arbitrary prompt content (quotes,
     # newlines, large prompts) safely; python3 is the fallback.
     if command -v jq >/dev/null 2>&1; then
       jq -cn --arg a "$agent" --arg p "$prompt" --arg c "$PWD" --arg r "$res" \
-        --arg o "$out" --arg m "$model_override" \
-        '{agent:$a, prompt:$p, cwd:$c, res_path:$r, out:$o}
+        --arg o "$out" --arg u "$usage_f" --arg m "$model_override" \
+        '{agent:$a, prompt:$p, cwd:$c, res_path:$r, out:$o, usage_path:$u}
          + (if $m != "" then {model:$m} else {} end)' > "$req"
     else
-      _ID_A="$agent" _ID_P="$prompt" _ID_C="$PWD" _ID_R="$res" _ID_O="$out" _ID_M="$model_override" python3 -c \
-        'import json,os; d={"agent":os.environ["_ID_A"],"prompt":os.environ["_ID_P"],"cwd":os.environ["_ID_C"],"res_path":os.environ["_ID_R"],"out":os.environ["_ID_O"]};
+      _ID_A="$agent" _ID_P="$prompt" _ID_C="$PWD" _ID_R="$res" _ID_O="$out" _ID_U="$usage_f" _ID_M="$model_override" python3 -c \
+        'import json,os; d={"agent":os.environ["_ID_A"],"prompt":os.environ["_ID_P"],"cwd":os.environ["_ID_C"],"res_path":os.environ["_ID_R"],"out":os.environ["_ID_O"],"usage_path":os.environ["_ID_U"]};
 m=os.environ.get("_ID_M","");
 d.update({"model":m} if m else {});
 print(json.dumps(d))' > "$req"
@@ -216,7 +249,7 @@ print(json.dumps(d))' > "$req"
           _ref="$(stat -c %Y "$started" 2>/dev/null || stat -f %m "$started" 2>/dev/null || echo "$_now")"
           _age=$(( _now - _ref ))
           if [[ "$_age" -gt "$_inflight_cap" ]]; then
-            rm -f "$req.ready" "$started" 2>/dev/null || true
+            rm -f "$req.ready" "$started" "$usage_f" 2>/dev/null || true
             if [[ -z "$_requeued" && "${CHAIN_DISPATCH_REQUEUE_ON_TIMEOUT:-true}" == "true" ]]; then
               _requeued=1
               echo "[interactive-dispatch] claimed agent '$agent' exceeded inflight timeout (${_age}s > ${_inflight_cap}s) — requeueing once before giving up." >&2
@@ -262,10 +295,29 @@ print(json.dumps(d))' > "$req"
   fi
   _interactive_dispatch_wait_event "ok" "$rc"
 
+  # Usage sidecar (protocol v2, best-effort). A v2 pump writes per-dispatch
+  # token counts to $usage_f BEFORE $res, shaped like the headless stream
+  # renderer's $CHAIN_CLAUDE_USAGE_SIDECAR — so the SAME telemetry helper
+  # emits the same claude_usage event (agent attribution included) and the
+  # trace recorder spreads it, with no analyzer changes. Absent file = pre-v2
+  # pump = today's behavior. Malformed content: one warn, skip, never fatal.
+  local _usage_sidecar=""
+  if [[ -s "$usage_f" ]]; then
+    if _interactive_usage_valid "$usage_f"; then
+      _usage_sidecar="$usage_f"
+      if declare -F record_claude_usage_from_sidecar >/dev/null 2>&1; then
+        record_claude_usage_from_sidecar "$usage_f" || true
+      fi
+    else
+      echo "[interactive-dispatch] agent '$agent' returned a malformed usage sidecar — skipping token telemetry for this dispatch." >&2
+    fi
+  fi
+
   # Trace capture (best-effort). The pump writes the subagent's final message
   # to $out before $res; older pumps don't — record a stub so the invocation
   # is still attributed. Model attribution: the explicit override if set, else
-  # the frontmatter model the subagent inherits.
+  # the frontmatter model the subagent inherits (a model in the validated usage
+  # sidecar wins in the trace merge, same as headless).
   if [[ -n "${CHAIN_TRACE_DIR:-}" ]] && declare -F _trace_record_invocation >/dev/null 2>&1; then
     local _dur=$(( $(date +%s) - _dispatch_start ))
     local _out_for_trace="$out"
@@ -279,12 +331,12 @@ print(json.dumps(d))' > "$req"
       _CHAIN_TRACE_MODEL="$(python3 "$(dirname "${BASH_SOURCE[0]}")/agent_permissions.py" model "$agent" 2>/dev/null || true)"
     fi
     _CHAIN_TRACE_EFFORT=""   # effort is not applied on the interactive path
-    _trace_record_invocation "$_out_for_trace" "" "$_dur" "$rc" "$@" || true
+    _trace_record_invocation "$_out_for_trace" "$_usage_sidecar" "$_dur" "$rc" "$@" || true
     [[ "$_out_for_trace" != "$out" ]] && rm -f "$_out_for_trace" 2>/dev/null || true
     _CHAIN_TRACE_MODEL=""
   fi
 
-  rm -f "$res" "$req.ready" "$started" "$out" 2>/dev/null || true
+  rm -f "$res" "$req.ready" "$started" "$out" "$usage_f" 2>/dev/null || true
   return "$rc"
 }
 
@@ -455,6 +507,133 @@ _interactive_dispatch_self_test() {
   wait "$pump" 2>/dev/null || true
   if [[ "$rc" -eq "${DISPATCH_UNAVAILABLE_EXIT_CODE:-70}" ]]; then echo "  PASS interactive-dispatch: requeue into dead pump → 70 via Tier A"; else echo "  FAIL interactive-dispatch: requeue-then-dead (rc=$rc)"; fails=1; fi
   rm -rf "$d"
+
+  # Tests 9-12 — TOKEN-5 usage sidecar. Source the real telemetry lib (restoring
+  # shell options afterwards: telemetry.sh sets -u, the self-test predates it) so
+  # the engine-side emit path runs for real and lands in telemetry.jsonl.
+  local _old_opts; _old_opts="$(set +o)"
+  # shellcheck disable=SC1091
+  source "$(dirname "${BASH_SOURCE[0]}")/telemetry.sh"
+  eval "$_old_opts" 2>/dev/null || true
+  export GOAL_SESSION_ID="td-usage-test"
+
+  # Test 9 — pump writes a valid usage sidecar to the request's usage_path →
+  # one claude_usage telemetry event with the dispatching agent + exact numbers,
+  # the trace recorder is handed that sidecar (not ""), and the sidecar file is
+  # cleaned up with the channel files.
+  d="$(mktemp -d)"; export CHAIN_DISPATCH_DIR="$d"; rc=0
+  local td9; td9="$(mktemp -d)"; export GOAL_SESSION_DIR="$td9"
+  local trace9; trace9="$(mktemp -d)"; export CHAIN_TRACE_DIR="$trace9"
+  _trace_record_invocation() {  # stub: capture the sidecar arg while it is live
+    [[ -n "${2:-}" && -s "${2:-/nonexistent}" ]] && cp "$2" "$CHAIN_TRACE_DIR/sidecar-as-seen.json" 2>/dev/null
+  }
+  CHAIN_PUMP_HEARTBEAT_TIMEOUT=3600 CHAIN_DISPATCH_INFLIGHT_TIMEOUT=3600
+  ( for _ in $(seq 1 50); do
+      r="$(find "$d" -maxdepth 1 -name 'req.*.ready' 2>/dev/null | head -1)"
+      if [[ -n "$r" ]]; then
+        u="$(sed -n 's/.*"usage_path":"\([^"]*\)".*/\1/p' "$r")"
+        if [[ -n "$u" ]]; then
+          printf '{"model":"claude-test-usage","num_turns":7,"duration_ms":4200,"usage":{"input_tokens":111,"output_tokens":222,"cache_read_input_tokens":333,"cache_creation_input_tokens":44}}\n' > "$u"
+          echo 0 > "${r%.ready}.res"
+        else
+          echo 9 > "${r%.ready}.res"   # usage_path missing from request JSON
+        fi
+        break
+      fi
+      sleep 0.1
+    done ) &
+  pump=$!
+  CHAIN_DISPATCH_POLL_SECONDS=0.2 _interactive_invoke -p "usage sidecar test" || rc=$?
+  wait "$pump" 2>/dev/null || true
+  unset -f _trace_record_invocation
+  local _urow
+  _urow="$(jq -c 'select(.event=="claude_usage")' "$td9/telemetry.jsonl" 2>/dev/null | head -1)"
+  if [[ "$rc" -eq 0 && -n "$_urow" ]] \
+     && [[ "$(printf '%s' "$_urow" | jq -r '.agent')" == "developer" ]] \
+     && [[ "$(printf '%s' "$_urow" | jq -r '.usage.output_tokens')" == "222" ]] \
+     && [[ "$(printf '%s' "$_urow" | jq -r '.usage.cache_creation_input_tokens')" == "44" ]] \
+     && [[ "$(printf '%s' "$_urow" | jq -r '.model')" == "claude-test-usage" ]] \
+     && grep -q '"output_tokens":222' "$trace9/sidecar-as-seen.json" 2>/dev/null \
+     && ! find "$d" -maxdepth 1 -name 'req.*.usage' 2>/dev/null | grep -q .; then
+    echo "  PASS interactive-dispatch: valid usage sidecar → claude_usage event (agent+numbers) + trace sidecar + cleanup"
+  else
+    echo "  FAIL interactive-dispatch: usage sidecar emit (rc=$rc, row=${_urow:-missing}, trace=$(cat "$trace9/sidecar-as-seen.json" 2>/dev/null || echo missing))"; fails=1
+  fi
+  rm -rf "$d" "$trace9"; unset CHAIN_TRACE_DIR
+
+  # Test 10 — no usage sidecar written (an older pump): byte-identical behavior,
+  # no claude_usage event, no usage warning on stderr.
+  d="$(mktemp -d)"; export CHAIN_DISPATCH_DIR="$d"; rc=0
+  local td10; td10="$(mktemp -d)"; export GOAL_SESSION_DIR="$td10"
+  local err10; err10="$(mktemp)"
+  ( for _ in $(seq 1 50); do
+      r="$(find "$d" -maxdepth 1 -name 'req.*.ready' 2>/dev/null | head -1)"
+      if [[ -n "$r" ]]; then echo 0 > "${r%.ready}.res"; break; fi
+      sleep 0.1
+    done ) &
+  pump=$!
+  CHAIN_DISPATCH_POLL_SECONDS=0.2 _interactive_invoke -p "no usage sidecar" 2>"$err10" || rc=$?
+  wait "$pump" 2>/dev/null || true
+  if [[ "$rc" -eq 0 ]] \
+     && ! grep -q 'claude_usage' "$td10/telemetry.jsonl" 2>/dev/null \
+     && ! grep -q 'usage' "$err10"; then
+    echo "  PASS interactive-dispatch: absent usage sidecar → no event, no warnings, rc flows"
+  else
+    echo "  FAIL interactive-dispatch: absent-sidecar path (rc=$rc, stderr=$(cat "$err10"))"; fails=1
+  fi
+  rm -rf "$d" "$td10"; rm -f "$err10"
+
+  # Test 11 — malformed usage sidecars (string tokens; negative tokens) are
+  # tolerated loudly: no claude_usage event, exactly ONE warn line per dispatch,
+  # exit code still flows (never a crash).
+  local _bad _n=0
+  for _bad in \
+    '{"usage":{"input_tokens":"abc","output_tokens":222,"cache_read_input_tokens":333,"cache_creation_input_tokens":44}}' \
+    '{"usage":{"input_tokens":111,"output_tokens":-5,"cache_read_input_tokens":333,"cache_creation_input_tokens":44}}'; do
+    _n=$((_n+1))
+    d="$(mktemp -d)"; export CHAIN_DISPATCH_DIR="$d"; rc=0
+    local td11; td11="$(mktemp -d)"; export GOAL_SESSION_DIR="$td11"
+    local err11; err11="$(mktemp)"
+    ( for _ in $(seq 1 50); do
+        r="$(find "$d" -maxdepth 1 -name 'req.*.ready' 2>/dev/null | head -1)"
+        if [[ -n "$r" ]]; then
+          u="$(sed -n 's/.*"usage_path":"\([^"]*\)".*/\1/p' "$r")"
+          [[ -n "$u" ]] && printf '%s\n' "$_bad" > "$u"
+          echo 0 > "${r%.ready}.res"
+          break
+        fi
+        sleep 0.1
+      done ) &
+    pump=$!
+    CHAIN_DISPATCH_POLL_SECONDS=0.2 _interactive_invoke -p "malformed usage $_n" 2>"$err11" || rc=$?
+    wait "$pump" 2>/dev/null || true
+    if [[ "$rc" -eq 0 ]] \
+       && ! grep -q 'claude_usage' "$td11/telemetry.jsonl" 2>/dev/null \
+       && [[ "$(grep -c 'malformed usage' "$err11")" == "1" ]]; then
+      echo "  PASS interactive-dispatch: malformed usage sidecar #$_n → skipped with one warn, rc flows"
+    else
+      echo "  FAIL interactive-dispatch: malformed usage #$_n (rc=$rc, warns=$(grep -c 'malformed usage' "$err11" 2>/dev/null), stderr=$(cat "$err11"))"; fails=1
+    fi
+    rm -rf "$d" "$td11"; rm -f "$err11"
+  done
+
+  # Test 12 — analyze_telemetry.py aggregates the pump-emitted row (Test 9's
+  # telemetry.jsonl) alongside a hand-built headless-shaped row with NO analyzer
+  # changes: per-agent buckets and totals come out right.
+  printf '%s\n' '{"ts":"2026-07-16T00:00:00Z","session_id":"td-usage-test","iter":1,"event":"claude_usage","cli":"claude","agent":"reviewer","model":"claude-sonnet-5","num_turns":3,"duration_ms":1000,"total_cost_usd":0.01,"is_error":false,"usage":{"input_tokens":500,"output_tokens":100,"cache_read_input_tokens":4000,"cache_creation_input_tokens":0}}' >> "$td9/telemetry.jsonl"
+  local _agg
+  _agg="$(python3 "$(dirname "${BASH_SOURCE[0]}")/analyze_telemetry.py" --json "$td9/telemetry.jsonl" 2>/dev/null)"
+  if [[ -n "$_agg" ]] \
+     && [[ "$(printf '%s' "$_agg" | jq -r '.["td-usage-test"].by_agent.developer["gen_ai.usage.output_tokens"]')" == "222" ]] \
+     && [[ "$(printf '%s' "$_agg" | jq -r '.["td-usage-test"].by_agent.reviewer["gen_ai.usage.output_tokens"]')" == "100" ]] \
+     && [[ "$(printf '%s' "$_agg" | jq -r '.["td-usage-test"].total.invocations')" == "2" ]] \
+     && [[ "$(printf '%s' "$_agg" | jq -r '.["td-usage-test"].by_model["claude-test-usage"]["gen_ai.usage.input_tokens"]')" == "111" ]]; then
+    echo "  PASS interactive-dispatch: analyze_telemetry aggregates mixed pump+headless rows unchanged"
+  else
+    echo "  FAIL interactive-dispatch: analyzer mixed-fixture aggregation (got: $(printf '%s' "$_agg" | head -c 300))"; fails=1
+  fi
+  rm -rf "$td9"
+  unset GOAL_SESSION_DIR GOAL_SESSION_ID
 
   if [[ "$fails" -eq 0 ]]; then echo "interactive-dispatch self-test: OK"; else echo "interactive-dispatch self-test: FAILED"; fi
   return "$fails"
