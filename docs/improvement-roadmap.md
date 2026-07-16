@@ -967,16 +967,19 @@ benchmark (or a real session's telemetry) before AND after (G8).
 - **Trigger:** telemetry shows template reads are a measurable share of input tokens.
 
 ### TOKEN-2 · Tier experiment: goal-decomposer strong→standard
-- **Priority:** P1 · **Effort:** S · **Risk:** MED · **Status:** IN-PROGRESS
-  (experiment launched 2026-07-15 on branch `experiment/token-2-decomposer-standard`,
-  user-approved G1 spend session; the 2026-07-14 deferred-by-user-ordering note is
-  closed — blockers EVO-3 + REL-1 were already DONE) *(absorbed: README
-  Token-Opt Tier-2; the orchestrator half is already DONE — see §17 ledger)*
+- **Priority:** P1 · **Effort:** S · **Risk:** MED · **Status:** DONE
+  (**ADOPTED 2026-07-16, user-confirmed** — experiment ran 2026-07-15→16 on branch
+  `experiment/token-2-decomposer-standard` under the user-approved G1 spend session
+  and merged on the explicit ADOPT confirm; the decomposer now runs the standard
+  tier with effort max; judges unchanged on strong; single-line rollback stands)
+  *(absorbed: README Token-Opt Tier-2; the orchestrator half is already DONE —
+  see §17 ledger)*
 - **Problem:** the decomposer runs on the strong tier every iteration; spec-writing may
   be within standard-tier reach now that it receives the goal slice + journey digest.
-- **Current state:** `agents/goal-decomposer/agent.yaml` `model_tier: strong`;
-  goal-evaluator MUST stay strong (adversarial judgment — old README said the same);
-  judge-effort guard (D4) stays regardless of tier.
+- **Current state (post-adopt):** `agents/goal-decomposer/agent.yaml`
+  `model_tier: standard` (v2.0.0, adopted 2026-07-16); goal-evaluator stays strong
+  (adversarial judgment — old README said the same); judge-effort guard (D4)
+  unchanged and still covers the decomposer.
 - **Blast-radius proof (2026-07-15, on the experiment branch):**
   `agent_permissions.py model/effort` across all 20 agents, before vs after the flip
   + resync — exactly one row changed: goal-decomposer `claude-opus-4-8 → claude-sonnet-5`
@@ -1004,9 +1007,12 @@ benchmark (or a real session's telemetry) before AND after (G8).
   examined and passed that architecture explicitly). Developer row +64% inside
   the flat total — part noise (±25% band), part plausible spec-thinness cost
   shift; fixture cannot decompose further. Full graded assessment: the POST in
-  `benchmarks/experiments.md`. **Awaiting the user's ADOPT/REVERT confirm**
-  (branch merges only on confirm; STALE-with-evidence remains a fully
-  successful outcome).
+  `benchmarks/experiments.md`. **Decision: ADOPT — user-confirmed 2026-07-16;
+  branch merged to main.** Watch item for real sessions: if decomposer spec
+  quality shows pain live (unledgered interpretation calls, downstream developer
+  cost inflation, review fails traceable to spec gaps), the rollback is the
+  single `model_tier` line + resync (this entry's Rollback), and the evidence
+  here is the before/after baseline.
 - **Change spec:** flip `model_tier` to `standard` on a branch; run EVO-3 benchmark +
   REL-1 judgment fixtures before/after; adopt only if spec quality (fixture pass +
   benchmark journeys/iteration) holds. Model-spend class → user approval first (G1).
