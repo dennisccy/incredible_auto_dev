@@ -1099,9 +1099,17 @@ benchmark (or a real session's telemetry) before AND after (G8).
 
 ### TOKEN-5 · Interactive pump token-usage telemetry
 - **Priority:** P1 · **Effort:** M · **Risk:** MED · **Status:** IN-PROGRESS *(2026-07-16:
-  contract + engine parse + extraction recipe shipped, evals green; remaining: G8
-  fresh-session certification + first REAL pump session showing `claude_usage` rows —
-  requires a pump started after this change, per the restart rule)*
+  contract + engine parse + extraction recipe shipped, evals green. Same day, G8: offline
+  half CERTIFIED by a fresh non-implementer session — dispatch self-tests 9–12 green
+  (valid/absent/malformed×2/analyzer-mix), claude sync --check + 113/113 evals green, and
+  the extraction recipe reproduced live on the certifying session's own transcript: the
+  recipe's jq and an independent python sum agree on all four token fields (13 msgs;
+  dedupe by `message.id` is load-bearing — the naive sum over the same 47 raw rows
+  inflates output ~4×), and re-running the recipe fresh on the original probe artifact
+  `agent-af4c552` reproduces the recorded totals exactly (16 msgs → 4,915 / 44,823 /
+  563,877 / 67,486). Restart rule confirmed documented in the skill's protocol-v2 header.
+  Remaining for DONE: first REAL pump session showing `claude_usage` rows — requires a
+  pump started after this change, per the restart rule)*
 - **Feasibility finding (2026-07-16 — Outcome A, a real path EXISTS):** a pump session
   CAN obtain per-dispatch token counts zero-spend from its own Claude Code transcript
   (verified live on CLI 2.1.205/2.1.206): `CLAUDE_CODE_SESSION_ID` is exported to Bash
