@@ -13,6 +13,12 @@ source "$SCRIPT_DIR/lib/common.sh"
 # lets claude_with_quota_retry forward each dispatch's usage sidecar into the
 # session's per-agent economics (TOKEN-8).
 source "$SCRIPT_DIR/lib/telemetry.sh"
+# Deterministic regression-replay lane — ONE implementation shared with the
+# lean executor (lib/replay-lane.sh). Engages ONLY for goal-session iterations
+# (see the goal-context block below); plain phase mode never touches it.
+source "$SCRIPT_DIR/lib/replay-lane.sh"
+# shellcheck disable=SC2034  # consumed by lib/replay-lane.sh's log helpers
+REPLAY_LANE_TAG="browser-qa"
 
 PHASE="${1:-}"
 require_phase_arg "$PHASE"
@@ -219,6 +225,61 @@ else
   [[ -n "$_fe_tail" ]] && { echo "[browser-qa] Frontend start log tail (${QA_FRONTEND_LOG:-?}):" >&2; echo "$_fe_tail" >&2; }
 fi
 
+# ── Goal-mode deterministic regression replay (replay-gap fix) ───────────────
+# For goal-session iterations (phase name `goal-<sid>-iter-<N>` — the same
+# regex run-phase.sh keys its evaluator-log pre-trim on) this step runs the
+# SAME two-lane split as the lean executor, via the shared lib/replay-lane.sh:
+#   • the deterministic replay re-verifies the iteration spec's
+#     Required-still-passing journeys that have stored golden scripts —
+#     services are already up here (under the post-dev fanout via
+#     CHAIN_SHARED_SERVICES, or this script's own boot above);
+#   • the LLM lane below covers the remainder (no golden on file, a replay
+#     FAIL to re-confirm, or the CHAIN_REGRESSION_REPLAY=false hatch) through
+#     the GOAL-MODE REGRESSION LANES prompt addendum;
+#   • after the dispatch the lanes merge into the single authoritative
+#     ui-test-results.md the goal-evaluator and the achievement gate read.
+# Plain phase mode: the name never matches, every variable below keeps its
+# empty/default value, and the dispatch prompt is byte-identical to before.
+GOAL_REPLAY_ACTIVE="no"
+# Lane dataflow globals — set here (and reassigned by the lib), consumed inside
+# lib/replay-lane.sh functions shellcheck cannot follow (computed source path).
+_use_replay="no"; R_REPLAY=""; REPLAY_FAILED=""
+# shellcheck disable=SC2034
+R_LLM=""
+REQUIRED_JOURNEYS=""
+_llm_out="$UI_TEST_RESULTS"
+_goal_lanes_note=""
+if [[ "$PHASE" =~ ^goal-(.+)-iter-[0-9]+$ ]]; then
+  GOAL_REPLAY_ACTIVE="yes"
+  replay_lane_paths "$PHASE"
+  # shellcheck disable=SC2034
+  REQUIRED_JOURNEYS="$(replay_lane_spec_journeys 'Required-still-passing' "$SPEC")"
+  replay_lane_partition_and_verify "$PHASE"
+  if [[ "$_use_replay" == "yes" ]]; then
+    _llm_out="$LLM_RESULTS"
+  fi
+  _llm_regr_set="$(replay_lane_llm_regression_set)"
+  _goal_lanes_note="
+
+GOAL-MODE REGRESSION LANES (goal-session iteration — IN ADDITION to the test plan):
+$(if [[ "$_use_replay" == "yes" && -n "${R_REPLAY// /}" ]]; then
+  echo "- Deterministic replay has ALREADY re-verified these Required-still-passing journeys from stored golden scripts: ${R_REPLAY% }. Do NOT re-test them and do NOT emit rows for them — their rows merge into the results automatically after your run. (If a test-plan case you execute anyway covers one, that is fine; your row supersedes the replay's.)"
+fi)
+$(if [[ -n "${_llm_regr_set// /}" ]]; then
+  echo "- ALSO execute these regression journeys this run: ${_llm_regr_set% }. For each: read its numbered steps + Acceptance line from the \"Must-have user journeys\" section of docs/goal.md, execute it like a test case, and add a results-table row using the journey ID as the Test ID (e.g. UT-J-01)."
+fi)
+$(if [[ -n "${REPLAY_FAILED// /}" ]]; then
+  echo "- The replay lane flagged possible regression(s) on: ${REPLAY_FAILED% } (already included in the list above). Re-confirm each by executing the journey yourself; if it passes, the replay FAIL was a stale golden script — repair that journey's golden so the next iteration replays clean."
+fi)
+
+GOLDEN REPLAY SCRIPTS (goal-mode regression speedup): for every journey you verify
+PASS, ALSO write a self-contained deterministic replay script to
+$JOURNEY_SCRIPTS_DIR/<J-XX>.json (overwrite if present), IMMEDIATELY after that
+journey passes — follow the 'Golden replay script' section of your agent
+instructions for the exact JSON shape. Best-effort: if you cannot produce one for
+a journey, skip it (that journey just falls back to the LLM lane next time)."
+fi
+
 SERVICES_NOTE="Note: browser-qa-phase.sh manages backend (${BACKEND_HEALTH_URL}, log: ${QA_BACKEND_LOG}) and frontend (${FRONTEND_URL}, log: ${QA_FRONTEND_LOG}). Services are restarted automatically if they die during quota-retry sleeps."
 
 # Pre-retry hook — revive any services that died during a long quota sleep
@@ -240,7 +301,7 @@ Agent instructions: .claude/agents/browser-qa-agent.md  <-- read this first
 Skill: .claude/skills/browser-workflow-executor.md  <-- read for Chrome MCP technique
 
 UI test plan: $UI_TEST_PLAN  <-- execute each test case in this file
-UI surface map: $UI_SURFACE_MAP
+UI surface map: $UI_SURFACE_MAP${_goal_lanes_note}
 
 Frontend URL: $FRONTEND_URL
 Frontend available: $FRONTEND_AVAILABLE
@@ -258,7 +319,7 @@ Execute the test plan:
 - Take screenshots for key states and save to reports/qa/${PHASE}-evidence/
 - For failures: record exact failure description
 
-Write your results to: $UI_TEST_RESULTS
+Write your results to: $_llm_out
 Use template: templates/ui-test-results.md
 
 The report MUST contain a line at the top:
@@ -281,6 +342,25 @@ Then STOP." || _bqa_rc=$?
 if [[ $_bqa_rc -eq 130 || $_bqa_rc -eq 137 || $_bqa_rc -eq 143 ]]; then
   echo "[browser-qa] Killed by signal (exit $_bqa_rc) — leaving artifacts untouched so resume can re-run this step." >&2
   exit "$_bqa_rc"
+fi
+
+# ── Goal-mode lane merge (replay + LLM → the authoritative results file) ─────
+# LLM listed last → wins on any journey both lanes touched (e.g. a replay-FAIL
+# re-confirm); the shared merge also reconciles the raw replay artifact when a
+# FAIL was overturned. Runs BEFORE the no-results stub check below, so an
+# LLM-lane crash still leaves the replay lane's REAL rows in ui-test-results.md
+# (never a stub) — the goal-evaluator and the achievement gate read the merged
+# file either way. Mirrors goal-iter-lean.sh's section tail (REL-11 warn on a
+# dispatch that returned without writing; quota 75 excluded — the outer loop
+# handles it loudly).
+if [[ "$GOAL_REPLAY_ACTIVE" == "yes" ]]; then
+  if [[ ! -f "$_llm_out" && $_bqa_rc -ne ${QUOTA_EXHAUSTED_EXIT_CODE:-75} ]]; then
+    warn_missing_evidence "browser-qa-agent" "$_llm_out"
+  fi
+  if [[ "$_use_replay" == "yes" ]]; then
+    replay_lane_merge_results "$UI_TEST_RESULTS" "$_llm_out"
+  fi
+  replay_lane_golden_coverage "$UI_TEST_RESULTS" "$PHASE"
 fi
 
 # If the agent exited non-zero AND did not leave a results file (common when
