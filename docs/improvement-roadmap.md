@@ -1158,12 +1158,32 @@ benchmark (or a real session's telemetry) before AND after (G8).
   HONESTY RULE and the engine's skip-on-invalid.)*
 
 ### TOKEN-6 · Condensation helper for append-only state files
-- **Priority:** P1 · **Effort:** M · **Risk:** LOW · **Status:** TODO
+- **Priority:** P1 · **Effort:** M · **Risk:** LOW · **Status:** IN-PROGRESS *(2026-07-16:
+  helper + warn-only session-start wiring + protocol §4 cross-ref shipped, 9-case
+  self-test written RED first, wired into run-evals; remaining: G8 fresh-session
+  certification, and the first real session start with a >200-line lessons.md /
+  assumptions.md is the live proof of the wiring. `.claude/anti-patterns.md` (321 lines,
+  over budget) is deliberately NOT condensed by the engine — protocol §4.4 documents the
+  human-triggered `--human` command and dedicated-commit rule for it)*
 - **Problem:** maintenance protocol §4 mandates condensing knowledge files at ~200
   lines, but no mechanism exists (verified) — they grow until someone notices prompt
   bloat.
-- **Current state:** manual-only. Files affected: `runs/.../state/lessons.md`,
-  `assumptions.md` (NEED-5), `.claude/anti-patterns.md` (~287 lines — already over).
+- **Current state (shipped by this item):** `scripts/automation/lib/condense.sh` —
+  deterministic-only (no model calls ever): entries = unfenced `## ` blocks keyed by
+  `iter-<N>` / `Iteration <N>` / `<N>.` (the shipped §2 formats); blocks outside the
+  newest K distinct keys (default 5; `--keep` / `CHAIN_CONDENSE_KEEP_ITERS`) move
+  VERBATIM to `<file>.archive.md` (append-only, header on creation); §2 rule-class
+  lines (`**Rule:**`/`**Prevention:**`/`**Applies to:**`/`**AGENT RULE …:**` +
+  continuations) stay live under a `[condensed:]` heading stub; keyless headings and
+  malformed lines are kept in place with one warning; fenced `## `/rule text is
+  content, not boundaries. Threshold `--min-lines` default 200 (§4). Guards
+  (structural): paths under `.claude/` refused without `--human`;
+  `evaluator-log.md`/`journey-history.json` always refused (§4.3). Idempotent —
+  second run moves nothing. Engine wiring: `run-goal.sh` session start, one warn-only
+  call per session state file (`lessons.md`, `assumptions.md`) over 200 lines behind
+  `CHAIN_AUTO_CONDENSE` (default true), logging one line per condensed file. Files
+  before this item: manual-only; affected: `runs/.../state/lessons.md`,
+  `assumptions.md` (NEED-5), `.claude/anti-patterns.md` (already over budget).
 - **Change spec:** deterministic-first: `scripts/automation/lib/condense.sh <file>` —
   moves entries older than the newest K iterations to `<file>.archive.md` beside it,
   preserving any line matching the "rule" format; prints a summary. Engine calls it

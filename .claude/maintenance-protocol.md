@@ -63,6 +63,16 @@ When any append-only knowledge file exceeds **~200 lines** (`lessons.md`,
 2. Do it in a dedicated commit touching nothing else, message `chore(<file>): condense`.
 3. Never condense `evaluator-log.md` or `journey-history.json` — they are chronological
    records, and the scripts pre-trim/inline them already.
+4. Mechanism: `scripts/automation/lib/condense.sh <file>` does this deterministically —
+   entries older than the newest 5 iteration keys move verbatim to `<file>.archive.md`,
+   lines in the §2 rule formats (`**Rule:**` / `**Prevention:**` / `**Applies to:**` /
+   `**AGENT RULE …:**`) stay in place, no LLM involved. The goal engine runs it warn-only
+   at session start for session state files (`lessons.md`, `assumptions.md`) over 200
+   lines (knob `CHAIN_AUTO_CONDENSE`, default true). It structurally REFUSES paths under
+   `.claude/` unless `--human` is passed — so `.claude/anti-patterns.md` is condensed
+   ONLY by a human running
+   `bash scripts/automation/lib/condense.sh --human .claude/anti-patterns.md`
+   in its own dedicated commit per rule 2; it also refuses rule 3's files outright.
 
 ## 5. Cache stability
 

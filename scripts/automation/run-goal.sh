@@ -1049,6 +1049,25 @@ if [[ "$RUN_MODE" == "resume" && "$PRIOR_STATUS" == "AWAITING_INTENT_REVIEW" ]];
   touch "$INTENT_REVIEW_DONE"
 fi
 
+# ── Session-start condensation of append-only knowledge files (TOKEN-6) ───
+# Protocol §4: when lessons.md / assumptions.md exceed ~200 lines, the
+# deterministic helper moves entries older than the newest 5 iterations to
+# <file>.archive.md, keeping §2 rule-format lines in place. Warn-only: a
+# condense failure NEVER gates the engine. `.claude/` files are refused by
+# condense.sh itself (--human, dedicated commit — structural, not this knob).
+if [[ "${CHAIN_AUTO_CONDENSE:-true}" == "true" ]]; then
+  for _condense_f in "$LESSONS_FILE" "$ASSUMPTIONS_FILE"; do
+    if [[ -f "$_condense_f" && "$(wc -l < "$_condense_f")" -gt 200 ]]; then
+      if _condense_out="$(bash "$SCRIPT_DIR/lib/condense.sh" "$_condense_f" 2>/dev/null)"; then
+        echo "[run-goal] $(printf '%s\n' "$_condense_out" | tail -1)"
+      else
+        echo "[run-goal] WARN: condense.sh failed for $_condense_f — continuing (warn-only)" >&2
+      fi
+    fi
+  done
+  unset _condense_f _condense_out
+fi
+
 # ── Export shared env for invoked agents ──────────────────────────────────
 export GOAL_SESSION_ID="$SESSION_ID"
 export GOAL_SESSION_DIR="$GOAL_SESSION_DIR_LOCAL"

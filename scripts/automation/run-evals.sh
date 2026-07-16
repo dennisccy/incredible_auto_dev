@@ -109,6 +109,15 @@ else
   bash scripts/automation/lib/checkpoint.sh --self-test || true
   _fail "self-test: checkpoint.sh"
 fi
+# Deterministic condensation of append-only state files (TOKEN-6): entry
+# boundaries, rule preservation, .claude/ + chronological-record guards,
+# archive append, idempotency, fence awareness.
+if bash scripts/automation/lib/condense.sh --self-test >/dev/null 2>&1; then
+  _pass "self-test: condense.sh (archive move / rule preservation / guards)"
+else
+  bash scripts/automation/lib/condense.sh --self-test || true
+  _fail "self-test: condense.sh"
+fi
 # Service bootstrap: kill-tree escalation, corrupt-.next detector, and the
 # frontend self-heal recovery (clears a stale .next + cold-rebuilds instead of
 # SKIPPING the demo/browser-QA). Guards the fix for the iter-6 corrupt-.next SKIP.
