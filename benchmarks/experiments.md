@@ -787,3 +787,67 @@ Entry format contract (grep-able; pinned by
   (quoted above) — recommendation ADOPT presented to the user; decision +
   confirm recorded in the TOKEN-2 roadmap entry. Kept scratch:
   /home/dennis-chan/.cache/iad/shared/bench-bench-20260716-0626.PmMupK
+
+---
+
+## PRE bench-20260716-1430 · 2026-07-16T14:30:56Z
+- framework-sha: 13668f3059638cb7f8fa739004e4f70f3bee3584 (dirty: false)
+- fixture: todo-app · max-iter 2
+- hypothesis: TOKEN-7 @ 13668f305963: reviewer per-agent wall + output tokens DOWN vs run E bench-20260716-0626 (hypothesis ~10% per Superpowers-6, direction certain, size uncertain); packet present in scratch for every review round incl. any fix rounds; journeys HOLD 3/3; other agents ≈ flat; status not predicated
+- metrics + prediction (mechanical --predict): journeys_passing_after>=3
+- attribution 2026-07-16 (appended at launch, engine running; the TOKEN-7
+  user-approved G9 spend session, prompt of 2026-07-16): ONE VARIABLE ON THE
+  REVIEWER'S DISPATCH PATH vs control run E `bench-20260716-0626` @
+  d41a38bcfb4f — TOKEN-7's pre-baked review packet (commit 13668f3: packet
+  built post-developer/pre-fork + rebuilt post-fix, packet-first reviewer
+  prompt with the hint reframed to truncation follow-ups, reviewer body
+  1.2.0→1.2.1). WINDOW AUDIT (all 8 commits d41a38bcfb4f..HEAD, file lists
+  read): 083db52 + d19f4a4 + b10ddc6 docs-only; TOKEN-3 0700934 touches
+  run-phase.sh Step 2 behind CHAIN_SKIP_TESTPLAN_IF_PRESENT default FALSE
+  (full-mode-only; benchmark env carries no CHAIN_* knobs and run E dispatched
+  lean ×2); TOKEN-4 2bf5e51 touches run-phase.sh Step 9's audit-rerun cap
+  (full-mode-only; lean has no audit step); TOKEN-5 743c0a3 touches
+  interactive-dispatch.sh/goal-await-dispatch.sh/skills (pump backend only;
+  the benchmark runs headless — those files never execute); TOKEN-6 1ea8853
+  adds lib/condense.sh + a session-start warn-only wiring in run-goal.sh
+  gated on lessons/assumptions >200 lines (a fresh benchmark scratch starts
+  empty — deterministic no-op, no dispatch); TOKEN-7 13668f3 is the variable.
+  None of TOKEN-3/4/5/6 touches the reviewer's path. JUDGMENT FIXTURES
+  MEASURED PRE-LAUNCH ON THIS SHA (the G9 ~$3 gate): reviewer 4/4, every
+  verdict class exact (PASS/PASS_WITH_NOTES/FAIL/FAIL, 123–200s/case) under
+  the packet-first prompt with the packet built per-sandbox by the mirrored
+  helper (packet observed in each case sandbox at the engine path layout) —
+  no class flip, judge resolved claude-sonnet-5 @ max. Offline gates at
+  launch: run-evals 116/116 (incl. the new test-review-packet.sh G3 fixture),
+  test-goal-parallel-bqa 80/80 (expected artifact tree gains the packet in
+  BOTH sequential and fork modes), prompt-mirror byte-gate green with NO new
+  sanctioned rename ($REVIEW_PACKET spelled identically both sides).
+  ENVIRONMENT PREFLIGHT (run D's lesson, mandatory — findings): zero goal
+  engines, zero benchmark/lean processes, zero CDP/automation Chrome
+  consumers, ports 9222/9223/9224/5177/8000/3000 all free, shell env clean of
+  CHAIN_*; remaining ambient load BASELINE-EQUIVALENT to green runs C/E — the
+  user's ordinary desktop Chrome (no debug port; demonstrably running during
+  both green controls) and idle parked claude UIs whose superpowers MCP node
+  servers hold no browser (same class run E accepted; this session is one of
+  them). NAMED RESIDUALS vs E (sub-noise class, cost direction ≈ nil): one
+  packet build per review round (git diff + stdlib python, sub-second,
+  engine-side — no model tokens) and one added engine log line per build.
+  MEASUREMENT PLAN: per-agent reviewer rows (wall, output tokens, cost,
+  turns) vs run E's reviewer row (2 inv, 24,080 out-tok, $1.574, 300,473 ms,
+  37 turns); packet files verified per round in the kept scratch (engine.log
+  "review packet built" lines vs review rounds, rebuilt-after-fix if any fix
+  round occurs); opportunistic TOKEN-8 full-depth check as always. Reviewer
+  wall/out-tok are the graded clauses; size claim (~10%) is graded honestly
+  against the ±25% per-agent noise band (A′↔B↔C precedent) — a null result on
+  size against that band is a finding about fixture sensitivity, not a failed
+  replication. Final status NOT predicated (documented evaluator variance).
+- LAUNCH ABORTED 2026-07-16 ~15:34Z (infrastructure, not engine): the session
+  harness killed the backgrounded runner's process tree ~4 min after launch —
+  iteration-0's verify-only developer was mid-dispatch (engine.log ends
+  mid-stream; no halt banner, no quota event, no packet involvement; ~<$1
+  spent). Engine tree confirmed dead; scratch kept at
+  ~/.cache/iad/shared/bench-bench-20260716-1430.fHcC8L for provenance. No
+  results, no POST. Superseded by the detached relaunch below — SAME sha
+  13668f3059638cb7f8fa739004e4f70f3bee3584, same hypothesis re-registered
+  verbatim, same environment (preflight re-verified at relaunch); the
+  attribution paragraph above carries over to the relaunch unchanged.
