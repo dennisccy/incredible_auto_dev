@@ -99,6 +99,27 @@ MAX_AUDIT_RETRIES=3
 
 log()  { echo "[run-phase] $*"; }
 
+# TOKEN-3: deterministic "spec already lists tests" heuristic for Step 2.
+# Matches a `## Test`-titled section (word-bounded: `## Tests`, `## Test Plan`,
+# `## Test Scenarios` — deliberately NOT the boilerplate `## TESTING REQUIREMENTS`
+# heading that templates/phase-spec.md ships in every spec while still expecting
+# the generator to run) OR >=3 `TC-` test-case lines (the goal-decomposer's TC-
+# scenario contract). Prints the matched reason; rc 0 = spec has its own tests.
+_spec_lists_tests_reason() {
+  local spec="$1" heading tc_count
+  heading="$(grep -m1 -iE '^#{2,}[[:space:]]*tests?\b' "$spec" 2>/dev/null || true)"
+  if [[ -n "$heading" ]]; then
+    echo "spec has a '## Test' section ('${heading}')"
+    return 0
+  fi
+  tc_count="$(grep -cE '(^|[^A-Za-z0-9_])TC-[0-9]' "$spec" 2>/dev/null || true)"
+  if [[ "${tc_count:-0}" -ge 3 ]]; then
+    echo "spec lists ${tc_count} 'TC-' test-case lines (>=3)"
+    return 0
+  fi
+  return 1
+}
+
 # Invoke the iteration-summarizer agent. The agent reads existing artifacts
 # and writes reports/phase-<phase>-iteration-summary.md. Non-blocking — if
 # the agent call fails, the renderer below still runs and falls back to a
@@ -598,11 +619,20 @@ echo ""
 
 # ── Step 2/11: Generate functional test plan ────────────────────────────────
 if [[ "$SKIP_TEST_PLAN" == "false" ]]; then
-  log "Step 2/11 -- Generating functional test plan..."
-  bash "$SCRIPT_DIR/generate-test-plan.sh" "$PHASE" \
-    && log "  Test plan: $TEST_PLAN" \
-    || log "  Warning: test plan generation failed -- QA will run standard checks only"
-  update_status "$PHASE" "in_progress" "test_plan_generated"
+  _tp_skip_reason=""
+  if [[ "${CHAIN_SKIP_TESTPLAN_IF_PRESENT:-false}" == "true" ]] \
+     && _tp_skip_reason="$(_spec_lists_tests_reason "$SPEC")"; then
+    # TOKEN-3: the spec carries its own test list — save the generator dispatch.
+    # NEVER silent: one loud line naming the matched heuristic.
+    log "Step 2/11 -- Test plan: SKIPPED (CHAIN_SKIP_TESTPLAN_IF_PRESENT=true; ${_tp_skip_reason}) -- no generator dispatch; QA runs the spec's own tests."
+    update_status "$PHASE" "in_progress" "test_plan_generated"
+  else
+    log "Step 2/11 -- Generating functional test plan..."
+    bash "$SCRIPT_DIR/generate-test-plan.sh" "$PHASE" \
+      && log "  Test plan: $TEST_PLAN" \
+      || log "  Warning: test plan generation failed -- QA will run standard checks only"
+    update_status "$PHASE" "in_progress" "test_plan_generated"
+  fi
 else
   log "Step 2/11 -- Test plan: skipped (checkpoint: $CURRENT_STEP)"
 fi

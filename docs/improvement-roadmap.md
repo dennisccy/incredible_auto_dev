@@ -1025,18 +1025,36 @@ benchmark (or a real session's telemetry) before AND after (G8).
 - **Trigger:** decomposer cost is a top-3 line in per-agent telemetry.
 
 ### TOKEN-3 · Skip test-plan generation when the spec already lists tests
-- **Priority:** P1 · **Effort:** S · **Risk:** LOW · **Status:** TODO *(absorbed:
-  README Token-Opt Tier-2)*
+- **Priority:** P1 · **Effort:** S · **Risk:** LOW · **Status:** IN-PROGRESS
+  (mechanics landed + sandbox-proven 2026-07-16; ships **default `false`** per G4 —
+  the default flip to `true` is the real finish line and awaits **one observed clean
+  full-mode phase with the skip active**, riding the same wait as TOKEN-8's live DoD:
+  the next natural full-depth iteration/phase) *(absorbed: README Token-Opt Tier-2)*
 - **Problem:** full-mode Step 2 generates a functional test plan even when the phase
   spec already contains explicit test scenarios — a wasted dispatch.
-- **Current state:** `run-phase.sh` Step 2 always runs the qa test-plan generator.
+- **Current state (post-mechanics):** `run-phase.sh` Step 2 gates the generator
+  dispatch behind `CHAIN_SKIP_TESTPLAN_IF_PRESENT` (default `false` = today's
+  always-generate behavior; `true` + heuristic match → dispatch skipped with ONE loud
+  log line naming the matched heuristic, checkpoint still advances to
+  `test_plan_generated`). Heuristic `_spec_lists_tests_reason()`: word-bounded
+  `## Test`-titled section (`## Tests`, `## Test Scenarios`, `## Test Plan` —
+  deliberately NOT the boilerplate `## TESTING REQUIREMENTS` heading, which
+  `templates/phase-spec.md` ships in every spec while its comment says the generator
+  is still expected to run) OR ≥3 `TC-` test-case lines (the decomposer TC- scenario
+  contract, REL-9 — a spec meeting that contract auto-earns the skip once the knob
+  flips).
 - **Change spec:** deterministic heuristic (spec contains a `## Test` section or ≥3
   `TC-` lines) → skip generation and note the skip in the run log; NEVER skip silently.
   Knob `CHAIN_SKIP_TESTPLAN_IF_PRESENT` default `true` after one observed clean phase.
 - **DoD:** sandbox phase with tests-in-spec skips with a logged reason; phase without
-  them generates as today; evals green.
+  them generates as today; evals green. ✅ *Sandbox half met 2026-07-16:*
+  `tests/automation/test-testplan-skip.sh` (17 assertions; full stubbed run-phase.sh
+  pipeline runs: heading-skip + TC-skip with logged reasons and zero generator
+  dispatches on the canary, plain spec generates as today, knob-off default generates,
+  `## TESTING REQUIREMENTS` boilerplate does NOT suppress). *Default flip: pending the
+  observed clean phase above.*
 - **Verify:** `bash -n scripts/automation/run-phase.sh && ./scripts/automation/run-evals.sh`
-- **Files:** `scripts/automation/run-phase.sh`.
+- **Files:** `scripts/automation/run-phase.sh`, `tests/automation/test-testplan-skip.sh`.
 - **Rollback:** knob.
 
 ### TOKEN-4 · Cap the audit-failure full-rerun
