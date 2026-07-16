@@ -34,7 +34,7 @@ Plan → Test Plan → Dev+Review loop → QA loop → Audit loop → Finalize
 
 - **Dev+Review loop**: max 3 attempts. On review FAIL, developer fixes listed issues, reviewer re-evaluates.
 - **QA loop**: max 3 attempts. On QA FAIL, developer fixes, reviewer confirms, QA re-validates.
-- **Audit loop**: max 2 attempts. On audit FAIL, developer + reviewer + QA re-run before auditor re-evaluates.
+- **Audit loop**: max 3 attempts (`MAX_AUDIT_RETRIES`). On audit FAIL, developer + reviewer + full QA re-run before the auditor re-evaluates — but the full (QA-inclusive) rerun is capped at `CHAIN_AUDIT_RERUN_CAP` completed passes per run (default 1; `0` = uncapped, the pre-cap behavior); later FAILs harden in fix-only mode (developer + reviewer + audit re-check, no full QA rerun), loudly logged each time (TOKEN-4).
 - After max retries are exhausted, the pipeline halts with a FAILED status.
 
 ---

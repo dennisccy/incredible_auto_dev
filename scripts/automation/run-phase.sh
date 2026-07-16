@@ -926,6 +926,16 @@ kill_phase_servers
 if [[ "$SKIP_AUDIT" == "false" ]]; then
   log "Step 9/11 -- Post-phase audit (max $MAX_AUDIT_RETRIES attempts)..."
   AUDIT_ATTEMPT=0
+  # TOKEN-4: cap on COMPLETED full (QA-inclusive) hardening reruns per run.
+  # After the cap is spent, later audit FAILs harden in fix-only mode
+  # (dev + review + audit re-check, NO full QA rerun). cap=0 = uncapped
+  # (pre-TOKEN-4 behavior: full rerun on every failed attempt — the rollback).
+  AUDIT_RERUN_CAP="${CHAIN_AUDIT_RERUN_CAP:-1}"
+  if ! [[ "$AUDIT_RERUN_CAP" =~ ^[0-9]+$ ]]; then
+    log "  Warning: CHAIN_AUDIT_RERUN_CAP='$AUDIT_RERUN_CAP' is not a non-negative integer -- using default 1"
+    AUDIT_RERUN_CAP=1
+  fi
+  AUDIT_FULL_RERUNS=0
 
   while true; do
     AUDIT_ATTEMPT=$((AUDIT_ATTEMPT + 1))
@@ -951,7 +961,17 @@ if [[ "$SKIP_AUDIT" == "false" ]]; then
       fail "Audit failed after $MAX_AUDIT_RETRIES attempts. See: $AUDIT_REPORT" "audit_failed"
     fi
 
-    log "  Audit: FAIL (attempt $AUDIT_ATTEMPT) -- applying hardening fixes..."
+    # TOKEN-4: pick the hardening mode for this failed attempt, loudly.
+    if [[ "$AUDIT_RERUN_CAP" -eq 0 ]]; then
+      AUDIT_FIX_MODE="full"
+      log "  Audit: FAIL (attempt $AUDIT_ATTEMPT) -- hardening in FULL-RERUN mode (dev + review + full QA; CHAIN_AUDIT_RERUN_CAP=0: uncapped)..."
+    elif [[ "$AUDIT_FULL_RERUNS" -lt "$AUDIT_RERUN_CAP" ]]; then
+      AUDIT_FIX_MODE="full"
+      log "  Audit: FAIL (attempt $AUDIT_ATTEMPT) -- hardening in FULL-RERUN mode (dev + review + full QA; full rerun $((AUDIT_FULL_RERUNS + 1))/$AUDIT_RERUN_CAP)..."
+    else
+      AUDIT_FIX_MODE="fix-only"
+      log "  Audit: FAIL (attempt $AUDIT_ATTEMPT) -- hardening in FIX-ONLY mode (dev + review + audit re-check, NO full QA rerun; CHAIN_AUDIT_RERUN_CAP=$AUDIT_RERUN_CAP full rerun(s) already spent)..."
+    fi
     ad_rc=0
     escalate_model_on
     _run_step "$SCRIPT_DIR/dev-phase.sh" "$PHASE" || ad_rc=$?
@@ -965,15 +985,22 @@ if [[ "$SKIP_AUDIT" == "false" ]]; then
     _guard_step_rc "$ar_rc" "Step 9 hardening (review)"
     [[ $ar_rc -ne 0 ]] && log "  Warning: review-phase.sh exited with error -- continuing"
 
-    log "  Re-running QA after hardening..."
-    aq_rc=0
-    _run_step "$SCRIPT_DIR/qa-phase.sh" "$PHASE" || aq_rc=$?
-    [[ $aq_rc -eq 75 ]] && { AUDIT_ATTEMPT=$((AUDIT_ATTEMPT - 1)); continue; }
-    _guard_step_rc "$aq_rc" "Step 9 hardening (qa)"
-    if ! verdict_passes "$QA_REPORT"; then
-      fail "QA failed during audit hardening. See: $QA_REPORT" "audit_qa_failed"
+    if [[ "$AUDIT_FIX_MODE" == "full" ]]; then
+      log "  Re-running QA after hardening..."
+      aq_rc=0
+      _run_step "$SCRIPT_DIR/qa-phase.sh" "$PHASE" || aq_rc=$?
+      [[ $aq_rc -eq 75 ]] && { AUDIT_ATTEMPT=$((AUDIT_ATTEMPT - 1)); continue; }
+      _guard_step_rc "$aq_rc" "Step 9 hardening (qa)"
+      if ! verdict_passes "$QA_REPORT"; then
+        fail "QA failed during audit hardening. See: $QA_REPORT" "audit_qa_failed"
+      fi
+      log "  QA: PASS (post-hardening)"
+      # Count only COMPLETED full passes (a quota-interrupted QA above does not
+      # reach here, so it does not spend the cap).
+      AUDIT_FULL_RERUNS=$((AUDIT_FULL_RERUNS + 1))
+    else
+      log "  Skipping full QA rerun (fix-only mode) -- auditor re-checks next."
     fi
-    log "  QA: PASS (post-hardening)"
   done
 
   update_status "$PHASE" "complete" "audit_passed"

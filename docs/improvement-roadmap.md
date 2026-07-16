@@ -1058,25 +1058,43 @@ benchmark (or a real session's telemetry) before AND after (G8).
 - **Rollback:** knob.
 
 ### TOKEN-4 · Cap the audit-failure full-rerun
-- **Priority:** P1 · **Effort:** S · **Risk:** MED · **Status:** TODO *(absorbed:
-  README Token-Opt Tier-2)*
-- **Problem:** on audit FAIL, the hardening loop (`run-phase.sh:855-908`,
-  `MAX_AUDIT_RETRIES=3`) re-runs developer + reviewer + full QA on EVERY failed
-  attempt — the most expensive retry in the pipeline. (The old README cited
-  `:649-679`; the loop has moved — verified 2026-07-06.)
-- **Current state:** full rerun per attempt as above; the dev pass inside it already
-  escalates to the strong tier (`escalate_model_on`, `run-phase.sh:887`; the
-  dev/review-loop equivalent is `:583`); a QA FAIL inside hardening hard-fails the
-  phase (`audit_qa_failed`).
+- **Priority:** P1 · **Effort:** S · **Risk:** MED · **Status:** DONE
+  (landed + sandbox-proven 2026-07-16; the DoD is fully sandbox-satisfiable and met.
+  **Ships default cap=1 by design — deliberately NOT G4 default-off:** the entry
+  itself specifies `CHAIN_AUDIT_RERUN_CAP=1`; this is a cost guard with a tested
+  one-knob rollback (`cap=0` = exact pre-cap behavior) rather than a behavior
+  experiment, and the Stop-and-ask below carries the explicit revert trigger. Do
+  not relitigate the default.) *(absorbed: README Token-Opt Tier-2)*
+- **Problem:** on audit FAIL, the hardening loop (`run-phase.sh`, Step 9 —
+  the loop moves; grep "Post-phase audit loop", `MAX_AUDIT_RETRIES=3`) re-ran
+  developer + reviewer + full QA on EVERY failed attempt — the most expensive retry
+  in the pipeline. (The old README cited `:649-679`; verified moved 2026-07-06 and
+  again 2026-07-16.)
+- **Current state (post-change):** the loop picks a hardening mode per failed
+  attempt, loudly logged: FULL-RERUN (dev + review + full QA) until
+  `CHAIN_AUDIT_RERUN_CAP` COMPLETED full passes are spent (default `1`;
+  quota-interrupted QA does not spend the cap), then FIX-ONLY (dev + review +
+  audit re-check, NO full QA rerun). Identical in both modes: strong-tier dev
+  escalation (`escalate_model_on`) and the `audit_qa_failed` hard-fail whenever
+  full-mode QA runs and fails. The counter is per-run (in-memory): a human resume
+  from `audit_failed` re-earns one full rerun; `MAX_AUDIT_RETRIES=3` still bounds
+  total attempts.
 - **Change spec:** after the FIRST full rerun, subsequent audit FAILs in the same phase
   switch to fix-only mode (developer fix + reviewer + audit re-check, no full QA rerun),
   logged. Knob `CHAIN_AUDIT_RERUN_CAP=1`.
-- **DoD:** sandbox test of the audit-fail path shows the cap; evals green.
-- **Verify:** targeted test + `./scripts/automation/run-evals.sh`
-- **Files:** `scripts/automation/run-phase.sh`.
-- **Rollback:** knob (cap=0 → old behavior).
-- **Stop-and-ask:** if telemetry shows audits legitimately need full reruns (fix-only
-  passes audit but phase ships bugs), revert and mark STALE with evidence.
+- **DoD:** sandbox test of the audit-fail path shows the cap; evals green. ✅
+  2026-07-16: `tests/automation/test-audit-rerun-cap.sh` (17 assertions driving the
+  real run-phase.sh Step-9 loop from an `audit_failed` checkpoint with stubbed step
+  scripts + dispatch canary: attempt 1 hardens FULL, attempt 2+ hardens FIX-ONLY
+  with zero QA dispatches; `cap=0` restores full reruns every attempt; escalation
+  env visible to dev in both modes; `audit_qa_failed` and `audit_failed` exhaustion
+  paths unchanged). Evals green (113).
+- **Verify:** `bash tests/automation/test-audit-rerun-cap.sh && ./scripts/automation/run-evals.sh`
+- **Files:** `scripts/automation/run-phase.sh`, `tests/automation/test-audit-rerun-cap.sh`.
+- **Rollback:** knob (`CHAIN_AUDIT_RERUN_CAP=0` → old behavior; covered by test case B).
+- **Stop-and-ask (STILL LIVE — the revert trigger):** if telemetry shows audits
+  legitimately need full reruns (fix-only passes audit but phases ship bugs), revert
+  to `cap=0` and mark this STALE with evidence.
 - **Trigger:** telemetry shows the audit-fail full-rerun firing more than rarely.
 
 ### TOKEN-5 · Interactive pump token-usage telemetry
