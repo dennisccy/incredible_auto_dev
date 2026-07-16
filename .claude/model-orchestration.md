@@ -136,6 +136,7 @@ An agent's claim about its own work is a hypothesis, not evidence.
 | `CHAIN_ASYNC_SHOWCASE` | default `true`; demo/summary/README/renders run in the background overlapping the next decomposer (CONTINUE/ESCALATE only; joined + committed before the next executor dispatch) | `run-goal.sh` |
 | `CHAIN_SESSION_RETRO` | default `true`; terminal halts (GOAL_ACHIEVED/STALLED/REGRESSION_HALT/BUDGET_EXHAUSTED) freeze a deterministic evidence snapshot to `state/retro-input.md` AND then dispatch the retro-analyst (light tier) to draft `reports/goal-session-<sid>-retro.md` improvement proposals from it (EVO-2); the drafting dispatch is skipped when the digest is missing; resumable pauses never fire either step; non-blocking — set `false` to disable both | `run-goal.sh`, `lib/retro_collect.sh` |
 | `CHAIN_AGENT_EFFORT` | opt-in experiment, e.g. `developer=high`; **judges are refused by a hardcoded guard**; auto-reverted by the telemetry tripwire on quality movement | `lib/agent_permissions.py` |
+| `CHAIN_DOCTOR` | default `true`; run-goal.sh prints the REL-2 preflight doctor table (PASS/WARN/FAIL environment truth) at engine start, WARN-ONLY BY CONSTRUCTION — crash/nonzero/hang all degrade to a log line and the session proceeds; gating exists only as the doctor CLI's own `--strict-doctor` flag (exit 1 on ≥1 FAIL; the engine never passes it) | `run-goal.sh`, `doctor.sh` |
 
 If you disable a gate/routing knob for an experiment, **re-enable it in the same session**
 and say so in your report — a silently disabled gate is the #1 way this system degrades

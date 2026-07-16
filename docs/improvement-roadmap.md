@@ -1465,7 +1465,29 @@ benchmark (or a real session's telemetry) before AND after (G8).
 - **Slices:** (a) evaluator cases + runner; (b) reviewer cases; (c) auditor cases.
 
 ### REL-2 · Preflight doctor
-- **Priority:** P1 · **Effort:** M · **Risk:** LOW · **Status:** TODO
+- **Priority:** P1 · **Effort:** M · **Risk:** LOW · **Status:** IN-PROGRESS
+  *(implemented + tested 2026-07-17: `scripts/automation/doctor.sh` (14 checks, `--only`/
+  `--list`/`--strict-doctor`, advisory by construction — exit 0 unless `--strict-doctor`
+  AND ≥1 FAIL) + warn-only engine wiring (`run_doctor_preflight`, `CHAIN_DOCTOR=true`
+  default, called before `chain_tmp_init` so the table is pre-mutation truth; crash/
+  nonzero/hang all degrade to a log line — proven by a crashing-stub test) +
+  `tests/automation/test-doctor.sh` (44 asserts, PATH-shim fakes, registered in
+  run-evals §2c, ~2s; suite 122/122). Three evidence-born checks beyond the original
+  list: `tmp-health` WRITE-probes the configured tmp root (REL-13 EDQUOT incident —
+  failure mode was exit-1-with-no-output, statfs is blind to tmpfs quotas);
+  `chrome-exclusive` WARNs naming competing chrome PIDs (run D `bench-20260715-0924`
+  lost ~$16 to DevTools-port contention from foreign Chromes); `ambient-env` WARNs on
+  ambient CHAIN_* vars via a snapshot taken at the very top of run-goal.sh before the
+  engine's own exports (`_CHAIN_AMBIENT_AT_START` → `CHAIN_DOCTOR_AMBIENT`; §9
+  measurement discipline records "no ambient CHAIN_ vars" as a precondition).
+  `engine-lock` SKIPs naming REL-4 until that lock ships (staleness verdict when a
+  lock file is present). Chrome MCP detection is config-file truth, zero dispatch
+  spend: `.claude/settings.json` enabledPlugins/allow + plugin cache dir +
+  `.mcp.json`/`~/.claude.json` mcpServers. First real-machine run: 10 PASS / 3 WARN
+  (gh not logged in; uutils timeout, not GNU; 17 chrome-family processes) / 1 SKIP in
+  1.4s — honest findings, reported. REMAINING: G8 fresh-session certification (M
+  effort — implementer never self-certifies); live proof rides the next engine start
+  with `CHAIN_DOCTOR` active.)*
 - **Problem:** sessions die mid-iteration on environment problems that were knowable at
   start (missing playwright, dead Chrome MCP, unauthenticated gh, low disk, stale pump).
 - **Current state:** only GitHub auth is preflighted (`git ls-remote` before the loop,

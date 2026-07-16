@@ -379,6 +379,7 @@ Model tiers: each agent's `model_tier` lives in `agents/<name>/agent.yaml`; tier
 # Utilities
 ./scripts/automation/run-evals.sh                      # offline eval suite (<30s, no API) — run before every framework commit
 bash scripts/automation/install-git-hooks.sh           # OPT-IN pre-commit eval guard (fast subset, <10s) — see Tests
+bash scripts/automation/doctor.sh                      # preflight doctor: PASS/WARN/FAIL environment table (advisory; --only <check>, --list, --strict-doctor)
 ./scripts/automation/generate-test-plan.sh phase-1     # write test plan before dev
 ./scripts/automation/ui-audit-phase.sh phase-1         # standalone UI audit
 ./scripts/automation/check-install.sh "pip install X"  # check install safety

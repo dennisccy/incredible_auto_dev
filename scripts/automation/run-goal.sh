@@ -70,6 +70,12 @@
 # until the quota resets and resumes.
 set -euo pipefail
 
+# REL-2: snapshot the ambient CHAIN_* names NOW — before this script (or the
+# libs it sources) exports its own — so the preflight doctor can report the
+# session-START environment truth (stray knobs silently alter engine behavior;
+# measurement runs demand a clean env).
+_CHAIN_AMBIENT_AT_START="$(compgen -A export CHAIN_ 2>/dev/null | sort | tr '\n' ' ' || true)"
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/lib/common.sh"
 source "$SCRIPT_DIR/lib/telemetry.sh"
@@ -787,6 +793,40 @@ PY
   exit 0
 }
 
+# ── Preflight doctor (REL-2) ──────────────────────────────────────────────
+# Advisory BY CONSTRUCTION: the doctor observes and reports; it must never be
+# able to stop a session (a broken doctor gating the engine would invert its
+# purpose). Every failure path here — missing script, crash, nonzero exit, a
+# hang (bounded by timeout when available) — degrades to a log line and
+# return 0. Strict gating exists only as the doctor CLI's own --strict-doctor
+# flag, never as engine behavior. Knob: CHAIN_DOCTOR (default true).
+# CHAIN_DOCTOR_BIN overrides the script path (test seam).
+run_doctor_preflight() {
+  if [[ "${CHAIN_DOCTOR:-true}" != "true" ]]; then
+    echo "[run-goal] CHAIN_DOCTOR=${CHAIN_DOCTOR:-false} — preflight doctor skipped."
+    return 0
+  fi
+  local _doctor="${CHAIN_DOCTOR_BIN:-$SCRIPT_DIR/doctor.sh}"
+  if [[ ! -f "$_doctor" ]]; then
+    echo "[run-goal] Preflight doctor not found ($_doctor) — skipping (advisory)."
+    return 0
+  fi
+  echo "[run-goal] Preflight doctor (advisory — WARN/FAIL rows never gate; CHAIN_DOCTOR=false to skip):"
+  local _out="" _rc=0 _runner=""
+  command -v timeout >/dev/null 2>&1 && _runner="timeout 90"
+  # shellcheck disable=SC2086  # intentional word-split for the optional runner
+  _out="$(CHAIN_DOCTOR_AMBIENT="${_CHAIN_AMBIENT_AT_START-}" $_runner bash "$_doctor" 2>&1)" || _rc=$?
+  [[ -n "$_out" ]] && printf '%s\n' "$_out"
+  if [[ "$_rc" -ne 0 ]]; then
+    echo "[run-goal] doctor exited rc=$_rc — continuing anyway (the doctor is advisory by construction)."
+    return 0
+  fi
+  local _counts
+  _counts="$(printf '%s\n' "$_out" | grep -m1 -o 'pass=[0-9]* warn=[0-9]* fail=[0-9]* skip=[0-9]*' || true)"
+  echo "[run-goal] doctor: ${_counts:-counts unavailable} — advisory only, see table above."
+  return 0
+}
+
 # ── Intent checkpoint review packet (NEED-7) ──────────────────────────────
 # Assembles runs/goal-session-<sid>/intent-review.md DETERMINISTICALLY — pure
 # read/format of existing artifacts, no model dispatch. Every section fails
@@ -1383,6 +1423,11 @@ on_abort() {
   exit 130
 }
 trap on_abort INT TERM
+
+# Advisory preflight doctor (REL-2): one PASS/WARN/FAIL table of environment
+# truth into the engine log BEFORE anything mutates state (tmp init/janitor
+# sweeps, disk guard) — warn-only by construction, see run_doctor_preflight.
+run_doctor_preflight
 
 # Per-run tmp isolation (lib/chain-tmp.sh): one session-scoped dir now (covers
 # the baseline + the first decomposer); the loop rotates to a per-iteration dir
