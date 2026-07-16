@@ -32,6 +32,11 @@
 #                                     wrote its artifacts is treated like any non-zero exit —
 #                                     callers (run-phase.sh) log a warning and continue.
 #                                     Set to 0 to disable the timeout.
+#   CHAIN_PROMPT_ARGV_MAX             Prompt size in bytes beyond which the prompt is fed to
+#                                     the CLI on stdin instead of argv (default: 100000).
+#                                     Linux caps each single argv/envp string at 128 KiB
+#                                     (MAX_ARG_STRLEN); past it execve fails with E2BIG, so
+#                                     a huge prompt can never ride `-p "<prompt>"`.
 #   CHAIN_CLAUDE_DISABLE_CACHE_HYGIENE Set to "true" to drop the
 #                                     `--exclude-dynamic-system-prompt-sections` flag.
 #                                     Default: flag is added. The flag tells claude to move
@@ -136,6 +141,36 @@ if [[ -z "${_CHAIN_CODEX_RUNTIME_EXPLICIT+x}" ]]; then
   _CHAIN_CODEX_RUNTIME_EXPLICIT="${CHAIN_CODEX_MAX_RUNTIME_SECONDS+set}"
 fi
 : "${CHAIN_CODEX_MAX_RUNTIME_SECONDS:=7200}"
+
+# ── Oversized-prompt routing (execve MAX_ARG_STRLEN) ─────────────────────────
+# Linux caps every SINGLE argv/envp string at MAX_ARG_STRLEN (32 pages = 128
+# KiB): a prompt past the cap can never be passed as one `-p "<prompt>"` argv
+# string — execve fails with E2BIG before the CLI even starts (bash prints
+# "Argument list too long"). Prompts past CHAIN_PROMPT_ARGV_MAX bytes are
+# therefore fed to the CLI on stdin (`claude -p` and `codex exec -` both read
+# the prompt from stdin); below the threshold argv is used exactly as before.
+# 100000 leaves headroom under the 131072 hard cap.
+: "${CHAIN_PROMPT_ARGV_MAX:=100000}"
+
+# Byte length of $1 (${#var} counts characters; LC_ALL=C makes it bytes).
+_prompt_byte_len() {
+  local LC_ALL=C
+  printf '%s' "${#1}"
+}
+
+# Run "$@" with the caller's oversized prompt fed on stdin. Reads the caller's
+# dynamically scoped _CHAIN_PROMPT_STDIN — a plain shell local, NEVER exported:
+# an exported var would ride envp into the child and hit the same E2BIG cap.
+# The process substitution's printf is a shell builtin, so no exec ever
+# carries the prompt. Empty/unset var = run "$@" unchanged with inherited
+# stdin (the below-threshold path — byte-identical historical behavior).
+_invoke_with_prompt_stdin() {
+  if [[ -n "${_CHAIN_PROMPT_STDIN:-}" ]]; then
+    "$@" < <(printf '%s' "$_CHAIN_PROMPT_STDIN")
+  else
+    "$@"
+  fi
+}
 
 # Exit code returned when quota retries are exhausted.
 # 75 = EX_TEMPFAIL (POSIX sysexits.h) — "temporary failure, try again later".
@@ -522,6 +557,24 @@ _claude_invoke() {
   local timeout_retry_count=0
   local tmp_log
 
+  # Oversized-prompt routing: past CHAIN_PROMPT_ARGV_MAX bytes the prompt is
+  # dropped from argv (keeping the -p flag — claude in print mode reads the
+  # prompt from stdin when no positional is given) and _invoke_with_prompt_stdin
+  # feeds it at each call site below. See that helper's comment block for the
+  # MAX_ARG_STRLEN background. Trace capture still receives the original "$@".
+  local -a _args=("$@")
+  local _CHAIN_PROMPT_STDIN=""
+  local _pi
+  for (( _pi=0; _pi + 1 < ${#_args[@]}; _pi++ )); do
+    if [[ "${_args[$_pi]}" == "-p" || "${_args[$_pi]}" == "--print" ]]; then
+      if (( $(_prompt_byte_len "${_args[$((_pi+1))]}") > CHAIN_PROMPT_ARGV_MAX )); then
+        _CHAIN_PROMPT_STDIN="${_args[$((_pi+1))]}"
+        _args=("${_args[@]:0:$((_pi+1))}" "${_args[@]:$((_pi+2))}")
+      fi
+      break
+    fi
+  done
+
   while true; do
     # ── Pre-flight: check sentinel before wasting a claude invocation ────
     local sentinel_remaining sentinel_epoch
@@ -655,12 +708,12 @@ _claude_invoke() {
     # https://www.gnu.org/software/coreutils/manual/html_node/timeout-invocation.html
     if [[ "${_runtime_cap:-0}" -gt 0 ]] && command -v timeout >/dev/null 2>&1; then
       if [[ -n "$_renderer_path" ]]; then
-        timeout --foreground --kill-after=60 "$_runtime_cap" claude "${_claude_extra_args[@]}" "$@" 2>&1 \
+        _invoke_with_prompt_stdin timeout --foreground --kill-after=60 "$_runtime_cap" claude "${_claude_extra_args[@]}" "${_args[@]}" 2>&1 \
           | python3 "$_renderer_path" 2>&1 \
           | tee "$tmp_log"
         exit_code="${PIPESTATUS[0]}"
       else
-        timeout --foreground --kill-after=60 "$_runtime_cap" claude "${_claude_extra_args[@]}" "$@" 2>&1 | tee "$tmp_log"
+        _invoke_with_prompt_stdin timeout --foreground --kill-after=60 "$_runtime_cap" claude "${_claude_extra_args[@]}" "${_args[@]}" 2>&1 | tee "$tmp_log"
         exit_code="${PIPESTATUS[0]}"
       fi
       # GNU timeout returns 124 on SIGTERM, 137 on SIGKILL — log, then retry
@@ -681,12 +734,12 @@ _claude_invoke() {
       fi
     else
       if [[ -n "$_renderer_path" ]]; then
-        claude "${_claude_extra_args[@]}" "$@" 2>&1 \
+        _invoke_with_prompt_stdin claude "${_claude_extra_args[@]}" "${_args[@]}" 2>&1 \
           | python3 "$_renderer_path" 2>&1 \
           | tee "$tmp_log"
         exit_code="${PIPESTATUS[0]}"
       else
-        claude "${_claude_extra_args[@]}" "$@" 2>&1 | tee "$tmp_log"
+        _invoke_with_prompt_stdin claude "${_claude_extra_args[@]}" "${_args[@]}" 2>&1 | tee "$tmp_log"
         exit_code="${PIPESTATUS[0]}"
       fi
     fi
@@ -947,6 +1000,20 @@ _codex_invoke() {
     return 2
   fi
 
+  # Oversized-prompt routing — same MAX_ARG_STRLEN cap as the Claude backend:
+  # past the threshold the prompt becomes the positional `-` (codex exec's
+  # read-prompt-from-stdin sentinel) and _invoke_with_prompt_stdin feeds the
+  # real prompt on stdin at the call sites below. Below the threshold the
+  # positional argv form is used exactly as before. Like this backend's quota
+  # patterns, the stdin form is best-guess until the first real oversized
+  # Codex run — but an argv string past the cap fails E2BIG with certainty,
+  # so this path strictly improves on it.
+  local _CHAIN_PROMPT_STDIN=""
+  if (( $(_prompt_byte_len "$_codex_prompt") > CHAIN_PROMPT_ARGV_MAX )); then
+    _CHAIN_PROMPT_STDIN="$_codex_prompt"
+    _codex_prompt="-"
+  fi
+
   while true; do
     # Sentinel pre-flight
     if [[ -f "$_CODEX_QUOTA_SENTINEL" ]]; then
@@ -1004,24 +1071,24 @@ _codex_invoke() {
     local exit_code
     if [[ "${_codex_runtime_cap:-0}" -gt 0 ]] && command -v timeout >/dev/null 2>&1; then
       if [[ -n "$_renderer_path" ]]; then
-        timeout --foreground --kill-after=60 "$_codex_runtime_cap" \
+        _invoke_with_prompt_stdin timeout --foreground --kill-after=60 "$_codex_runtime_cap" \
           codex "${_codex_extra_args[@]}" 2>&1 \
           | python3 "$_renderer_path" 2>&1 \
           | tee "$tmp_log"
         exit_code="${PIPESTATUS[0]}"
       else
-        timeout --foreground --kill-after=60 "$_codex_runtime_cap" \
+        _invoke_with_prompt_stdin timeout --foreground --kill-after=60 "$_codex_runtime_cap" \
           codex "${_codex_extra_args[@]}" 2>&1 | tee "$tmp_log"
         exit_code="${PIPESTATUS[0]}"
       fi
     else
       if [[ -n "$_renderer_path" ]]; then
-        codex "${_codex_extra_args[@]}" 2>&1 \
+        _invoke_with_prompt_stdin codex "${_codex_extra_args[@]}" 2>&1 \
           | python3 "$_renderer_path" 2>&1 \
           | tee "$tmp_log"
         exit_code="${PIPESTATUS[0]}"
       else
-        codex "${_codex_extra_args[@]}" 2>&1 | tee "$tmp_log"
+        _invoke_with_prompt_stdin codex "${_codex_extra_args[@]}" 2>&1 | tee "$tmp_log"
         exit_code="${PIPESTATUS[0]}"
       fi
     fi

@@ -445,6 +445,98 @@ rm -rf "$HYG"
 # so this test run leaves no shared state (the EXIT trap also clears it).
 rm -f "$_QUOTA_SENTINEL" 2>/dev/null || true
 
+# ── Tests: oversized prompt routing (execve MAX_ARG_STRLEN) ──────────────────
+# Linux caps every single argv/envp string at 128 KiB (32 pages). A prompt past
+# that cap can never be passed as one argv string — execve fails with E2BIG
+# before the CLI starts. The invoke layer must route oversized prompts via
+# stdin (below the threshold argv is used exactly as before).
+
+echo ""
+echo "=== oversized prompt routing tests ==="
+echo ""
+
+BIG=$(mktemp -d)
+mkdir -p "$BIG/bin"
+# Mock claude: records the longest argv string and each arg (one per line),
+# copies stdin verbatim. Never invoked at all under the old code for the
+# oversized case — execve dies with E2BIG first.
+cat > "$BIG/bin/claude" <<'EOF'
+#!/usr/bin/env bash
+max=0
+for a in "$@"; do n=${#a}; (( n > max )) && max=$n; done
+printf '%s' "$max" > "$MOCK_ARGV_MAX_OUT"
+printf '%s\n' "$@" > "$MOCK_ARGS_OUT"
+cat > "$MOCK_STDIN_COPY"
+echo done
+exit 0
+EOF
+chmod +x "$BIG/bin/claude"
+
+bigp="$(head -c 300000 /dev/zero | tr '\0' q)"
+bigp+=$'\nsecond line with "quotes", a \ttab, a trailing space \nand a trailing newline:\n'
+printf '%s' "$bigp" > "$BIG/expected.prompt"
+
+rc=0
+( export PATH="$BIG/bin:$PATH"
+  export MOCK_ARGV_MAX_OUT="$BIG/argv-max" MOCK_ARGS_OUT="$BIG/args" MOCK_STDIN_COPY="$BIG/stdin-copy"
+  export CHAIN_TELEMETRY_TOKENS=false CHAIN_DISABLE_AUTO_WAIT=true CHAIN_AGENT_TIMEOUTS=false
+  unset CHAIN_CURRENT_AGENT CHAIN_TRACE_DIR CHAIN_AGENT_BACKEND
+  claude_with_quota_retry -p "$bigp" < /dev/null >/dev/null 2>&1 ) || rc=$?
+
+[[ $rc -eq 0 ]] \
+  && assert "oversized claude prompt: dispatch succeeds (no E2BIG)" "pass" \
+  || assert "oversized claude prompt: dispatch succeeds (got rc=$rc)" "fail"
+cmp -s "$BIG/expected.prompt" "$BIG/stdin-copy" 2>/dev/null \
+  && assert "oversized claude prompt: reaches the CLI byte-exact via stdin" "pass" \
+  || assert "oversized claude prompt: reaches the CLI byte-exact via stdin" "fail"
+argvmax=$(cat "$BIG/argv-max" 2>/dev/null || echo 999999)
+[[ "$argvmax" -lt 131072 ]] \
+  && assert "oversized claude prompt: no argv string at MAX_ARG_STRLEN (max=$argvmax)" "pass" \
+  || assert "oversized claude prompt: no argv string at MAX_ARG_STRLEN (max=$argvmax)" "fail"
+
+# Small prompt: byte-identical historical behavior — the prompt stays on argv
+# and nothing is fed on stdin.
+rm -f "$BIG/argv-max" "$BIG/args" "$BIG/stdin-copy"
+rc=0
+( export PATH="$BIG/bin:$PATH"
+  export MOCK_ARGV_MAX_OUT="$BIG/argv-max" MOCK_ARGS_OUT="$BIG/args" MOCK_STDIN_COPY="$BIG/stdin-copy"
+  export CHAIN_TELEMETRY_TOKENS=false CHAIN_DISABLE_AUTO_WAIT=true CHAIN_AGENT_TIMEOUTS=false
+  unset CHAIN_CURRENT_AGENT CHAIN_TRACE_DIR CHAIN_AGENT_BACKEND
+  claude_with_quota_retry -p "small prompt stays on argv" < /dev/null >/dev/null 2>&1 ) || rc=$?
+if [[ $rc -eq 0 ]] && grep -qxF "small prompt stays on argv" "$BIG/args" 2>/dev/null \
+   && [[ ! -s "$BIG/stdin-copy" ]]; then
+  assert "small claude prompt: stays on argv, stdin untouched" "pass"
+else
+  assert "small claude prompt: stays on argv, stdin untouched (rc=$rc)" "fail"
+fi
+
+# Codex backend: an oversized prompt must become the stdin-sentinel positional
+# `-` (codex exec reads the prompt from stdin then), byte-exact on stdin.
+cat > "$BIG/bin/codex" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$@" > "$MOCK_ARGS_OUT"
+cat > "$MOCK_STDIN_COPY"
+echo done
+exit 0
+EOF
+chmod +x "$BIG/bin/codex"
+rm -f "$BIG/args" "$BIG/stdin-copy"
+rm -f /tmp/codex-quota-exhausted 2>/dev/null || true
+rc=0
+( export PATH="$BIG/bin:$PATH"
+  export MOCK_ARGS_OUT="$BIG/args" MOCK_STDIN_COPY="$BIG/stdin-copy"
+  export CHAIN_TELEMETRY_TOKENS=false CHAIN_DISABLE_AUTO_WAIT=true CHAIN_AGENT_TIMEOUTS=false
+  export CHAIN_AGENT_BACKEND=codex
+  unset CHAIN_CURRENT_AGENT CHAIN_TRACE_DIR
+  claude_with_quota_retry -p "$bigp" < /dev/null >/dev/null 2>&1 ) || rc=$?
+if [[ $rc -eq 0 ]] && [[ "$(tail -n 1 "$BIG/args" 2>/dev/null)" == "-" ]] \
+   && cmp -s "$BIG/expected.prompt" "$BIG/stdin-copy" 2>/dev/null; then
+  assert "oversized codex prompt: positional '-' + byte-exact stdin" "pass"
+else
+  assert "oversized codex prompt: positional '-' + byte-exact stdin (rc=$rc, last-arg=$(tail -n 1 "$BIG/args" 2>/dev/null | head -c 20))" "fail"
+fi
+rm -rf "$BIG"
+
 # ── Results ───────────────────────────────────────────────────────────────────
 
 echo ""

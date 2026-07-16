@@ -607,11 +607,33 @@ _join_showcase_tail() {
 # session grows — agents only need the tail (last few entries), not the full
 # file. The tail size is generous enough to cover the "last 3" / "last 5"
 # entries the agents request, even when entries are multi-paragraph.
+#
+# The result is ALSO byte-capped (CHAIN_INLINE_TAIL_MAX_BYTES, default 48 KiB):
+# a line cap alone let these inlined blocks grow one long line at a time until
+# the assembled dispatch prompt crossed the 128 KiB execve per-argv-string cap
+# (production: every dispatch from ~iteration 40 of a long session). When the
+# cap bites, a marker line points the agent at the on-disk file — agents
+# already receive those paths, so truncation loses nothing. The dispatch layer
+# handles arbitrary prompt sizes regardless (lib/interactive-dispatch.sh,
+# lib/quota-retry.sh); this cap stops the prompt bloat and token waste at the
+# source.
 #   _tail_or_placeholder <file> <max-lines> <placeholder>
 _tail_or_placeholder() {
   local file="$1" max="$2" placeholder="$3"
   if [[ -f "$file" && -s "$file" ]]; then
-    tail -n "$max" "$file"
+    local cap="${CHAIN_INLINE_TAIL_MAX_BYTES:-49152}"
+    local out
+    out="$(tail -n "$max" "$file")"
+    # Byte cap via bash substring, NOT `| tail -c`: uutils-coreutils tail -c
+    # returns wrong sizes when reading a pipe (observed on 0.8.0), and bash
+    # needs no extra process. LC_ALL=C makes ${#}/substring count bytes.
+    local LC_ALL=C
+    if (( ${#out} > cap )); then
+      printf '[inline tail truncated to the last %s of %s bytes — full file on disk at: %s]\n' "$cap" "${#out}" "$file"
+      printf '%s\n' "${out:${#out}-cap}"
+    else
+      printf '%s\n' "$out"
+    fi
   else
     printf '%s\n' "$placeholder"
   fi

@@ -126,6 +126,25 @@ sys.exit(0 if ok else 1)
 PYEOF
 }
 
+# A request file is publishable only when it parses as JSON (the pump does the
+# field-level reads). jq primary, python3 fallback — same tooling policy as
+# _interactive_usage_valid. Callers MUST check [[ -s file ]] BEFORE this: a
+# stubbed/broken jq that exits 0 without reading would false-pass an empty file.
+_interactive_request_valid() {
+  local f="$1"
+  if command -v jq >/dev/null 2>&1; then
+    jq -e . "$f" >/dev/null 2>&1
+    return $?
+  fi
+  python3 - "$f" <<'PYEOF' >/dev/null 2>&1
+import json, sys
+try:
+    json.load(open(sys.argv[1]))
+except Exception:
+    sys.exit(1)
+PYEOF
+}
+
 # Echo the value following -p / --print in the args (the agent prompt). Empty if absent.
 _interactive_extract_prompt() {
   while [[ $# -gt 0 ]]; do
@@ -151,7 +170,10 @@ _interactive_invoke() {
 
   local agent="${CHAIN_CURRENT_AGENT:-unattributed}"
   local prompt
-  prompt="$(_interactive_extract_prompt "$@")"
+  # printf-x sentinel: $(...) strips trailing newlines, which would silently
+  # drop them from a prompt that ends in one — the pump must get it byte-exact.
+  prompt="$(_interactive_extract_prompt "$@"; printf x)"
+  prompt="${prompt%x}"
 
   # Pump-mode TMPDIR bridge: interactive subagents execute in the PUMP session's
   # environment — the engine's exported TMPDIR never reaches them. Relay it as a
@@ -182,7 +204,7 @@ _interactive_invoke() {
     [[ -n "$_agent_cap" ]] && _inflight_cap="$_agent_cap"
   fi
 
-  local req res out usage_f
+  local req res out usage_f pfile _built
   local _requeued=""
   local _dispatch_start _claim_epoch hb started _now _ref _age _busy _s
   # Dispatch-attempt loop: normally one pass; a Tier B inflight timeout may
@@ -195,20 +217,45 @@ _interactive_invoke() {
     out="$req.out"
     usage_f="$req.usage"
 
-    # Build the request JSON. jq handles arbitrary prompt content (quotes,
-    # newlines, large prompts) safely; python3 is the fallback.
+    # Build the request JSON. The prompt is routed via a temp file (jq
+    # --rawfile, jq ≥ 1.6) or stdin (python3) — NEVER as a single argv/envp
+    # string: Linux caps each such string at MAX_ARG_STRLEN (32 pages = 128
+    # KiB) and execve fails with E2BIG past it, which is how goal-mode prompts
+    # over 128 KiB used to publish 0-byte requests and wedge the engine.
+    # printf is a shell builtin (no exec), so writing the prompt file has no
+    # size cap; small fields stay on argv/env. A jq too old for --rawfile
+    # fails harmlessly into the python3 branch; any residual build failure is
+    # caught by the publish guard below.
+    pfile="$(mktemp "$dir/.prompt.XXXXXX")"
+    printf '%s' "$prompt" > "$pfile"
+    _built=""
     if command -v jq >/dev/null 2>&1; then
-      jq -cn --arg a "$agent" --arg p "$prompt" --arg c "$PWD" --arg r "$res" \
+      jq -cn --rawfile p "$pfile" --arg a "$agent" --arg c "$PWD" --arg r "$res" \
         --arg o "$out" --arg u "$usage_f" --arg m "$model_override" \
         '{agent:$a, prompt:$p, cwd:$c, res_path:$r, out:$o, usage_path:$u}
-         + (if $m != "" then {model:$m} else {} end)' > "$req"
-    else
-      _ID_A="$agent" _ID_P="$prompt" _ID_C="$PWD" _ID_R="$res" _ID_O="$out" _ID_U="$usage_f" _ID_M="$model_override" python3 -c \
-        'import json,os; d={"agent":os.environ["_ID_A"],"prompt":os.environ["_ID_P"],"cwd":os.environ["_ID_C"],"res_path":os.environ["_ID_R"],"out":os.environ["_ID_O"],"usage_path":os.environ["_ID_U"]};
-m=os.environ.get("_ID_M","");
-d.update({"model":m} if m else {});
-print(json.dumps(d))' > "$req"
+         + (if $m != "" then {model:$m} else {} end)' > "$req" 2>/dev/null && _built=1
     fi
+    if [[ -z "$_built" ]]; then
+      _ID_A="$agent" _ID_C="$PWD" _ID_R="$res" _ID_O="$out" _ID_U="$usage_f" _ID_M="$model_override" python3 -c \
+'import json,os,sys
+d={"agent":os.environ["_ID_A"],"prompt":sys.stdin.read(),"cwd":os.environ["_ID_C"],"res_path":os.environ["_ID_R"],"out":os.environ["_ID_O"],"usage_path":os.environ["_ID_U"]}
+m=os.environ.get("_ID_M","")
+d.update({"model":m} if m else {})
+print(json.dumps(d))' < "$pfile" > "$req" || true
+    fi
+
+    # Publish guard: never hand the pump a poisoned request. A builder failure
+    # (empty or non-JSON output) is a hard local error: log loudly, leave NO
+    # .ready behind, return 2 — same "cannot dispatch" convention as the
+    # missing-CHAIN_DISPATCH_DIR case above. The -s (non-empty) check must run
+    # BEFORE the JSON parse: a broken jq that exits 0 without writing output
+    # would otherwise false-pass the jq-based validation too.
+    if [[ ! -s "$req" ]] || ! _interactive_request_valid "$req"; then
+      echo "[interactive-dispatch] request build failed for agent '$agent' (prompt $(wc -c < "$pfile" 2>/dev/null || echo '?') bytes) — refusing to publish a poisoned request." >&2
+      rm -f "$req" "$pfile" 2>/dev/null || true
+      return 2
+    fi
+    rm -f "$pfile" 2>/dev/null || true
 
     _dispatch_start="$(date +%s)"
 
@@ -634,6 +681,111 @@ _interactive_dispatch_self_test() {
   fi
   rm -rf "$td9"
   unset GOAL_SESSION_DIR GOAL_SESSION_ID
+
+  # Tests 13-15 — request-builder size safety (execve MAX_ARG_STRLEN regression).
+  # Linux caps every single argv/envp string at 128 KiB (32 pages); the builder
+  # must route the prompt via file/stdin — never as one argv/env string — and
+  # must never publish a request it failed to build. Production: goal-mode
+  # prompts crossed the cap around iteration 40 of a long session and every
+  # dispatch from there published a 0-byte .ready, wedging the engine for the
+  # full inflight cap.
+
+  # Test 13 — oversized round-trip (jq builder): a ≥300000-byte prompt with
+  # newlines, quotes, and a TRAILING newline reaches the pump byte-exact
+  # through the .ready JSON. The fake pump parses the request with real jq on
+  # the file (no size limit there), checks res_path, extracts .prompt raw, and
+  # answers 0 only on a byte-exact cmp. Under the old `--arg p "$prompt"`
+  # builder jq never execs (E2BIG) and the published .ready is 0 bytes.
+  d="$(mktemp -d)"; export CHAIN_DISPATCH_DIR="$d"; rc=0
+  CHAIN_PUMP_HEARTBEAT_TIMEOUT=8; CHAIN_DISPATCH_INFLIGHT_TIMEOUT=3600; CHAIN_DISPATCH_POLL_SECONDS=0.2
+  touch "$d/.pump-alive"   # fresh heartbeat: a catastrophic no-publish bug aborts in ~8s instead of hanging
+  local bigp
+  bigp="$(head -c 300000 /dev/zero | tr '\0' x)"
+  bigp+=$'\nline 2 has "quotes", a \\ backslash, a \ttab, a trailing space \nand ends with a trailing newline:\n'
+  printf '%s' "$bigp" > "$d/expected.prompt"
+  ( for _ in $(seq 1 100); do
+      r="$(find "$d" -maxdepth 1 -name 'req.*.ready' 2>/dev/null | head -1)"
+      if [[ -n "$r" ]]; then
+        if jq -e . "$r" >/dev/null 2>&1 \
+           && [[ "$(jq -r '.res_path' "$r")" == "${r%.ready}.res" ]] \
+           && jq -j '.prompt' "$r" > "$d/got.prompt" 2>/dev/null \
+           && cmp -s "$d/expected.prompt" "$d/got.prompt"; then
+          echo 0 > "${r%.ready}.res"
+        else
+          echo 9 > "${r%.ready}.res"
+        fi
+        break
+      fi
+      sleep 0.1
+    done ) &
+  pump=$!
+  CHAIN_TMPDIR="" _interactive_invoke -p "$bigp" 2>"$d/err" || rc=$?
+  wait "$pump" 2>/dev/null || true
+  if [[ "$rc" -eq 0 && "$(wc -c < "$d/expected.prompt")" -ge 300000 ]]; then
+    echo "  PASS interactive-dispatch: >=300KB prompt round-trips byte-exact (jq builder)"
+  else
+    echo "  FAIL interactive-dispatch: oversized prompt round-trip via jq (rc=$rc, stderr=$(head -c 200 "$d/err" 2>/dev/null))"; fails=1
+  fi
+  rm -rf "$d"
+
+  # Test 14 — oversized round-trip (python3 fallback builder): same prompt with
+  # jq hidden from `command -v` (function stub, same style as Test 6's
+  # _agent_timeout_for) so the python3 branch builds the request. The pump's
+  # direct jq calls bypass `command -v`, so verification still uses real jq.
+  # Under the old `_ID_P="$prompt"` builder the exec dies via envp (same
+  # E2BIG) and a 0-byte .ready is published.
+  d="$(mktemp -d)"; export CHAIN_DISPATCH_DIR="$d"; rc=0
+  touch "$d/.pump-alive"
+  printf '%s' "$bigp" > "$d/expected.prompt"
+  command() { [[ "${1:-}" == "-v" && "${2:-}" == "jq" ]] && return 1; builtin command "$@"; }
+  ( for _ in $(seq 1 100); do
+      r="$(find "$d" -maxdepth 1 -name 'req.*.ready' 2>/dev/null | head -1)"
+      if [[ -n "$r" ]]; then
+        if jq -e . "$r" >/dev/null 2>&1 \
+           && [[ "$(jq -r '.res_path' "$r")" == "${r%.ready}.res" ]] \
+           && jq -j '.prompt' "$r" > "$d/got.prompt" 2>/dev/null \
+           && cmp -s "$d/expected.prompt" "$d/got.prompt"; then
+          echo 0 > "${r%.ready}.res"
+        else
+          echo 9 > "${r%.ready}.res"
+        fi
+        break
+      fi
+      sleep 0.1
+    done ) &
+  pump=$!
+  CHAIN_TMPDIR="" _interactive_invoke -p "$bigp" 2>"$d/err" || rc=$?
+  wait "$pump" 2>/dev/null || true
+  unset -f command
+  if [[ "$rc" -eq 0 ]]; then
+    echo "  PASS interactive-dispatch: >=300KB prompt round-trips byte-exact (python3 fallback)"
+  else
+    echo "  FAIL interactive-dispatch: oversized prompt round-trip via python3 (rc=$rc, stderr=$(head -c 200 "$d/err" 2>/dev/null))"; fails=1
+  fi
+  rm -rf "$d"
+
+  # Test 15 — publish guard: a builder that emits nothing (jq shadowed by a
+  # no-op function that "succeeds", so the python3 fallback does not run and
+  # jq-based JSON validation is neutralized too — the -s non-empty check must
+  # catch it first) returns 2 promptly, logs agent + prompt size to stderr,
+  # and leaves NO .ready and NO .awaiting-pump behind. Under the old code the
+  # empty request was published and the engine sat in the wait loop (bounded
+  # here by a pre-staled heartbeat → Tier A 70, so RED fails fast, not forever).
+  d="$(mktemp -d)"; export CHAIN_DISPATCH_DIR="$d"; rc=0
+  CHAIN_PUMP_HEARTBEAT_TIMEOUT=1; CHAIN_DISPATCH_POLL_SECONDS=0.2
+  touch -d '120 seconds ago' "$d/.pump-alive" 2>/dev/null || true
+  jq() { :; }
+  _interactive_invoke -p "guard me" 2>"$d/err" || rc=$?
+  unset -f jq
+  if [[ "$rc" -eq 2 ]] \
+     && ! find "$d" -maxdepth 1 -name 'req.*.ready' 2>/dev/null | grep -q . \
+     && [[ ! -f "$d/.awaiting-pump" ]] \
+     && grep -q "request build failed for agent 'developer'" "$d/err"; then
+    echo "  PASS interactive-dispatch: builder failure → rc 2, loud stderr, nothing published"
+  else
+    echo "  FAIL interactive-dispatch: publish guard (rc=$rc, ready=$(find "$d" -maxdepth 1 -name 'req.*.ready' 2>/dev/null | wc -l | tr -d ' '), stderr=$(head -c 200 "$d/err" 2>/dev/null))"; fails=1
+  fi
+  rm -rf "$d"
 
   if [[ "$fails" -eq 0 ]]; then echo "interactive-dispatch self-test: OK"; else echo "interactive-dispatch self-test: FAILED"; fi
   return "$fails"
