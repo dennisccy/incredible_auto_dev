@@ -27,6 +27,20 @@ PLAN_FILE="$REPO_ROOT/runs/${PHASE}/plan.md"
 echo "[review-phase] Reviewing: $PHASE"
 
 cd "$REPO_ROOT"
+
+# TOKEN-7: pre-baked review packet — built fresh before EVERY dispatch of this
+# script (run-phase.sh re-invokes it per review round: Step 3 attempts, Step 7
+# fix-mode, Step 9 hardening), so a re-review never reads a stale packet. A
+# build failure degrades LOUDLY to the hint-only dispatch (the prompt's packet
+# line says "if present") and removes any stale file — absent beats stale.
+REVIEW_PACKET="$REPO_ROOT/runs/${PHASE}/review-packet.md"
+if build_review_packet "$REVIEW_PACKET" HEAD; then
+  echo "[review-phase] review packet built: $REVIEW_PACKET (base HEAD)"
+else
+  echo "[review-phase] review packet build failed — removing any stale packet; the reviewer degrades to the diff-hint commands." >&2
+  rm -f "$REVIEW_PACKET" 2>/dev/null || true
+fi
+
 export CHAIN_CURRENT_AGENT=reviewer
 claude_with_quota_retry -p "You are the reviewer agent for phased development.
 
@@ -42,6 +56,8 @@ Agent instructions: .claude/agents/reviewer.md  <-- read this first
 (CLAUDE.md is already in your system prompt — do not Read it again.)
 
 Read the phase spec, the dev handoff, and each changed file listed in the handoff.
+Bounded diff packet (read FIRST if present): $REVIEW_PACKET — hunks capped, noise excluded, truncations NAMED. The phase spec + dev handoff remain required reading — never verdict from the diff alone (D7).
+Run these only for files the packet marks truncated or excluded (or if the packet file is absent):
 $(review_diff_hint HEAD)
 
 Apply the TOKEN AND QUESTIONING POLICY from .claude/core.md strictly.

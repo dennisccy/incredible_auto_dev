@@ -69,25 +69,33 @@ fictional stdlib-only QuickList app (http.server + SQLite + vanilla JS — zero
 third-party deps, so a reviewer that runs `python3 -m unittest` in the sandbox
 gets a real green run instead of an ImportError).
 
-**How the reviewer's diff is represented.** The reviewer's key input is a live
-`git diff HEAD` it runs itself (its body.md: work under review is UNCOMMITTED at
-review time). A pre-baked diff file in the prompt would have forced a
-non-production prompt, so the runner instead REBUILDS that repo state per case as
-a scratch git repo inside the sandbox: copy `tree/` (the post-iteration working
-tree), reverse-apply `source/change.patch` to rewind, commit that baseline as
-HEAD, then re-apply the patch and leave it uncommitted. The dispatch prompt is
-then the engine's lean-review prompt (goal-iter-lean.sh `run_reviewer`) verbatim,
-including the real `review_diff_hint` from `lib/common.sh` — the reviewer runs
-the identical noise-excluded diff command production gives it, and sees exactly
-the authored patch — and the pre-sliced project template (TOKEN-1): the builder
-inlines `project_template_slice reviewer` over the sandbox's own
-`.claude/project-template.md` (the framework template, symlinked in with the
-other read-only assets), via the same helper production substitutes — never a
-duplicated slicer. The verbatim mirror is a GATE, not a convention:
-`tests/automation/test-project-template-slice.sh` (run-evals §2c) extracts both
-prompt templates and fails on any byte difference beyond its four sanctioned
-variable renames. (The lean dispatch is the one mirrored; the phase-mode
-review-phase.sh prompt differs slightly and has no fixture yet.)
+**How the reviewer's diff is represented.** The reviewer's primary diff input is
+the pre-baked review packet (TOKEN-7) production builds before dispatch, backed
+by a live `git diff HEAD` fallback it runs itself for truncated/excluded files
+(its body.md: work under review is UNCOMMITTED at review time). The runner
+REBUILDS that repo state per case as a scratch git repo inside the sandbox: copy
+`tree/` (the post-iteration working tree), reverse-apply `source/change.patch`
+to rewind, commit that baseline as HEAD, then re-apply the patch and leave it
+uncommitted. It then BUILDS the packet inside the sandbox with the SAME
+`build_review_packet` helper production calls (goal-iter-lean.sh), over that
+scratch-git state at the engine's path layout
+(`runs/goal-session-<sid>/iter-<N>/review-packet.md`) — the packet is DERIVED
+per run in the throwaway sandbox, never stored in the frozen `tree/`. The
+dispatch prompt is the engine's lean-review prompt (goal-iter-lean.sh
+`run_reviewer`) verbatim: the packet-first line, the real `review_diff_hint`
+from `lib/common.sh` (reframed to truncation follow-ups) — the reviewer reads
+the identical packet and can run the identical noise-excluded diff command
+production gives it, seeing exactly the authored patch — and the pre-sliced
+project template (TOKEN-1): the builder inlines `project_template_slice
+reviewer` over the sandbox's own `.claude/project-template.md` (the framework
+template, symlinked in with the other read-only assets), via the same helper
+production substitutes — never a duplicated slicer. The verbatim mirror is a
+GATE, not a convention: `tests/automation/test-project-template-slice.sh`
+(run-evals §2c) extracts both prompt templates and fails on any byte difference
+beyond its four sanctioned variable renames (`$REVIEW_PACKET` is spelled
+identically on both sides, so the packet needed no new rename). (The lean
+dispatch is the one mirrored; the phase-mode review-phase.sh prompt differs
+slightly and has no fixture yet.)
 
 ## auditor cases (slice (c) — 4 cases)
 

@@ -393,6 +393,58 @@ review_diff_hint() {
   printf '  (stat of ONLY the excluded paths: if it lists dependency lockfiles, note WHICH changed and review the matching package.json/pyproject edit in the main diff; runs/ and reports/ churn is harness bookkeeping, outside review scope)\n'
 }
 
+# Build the pre-baked review packet (TOKEN-7): a bounded file that pre-executes
+# BOTH review_diff_hint commands so reviewer-class agents stop paying tool-call
+# round trips for git diffs. Section 1 is the hint's first command (the
+# REVIEW_DIFF_EXCLUDE_PATTERNS-excluded diff) piped through diff_bound.py —
+# hunks capped, truncations NAMED in its header; the same patterns are ALSO
+# passed as --exclude so a rename/path form the git pathspec misses is still
+# named, never silently rendered. Section 2 is the hint's second command: a
+# --stat of ONLY the excluded paths (dependency-lockfile visibility). The
+# packet replaces running diff COMMANDS, never code-reading (anti-pattern #12)
+# and never the spec/handoff inputs (roadmap D7). Deliberately independent of
+# goal_gate_build_diff_artifacts (different consumer + timing; gate artifacts
+# stay untouched). Runs against the CURRENT working directory's git repo —
+# callers cd first (engine → $REPO_ROOT; judgment runner → its case sandbox).
+# Contract: atomic write (tmp+mv, never a half-written packet); non-zero on
+# build failure WITHOUT leaving a stale packet behind — callers log and let
+# the dispatch degrade to hint-only (the TOKEN-7 DoD's absent-packet path).
+#   $1 — output file    $2 — git ref to diff against (default HEAD)
+build_review_packet() {
+  local out="${1:?build_review_packet: output path required}" ref="${2:-HEAD}"
+  local p tmp bounded stat_out
+  local ex=() only=() bound_ex=()
+  for p in "${REVIEW_DIFF_EXCLUDE_PATTERNS[@]}"; do
+    ex+=(":(exclude)$p"); only+=("$p"); bound_ex+=(--exclude "$p")
+  done
+  # Every step is individually rc-checked: callers invoke this under
+  # `if ! ...` (set -e suspended there), and a failed git diff must NEVER
+  # yield a packet that reads as "(no changes)" — fail, leave no file.
+  bounded="$(set -o pipefail
+             git diff "$ref" -- . "${ex[@]}" 2>/dev/null \
+               | python3 "$REPO_ROOT/scripts/automation/lib/diff_bound.py" "${bound_ex[@]}" 2>/dev/null)" || return 1
+  [[ -n "$bounded" ]] || return 1   # diff_bound always emits a header; empty = something upstream lied
+  stat_out="$(git diff "$ref" --stat -- "${only[@]}" 2>/dev/null)" || return 1
+  mkdir -p "$(dirname "$out")" 2>/dev/null || return 1
+  tmp="$(mktemp "$out.tmp.XXXXXX" 2>/dev/null)" || return 1
+  {
+    printf '# Review packet — bounded diff vs %s\n' "$ref"
+    printf 'Pre-built by build_review_packet (lib/common.sh): the dispatch prompt'\''s git diff\n'
+    printf 'commands, already run for you. Truncations and exclusions are NAMED below — run\n'
+    printf 'the git commands ONLY for files marked truncated or excluded, if they matter.\n\n'
+    printf '%s\n' "$bounded"
+    printf '\n## Excluded-path stat (dependency/lockfile visibility)\n\n'
+    if [[ -n "$stat_out" ]]; then
+      printf '%s\n' "$stat_out"
+      printf '\n(if a dependency lockfile appears above, review the matching package.json/pyproject\nedit in the main diff — never lockfile hunks; runs/ reports/ docs/handoffs/ churn is\nharness bookkeeping, outside review scope)\n'
+    else
+      printf '(no changes in excluded paths)\n'
+    fi
+  } > "$tmp" 2>/dev/null || { rm -f "$tmp" 2>/dev/null; return 1; }
+  mv -f "$tmp" "$out" 2>/dev/null || { rm -f "$tmp" 2>/dev/null; return 1; }
+  return 0
+}
+
 # ── Per-agent project-template slicing (TOKEN-1) ──────────────────────────────
 # Dispatch wrappers inline ONLY the template sections an agent's duties use,
 # instead of instructing a full-file Read (release-manager needs ~5 lines of a

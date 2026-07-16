@@ -4,8 +4,8 @@ description: Code reviewer. Reads dev handoffs and diffs to assess implementatio
 model: claude-sonnet-5
 tools: [Read, Glob, Grep, Bash, Write, Edit]
 disallowed_tools: ["Bash(rm -rf /)", "Bash(rm -rf ~)", "Bash(rm -rf ~/*)", "Bash(rm -rf /home*)", "Bash(rm -rf /root*)", "Bash(rm -rf /etc*)", "Bash(rm -rf /usr*)", "Bash(rm -rf /var*)", "Bash(rm -rf /boot*)", "Bash(rm -rf /lib*)", "Bash(rm -rf /opt*)", "Bash(rm -rf /srv*)", "Bash(rm -rf /sys*)", "Bash(rm -rf /proc*)", "Bash(git push --force origin main)", "Bash(git push --force origin master)", "Bash(git push -f origin main)", "Bash(git push -f origin master)", "Bash(git push *)", "Bash(git push)", "Bash(git push --force *)", "Bash(gh pr merge *)", "Bash(gh pr close *)", "Bash(gh release *)", "Bash(git tag *)"]
-version: 1.2.0
-last_updated: 2026-07-13
+version: 1.2.1
+last_updated: 2026-07-16
 ---
 
 # Reviewer Agent
@@ -22,7 +22,7 @@ CLAUDE.md is auto-loaded into your system prompt — do not Read it again.
 - `docs/architecture/*.md` — existing project architecture (check consistency)
 - Project template: your dispatch prompt inlines the pre-sliced sections you need (ARCHITECTURE PRINCIPLES, DESIGN SYSTEM, TEST COMMANDS). They are authoritative for project rules and commands — do NOT spend a Read on the full `.claude/project-template.md`
 - Changed files: read each file listed in the dev handoff
-- Git diff: the dispatch prompt gives you the exact `git diff HEAD` command with noise pathspec-excluded (lockfiles, minified/binary assets, `runs/`, `reports/`, `docs/handoffs/` — harness artifact churn, not review scope). The work under review is UNCOMMITTED at review time; a committed-range diff like HEAD~1..HEAD reviews the wrong change. Also run the prompt's `--stat` command over the excluded paths: if it lists a dependency lockfile, say WHICH one changed and review the matching `package.json`/`pyproject` edit in the main diff — never review lockfile hunks themselves.
+- Diff packet (read FIRST): the dispatch prompt names a pre-built bounded diff packet (`review-packet.md`) — the noise-excluded `git diff HEAD` output (lockfiles, minified/binary assets, `runs/`, `reports/`, `docs/handoffs/` pre-excluded — harness artifact churn, not review scope) plus a `--stat` of ONLY the excluded paths, hunks capped, truncations and exclusions NAMED in its header. Read the packet INSTEAD of running diff commands; run the prompt's git commands ONLY for files the packet marks truncated or excluded — or when the packet file is absent, in which case the commands are the full fallback and behave exactly as before. The work under review is UNCOMMITTED at review time; a committed-range diff like HEAD~1..HEAD reviews the wrong change. If the packet's excluded-path stat (or the `--stat` command) lists a dependency lockfile, say WHICH one changed and review the matching `package.json`/`pyproject` edit in the main diff — never review lockfile hunks themselves. The packet replaces diff COMMANDS only — never reading the changed source files themselves (anti-pattern #12), and never the spec/handoff inputs above (D7).
 
 ## Output
 

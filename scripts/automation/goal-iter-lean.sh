@@ -87,6 +87,26 @@ mkdir -p "$REPO_ROOT/docs/handoffs"
 # expensive developer build. Any doubt → the step re-runs (today's behavior).
 ITER_DIR="$(goal_iter_dir "$ITER_NAME" 2>/dev/null || true)"
 
+# ── TOKEN-7: pre-baked review packet ──────────────────────────────────────
+# Built once the developer settles — BEFORE the SPEED-2/3 fork spawn points
+# (the packet's stat tail reads tracked runs/ paths, and a forked lane
+# mid-write must never race the packet; roadmap TOKEN-7 stop-and-ask (2)) —
+# and REBUILT after every fix-mode developer pass (after the fork reap +
+# invalidation) so a round-2 reviewer never reads a stale packet. A build
+# failure degrades LOUDLY to hint-only dispatch (the prompt's packet line
+# says "if present") and removes any stale file — absent beats stale.
+# Lives under runs/ (checkpoint-tree-hash-excluded), so builds never churn
+# a resume-skip decision.
+REVIEW_PACKET="${ITER_DIR:-$REPO_ROOT/runs/$ITER_NAME}/review-packet.md"
+_build_review_packet_or_degrade() {
+  if (cd "$REPO_ROOT" && build_review_packet "$REVIEW_PACKET" HEAD); then
+    echo "[goal-iter-lean] review packet built: $REVIEW_PACKET (base HEAD)"
+  else
+    echo "[goal-iter-lean] review packet build failed — removing any stale packet; the reviewer degrades to the diff-hint commands." >&2
+    rm -f "$REVIEW_PACKET" 2>/dev/null || true
+  fi
+}
+
 _review_parses() { grep -qE '^\*\*Verdict:\*\*[[:space:]]*(PASS_WITH_NOTES|PASS|FAIL)[[:space:]]*$' "$REVIEW_REPORT" 2>/dev/null; }
 _review_verdict() { grep -m1 -E '^\*\*Verdict:\*\*' "$REVIEW_REPORT" 2>/dev/null | grep -oE 'PASS_WITH_NOTES|PASS|FAIL' | head -1; }
 _step_skipped_event() {
@@ -840,6 +860,8 @@ $(project_template_slice reviewer)
 Agent instructions: .claude/agents/reviewer.md  <-- read this first
 (CLAUDE.md is already in your system prompt — do not Read it again.)
 
+Bounded diff packet (read FIRST if present): $REVIEW_PACKET — hunks capped, noise excluded, truncations NAMED. The iter spec + dev handoff remain required reading — never verdict from the diff alone (D7).
+Run these only for files the packet marks truncated or excluded (or if the packet file is absent):
 $(review_diff_hint HEAD)
 
 Apply the TOKEN AND QUESTIONING POLICY from .claude/core.md strictly.
@@ -871,6 +893,11 @@ else
   if [[ "$_dev_rc" -ne 0 ]]; then exit "$_dev_rc"; fi
   [[ -s "$DEV_HANDOFF" ]] && step_mark_done developer --dir "$ITER_DIR" "$DEV_HANDOFF"
 fi
+
+# TOKEN-7 build 1: the round-1 review packet. Ordering is load-bearing — this
+# sits BEFORE both fork spawn points below (same stale-write discipline as the
+# forks' own kill-then-invalidate rule).
+_build_review_packet_or_degrade
 
 # ── SPEED-2 fork: service boot + deterministic replay ∥ review ────────────
 # Forked HERE — right after the developer step settles — because review and
@@ -995,6 +1022,11 @@ Review report path: $REVIEW_REPORT
     if [[ "$_dev_rc" -ne 0 ]]; then exit "$_dev_rc"; fi
     [[ -s "$DEV_HANDOFF" ]] && step_mark_done developer-fix --dir "$ITER_DIR" "$DEV_HANDOFF"
   fi
+  # TOKEN-7 rebuild: the fix-mode developer changed the tree (whichever fork
+  # was running is already reaped and its lane files discarded, above) — a
+  # round-2 reviewer must never read the stale round-1 packet. Runs on the
+  # resume-skip path too: a resumed fix invalidates a crashed attempt's packet.
+  _build_review_packet_or_degrade
   if step_done_valid review-2 --dir "$ITER_DIR" "$REVIEW_REPORT" && _review_parses; then
     _step_skipped_event "reviewer (fix-mode)"
   else

@@ -315,6 +315,9 @@ grep -q "Forking browser-qa service boot" "$WORK/lean-A.log" \
   || assert "A: dispatch order developer→reviewer→browser-qa unchanged (got: $(tr '\n' ' ' < "$CANARY"))" "fail"
 # The exact sequential artifact tree (verified pre-change against HEAD by the
 # SPEED-2 snapshot proof) — a drift here means off mode is no longer identical.
+# 2026-07-16: iter-1/review-packet.md added — the TOKEN-7 pre-baked review
+# packet is built on the sequential path too (before the fork spawn point),
+# so it belongs to the expected tree in every mode.
 EXPECTED_TREE="./docs/goal.md
 ./docs/handoffs/${ITER}-dev.md
 ./docs/phases/${ITER}.md
@@ -325,6 +328,7 @@ EXPECTED_TREE="./docs/goal.md
 ./runs/goal-session-pbtest/iter-1/.steps/browser-qa.done
 ./runs/goal-session-pbtest/iter-1/.steps/developer.done
 ./runs/goal-session-pbtest/iter-1/.steps/review-1.done
+./runs/goal-session-pbtest/iter-1/review-packet.md
 ./runs/goal-session-pbtest/journey-scripts/J-01.json
 ./runs/goal-session-pbtest/telemetry.jsonl
 ./src/app.py"
