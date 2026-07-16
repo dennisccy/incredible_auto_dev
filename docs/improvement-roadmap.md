@@ -1200,9 +1200,22 @@ benchmark (or a real session's telemetry) before AND after (G8).
 - **Rollback:** knob; archives are additive.
 
 ### TOKEN-7 · Pre-baked review packet (reviewer stops running git)
-- **Priority:** P1 · **Effort:** M · **Risk:** MED · **Status:** IN-PROGRESS
-  (implemented + fixtures 4/4 + measured 2026-07-16 @ 13668f305963 — see the
-  measurement note; G8 fresh-session certification remains, per M-effort rule G8)
+- **Priority:** P1 · **Effort:** M · **Risk:** MED · **Status:** DONE
+  (implemented + fixtures 4/4 + measured 2026-07-16 @ 13668f305963; **G8-certified
+  DONE 2026-07-16 by a fresh session @ 3331f97** — reproduced, not re-trusted:
+  test-review-packet 20/20 + parallel-bqa 80/80 + checkpoints 11/11 + sync --check
+  clean + run-evals 116/116; build_review_packet, both dispatch prompts, the
+  reviewer body and the judgment-runner mirror read against the change spec
+  (`$REVIEW_PACKET` spelled identically both sides; the byte-gate's four sanctioned
+  renames unchanged); both stop-and-ask orderings re-confirmed in code with the
+  measurement note's line anchors corrected — build 1 at `goal-iter-lean.sh:900`
+  BEFORE both fork spawns (`:928`/`:967`), fix-path rebuild `:1029` after the reaps
+  (`:1006-1007`) + `escalate_model_off` (`:1020`); economics re-derived from the
+  results JSONs + both kept scratches' per-invocation telemetry — every raw figure
+  exact, one derived-percentage slip corrected in the verdict below (real-review
+  wall 220.6→186.9s = −15.3%, not the ledger's −15.5%); packet files verified in
+  the kept scratch (iter-0 412B lean, iter-1 11,424B phase-mode; exactly 2
+  runtime "review packet built" lines, 0 "build failed"))
 - **Source:** Superpowers 6 release notes (primeradiant.com/blog/2026/superpowers-6.html):
   pre-generated diff packages cut review tokens + wall ≈10% on THEIR benchmark — treat
   as hypothesis here, measure per G8. Anchors verified 2026-07-07 @ `eb5c8f9`.
@@ -1211,9 +1224,11 @@ benchmark (or a real session's telemetry) before AND after (G8).
   RELOCATED — the packet does not cut reviewer OUTPUT tokens (≈ flat; null vs their
   ~10% at this fixture's noise band) but collapses TURNS (37→24 session, −35%) and
   therefore BILLED INPUT (cache-read −67% on the real review round) and COST
-  (reviewer −24.3% session, −27.1% real review); real-review wall −15.5% (in line
-  with their ~10%), session reviewer wall ≈ flat. Their claim, our data: direction
-  right; size understated on billed input, overstated on output tokens.
+  (reviewer −24.3% session, −27.1% real review); real-review wall −15.3% (in line
+  with their ~10%; the ledger POST's −15.5% was a derived-percentage slip — raw
+  220.6→186.9s, corrected here at G8 certification), session reviewer wall ≈ flat.
+  Their claim, our data: direction right; size understated on billed input,
+  overstated on output tokens.
 - **Problem:** the reviewer (~21 min, 2nd-longest lean step) receives only a two-command
   HINT and shells out to git itself — every review pays tool-call round trips for a
   diff the engine could pre-build deterministically.
@@ -1386,6 +1401,15 @@ benchmark (or a real session's telemetry) before AND after (G8).
   exact rows this entry's three prior run-checks could not produce. Offline
   half was already green (test-phase-telemetry.sh; standalone phase mode
   writes nothing). DoD met in full → DONE.
+  *Certified 2026-07-16 (fresh session; telemetry re-read row-by-row from the
+  kept scratch `bench-bench-20260716-1436.dNHg0w`):* claim VERIFIED — and
+  under-enumerated: full iter-1 also carries the **developer** row ($3.144,
+  79 turns, iter=1, via dev-phase.sh) that the resolution note above omitted,
+  completing the DoD's named developer + reviewer ($0.780) + auditor ($1.578)
+  trio; every row correctly agent-attributed at iter=1, and run E's all-lean
+  telemetry correctly carries none of the phase-script rows. Offline half
+  re-ran green same day (test-phase-telemetry.sh cases 1+2 inside run-evals
+  116/116). Measurement chapter closed.
 
 ---
 
