@@ -1053,6 +1053,11 @@ benchmark (or a real session's telemetry) before AND after (G8).
   dispatches on the canary, plain spec generates as today, knob-off default generates,
   `## TESTING REQUIREMENTS` boilerplate does NOT suppress). *Default flip: pending the
   observed clean phase above.*
+  *Coupling note (2026-07-16):* REL-9 landed — the decomposer template now
+  CONTRACTS ≥1 TC- scenario line per DoD checkbox (≥3 in any real spec), so
+  specs meeting the TC- heuristic become the norm rather than the exception;
+  the observed-clean-phase precondition is reachable at the next full-depth
+  phase run with `CHAIN_SKIP_TESTPLAN_IF_PRESENT=true`.
 - **Verify:** `bash -n scripts/automation/run-phase.sh && ./scripts/automation/run-evals.sh`
 - **Files:** `scripts/automation/run-phase.sh`, `tests/automation/test-testplan-skip.sh`.
 - **Rollback:** knob.
@@ -1644,7 +1649,28 @@ benchmark (or a real session's telemetry) before AND after (G8).
   adding a field (G3).
 
 ### REL-9 · Test-first spec weighting in the decomposer
-- **Priority:** P1 · **Effort:** S · **Risk:** LOW · **Status:** TODO
+- **Priority:** P1 · **Effort:** S · **Risk:** LOW · **Status:** DONE
+  (implemented + verified in-session 2026-07-16 — S items self-close: all four
+  change-spec points landed additively; agent.yaml 2.0.0→2.0.1 (the 1.2.1 anchor
+  below predated TOKEN-2's 2.0.0 bump), mirror resynced + `--check` clean,
+  run-evals 116/116, `grep TC- .claude/agents/goal-decomposer.md` green, template
+  self-consistency read done (banned words appear only inside the quoted ban
+  list; no template text violates its own contract). Two deliberate guards worth
+  not "fixing" later: (1) the contract is PROSE inside the existing
+  `## TESTING REQUIREMENTS` section, NO new heading — TOKEN-3's skip regex
+  (`run-phase.sh` `_spec_lists_tests_reason`, case-insensitive
+  `^#{2,}\s*tests?\b`) would match a `### Test scenarios` heading ALONE and
+  grant the skip with zero TC- lines; (2) the template shows exactly TWO example
+  TC- lines, so a verbatim-copied unfilled template can never reach the ≥3 skip
+  threshold by itself. Stop-and-ask cleared: qa/browser-qa bodies list spec
+  sections as an extraction guide, not a closed set — no companion edit. No
+  lean/baseline carve-out added — the change spec names none, and baseline's
+  own DoD wording maps to a TC- line trivially. Live proof rides the next real
+  goal session's specs (per the DoD's observed-not-gated clause): the decomposer
+  has been STANDARD-tier since TOKEN-2, so a MORE demanding template on the
+  cheaper model is the thesis under live test — if the next session's specs
+  degrade, TOKEN-2's watch item (single-line tier rollback) is the first
+  suspect, not REL-9's rollback.)
 - **Source:** Superpowers 6 measured finding: test specifications + interface
   definitions carry implementation quality; implementation bodies in plans are
   marginal contributors. Anchors verified 2026-07-07 @ `eb5c8f9`.
@@ -1652,13 +1678,21 @@ benchmark (or a real session's telemetry) before AND after (G8).
   `## TESTING REQUIREMENTS` is three skeletal lines while `## IN SCOPE` invites
   implementation bullets — the spec's detail budget is weighted toward the part that
   matters least for downstream quality.
-- **Current state:** the template lives inside `agents/goal-decomposer/body.md:37-110`;
-  `## TESTING REQUIREMENTS` at `:101-105` ("Browser: <journeys>", "Unit/integration:
-  <code paths>", "Error cases: <invalid inputs>"); `### Data-contract additions` at
-  `:86-87` (canonical module + serving endpoint); pre-write self-check at `:184`. Spec
-  consumers are prompt-readers only (`goal-iter-lean.sh:121/:152/:284/:414`) plus the
-  J-ID regex `_spec_journeys()` (`goal-iter-lean.sh:299`) — additive spec content
-  breaks no parser. `agent.yaml`: v1.2.1, `model_tier: strong`.
+- **Current state (post-change 2026-07-16; the pre-REL-9 anchors, verified
+  2026-07-07, had rotted — tier and version were pre-TOKEN-2):** template at
+  `agents/goal-decomposer/body.md:37-130`; `## TESTING REQUIREMENTS` `:101-129`
+  carries the TC- contract (`:107-119`: shape line + two example TC- lines;
+  vague-term ban aligned with the canonical goal-lint list,
+  `lib/goal_lint.py:62-63` — "works well", "user-friendly", "fast", "properly",
+  "intuitive", "correctly" — plus the bare forms "works"/"as expected"; one
+  vocabulary, not two); `### Data-contract additions` `:86-88` requires exact
+  field name(s) + type/shape alongside canonical module + endpoint; pre-write
+  self-check `:194-203` is six items, item 6 (`:201`) = the D6 test-first check
+  (spec validated against the contract before writing; IN SCOPE bullets stay
+  coarse; shrink by cutting narrative, never TC-/Data-contract content). Spec
+  consumers remain prompt-readers plus the J-ID regex `_spec_journeys()`
+  (`goal-iter-lean.sh:200`) — both consume the additive content unchanged.
+  `agent.yaml`: v2.0.1, `model_tier: standard` (since TOKEN-2).
 - **Change spec:**
   1. `## TESTING REQUIREMENTS` contract: every DEFINITION OF DONE checkbox and every
      Data-contract addition must map to ≥1 concrete scenario line of the form

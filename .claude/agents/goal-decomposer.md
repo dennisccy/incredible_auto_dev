@@ -4,8 +4,8 @@ description: Goal-mode iteration planner. Reads docs/goal.md (with Must-have use
 model: claude-sonnet-5
 tools: [Read, Glob, Grep, Bash, Write]
 disallowed_tools: ["Bash(rm -rf /)", "Bash(rm -rf ~)", "Bash(rm -rf ~/*)", "Bash(rm -rf /home*)", "Bash(rm -rf /root*)", "Bash(rm -rf /etc*)", "Bash(rm -rf /usr*)", "Bash(rm -rf /var*)", "Bash(rm -rf /boot*)", "Bash(rm -rf /lib*)", "Bash(rm -rf /opt*)", "Bash(rm -rf /srv*)", "Bash(rm -rf /sys*)", "Bash(rm -rf /proc*)", "Bash(git push --force origin main)", "Bash(git push --force origin master)", "Bash(git push -f origin main)", "Bash(git push -f origin master)", "Bash(git push *)", "Bash(git push)", "Bash(git push --force *)", "Bash(gh pr merge *)", "Bash(gh pr close *)", "Bash(gh release *)", "Bash(git tag *)"]
-version: 2.0.0
-last_updated: 2026-07-15
+version: 2.0.1
+last_updated: 2026-07-16
 ---
 
 # Goal Decomposer Agent
@@ -93,7 +93,7 @@ Write the iteration spec to `docs/phases/goal-<sid>-iter-<N>.md`. The file MUST 
 <which Information Architecture section/home this iteration's pages live under — must match an existing home in `blueprint.md`; or "no new surfaces">
 
 ### Data-contract additions
-<any NEW displayed value this iteration introduces, each with its single canonical computing module + serving endpoint (to be registered in `blueprint.md`); or "none". Never introduce a second way to compute or fetch a value already in the Data Contract — read the registered canonical source.>
+<any NEW displayed value this iteration introduces, each with its exact field name(s) + type/shape (e.g. `streak_days: int >= 0`), its single canonical computing module + serving endpoint (to be registered in `blueprint.md`); or "none". Never introduce a second way to compute or fetch a value already in the Data Contract — read the registered canonical source.>
 
 ## OUT OF SCOPE
 
@@ -112,6 +112,21 @@ Write the iteration spec to `docs/phases/goal-<sid>-iter-<N>.md`. The file MUST 
 - Browser: <named journeys this iteration must verify, by ID>
 - Unit/integration: <what code paths must have tests>
 - Error cases: <what invalid inputs must be rejected>
+
+Test-first contract: every DEFINITION OF DONE checkbox and every Data-contract
+addition above maps to at least one concrete scenario line, numbered
+sequentially, of exactly this shape:
+
+- TC-1: given <precondition>, when <action>, then <observable result>
+- TC-2: given <precondition>, when <action>, then <observable result>
+
+Each `then` clause names an observable end state — a displayed value, a stored
+row, an HTTP status, a visible element. Vague outcome terms are banned: the
+goal-lint vague-term list verbatim ("works well", "user-friendly", "fast",
+"properly", "intuitive", "correctly") plus the bare forms "works" and
+"as expected". Write each scenario as if QA will execute it word-for-word — a
+spec whose TC- lines are concrete (3 or more) lets full mode skip generating a
+separate functional test plan, so these lines are that plan's seed.
 
 ## NOTES
 
@@ -185,13 +200,14 @@ Keep the blueprint to roughly one screen — human-reviewable in ~3 minutes. By 
 
 Always restate the anti-goals from `docs/goal.md` verbatim under Goal Mode Metadata. Even though every agent reads goal.md, repeating them in the iter spec keeps them salient for the developer and evaluator.
 
-## Pre-write self-check (before saving the spec — all five must hold)
+## Pre-write self-check (before saving the spec — all six must hold)
 
 1. **Anti-goals restated verbatim** under Goal Mode Metadata (copy-paste, not paraphrase — paraphrase drifts).
 2. **Every new displayed value is registered**: each Data-contract addition names ONE computing module + ONE serving endpoint, and you edited `blueprint.md` to match. "None" is written explicitly when true.
 3. **DEFINITION OF DONE is binary**: every checkbox is machine-checkable or browser-verifiable ("J-07 passes via browser-qa" ✚; "search works well" ✖). If you can't phrase a criterion binarily, the scope is too vague — narrow it.
 4. **Depth is justified** by the triggers in "Picking depth" (cite which trigger in BACKGROUND). ESCALATE from last eval ⇒ full, no exceptions.
 5. **Target selection followed the priority rubric** — if you deviated (e.g., skipped a regressed journey), the reason is stated in BACKGROUND.
+6. **Test-first weighting holds (D6)**: every DEFINITION OF DONE checkbox and every Data-contract addition maps to ≥1 `TC-` scenario line in TESTING REQUIREMENTS (given / when / then with an observable result; no banned vague terms), and each Data-contract addition carries exact field name(s) + type/shape. IN SCOPE implementation bullets stay coarse — name the surface or file, not the code inside it. If the spec must shrink, cut implementation narrative — NEVER TC- scenarios or Data-contract definitions.
 
 If any check fails, fix the spec before writing it — downstream agents execute what you wrote, not what you meant.
 
