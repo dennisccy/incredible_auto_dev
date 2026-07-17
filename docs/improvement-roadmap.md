@@ -1465,7 +1465,7 @@ benchmark (or a real session's telemetry) before AND after (G8).
 - **Slices:** (a) evaluator cases + runner; (b) reviewer cases; (c) auditor cases.
 
 ### REL-2 · Preflight doctor
-- **Priority:** P1 · **Effort:** M · **Risk:** LOW · **Status:** IN-PROGRESS
+- **Priority:** P1 · **Effort:** M · **Risk:** LOW · **Status:** DONE 2026-07-17
   *(implemented + tested 2026-07-17: `scripts/automation/doctor.sh` (14 checks, `--only`/
   `--list`/`--strict-doctor`, advisory by construction — exit 0 unless `--strict-doctor`
   AND ≥1 FAIL) + warn-only engine wiring (`run_doctor_preflight`, `CHAIN_DOCTOR=true`
@@ -1485,9 +1485,15 @@ benchmark (or a real session's telemetry) before AND after (G8).
   spend: `.claude/settings.json` enabledPlugins/allow + plugin cache dir +
   `.mcp.json`/`~/.claude.json` mcpServers. First real-machine run: 10 PASS / 3 WARN
   (gh not logged in; uutils timeout, not GNU; 17 chrome-family processes) / 1 SKIP in
-  1.4s — honest findings, reported. REMAINING: G8 fresh-session certification (M
-  effort — implementer never self-certifies); live proof rides the next engine start
-  with `CHAIN_DOCTOR` active.)*
+  1.4s — honest findings, reported. Certified DONE 2026-07-17 by a fresh
+  non-implementer session per G8: test-doctor 44/44 + evals 122/122 re-run green; live
+  table on this machine 10 PASS / 3 WARN / 0 FAIL / 1 SKIP in 1.5s with every WARN
+  independently truth-checked (gh auth rc 1; uutils timeout 0.8.0; 26 live
+  chrome-family processes vs the row's 27 — scan-to-scan drift, same truth);
+  `--only` single-row + unknown-key exit 2, strict/non-strict exit semantics, the
+  crashing-stub warn-only wiring, the three incident citations, and config-file
+  Chrome-MCP detection all spot-checked against source plus the fresh suite run. Live
+  engine-start proof still rides the next real session with `CHAIN_DOCTOR` active.)*
 - **Problem:** sessions die mid-iteration on environment problems that were knowable at
   start (missing playwright, dead Chrome MCP, unauthenticated gh, low disk, stale pump).
 - **Current state:** only GitHub auth is preflighted (`git ls-remote` before the loop,
