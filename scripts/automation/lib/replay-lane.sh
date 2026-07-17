@@ -133,6 +133,87 @@ _replay_lane_mark_skipped_infra() {
   fi
 }
 
+# ── REL-14: primary-lane browser-infra preflight + out-of-band token ──────────
+# The REL-5 discipline above covers only the deterministic replay lane; these
+# helpers extend it to the PRIMARY browser-qa dispatch (LLM lane in lean,
+# browser-qa-phase.sh in full). The token is OUT-OF-BAND by design: the merged
+# ui-test-results verdict enum stays PASS|FAIL|SKIPPED (the checkpoint greps
+# and verdicts.py must never see a new value); the goal-evaluator reads
+# $ITER_DIR/browser-infra.json separately and scores the listed journeys
+# partial(pending-infra). All call sites gate on CHAIN_BQA_PREFLIGHT
+# (default false — an absent token is byte-for-byte today's behavior).
+
+# bqa_services_probe — pure probe, never boots. Backend health URL first, then
+# the frontend. Ready = any HTTP status (same permissive regex as
+# ensure_services_running: a 404 still proves the server answers).
+bqa_services_probe() {
+  local _bp_be="${QA_BACKEND_HEALTH_URL:-http://localhost:${CHAIN_BACKEND_PORT:-8000}/health}"
+  local _bp_fe="${FRONTEND_URL:-http://localhost:${CHAIN_FRONTEND_PORT:-3000}}"
+  local _bp_code
+  _bp_code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 "$_bp_be" 2>/dev/null || echo 000)"
+  [[ "$_bp_code" =~ ^[1-5][0-9][0-9]$ ]] || return 1
+  _bp_code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 "$_bp_fe" 2>/dev/null || echo 000)"
+  [[ "$_bp_code" =~ ^[1-5][0-9][0-9]$ ]] || return 1
+  return 0
+}
+
+# bqa_preflight — probe → one re-check via ensure_services_running (idempotent:
+# it returns immediately when services already answer) → probe again. Mirrors
+# the REL-5 rc-6 retry shape above. Returns 0 = the dispatch may proceed;
+# 1 = infra still down after the single retry (the caller writes the token and
+# skips the dispatch instead of burning it against dead infra).
+bqa_preflight() {
+  bqa_services_probe && return 0
+  _replay_lane_log "REL-14 preflight: services probe failed — re-checking services and retrying the probe once..."
+  if declare -F ensure_services_running >/dev/null 2>&1; then ensure_services_running || true; fi
+  bqa_services_probe && return 0
+  return 1
+}
+
+# bqa_write_infra_token <iter_dir> <journeys-space-sep> <reason> <detected_by>
+# The out-of-band REL-14 token. `attempts` counts CONSECUTIVE infra-blocked
+# iterations: run-goal.sh exports CHAIN_BQA_PREV_ATTEMPTS from the previous
+# iteration's token when it schedules a make-up; a fresh screenshot (journey
+# scored passing/failing) resets the chain by not carrying the export forward.
+bqa_write_infra_token() {
+  local _bt_dir="$1" _bt_journeys="$2" _bt_reason="$3" _bt_by="$4"
+  local _bt_attempts=$(( ${CHAIN_BQA_PREV_ATTEMPTS:-0} + 1 ))
+  mkdir -p "$_bt_dir" 2>/dev/null || true
+  BQA_JOURNEYS="$_bt_journeys" BQA_REASON="$_bt_reason" BQA_BY="$_bt_by" BQA_ATTEMPTS="$_bt_attempts" \
+  python3 - "$_bt_dir/browser-infra.json" <<'PY' || _replay_lane_warn "REL-14: failed to write browser-infra.json (non-blocking)"
+import json, os, sys
+journeys = [j for j in os.environ.get("BQA_JOURNEYS", "").split() if j]
+with open(sys.argv[1], "w") as f:
+    json.dump({"journeys": journeys,
+               "reason": os.environ.get("BQA_REASON", ""),
+               "attempts": int(os.environ.get("BQA_ATTEMPTS", "1")),
+               "detected_by": os.environ.get("BQA_BY", "")}, f, indent=1)
+    f.write("\n")
+PY
+  _replay_lane_warn "REL-14: browser-infra token written ($_bt_by, attempt $_bt_attempts) for: ${_bt_journeys:-(none)} — $_bt_reason"
+  if declare -F record_telemetry_event >/dev/null 2>&1; then
+    record_telemetry_event "browser_infra_token" "$(jq -cn --arg j "$_bt_journeys" --arg r "$_bt_reason" --arg d "$_bt_by" --argjson a "$_bt_attempts" \
+        '{journeys:$j, reason:$r, detected_by:$d, attempts:$a}' 2>/dev/null \
+      || printf '{"journeys":"%s","detected_by":"%s"}' "$_bt_journeys" "$_bt_by")"
+  fi
+}
+
+# bqa_results_infra_reason <merged-results-file>
+# Post-scan classifier for mid-run browser death (which no preflight can
+# catch): succeeds (and echoes the reason) ONLY when the results contain at
+# least one row, NO PASS/FAIL row, and an explicit browser-infra taxonomy
+# reason (demo_runner's "browser infrastructure failure" / a Chrome readiness
+# error). Deliberately conservative: legitimate SKIPs (single-service
+# projects, frontend-less iterations) must never be tokenized — a false
+# negative just means today's behavior.
+bqa_results_infra_reason() {
+  local _br_f="$1"
+  [[ -f "$_br_f" ]] || return 1
+  grep -qE '\|[[:space:]]*(PASS|FAIL)[[:space:]]*\|' "$_br_f" && return 1
+  grep -qE '^\|' "$_br_f" || return 1
+  grep -m1 -oiE '(browser infrastructure failure|chrome (mcp )?did not become ready)[^|]*' "$_br_f" || return 1
+}
+
 # Partition Required-still-passing into replay (LINTABLE golden on file) vs LLM,
 # then run the deterministic replay over the golden set. $1 = iter/phase name.
 # Requires replay_lane_paths to have run. Sets R_REPLAY, R_LLM, _use_replay,

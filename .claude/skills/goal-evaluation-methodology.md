@@ -34,6 +34,16 @@ your overall impression of the iteration.
      claim, including the dev handoff.
    - Record the citation (results row + screenshot filename). **No citation → the journey's
      status is `unknown`, and you say so.**
+   - **One carve-out (REL-14):** when the journey is listed in this iteration's
+     `<iter-dir>/browser-infra.json` (the engine's browser-infra token: services/Chrome
+     failed, NOT the product) and there is no fresh screenshot, score it `partial` with the
+     gap noted as `pending-infra`, and set `pending_infra: true` on it in journey-history —
+     the code evidence stands, the browser evidence is OWED. Never `passing` (the
+     no-screenshot rail is absolute), and never `failing`/`regressed` on infra absence
+     alone. If the token shows `attempts >= 2` (two consecutive infra-blocked iterations),
+     the browser infrastructure itself is the blocker: treat it as a human-owned action
+     (STALLED-class, decision tree C.2) instead of scheduling a third silent retry. A fresh
+     screenshot this iteration — pass or fail — clears `pending_infra` and scores normally.
 4. **Stable-journey spot-check.** Journeys with unchanged `passing`/`already_passing` status
    that are in this iteration's **Required-still-passing set** (and have a stored golden
    script) are re-verified mechanically by the replay lane (`demo_runner.py --mode verify`)

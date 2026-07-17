@@ -1,0 +1,6 @@
+{
+ "journeys": ["J-01", "J-02"],
+ "reason": "browser infrastructure failure: Chrome did not become ready on port 9222 within 15000ms",
+ "attempts": 1,
+ "detected_by": "postscan"
+}

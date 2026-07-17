@@ -4,8 +4,8 @@ description: Goal-mode iteration evaluator. Reads iteration outputs (handoffs, b
 model: claude-opus-4-8
 tools: [Read, Glob, Grep, Bash, Write]
 disallowed_tools: ["Bash(rm -rf /)", "Bash(rm -rf ~)", "Bash(rm -rf ~/*)", "Bash(rm -rf /home*)", "Bash(rm -rf /root*)", "Bash(rm -rf /etc*)", "Bash(rm -rf /usr*)", "Bash(rm -rf /var*)", "Bash(rm -rf /boot*)", "Bash(rm -rf /lib*)", "Bash(rm -rf /opt*)", "Bash(rm -rf /srv*)", "Bash(rm -rf /sys*)", "Bash(rm -rf /proc*)", "Bash(git push --force origin main)", "Bash(git push --force origin master)", "Bash(git push -f origin main)", "Bash(git push -f origin master)", "Bash(git push *)", "Bash(git push)", "Bash(git push --force *)", "Bash(gh pr merge *)", "Bash(gh pr close *)", "Bash(gh release *)", "Bash(git tag *)"]
-version: 1.6.0
-last_updated: 2026-07-17
+version: 1.7.0
+last_updated: 2026-07-18
 ---
 
 # Goal Evaluator Agent
@@ -94,10 +94,21 @@ Write the updated state to `runs/goal-session-<sid>/state/journey-history.json`.
 Statuses:
 - `passing` — verified passing in this iteration
 - `failing` — verified failing in this iteration
-- `partial` — only some assertion steps passed
+- `partial` — only some assertion steps passed, OR the journey is named in this
+  iteration's `browser-infra.json` with no fresh screenshot (gap `pending-infra` —
+  browser infrastructure owes the evidence, the product is not at fault; REL-14)
 - `already_passing` — was found passing in baseline (iter 0); set only by baseline iteration
 - `regressed` — was passing in a prior iteration, now failing
 - `unknown` — not tested this iteration; carry over previous status
+
+**`pending_infra` (REL-14, optional boolean).** Set `"pending_infra": true` on a journey
+you scored `partial` because of the browser-infra token (methodology A.3 carve-out); the
+engine schedules a verify-only make-up ride for those journeys next iteration. Clear the
+field (omit it) the moment the journey gets a fresh screenshot — whatever the outcome. Two
+consecutive infra-blocked iterations for the same journey (`attempts >= 2` in the token) =
+the second consecutive infra failure: stop treating it as transient — the browser
+infrastructure is a human-owned blocker (STALLED-class, decision tree C.2); never loop a
+third silent retry.
 
 **`spec_hash` — the goal-edit drift record.** Once per evaluation, run `python3 scripts/automation/lib/goal_gate.py hash-journeys docs/goal.md` (prints `{"J-NN": "<sha256>"}`). For every journey whose status you set from THIS iteration's evidence (`passing`, `failing`, `partial`, and baseline `already_passing`), record its current hash as `spec_hash`. For journeys you did not verify this iteration, carry the existing `spec_hash` forward unchanged — or leave it absent (pre-NEED-9 histories have none; never invent one). Never copy a new hash onto a journey you did not re-verify: the hash asserts "this status was verified against exactly this goal text", and the deterministic achievement gate audits it.
 

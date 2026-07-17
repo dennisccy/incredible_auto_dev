@@ -1,0 +1,25 @@
+{
+  "journeys": {
+    "J-01": {
+      "id": "J-01",
+      "name": "Add an item",
+      "status": "passing",
+      "last_verified_iter": "goal-fixt06-iter-2",
+      "last_passing_iter": "goal-fixt06-iter-2",
+      "first_seen_iter": "goal-fixt06-iter-0",
+      "last_evidence_path": "reports/qa/goal-fixt06-iter-2-evidence/UT-01-add-item.png",
+      "spec_hash": "ee1d275b5033b35ab934de4baa9ecd3ff5f4d9bf510bed55ae0bb4c10f367db4"
+    },
+    "J-02": {
+      "id": "J-02",
+      "name": "Filter to open items",
+      "status": "unknown",
+      "last_verified_iter": null,
+      "last_passing_iter": null,
+      "first_seen_iter": "goal-fixt06-iter-0",
+      "last_evidence_path": null
+    }
+  },
+  "anti_goal_violations": [],
+  "updated_at": "2026-07-04T09:12:40Z"
+}

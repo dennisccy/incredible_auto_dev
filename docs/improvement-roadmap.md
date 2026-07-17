@@ -2410,9 +2410,34 @@ benchmark (or a real session's telemetry) before AND after (G8).
   rest of the doctor remains TODO.)*
 
 ### REL-14 · Browser-infra make-up lane (primary browser-qa preflight + screenshot-only recovery)
-- **Priority:** P1 · **Effort:** M · **Risk:** MED · **Status:** TODO
+- **Priority:** P1 · **Effort:** M · **Risk:** MED · **Status:** IN-PROGRESS
   *(mini-spec authored 2026-07-17 in the user-approved throughput package; absorbs
-  §16 CAND-BQA-PREFLIGHT — see its absorption note. Implement in a later session.)*
+  §16 CAND-BQA-PREFLIGHT — see its absorption note. IMPLEMENTED 2026-07-18, user-
+  directed "do the next step": all five components as specced, TDD red→green via
+  `tests/automation/test-browser-infra-makeup.sh` (27 asserts: probe/preflight
+  one-retry/token attempts-counter/conservative classifier units + wiring greps +
+  checkpoint-enum invariance) registered in run-evals §2c. As built: shared
+  helpers `lib/replay-lane.sh:149/:165/:178/:209` (`bqa_services_probe`,
+  `bqa_preflight`, `bqa_write_infra_token`, `bqa_results_infra_reason`); lean lane
+  union `goal-iter-lean.sh:208`, preflight `:710`, post-scan `:750`; full lane
+  preflight `browser-qa-phase.sh:303`, post-scan `:399`, blocked-stub after the
+  merge; engine make-up scheduling + CHAIN_BQA_MAKEUP_JOURNEYS/_PREV_ATTEMPTS
+  exports `run-goal.sh:1677-1703`, BINDING decomposer line + evaluator input line
+  `run-goal.sh:2066` mirrored VERBATIM into the judgment harness
+  (`run-judgment-evals.sh:267` — the two prompts must stay in lockstep);
+  methodology A.3 carve-out (`skills/goal-evaluation-methodology.md` — note: the
+  pre-REL-14 rail scored no-citation as `unknown`; token journeys now score
+  `partial(pending-infra)`, never passing/failing/regressed on infra absence) +
+  `pending_infra` boolean + two-strike rule in `agents/goal-evaluator/body.md`
+  (agent.yaml 1.7.0); judgment fixture
+  `tests/judgment/goal-evaluator/case-06-pending-infra-makeup/` AUTHORED with
+  real spec-hashes (expected CONTINUE; harness --list discovers it, ~$2.38/run).
+  Neighbors re-run green: replay-lane, replay-lane-full, goal-parallel-bqa,
+  goal-checkpoints, goal-async-tail. STILL OUTSTANDING before DONE: (a) G9
+  judgment-fixture run (user spend approval; stock harness checks the verdict
+  class — inspect --keep-sandbox journey-history for pending_infra:true per the
+  case notes), (b) G8 fresh-session certification, (c) one real-session
+  observation with CHAIN_BQA_PREFLIGHT=true (knob ships DEFAULT OFF per G4).)*
 - **Problem:** a browser-infra failure in the PRIMARY browser-qa lane costs a whole
   iteration. REL-5 gave the golden-replay lane SKIPPED-INFRA discipline
   (`lib/replay-lane.sh:185-215`: rc-6 → services re-check → ONE retry → second rc-6

@@ -286,12 +286,40 @@ SERVICES_NOTE="Note: browser-qa-phase.sh manages backend (${BACKEND_HEALTH_URL},
 # before claude attempts the next call.
 export CHAIN_CLAUDE_PRE_RETRY_HOOK="ensure_services_running"
 
+# ── REL-14 preflight (CHAIN_BQA_PREFLIGHT, default off) ─────────────────────
+# Probe services once more (+ one ensure_services_running retry) before burning
+# the browser-qa dispatch against dead infra. On persistent failure: skip the
+# dispatch; goal-session iterations also write the out-of-band token the
+# goal-evaluator reads ($ITER_DIR/browser-infra.json). The merged results
+# verdict enum stays PASS|FAIL|SKIPPED either way. FRONTEND_AVAILABLE=no keeps
+# today's honest agent-side SKIP path and is never tokenized here.
+_bqa_infra_blocked="no"
+_bqa_tok_set=""
+if [[ "$GOAL_REPLAY_ACTIVE" == "yes" ]]; then
+  _bqa_tok_set="$(replay_lane_spec_journeys 'Target journeys:' "$SPEC") ${_llm_regr_set:-}"
+  _bqa_tok_set="$(echo "$_bqa_tok_set" | tr ' ' '\n' | grep -E '^J-[0-9]+$' | sort -u | tr '\n' ' ' || true)"
+  _bqa_tok_set="${_bqa_tok_set% }"
+fi
+if [[ "${CHAIN_BQA_PREFLIGHT:-false}" == "true" && "$FRONTEND_AVAILABLE" == "yes" ]]; then
+  if ! bqa_preflight; then
+    _bqa_infra_blocked="yes"
+    echo "[browser-qa] REL-14 preflight: services still unreachable after re-check + retry — skipping the browser-qa dispatch." >&2
+    if [[ "$GOAL_REPLAY_ACTIVE" == "yes" && -n "${GOAL_SESSION_DIR:-}" && -n "${GOAL_ITER_INDEX:-}" ]]; then
+      bqa_write_infra_token "$GOAL_SESSION_DIR/iter-$GOAL_ITER_INDEX" "$_bqa_tok_set" \
+        "services preflight failed after ensure_services_running retry" "preflight"
+    fi
+  fi
+fi
+
 # ── Run browser QA agent ───────────────────────────────────────────────────
 cd "$REPO_ROOT"
 export CHAIN_CURRENT_AGENT=browser-qa-agent
 # Guard against `set -e` so we can inspect the exit code and fall back to
 # writing a SKIPPED stub when the agent leaves no results file.
 _bqa_rc=0
+if [[ "$_bqa_infra_blocked" == "yes" ]]; then
+  : # REL-14: dispatch skipped — preflight failure recorded above
+else
 claude_with_quota_retry -p "You are the browser-qa-agent for phased development.
 
 Phase: $PHASE
@@ -330,6 +358,7 @@ The report MUST contain a line at the top:
 **Browser QA Verdict:** SKIPPED
 
 Then STOP." || _bqa_rc=$?
+fi
 
 # Signal-induced exit (Ctrl-C, SIGKILL, SIGTERM) → do NOT write SKIPPED stubs.
 # A stub would advertise the step as "ran but produced no real artifact," which
@@ -354,13 +383,36 @@ fi
 # dispatch that returned without writing; quota 75 excluded — the outer loop
 # handles it loudly).
 if [[ "$GOAL_REPLAY_ACTIVE" == "yes" ]]; then
-  if [[ ! -f "$_llm_out" && $_bqa_rc -ne ${QUOTA_EXHAUSTED_EXIT_CODE:-75} ]]; then
+  if [[ ! -f "$_llm_out" && $_bqa_rc -ne ${QUOTA_EXHAUSTED_EXIT_CODE:-75} && "$_bqa_infra_blocked" != "yes" ]]; then
     warn_missing_evidence "browser-qa-agent" "$_llm_out"
   fi
   if [[ "$_use_replay" == "yes" ]]; then
     replay_lane_merge_results "$UI_TEST_RESULTS" "$_llm_out"
   fi
   replay_lane_golden_coverage "$UI_TEST_RESULTS" "$PHASE"
+fi
+
+# REL-14 post-scan (same knob): a dispatch that returned but left no results
+# file (mid-run browser death; quota pauses excluded) or an all-SKIP results
+# file carrying an explicit browser-infra reason also earns the token — no
+# preflight can catch a Chrome that dies mid-run. Goal-session iterations only.
+if [[ "${CHAIN_BQA_PREFLIGHT:-false}" == "true" && "$_bqa_infra_blocked" != "yes" \
+      && "$GOAL_REPLAY_ACTIVE" == "yes" && -n "${GOAL_SESSION_DIR:-}" && -n "${GOAL_ITER_INDEX:-}" ]]; then
+  if [[ ! -f "$_llm_out" && $_bqa_rc -ne ${QUOTA_EXHAUSTED_EXIT_CODE:-75} ]]; then
+    bqa_write_infra_token "$GOAL_SESSION_DIR/iter-$GOAL_ITER_INDEX" "$_bqa_tok_set" \
+      "browser-qa dispatch returned rc=$_bqa_rc with no results file" "postscan-missing"
+  elif _bqa_infra_reason="$(bqa_results_infra_reason "$UI_TEST_RESULTS")"; then
+    bqa_write_infra_token "$GOAL_SESSION_DIR/iter-$GOAL_ITER_INDEX" "$_bqa_tok_set" \
+      "$_bqa_infra_reason" "postscan"
+  fi
+fi
+
+# REL-14: a preflight-blocked dispatch leaves no LLM rows; if the replay merge
+# did not produce a results file either, write the SKIPPED stub so closure and
+# the evaluator still have an artifact (the out-of-band token carries the why).
+if [[ "$_bqa_infra_blocked" == "yes" && ! -f "$UI_TEST_RESULTS" ]]; then
+  write_failed_artifact_stub "$PHASE" "ui-test-results" \
+    "REL-14 preflight: services unreachable after re-check + one retry — browser-qa dispatch skipped (browser infrastructure, not a product defect)."
 fi
 
 # If the agent exited non-zero AND did not leave a results file (common when

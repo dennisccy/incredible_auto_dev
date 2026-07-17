@@ -1674,6 +1674,37 @@ PY
   # enforces the cadence even if the agent ignores it.
   LEAN_STREAK=$(goal_lean_streak "$GOAL_SESSION_DIR_LOCAL" "$CURRENT_ITER")
 
+  # REL-14 make-up scheduling: journeys the previous evaluation left
+  # pending_infra (browser evidence missing due to INFRA, not defects) get a
+  # verify-only make-up ride this iteration — a BINDING decomposer prompt line
+  # plus an engine-side union into the executor's browser set
+  # (CHAIN_BQA_MAKEUP_JOURNEYS; the union also covers the resume path, where a
+  # reused spec never saw the line). CHAIN_BQA_PREV_ATTEMPTS carries the token's
+  # consecutive-block counter so the evaluator can apply the two-strike rule.
+  BQA_MAKEUP_JOURNEYS=""
+  if [[ $CURRENT_ITER -gt 0 && -f "$JOURNEY_HISTORY" ]]; then
+    BQA_MAKEUP_JOURNEYS="$(python3 -c "
+import json
+try:
+    h = json.load(open('$JOURNEY_HISTORY'))
+    js = h.get('journeys', {}) if isinstance(h, dict) else {}
+    print(' '.join(sorted(j for j, v in js.items() if isinstance(v, dict) and v.get('pending_infra'))))
+except Exception:
+    pass" 2>/dev/null || true)"
+  fi
+  if [[ -n "$BQA_MAKEUP_JOURNEYS" ]]; then
+    export CHAIN_BQA_MAKEUP_JOURNEYS="$BQA_MAKEUP_JOURNEYS"
+    _prev_infra_token="$GOAL_SESSION_DIR_LOCAL/iter-$((CURRENT_ITER-1))/browser-infra.json"
+    CHAIN_BQA_PREV_ATTEMPTS="$(python3 -c "
+import json
+try: print(int(json.load(open('$_prev_infra_token')).get('attempts', 0)))
+except Exception: print(0)" 2>/dev/null || echo 0)"
+    export CHAIN_BQA_PREV_ATTEMPTS
+    echo "[run-goal] REL-14: pending-infra make-up scheduled for: $BQA_MAKEUP_JOURNEYS (prior attempts: $CHAIN_BQA_PREV_ATTEMPTS)"
+  else
+    unset CHAIN_BQA_MAKEUP_JOURNEYS CHAIN_BQA_PREV_ATTEMPTS 2>/dev/null || true
+  fi
+
   echo "[run-goal] Step 1: goal-decomposer (mode: $DECOMPOSER_MODE)"
   # Pre-trim historical state — pass only the tail to the decomposer so token
   # usage stays flat as the session grows. Spec asks for "last 3 entries";
@@ -1747,6 +1778,7 @@ Iteration state (single-file digest the goal-evaluator overwrote after the last 
 $ITER_STATE_INLINE
 \`\`\`
 \"Do not redo\" entries above are BINDING — do not re-plan or re-test them — unless docs/goal.md changed for that item.
+$( [[ -n "${CHAIN_BQA_MAKEUP_JOURNEYS:-}" ]] && echo "Pending-infra make-up targets: $CHAIN_BQA_MAKEUP_JOURNEYS. BINDING — include them as verify-only targets this iteration; do NOT re-plan their implementation — the code is present, only browser evidence is missing (prior browser-infra failure)." )
 
 $( [[ $CURRENT_ITER -gt 0 && -f "$GOAL_SESSION_DIR_LOCAL/iter-$((CURRENT_ITER-1))/eval.md" ]] && echo "Last iteration eval: $GOAL_SESSION_DIR_LOCAL/iter-$((CURRENT_ITER-1))/eval.md")
 
@@ -2031,6 +2063,7 @@ Iteration artifacts (read what exists):
   Audit handoff: docs/handoffs/${ITER_NAME}-audit.md (full mode only)
   Browser QA results: reports/phase-${ITER_NAME}-ui-test-results.md
   Evidence: reports/qa/${ITER_NAME}-evidence/
+  Browser-infra token: $ITER_DIR/browser-infra.json  <-- if present: its listed journeys hit a browser INFRA failure (services/Chrome), not a product defect. With no fresh screenshot, score them partial with gap 'pending-infra' and set pending_infra: true in journey-history (methodology A.3); attempts >= 2 in the token = treat the browser infrastructure as a human-owned blocker (STALLED-class)
   Coherence audit: $COHERENCE_OUTPUT  <-- COHERENCE-FAIL vetoes GOAL_ACHIEVED and drives a consolidation CONTINUE
   Goal-edit drift note: $ITER_DIR/journeys-changed.md  <-- if present, each listed journey's prior pass is VOID until re-verified against the CURRENT goal text (your step 3)
 
