@@ -20,8 +20,11 @@
 #   4. Verify rc=0 → _use_replay=yes, REPLAY_FAILED empty, results file has the
 #      UT-J row.
 #   5. Verify rc=5 (journey FAIL) → REPLAY_FAILED extracted for LLM re-confirm.
-#   6. Verify rc=6 (browser infra crash) → fallback: _use_replay=no, R_REPLAY
-#      cleared (ALL regression journeys ride the LLM lane).
+#   6. Verify rc=6 TWICE (persistent browser-infra, REL-5): ONE retry after a
+#      service re-check, then the lane records SKIPPED-INFRA (raw artifact
+#      verdict line + footer, REPLAY_SKIPPED_INFRA=yes, greppable log lines)
+#      and falls back: _use_replay=no, R_REPLAY cleared (ALL regression
+#      journeys ride the LLM lane).
 #   7. CHAIN_REGRESSION_REPLAY=false escape hatch → verify never invoked.
 #   8. Stale-artifact hygiene: a prior run's REGRESSION_RESULTS/LLM_RESULTS are
 #      removed at partition entry (a lane that does not run this iteration must
@@ -32,6 +35,12 @@
 #      reconciliation footer appended to the RAW replay artifact (companion 1:
 #      no stale FAIL survives the iteration); un-overturned FAIL → no footer.
 #  11. Merge crash → lane-file cp fallback (LLM file preferred).
+#  12. REL-5 flake discipline: infra-then-success → the retry rescues the lane
+#      (normal PASS path, no SKIPPED-INFRA); infra-then-FAIL → the retry's rc=5
+#      feeds REPLAY_FAILED unchanged; a clean rc=5 is NEVER retried
+#      (invocation-count-proven, zero service re-checks); a non-6 failure
+#      (rc=3) keeps the old no-retry generic fallback; SKIPPED-INFRA journeys
+#      still feed replay_lane_llm_regression_set (whole REQUIRED set).
 #
 # No API calls; runs in a couple of seconds.
 #
@@ -97,9 +106,34 @@ if mode == "verify":
     if stamp:
         with open(stamp, "w") as f:
             f.write(" ".join(journeys))
+    # REL-5 knobs: a per-invocation rc sequence driven by a counter file, so
+    # retry semantics (exactly-once, rescue, never-on-5) are provable.
+    attempt = 1
+    cf = os.environ.get("STUB_REPLAY_COUNT_FILE", "")
+    if cf:
+        try:
+            attempt = int(open(cf).read().strip() or "0") + 1
+        except Exception:
+            attempt = 1
+        with open(cf, "w") as f:
+            f.write(str(attempt))
     verdict = os.environ.get("STUB_REPLAY_VERDICT", "PASS")
     rc = os.environ.get("STUB_REPLAY_RC", "")
+    seq = os.environ.get("STUB_REPLAY_RC_SEQ", "").split()
+    if seq:
+        rc = seq[min(attempt, len(seq)) - 1]
     results = arg("--results")
+    if results and rc == "6":
+        # Mirror the real runner: a browser-infra crash still writes the
+        # results file (SKIP rows naming the infra failure) before exiting 6.
+        rows = "\n".join(
+            f"| UT-{j} | replay {j} | regression | P1 | replays clean | browser infrastructure failure: stub crash | SKIP | none |"
+            for j in journeys)
+        with open(results, "w") as f:
+            f.write("**Browser QA Verdict:** SKIPPED\n\n"
+                    "## Results Table\n"
+                    "| Test ID | Name | Type | Priority | Expected | Actual | Verdict | Evidence |\n"
+                    "|---|---|---|---|---|---|---|---|\n" + rows + "\n")
     if results and rc != "6":
         rows = "\n".join(
             f"| UT-{j} | replay {j} | regression | P1 | replays clean | stub {verdict.lower()} | {verdict} | none |"
@@ -125,10 +159,23 @@ run_partition() {  # $1 = REQUIRED_JOURNEYS value
     REQUIRED_JOURNEYS="$1"
     FRONTEND_AVAILABLE="${FRONTEND_AVAILABLE_OVERRIDE:-yes}"
     FRONTEND_URL="http://localhost:9"
+    # REL-5: the retry path re-checks services when the function exists (in
+    # production common.sh provides it; this stamping stub proves call counts —
+    # scenarios without STUB_SVC_STAMP also prove the lib survives its absence).
+    if [[ -n "${STUB_SVC_STAMP:-}" ]]; then
+      ensure_services_running() { echo recheck >> "$STUB_SVC_STAMP"; }
+    fi
     replay_lane_paths "$ITER"
-    replay_lane_partition_and_verify "$ITER" >/dev/null
+    if [[ -n "${RUN_PARTITION_LOG:-}" ]]; then
+      replay_lane_partition_and_verify "$ITER" > "$RUN_PARTITION_LOG" 2>&1
+    else
+      replay_lane_partition_and_verify "$ITER" >/dev/null
+    fi
     printf 'R_REPLAY=<%s>|R_LLM=<%s>|use=<%s>|failed=<%s>\n' \
       "${R_REPLAY:-}" "${R_LLM:-}" "${_use_replay:-}" "${REPLAY_FAILED:-}"
+    if [[ -n "${REPLAY_SKIPPED_INFRA:-}" ]]; then
+      printf 'skipinfra=<%s>\n' "$REPLAY_SKIPPED_INFRA"
+    fi
   )
 }
 
@@ -219,13 +266,37 @@ out="$(STUB_REPLAY_VERDICT=FAIL run_partition "J-01 J-02 ")"
   && assert "verify rc=5: REPLAY_FAILED extracted for LLM re-confirm" pass \
   || { assert "verify rc=5: REPLAY_FAILED extracted for LLM re-confirm" fail; echo "    got: $out"; }
 
-# ── 6. Verify rc=6: infra crash → full LLM fallback ─────────────────────────
+# ── 6. Verify rc=6 twice (REL-5): one retry + re-check → SKIPPED-INFRA ──────
 reset_goldens
 golden "J-01"
-out="$(STUB_REPLAY_RC=6 run_partition "J-01 J-02 ")"
-[[ "$out" == "R_REPLAY=<>|R_LLM=<J-02 >|use=<no>|failed=<>" ]] \
-  && assert "verify rc=6: fallback — _use_replay=no, R_REPLAY cleared" pass \
-  || { assert "verify rc=6: fallback — _use_replay=no, R_REPLAY cleared" fail; echo "    got: $out"; }
+rm -f "$WORK/count6"; : > "$WORK/svc6"
+out="$(STUB_REPLAY_RC_SEQ='6 6' STUB_REPLAY_COUNT_FILE="$WORK/count6" \
+       STUB_SVC_STAMP="$WORK/svc6" RUN_PARTITION_LOG="$WORK/lane6.log" \
+       run_partition "J-01 J-02 ")"
+want="R_REPLAY=<>|R_LLM=<J-02 >|use=<no>|failed=<>
+skipinfra=<yes>"
+[[ "$out" == "$want" ]] \
+  && assert "verify rc=6 twice: fallback + REPLAY_SKIPPED_INFRA=yes" pass \
+  || { assert "verify rc=6 twice: fallback + REPLAY_SKIPPED_INFRA=yes" fail; echo "    got: $out"; }
+[[ "$(cat "$WORK/count6" 2>/dev/null)" == "2" ]] \
+  && assert "verify rc=6 twice: exactly ONE retry (2 verify invocations)" pass \
+  || assert "verify rc=6 twice: exactly ONE retry (got $(cat "$WORK/count6" 2>/dev/null) invocations)" fail
+[[ "$(grep -c recheck "$WORK/svc6" 2>/dev/null)" == "1" ]] \
+  && assert "verify rc=6 twice: exactly one ensure_services_running re-check" pass \
+  || assert "verify rc=6 twice: exactly one ensure_services_running re-check (got $(grep -c recheck "$WORK/svc6" 2>/dev/null))" fail
+grep -q "browser-infra failure (rc=6) — re-checking services and retrying the replay once" "$WORK/lane6.log" \
+  && assert "verify rc=6 twice: greppable retry log line" pass \
+  || assert "verify rc=6 twice: greppable retry log line" fail
+grep -q "SKIPPED-INFRA — browser-infra failure persisted after one retry" "$WORK/lane6.log" \
+  && assert "verify rc=6 twice: greppable SKIPPED-INFRA verdict log line" pass \
+  || assert "verify rc=6 twice: greppable SKIPPED-INFRA verdict log line" fail
+REG6="$SBX/reports/phase-$ITER-regression-replay-results.md"
+grep -q '^\*\*Browser QA Verdict:\*\* SKIPPED-INFRA$' "$REG6" \
+  && assert "verify rc=6 twice: raw artifact verdict line is exactly SKIPPED-INFRA" pass \
+  || { assert "verify rc=6 twice: raw artifact verdict line is exactly SKIPPED-INFRA" fail; head -3 "$REG6" 2>/dev/null | sed 's/^/        /'; }
+grep -q 'routed to the LLM lane' "$REG6" \
+  && assert "verify rc=6 twice: raw artifact footer explains the routing" pass \
+  || assert "verify rc=6 twice: raw artifact footer explains the routing" fail
 
 # ── 7. Escape hatch ──────────────────────────────────────────────────────────
 reset_goldens
@@ -341,6 +412,73 @@ rm -f "$MERGED"
 [[ "$(cat "$MERGED" 2>/dev/null)" == "llm rows" ]] \
   && assert "merge crash: falls back to copying the LLM lane file" pass \
   || assert "merge crash: falls back to copying the LLM lane file" fail
+
+# ── 12. REL-5 flake discipline: rescue / infra-then-FAIL / never-retry-5 / non-6 ──
+# 12a. infra-then-success: the retry rescues the lane — normal PASS path,
+# no SKIPPED-INFRA state, raw artifact is the retry's own output.
+reset_goldens
+golden "J-01"
+rm -f "$WORK/count12a"; : > "$WORK/svc12a"
+out="$(STUB_REPLAY_RC_SEQ='6 0' STUB_REPLAY_COUNT_FILE="$WORK/count12a" \
+       STUB_SVC_STAMP="$WORK/svc12a" RUN_PARTITION_LOG="$WORK/lane12a.log" \
+       run_partition "J-01 J-02 ")"
+[[ "$out" == "R_REPLAY=<J-01 >|R_LLM=<J-02 >|use=<yes>|failed=<>" && "$(cat "$WORK/count12a" 2>/dev/null)" == "2" ]] \
+  && assert "12a rescue: retry turns an infra blip into a normal PASS lane" pass \
+  || { assert "12a rescue: retry turns an infra blip into a normal PASS lane" fail; echo "    got: $out ($(cat "$WORK/count12a" 2>/dev/null) invocations)"; }
+grep -q '^\*\*Browser QA Verdict:\*\* PASS' "$SBX/reports/phase-$ITER-regression-replay-results.md" \
+  && assert "12a rescue: raw artifact is the retry's normal output (no SKIPPED-INFRA)" pass \
+  || assert "12a rescue: raw artifact is the retry's normal output (no SKIPPED-INFRA)" fail
+
+# 12b. infra-then-FAIL: the retry's rc=5 takes the normal REPLAY_FAILED path
+# (first-observation assertion FAILs are re-confirmed by the LLM lane as today).
+reset_goldens
+golden "J-01"
+rm -f "$WORK/count12b"
+out="$(STUB_REPLAY_VERDICT=FAIL STUB_REPLAY_RC_SEQ='6 5' STUB_REPLAY_COUNT_FILE="$WORK/count12b" \
+       RUN_PARTITION_LOG="$WORK/lane12b.log" run_partition "J-01 J-02 ")"
+[[ "$out" == "R_REPLAY=<J-01 >|R_LLM=<J-02 >|use=<yes>|failed=<J-01 >" && "$(cat "$WORK/count12b" 2>/dev/null)" == "2" ]] \
+  && assert "12b infra-then-FAIL: retry's assertion FAIL feeds REPLAY_FAILED unchanged" pass \
+  || { assert "12b infra-then-FAIL: retry's assertion FAIL feeds REPLAY_FAILED unchanged" fail; echo "    got: $out ($(cat "$WORK/count12b" 2>/dev/null) invocations)"; }
+
+# 12c. A clean assertion failure (rc=5) is NEVER retried. Discriminating
+# sequence: a (forbidden) retry would hit rc=0 and flip the outcome.
+reset_goldens
+golden "J-01"
+rm -f "$WORK/count12c"; : > "$WORK/svc12c"
+out="$(STUB_REPLAY_VERDICT=FAIL STUB_REPLAY_RC_SEQ='5 0' STUB_REPLAY_COUNT_FILE="$WORK/count12c" \
+       STUB_SVC_STAMP="$WORK/svc12c" run_partition "J-01 J-02 ")"
+[[ "$out" == "R_REPLAY=<J-01 >|R_LLM=<J-02 >|use=<yes>|failed=<J-01 >" && "$(cat "$WORK/count12c" 2>/dev/null)" == "1" ]] \
+  && assert "12c: assertion failure (rc=5) NEVER retried — 1 invocation, FAIL propagates as today" pass \
+  || { assert "12c: assertion failure (rc=5) NEVER retried" fail; echo "    got: $out ($(cat "$WORK/count12c" 2>/dev/null) invocations)"; }
+[[ ! -s "$WORK/svc12c" ]] \
+  && assert "12c: zero service re-checks on an assertion failure" pass \
+  || assert "12c: zero service re-checks on an assertion failure" fail
+
+# 12d. A non-6 lane failure (rc=3, playwright missing) keeps the old no-retry
+# generic fallback — no retry, no re-check, no SKIPPED-INFRA state.
+reset_goldens
+golden "J-01"
+rm -f "$WORK/count12d"; : > "$WORK/svc12d"
+out="$(STUB_REPLAY_RC_SEQ='3' STUB_REPLAY_COUNT_FILE="$WORK/count12d" \
+       STUB_SVC_STAMP="$WORK/svc12d" RUN_PARTITION_LOG="$WORK/lane12d.log" \
+       run_partition "J-01 J-02 ")"
+[[ "$out" == "R_REPLAY=<>|R_LLM=<J-02 >|use=<no>|failed=<>" && "$(cat "$WORK/count12d" 2>/dev/null)" == "1" && ! -s "$WORK/svc12d" ]] \
+  && assert "12d: non-6 failure (rc=3) keeps the old generic fallback — no retry, no state" pass \
+  || { assert "12d: non-6 failure (rc=3) keeps the old generic fallback — no retry, no state" fail; echo "    got: $out ($(cat "$WORK/count12d" 2>/dev/null) invocations)"; }
+grep -q "Replay lane failed (rc=3) — falling back to the LLM lane" "$WORK/lane12d.log" \
+  && assert "12d: generic fallback warn text unchanged" pass \
+  || assert "12d: generic fallback warn text unchanged" fail
+
+# 12e. Reader decision (recorded in REL-5): SKIPPED-INFRA journeys still feed
+# the LLM lane — the regression set after a double-6 is the WHOLE required set.
+out="$( (
+  set -euo pipefail
+  source "$LIB"
+  _use_replay=no REPLAY_FAILED="" R_LLM="J-02 " REQUIRED_JOURNEYS="J-01 J-02 " REPLAY_SKIPPED_INFRA=yes
+  replay_lane_llm_regression_set
+) )"
+[[ "$out" == "J-01 J-02 " ]] && assert "12e: SKIPPED-INFRA → whole REQUIRED set feeds the LLM lane" pass \
+  || { assert "12e: SKIPPED-INFRA → whole REQUIRED set feeds the LLM lane" fail; echo "    got: <$out>"; }
 
 echo ""
 echo "RESULT: $PASS passed, $FAIL failed"

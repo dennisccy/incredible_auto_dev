@@ -307,11 +307,12 @@ replay_lane_paths "$ITER_NAME"
 
 # Golden partition + lane 1 (deterministic replay) — shared implementation in
 # lib/replay-lane.sh: stale-artifact hygiene, lint-quarantine of invalid
-# goldens, rc=5 → REPLAY_FAILED re-confirm via the LLM lane, any other failure
-# → ALL regression journeys fall back to the LLM lane, and the
+# goldens, rc=5 → REPLAY_FAILED re-confirm via the LLM lane, rc=6 → service
+# re-check + ONE retry then SKIPPED-INFRA on a second rc-6 (REL-5), any other
+# failure → ALL regression journeys fall back to the LLM lane, and the
 # CHAIN_REGRESSION_REPLAY=false hatch. Sets R_REPLAY, R_LLM, _use_replay,
-# REPLAY_FAILED — the exact globals _bqa_state_save ships across the SPEED-2
-# fork boundary.
+# REPLAY_FAILED, REPLAY_SKIPPED_INFRA — the exact globals _bqa_state_save
+# ships across the SPEED-2 fork boundary.
 replay_lane_partition_and_verify "$ITER_NAME"
 
 }
@@ -330,6 +331,7 @@ _bqa_state_save() {
     printf 'R_REPLAY=%q\n'             "${R_REPLAY:-}"
     printf 'R_LLM=%q\n'                "${R_LLM:-}"
     printf 'REPLAY_FAILED=%q\n'        "${REPLAY_FAILED:-}"
+    printf 'REPLAY_SKIPPED_INFRA=%q\n' "${REPLAY_SKIPPED_INFRA:-}"
     printf 'export QA_BACKEND_HEALTH_URL=%q\n'       "${QA_BACKEND_HEALTH_URL:-}"
     printf 'export QA_BACKEND_START_CMD=%q\n'        "${QA_BACKEND_START_CMD:-}"
     printf 'export QA_BACKEND_LOG=%q\n'              "${QA_BACKEND_LOG:-}"
@@ -370,7 +372,7 @@ _bqa_fork_consume() {
   fi
   replay_lane_paths "$ITER_NAME"
   cd "$REPO_ROOT"
-  echo "[goal-iter-lean] Consumed forked replay-lane results (frontend: ${FRONTEND_AVAILABLE:-?}, replay: ${_use_replay:-no}${REPLAY_FAILED:+, re-confirming via LLM: ${REPLAY_FAILED% }})."
+  echo "[goal-iter-lean] Consumed forked replay-lane results (frontend: ${FRONTEND_AVAILABLE:-?}, replay: ${_use_replay:-no}${REPLAY_FAILED:+, re-confirming via LLM: ${REPLAY_FAILED% }}${REPLAY_SKIPPED_INFRA:+, replay lane SKIPPED-INFRA — browser infra failed twice})."
   return 0
 }
 

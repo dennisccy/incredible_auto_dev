@@ -51,6 +51,13 @@
 #      probe answers, ONE loud log line names the URL, the frontend boot and
 #      readiness gate never run, and the dispatch prompt carries
 #      "Frontend available: yes".
+#   K. REL-5 flake discipline END-TO-END through the SPEED-2 fork: the forked
+#      replay lane gets demo_runner rc=6 twice → exactly ONE retry (counter),
+#      lane recorded SKIPPED-INFRA (raw artifact verdict line, fork state file
+#      → the join's consume line is the reader-side proof, telemetry event),
+#      whole required set falls back to the LLM lane, SKIPPED-INFRA never
+#      enters the merged results file, missing-evidence tripwire stays silent,
+#      browser-qa checkpoint marker carries the merged LLM PASS.
 #
 # No API calls; a few seconds per scenario.
 
@@ -142,6 +149,35 @@ if mode == "verify":
             sys.exit(143)
         signal.signal(signal.SIGTERM, on_term)
     time.sleep(float(os.environ.get("STUB_REPLAY_SLEEP", "0")))
+    # REL-5 knobs: per-invocation rc sequence via a counter file, so the lane's
+    # retry semantics are provable across the fork boundary.
+    seq = os.environ.get("STUB_REPLAY_RC_SEQ", "").split()
+    if seq:
+        attempt = 1
+        cf = os.environ.get("STUB_REPLAY_COUNT_FILE", "")
+        if cf:
+            try:
+                attempt = int(open(cf).read().strip() or "0") + 1
+            except Exception:
+                attempt = 1
+            with open(cf, "w") as f:
+                f.write(str(attempt))
+        rc = seq[min(attempt, len(seq)) - 1]
+        if rc == "6":
+            # Mirror the real runner: a browser-infra crash still writes the
+            # results file (SKIP rows naming the failure) before exiting 6.
+            results = arg("--results")
+            if results:
+                rows = "\n".join(
+                    f"| UT-{j} | replay {j} | journey | P1 | works | browser infrastructure failure: stub crash | SKIP | none |"
+                    for j in journeys)
+                with open(results, "w") as f:
+                    f.write("**Browser QA Verdict:** SKIPPED\n\n"
+                            "| Test ID | Name | Type | Prio | Expected | Actual | Verdict | Evidence |\n"
+                            "|---|---|---|---|---|---|---|---|\n" + rows + "\n")
+            sys.exit(6)
+        if rc not in ("", "0"):
+            sys.exit(int(rc))
     verdict = os.environ.get("STUB_REPLAY_VERDICT", "PASS")
     results = arg("--results")
     if results:
@@ -750,6 +786,59 @@ grep -q "Waiting for frontend at" "$WORK/lean-J.log" \
   && assert "J: dispatch order unchanged (developer→reviewer→browser-qa)" "pass" \
   || assert "J: dispatch order unchanged (got: $(tr '\n' ' ' < "$CANARY"))" "fail"
 unset CHAIN_FRONTEND_URL
+
+# ══ Scenario K: REL-5 — forked replay lane hits browser-infra twice → SKIPPED-INFRA ═
+# The lane (inside the SPEED-2 fork) gets rc=6 from demo_runner twice: it must
+# retry exactly once (service re-check between attempts), record the lane state
+# SKIPPED-INFRA on the RAW artifact + the fork state file (the join's consume
+# line is the reader-side proof), fall back to the LLM lane for the WHOLE
+# required set, keep SKIPPED-INFRA OUT of the merged results file (whose
+# verdict greps only know PASS/FAIL/SKIPPED), and never trip the
+# missing-evidence banner (the LLM lane wrote its own file).
+make_sandbox K
+new_capture K
+start_dummies
+export CHAIN_LEAN_PARALLEL_BROWSER_QA=replay
+export STUB_REPLAY_VERDICT=PASS
+export STUB_REVIEW_VERDICT=PASS
+export STUB_REPLAY_RC_SEQ="6 6"
+export STUB_REPLAY_COUNT_FILE="$WORK/replay-count-K"
+rm -f "$STUB_REPLAY_COUNT_FILE"
+rc=0; run_lean "$WORK/lean-K.log" || rc=$?
+[[ "$rc" -eq 0 ]] && assert "K: double-infra lean iteration exits 0" "pass" \
+  || { assert "K: double-infra lean iteration exits 0 (rc=$rc)" "fail"; sed -n '1,40p' "$WORK/lean-K.log"; }
+[[ "$(cat "$STUB_REPLAY_COUNT_FILE" 2>/dev/null)" == "2" ]] \
+  && assert "K: exactly one retry inside the fork (2 verify invocations)" "pass" \
+  || assert "K: exactly one retry inside the fork (got $(cat "$STUB_REPLAY_COUNT_FILE" 2>/dev/null) invocations)" "fail"
+grep -q "re-checking services and retrying the replay once" "$WORK/lean-K.log" \
+  && assert "K: greppable retry log line" "pass" || assert "K: greppable retry log line" "fail"
+grep -q "SKIPPED-INFRA — browser-infra failure persisted after one retry" "$WORK/lean-K.log" \
+  && assert "K: greppable SKIPPED-INFRA verdict log line" "pass" \
+  || assert "K: greppable SKIPPED-INFRA verdict log line" "fail"
+grep -q '^\*\*Browser QA Verdict:\*\* SKIPPED-INFRA$' "$REGRESSION_RESULTS" \
+  && assert "K: raw replay artifact records the exact SKIPPED-INFRA verdict line" "pass" \
+  || assert "K: raw replay artifact records the exact SKIPPED-INFRA verdict line" "fail"
+grep "Consumed forked replay-lane results" "$WORK/lean-K.log" | grep -q "SKIPPED-INFRA" \
+  && assert "K: join consume line carries the state across the fork boundary (reader proof)" "pass" \
+  || assert "K: join consume line carries the state across the fork boundary (reader proof)" "fail"
+K_LLM_LINE="$(llm_journeys_line "$PROMPTS_DIR")"
+[[ "$K_LLM_LINE" == *"J-01"* && "$K_LLM_LINE" == *"J-02"* ]] \
+  && assert "K: whole required set fell back to the LLM lane (J-01 J-02)" "pass" \
+  || assert "K: whole required set fell back to the LLM lane (got: $K_LLM_LINE)" "fail"
+grep -q '^\*\*Browser QA Verdict:\*\* PASS' "$UI_TEST_RESULTS" 2>/dev/null \
+  && ! grep -q 'SKIPPED-INFRA' "$UI_TEST_RESULTS" \
+  && assert "K: merged results stay LLM-written PASS — SKIPPED-INFRA never enters the merged file" "pass" \
+  || assert "K: merged results stay LLM-written PASS — SKIPPED-INFRA never enters the merged file" "fail"
+grep -q "\[missing-evidence\]" "$WORK/lean-K.log" \
+  && assert "K: missing-evidence tripwire stays silent (LLM lane wrote its file)" "fail" \
+  || assert "K: missing-evidence tripwire stays silent (LLM lane wrote its file)" "pass"
+[[ "$(marker_field "$ITER_DIR" browser-qa verdict)" == "PASS" ]] \
+  && assert "K: browser-qa checkpoint marker written with the merged PASS" "pass" \
+  || assert "K: browser-qa checkpoint marker written with the merged PASS (got: $(marker_field "$ITER_DIR" browser-qa verdict))" "fail"
+grep -q '"event":"replay_lane_skipped_infra"' "$GOAL_SESSION_DIR/telemetry.jsonl" \
+  && assert "K: replay_lane_skipped_infra telemetry event recorded" "pass" \
+  || assert "K: replay_lane_skipped_infra telemetry event recorded" "fail"
+unset STUB_REPLAY_RC_SEQ STUB_REPLAY_COUNT_FILE
 
 echo ""
 echo "=== Results: $PASS passed, $FAIL failed ==="

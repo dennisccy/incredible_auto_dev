@@ -1622,7 +1622,48 @@ benchmark (or a real session's telemetry) before AND after (G8).
 - **Rollback:** remove acquisition (lock files inert).
 
 ### REL-5 · Browser-qa flake discipline
-- **Priority:** P1 · **Effort:** S · **Risk:** LOW · **Status:** TODO
+- **Priority:** P1 · **Effort:** S · **Risk:** LOW · **Status:** DONE 2026-07-17 *(S item —
+  implementer flips DONE; stub tests are the DoD. Taxonomy re-verified first (the entry's
+  premise, refreshed anchors): demo_runner.py verify-mode rc contract is 0 ok / 5 = ≥1
+  journey assertion FAIL (`run_verify` tail, `lib/demo_runner.py:1045`) / 6 =
+  browser-INFRA failure — launch timeout or mid-run crash; the except path still writes
+  the results file (SKIP rows naming the failure) before returning 6 (`~:1021-1039`;
+  docstring `~:20-22`) / 3 = playwright missing / 2 = bad invocation. The split the
+  entry assumed exists; it was invisible to a naive `exit 6` grep because both codes are
+  `return`s propagated through `sys.exit(main(...))`. The lane itself moved post-entry
+  into `lib/replay-lane.sh` (`replay_lane_partition_and_verify`, shared by BOTH depths);
+  implemented there: rc 6 → `ensure_services_running` re-check (guarded `declare -F`;
+  the fn always returns 0) + retry ONCE via `_replay_lane_verify_once` (same command,
+  extracted); a second rc-6 → `_replay_lane_mark_skipped_infra`: raw artifact verdict
+  line rewritten to exactly `**Browser QA Verdict:** SKIPPED-INFRA` + dated footer,
+  `REPLAY_SKIPPED_INFRA=yes`, `replay_lane_skipped_infra` telemetry, one-line greppable
+  retry + verdict logs — then the SAME whole-set LLM fallback as any lane failure. rc 5
+  NEVER retried (proven with a discriminating '5 0' rc sequence — a forbidden retry
+  would flip the outcome); non-6 failure rcs keep the old no-retry generic fallback
+  byte-identically. demo_runner.py untouched. READER MAP (the G3 pass; decision:
+  SKIPPED-INFRA journeys DO feed the LLM lane — the entry's "infra unknown", so the LLM
+  lane still attempts/verifies them): ① `replay_lane_llm_regression_set` → whole
+  REQUIRED set via `_use_replay=no` (test 12e pin); ② SPEED-2 fork boundary —
+  `_bqa_state_save`/`_bqa_fork_consume` serialize the new global and the join's consume
+  line names the state (parallel-bqa scenario K reader proof); ③ the merged
+  ui-test-results.md NEVER carries SKIPPED-INFRA — its verdict line stays
+  agent/merge-written PASS/FAIL/SKIPPED (verdicts.py BrowserQAVerdict unchanged), so
+  the `PASS|FAIL|SKIPPED` checkpoint greps (goal-iter-lean.sh `~:448/:495/:739/:1045`)
+  cannot collapse it — asserted at the reader in scenario K; ④ evaluator + gates read
+  only the merged file (evaluator body already calls the raw file "a lane artifact, not
+  an input"; missing evidence → journey `unknown`), so "infra unknown" arrives with no
+  parser-contract change; NEITHER the browser-qa body's result-table contract (agent's
+  own PASS/FAIL/SKIP(PED)) nor the evaluator body enumerates lane states, so per the
+  entry's mirror-only-if-enumerating clause both bodies are untouched; ⑤ REL-11
+  missing-evidence tripwire watches the LLM lane's own output file — silent on a
+  SKIPPED-INFRA lane (scenario K). Fixtures (G3; both files already registered in
+  run-evals §2c): test-replay-lane.sh 35/35 — double-6 → exactly one retry + exactly
+  one service re-check + exact state string at writer and raw artifact; 6-then-0 rescue
+  → normal lane; 6-then-5 → REPLAY_FAILED unchanged; rc-3 → old fallback text
+  unchanged; test-goal-parallel-bqa.sh 91/91 with new scenario K (fork/join end-to-end:
+  retry counted across the fork, state survives the join, merged-file placement,
+  tripwire silence, checkpoint marker carries the merged PASS, telemetry event);
+  test-replay-lane-full.sh 24/24; test-goal-checkpoints.sh 11/11; run-evals green.)*
 - **Problem:** a browser infra hiccup (dead server moment, browser crash) reads as a
   journey FAIL, poisoning the evaluator's evidence and sometimes a whole iteration.
 - **Current state:** `demo_runner.py` already separates infra from assertion failures
@@ -1636,9 +1677,14 @@ benchmark (or a real session's telemetry) before AND after (G8).
 - **DoD:** forced-exit-6 stub shows one retry then SKIPPED-INFRA; real FAIL (5) is NOT
   retried (don't mask real regressions); evals green.
 - **Verify:** targeted stub test + `./scripts/automation/run-evals.sh`
-- **Files:** `scripts/automation/goal-iter-lean.sh`, possibly
-  `agents/browser-qa-agent/body.md` (+version, mirror).
-- **Rollback:** remove retry block.
+- **Files (as built):** `scripts/automation/lib/replay-lane.sh` (the lane's post-entry
+  home, shared by both depths), `scripts/automation/goal-iter-lean.sh` (fork-state
+  serialization + consume line + lane-contract comment),
+  `tests/automation/test-replay-lane.sh`, `tests/automation/test-goal-parallel-bqa.sh`.
+  `agents/browser-qa-agent/body.md` untouched — it enumerates only the agent's own
+  statuses, not lane states.
+- **Rollback:** revert the rc-6 retry branch in `replay_lane_partition_and_verify`
+  (rc 6 then lands in the generic non-zero fallback exactly as pre-REL-5).
 
 ### REL-6 · Iteration-state synthesis
 - **Priority:** P1 · **Effort:** M · **Risk:** MED · **Status:** TODO *(absorbed:

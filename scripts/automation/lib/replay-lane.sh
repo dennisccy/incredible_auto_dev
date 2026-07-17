@@ -18,11 +18,17 @@
 #      a golden that fails lint is quarantined (*.json.invalid) and its journey
 #      routed to the LLM lane (replay_lane_partition_and_verify).
 #   3. Replay the golden set with demo_runner.py --mode verify (no model in the
-#      loop). rc contract: 0 = all pass; 5 = journey FAIL(s) → REPLAY_FAILED is
-#      re-confirmed by the LLM lane (a brittle selector must not fake a
-#      regression and halt the session); any other rc = lane infrastructure
-#      failure → ALL replay journeys fall back to the LLM lane, byte-identical
-#      to running with CHAIN_REGRESSION_REPLAY=false.
+#      loop). rc contract (demo_runner.py docstring): 0 = all pass; 5 = journey
+#      FAIL(s) → REPLAY_FAILED is re-confirmed by the LLM lane (a brittle
+#      selector must not fake a regression and halt the session) and is NEVER
+#      retried here — re-rolling assertions would mask real regressions; 6 =
+#      browser-INFRA failure (launch/crash) → re-check services + retry ONCE
+#      (REL-5), a second rc-6 records the lane as SKIPPED-INFRA (raw-artifact
+#      verdict line + REPLAY_SKIPPED_INFRA global + telemetry — distinct from
+#      FAIL and from the REL-12 frontend-skip) and falls back; any other rc =
+#      lane infrastructure failure → no retry, ALL replay journeys fall back
+#      to the LLM lane, byte-identical to running with
+#      CHAIN_REGRESSION_REPLAY=false.
 #   4. Merge replay + LLM results into the single authoritative
 #      reports/phase-<iter>-ui-test-results.md the goal-evaluator AND the
 #      deterministic achievement gate read (LLM listed last → wins on any
@@ -44,7 +50,8 @@
 #        CHAIN_REGRESSION_REPLAY (knob, default true)
 #   Set by replay_lane_paths: EVIDENCE_DIR, SID, JOURNEY_SCRIPTS_DIR,
 #        REGRESSION_RESULTS, LLM_RESULTS, DEMO_RUNNER, MERGE_RESULTS
-#   Out of partition+verify: R_REPLAY, R_LLM, _use_replay, REPLAY_FAILED
+#   Out of partition+verify: R_REPLAY, R_LLM, _use_replay, REPLAY_FAILED,
+#        REPLAY_SKIPPED_INFRA
 
 _REPLAY_LANE_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
@@ -79,10 +86,57 @@ replay_lane_paths() {
   MERGE_RESULTS="$_REPLAY_LANE_LIB_DIR/merge_ui_test_results.py"
 }
 
+# One verify invocation over the golden set — extracted so the REL-5 retry is
+# literally the same command. $1 = iter/phase name, $2 = journey csv.
+_replay_lane_verify_once() {
+  python3 "$DEMO_RUNNER" --mode verify \
+    --scripts-dir "$JOURNEY_SCRIPTS_DIR" --journeys "$2" \
+    --results "$REGRESSION_RESULTS" --evidence-dir "$EVIDENCE_DIR" \
+    --base-url "$FRONTEND_URL" --phase-id "$1" --repo-root "$REPO_ROOT"
+}
+
+# REL-5: record the lane state SKIPPED-INFRA after a double browser-infra
+# failure. Writes the distinct verdict line onto the RAW replay artifact (the
+# goal-evaluator reads only the merged file — its body names the raw file "a
+# lane artifact, not an input" — so this line is for humans, retro, and the
+# eval fixtures), appends a dated footer explaining the routing, sets the
+# REPLAY_SKIPPED_INFRA global (serialized across the SPEED-2 fork boundary by
+# goal-iter-lean.sh's _bqa_state_save), and emits a telemetry event. Called
+# while R_REPLAY still names the affected journeys. $1 = iter/phase name.
+_replay_lane_mark_skipped_infra() {
+  local _rl_iter="$1"
+  REPLAY_SKIPPED_INFRA="yes"
+  _replay_lane_warn "Replay lane verdict: SKIPPED-INFRA — browser-infra failure persisted after one retry (rc=6 twice); ALL replay journeys fall back to the LLM lane."
+  local _tmp="$REGRESSION_RESULTS.tmp.$$"
+  if [[ -f "$REGRESSION_RESULTS" ]]; then
+    if awk 'BEGIN{done=0} /^\*\*Browser QA Verdict:\*\*/ && !done {print "**Browser QA Verdict:** SKIPPED-INFRA"; done=1; next} {print}' \
+        "$REGRESSION_RESULTS" > "$_tmp" 2>/dev/null; then
+      mv -f "$_tmp" "$REGRESSION_RESULTS" 2>/dev/null || rm -f "$_tmp" 2>/dev/null || true
+    else
+      rm -f "$_tmp" 2>/dev/null || true
+    fi
+  else
+    # Defensive: the real runner writes the file before exiting 6; if it could
+    # not, record the state anyway — absent beats silent.
+    printf '**Browser QA Verdict:** SKIPPED-INFRA\n' > "$REGRESSION_RESULTS" 2>/dev/null || true
+  fi
+  {
+    echo ""
+    echo "---"
+    echo ""
+    echo "_SKIPPED-INFRA ($(date -u +%Y-%m-%d)): the deterministic replay lane hit browser-infrastructure failure twice (demo_runner rc 6; services re-checked + one retry between attempts). The replay journeys were NOT verified by replay this iteration and were routed to the LLM lane — see the merged ui-test-results.md for their authoritative verdicts. This is a lane state, not a journey verdict: no journey is recorded FAIL by infra._"
+  } >> "$REGRESSION_RESULTS" 2>/dev/null || true
+  if declare -F record_telemetry_event >/dev/null 2>&1; then
+    record_telemetry_event "replay_lane_skipped_infra" "$(jq -cn --arg n "$_rl_iter" --arg j "${R_REPLAY% }" \
+        '{iter_name:$n, journeys:$j, note:"browser-infra failure twice (rc 6, one retry after a service re-check); replay journeys routed to the LLM lane"}' 2>/dev/null \
+      || printf '{"iter_name":"%s","journeys":"%s"}' "$_rl_iter" "${R_REPLAY% }")"
+  fi
+}
+
 # Partition Required-still-passing into replay (LINTABLE golden on file) vs LLM,
 # then run the deterministic replay over the golden set. $1 = iter/phase name.
 # Requires replay_lane_paths to have run. Sets R_REPLAY, R_LLM, _use_replay,
-# REPLAY_FAILED (see the header's dataflow contract).
+# REPLAY_FAILED, REPLAY_SKIPPED_INFRA (see the header's dataflow contract).
 replay_lane_partition_and_verify() {
   local _rl_iter="$1"
 
@@ -126,21 +180,46 @@ replay_lane_partition_and_verify() {
   # Lane 1 — deterministic replay of the already-passing set (only if golden
   # scripts exist).
   REPLAY_FAILED=""
+  REPLAY_SKIPPED_INFRA=""
   if [[ "$_use_replay" == "yes" ]]; then
     _replay_lane_log "Regression (deterministic replay): $R_REPLAY"
     local _replay_csv _replay_rc=0
     _replay_csv="$(echo "$R_REPLAY" | tr ' ' ',' | sed 's/^,*//;s/,*$//')"
-    python3 "$DEMO_RUNNER" --mode verify \
-      --scripts-dir "$JOURNEY_SCRIPTS_DIR" --journeys "$_replay_csv" \
-      --results "$REGRESSION_RESULTS" --evidence-dir "$EVIDENCE_DIR" \
-      --base-url "$FRONTEND_URL" --phase-id "$_rl_iter" --repo-root "$REPO_ROOT" || _replay_rc=$?
+    _replay_lane_verify_once "$_rl_iter" "$_replay_csv" || _replay_rc=$?
+    # REL-5: rc 6 is demo_runner's browser-INFRA class (launch timeout, mid-run
+    # crash) — transient by nature, so re-check services and retry ONCE. Only
+    # rc 6: an assertion failure (rc 5) is NEVER retried (re-rolling assertions
+    # masks real regressions — the LLM re-confirm is the false-positive net),
+    # and other rcs (3 = playwright missing, 2 = bad invocation, crash) are
+    # deterministic failures a retry cannot fix.
+    if [[ "$_replay_rc" -eq 6 ]]; then
+      _replay_lane_log "Replay lane browser-infra failure (rc=6) — re-checking services and retrying the replay once..."
+      if declare -F ensure_services_running >/dev/null 2>&1; then
+        ensure_services_running || true
+      fi
+      _replay_rc=0
+      _replay_lane_verify_once "$_rl_iter" "$_replay_csv" || _replay_rc=$?
+    fi
     if [[ "$_replay_rc" -eq 5 ]]; then
       REPLAY_FAILED="$(grep -E '^\| UT-J-[0-9]+ ' "$REGRESSION_RESULTS" 2>/dev/null | grep -F '| FAIL |' | grep -oE 'J-[0-9]+' | sort -u | tr '\n' ' ')"
       _replay_lane_log "Replay flagged possible regression(s) — re-confirming via LLM: $REPLAY_FAILED"
+    elif [[ "$_replay_rc" -eq 6 ]]; then
+      # REL-5: browser infra failed twice (one retry after a service re-check).
+      # The lane's recorded state is SKIPPED-INFRA — distinct from FAIL (no
+      # journey is "broken"; infra is unknown) and from the REL-12
+      # frontend-skip (the frontend WAS answering at boot). Routing is the same
+      # fallback as any lane failure, so every replay journey still gets an
+      # LLM-lane verifier; the state itself lives on the RAW artifact +
+      # REPLAY_SKIPPED_INFRA + telemetry and never enters the merged results
+      # file — its **Browser QA Verdict:** stays agent/merge-written
+      # PASS/FAIL/SKIPPED, so the checkpoint verdict greps cannot collapse it.
+      _replay_lane_mark_skipped_infra "$_rl_iter"
+      _use_replay="no"
+      R_REPLAY=""
     elif [[ "$_replay_rc" -ne 0 ]]; then
-      # Replay-lane infrastructure failure (rc 6 = browser launch/crash; any
-      # other rc = runner crash). The replay journeys were NOT verified — route
-      # ALL of them back to the LLM lane, byte-identical to running this
+      # Replay-lane infrastructure failure (non-6 rc = runner crash, missing
+      # playwright, bad invocation). The replay journeys were NOT verified —
+      # route ALL of them back to the LLM lane, byte-identical to running this
       # iteration with CHAIN_REGRESSION_REPLAY=false. Previously a replay crash
       # left them silently unverified for the iteration.
       _replay_lane_warn "Replay lane failed (rc=$_replay_rc) — falling back to the LLM lane for ALL regression journeys."
