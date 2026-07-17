@@ -2433,11 +2433,15 @@ benchmark (or a real session's telemetry) before AND after (G8).
   `tests/judgment/goal-evaluator/case-06-pending-infra-makeup/` AUTHORED with
   real spec-hashes (expected CONTINUE; harness --list discovers it, ~$2.38/run).
   Neighbors re-run green: replay-lane, replay-lane-full, goal-parallel-bqa,
-  goal-checkpoints, goal-async-tail. STILL OUTSTANDING before DONE: (a) G9
-  judgment-fixture run (user spend approval; stock harness checks the verdict
-  class — inspect --keep-sandbox journey-history for pending_infra:true per the
-  case notes), (b) G8 fresh-session certification, (c) one real-session
-  observation with CHAIN_BQA_PREFLIGHT=true (knob ships DEFAULT OFF per G4).)*
+  goal-checkpoints, goal-async-tail. G9 FIXTURE RUN DONE 2026-07-18
+  (user-approved): PASS — got CONTINUE in 344s (opus-4-8, effort max);
+  supplementary --keep-sandbox inspection confirmed the full contract, J-01 AND
+  J-02 both `partial` + `pending_infra: true`, J-01's prior pass preserved (no
+  REGRESSION over-call), eval.md reasons "browser evidence is owed" and "unit
+  tests are not journey evidence" verbatim-class. STILL OUTSTANDING before
+  DONE: (a) G8 fresh-session certification (non-implementer), (b) one
+  real-session observation with CHAIN_BQA_PREFLIGHT=true (knob ships DEFAULT
+  OFF per G4) — pairs naturally with SPEED-4's lean:full after-measurement.)*
 - **Problem:** a browser-infra failure in the PRIMARY browser-qa lane costs a whole
   iteration. REL-5 gave the golden-replay lane SKIPPED-INFRA discipline
   (`lib/replay-lane.sh:185-215`: rc-6 → services re-check → ONE retry → second rc-6
