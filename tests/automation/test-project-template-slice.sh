@@ -290,6 +290,30 @@ else
   assert "production reviewer prompt inlines the pre-sliced template" "fail"
 fi
 
+echo "=== 7. goal-evaluator prompt-mirror gate (production vs judgment builder) ==="
+# Same REL-1 drift gate for the goal-evaluator pair (REL-6 extended the prompt;
+# the fixtures must keep testing the prompt production actually sends).
+# Production: run-goal.sh Step 3. The closing quote sits on the STOP. line.
+EVAL_PROD="$(sed -n '/^  claude_with_quota_retry -p "You are the goal-evaluator agent for goal-mode iteration evaluation\.$/,/^STOP\." || _eval_rc=\$?$/p' \
+          "$ENGINE_ROOT/scripts/automation/run-goal.sh" \
+        | sed -e '1s/^  claude_with_quota_retry -p "//' -e '$s/" || _eval_rc=\$?$//')"
+# Judgment builder: the PROMPT_EOF heredoc body in _prepare_goal_evaluator.
+EVAL_MIRROR="$(sed -n '/^You are the goal-evaluator agent for goal-mode iteration evaluation\.$/,/^PROMPT_EOF$/p' \
+            "$ENGINE_ROOT/scripts/automation/run-judgment-evals.sh" \
+          | sed '$d')"
+[[ -n "$EVAL_PROD" ]]   && assert "extracted the production goal-evaluator prompt template" "pass" \
+  || assert "extracted the production goal-evaluator prompt template" "fail"
+[[ -n "$EVAL_MIRROR" ]] && assert "extracted the judgment builder's goal-evaluator prompt template" "pass" \
+  || assert "extracted the judgment builder's goal-evaluator prompt template" "fail"
+# The ONE sanctioned variable-name difference in this pair.
+EVAL_MIRROR_NORM="$(printf '%s\n' "$EVAL_MIRROR" | sed -e 's|\$VERDICT_FILE|$EVAL_OUTPUT|g')"
+if [[ "$EVAL_PROD" == "$EVAL_MIRROR_NORM" ]]; then
+  assert "judgment builder mirrors the production goal-evaluator prompt byte-for-byte (after the sanctioned rename)" "pass"
+else
+  assert "judgment builder mirrors the production goal-evaluator prompt byte-for-byte (after the sanctioned rename)" "fail"
+  diff <(printf '%s\n' "$EVAL_PROD") <(printf '%s\n' "$EVAL_MIRROR_NORM") | sed 's/^/        /' || true
+fi
+
 echo ""
 echo "=== Results: $PASS passed, $FAIL failed ==="
 [[ $FAIL -gt 0 ]] && exit 1

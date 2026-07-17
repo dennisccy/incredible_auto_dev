@@ -4,8 +4,8 @@ description: Goal-mode iteration evaluator. Reads iteration outputs (handoffs, b
 model: claude-opus-4-8
 tools: [Read, Glob, Grep, Bash, Write]
 disallowed_tools: ["Bash(rm -rf /)", "Bash(rm -rf ~)", "Bash(rm -rf ~/*)", "Bash(rm -rf /home*)", "Bash(rm -rf /root*)", "Bash(rm -rf /etc*)", "Bash(rm -rf /usr*)", "Bash(rm -rf /var*)", "Bash(rm -rf /boot*)", "Bash(rm -rf /lib*)", "Bash(rm -rf /opt*)", "Bash(rm -rf /srv*)", "Bash(rm -rf /sys*)", "Bash(rm -rf /proc*)", "Bash(git push --force origin main)", "Bash(git push --force origin master)", "Bash(git push -f origin main)", "Bash(git push -f origin master)", "Bash(git push *)", "Bash(git push)", "Bash(git push --force *)", "Bash(gh pr merge *)", "Bash(gh pr close *)", "Bash(gh release *)", "Bash(git tag *)"]
-version: 1.5.0
-last_updated: 2026-07-16
+version: 1.6.0
+last_updated: 2026-07-17
 ---
 
 # Goal Evaluator Agent
@@ -195,6 +195,20 @@ Write to `runs/goal-session-<sid>/iter-<N>/eval.md`:
 
 <only present when verdict is GOAL_ACHIEVED, REGRESSION, or STALLED — explain why halting>
 ```
+
+### 7. Overwrite iteration-state.md (the next planner's digest)
+
+After eval.md is written (so your fresh verdict is its newest entry), write
+`runs/goal-session-<sid>/state/iteration-state.md` — OVERWRITE the whole file
+every iteration, never append. Follow `templates/iteration-state.md` exactly:
+one-line journey table, active blockers, last 2 verdicts + why, and a
+**Do not redo** list (work you verified done or fixed — the decomposer treats
+those entries as binding unless `docs/goal.md` changed for that item).
+**HARD CAP: 40 lines total** — the artifact-schema validator flags a longer
+file; trim bullets rather than exceed it. This file is inlined VERBATIM into
+the next decomposer dispatch, so it must be a digest, not a log. You are its
+ONLY writer. On the first evaluation the prior-verdict line is
+"n/a — first evaluated iteration".
 
 ## Verdicts
 

@@ -236,6 +236,9 @@ require_cli
 ensure_cli_assets_synced "$CHAIN_CLI"
 JOURNEY_HISTORY="$GOAL_SESSION_DIR_LOCAL/state/journey-history.json"
 EVALUATOR_LOG="$GOAL_SESSION_DIR_LOCAL/state/evaluator-log.md"
+# REL-6: the evaluator-written, decomposer-read iteration digest (single
+# writer: only the goal-evaluator's step 7 creates/overwrites this file).
+ITER_STATE_FILE="$GOAL_SESSION_DIR_LOCAL/state/iteration-state.md"
 LESSONS_FILE="$GOAL_SESSION_DIR_LOCAL/state/lessons.md"
 # Assumption ledger (NEED-5): append-only record of interpretation calls the
 # decomposer/evaluator made where the goal was ambiguous. Created lazily by the
@@ -1672,6 +1675,10 @@ PY
   EVALUATOR_LOG_TAIL=$(_tail_or_placeholder "$EVALUATOR_LOG" 200 "(no entries yet — first iteration)")
   LESSONS_TAIL=$(_tail_or_placeholder "$LESSONS_FILE" 200 "(no lessons recorded yet)")
   ASSUMPTIONS_TAIL=$(_tail_or_placeholder "$ASSUMPTIONS_FILE" 200 "(no assumptions recorded yet)")
+  # REL-6: the evaluator-written iteration-state digest, inlined VERBATIM (the
+  # schema caps the file at 40 lines, so the 40-line budget below inlines the
+  # whole file; _tail_or_placeholder's byte cap guards a rogue oversized write).
+  ITER_STATE_INLINE=$(_tail_or_placeholder "$ITER_STATE_FILE" 40 "(first iteration — no prior state)")
   # Token-lean goal view (T1/T8): stable passing journeys digested to one line,
   # vision/anti-goals/failing journeys verbatim; plus an inline journey digest.
   # Both fail safe (full file / placeholder) — see lib/goal_gate.py.
@@ -1727,6 +1734,12 @@ Journey state (inline digest; Read $JOURNEY_HISTORY only for fields the digest o
 \`\`\`
 $JOURNEY_DIGEST
 \`\`\`
+
+Iteration state (single-file digest the goal-evaluator overwrote after the last iteration; inlined verbatim):
+\`\`\`
+$ITER_STATE_INLINE
+\`\`\`
+\"Do not redo\" entries above are BINDING — do not re-plan or re-test them — unless docs/goal.md changed for that item.
 
 $( [[ $CURRENT_ITER -gt 0 && -f "$GOAL_SESSION_DIR_LOCAL/iter-$((CURRENT_ITER-1))/eval.md" ]] && echo "Last iteration eval: $GOAL_SESSION_DIR_LOCAL/iter-$((CURRENT_ITER-1))/eval.md")
 
@@ -2009,6 +2022,7 @@ $JOURNEY_DIGEST
 
 Prior session state:
   Journey history: $JOURNEY_HISTORY  <-- update this with new state (full atomic write)
+  Iteration state: $ITER_STATE_FILE  <-- OVERWRITE with a fresh ≤40-line digest per templates/iteration-state.md (your step 7); the next decomposer dispatch inlines it verbatim
   Evaluator log: $EVALUATOR_LOG  <-- append a new entry; do not overwrite or read the full file (last 5 entries pre-trimmed below)
   Lessons file: $LESSONS_FILE  <-- append a brief lesson entry capturing a non-obvious takeaway (1-3 sentences). Skip if nothing surprising happened.
   Assumption ledger: $ASSUMPTIONS_FILE  <-- append an entry when a scoring decision required interpreting an ambiguous goal (step 5b of your instructions). Skip when none — zero entries is normal.
@@ -2036,7 +2050,7 @@ The verdict line MUST appear at the top of $EVAL_OUTPUT and start exactly with:
 
 Also include a 'Depth Recommendation For Next Iteration:' line: lean or full.
 
-Then update $JOURNEY_HISTORY (full atomic write) and append an entry to $EVALUATOR_LOG.
+Then update $JOURNEY_HISTORY (full atomic write), OVERWRITE $ITER_STATE_FILE (templates/iteration-state.md shape, ≤40 lines), and append an entry to $EVALUATOR_LOG.
 STOP." || _eval_rc=$?
 
   record_agent_invocation_end "goal-evaluator" "$_eval_start" "$_eval_rc"

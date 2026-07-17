@@ -42,9 +42,13 @@ from verdicts import (
 class ArtifactSchema:
     artifact_type: str
     path_pattern: re.Pattern
-    verdict_enum: type[Enum]
+    # None = no verdict line required (digest artifacts like iteration-state).
+    verdict_enum: Optional[type[Enum]] = None
     required_h2: tuple[str, ...] = ()
     description: str = ""
+    # Hard line cap; exceeding it is a validation issue (REL-6: the ≤40-line
+    # iteration-state cap must be validator-enforced, not advisory prose).
+    max_lines: Optional[int] = None
 
 
 SCHEMAS: tuple[ArtifactSchema, ...] = (
@@ -118,6 +122,17 @@ SCHEMAS: tuple[ArtifactSchema, ...] = (
         ),
         description="Iteration summary — reports/phase-<N>-iteration-summary.md",
     ),
+    ArtifactSchema(
+        artifact_type="iteration-state",
+        path_pattern=re.compile(r"state/iteration-state\.md$"),
+        verdict_enum=None,  # digest, not a verdict artifact
+        required_h2=("Journeys", "Active blockers", "Last 2 verdicts", "Do not redo"),
+        max_lines=40,
+        description=(
+            "Iteration-state digest — runs/goal-session-<sid>/state/"
+            "iteration-state.md (goal-evaluator-written, OVERWRITE, ≤40 lines)"
+        ),
+    ),
 )
 
 
@@ -182,18 +197,28 @@ def validate_path(path: str) -> ValidationResult:
         )
 
     issues: list[str] = []
-    allowed = {v.value for v in schema.verdict_enum}
-    verdict = find_verdict(content, allowed)
-    if verdict is None:
-        issues.append(
-            f"missing or invalid verdict line; expected one of: "
-            f"{sorted(allowed)}"
-        )
+    verdict: Optional[str] = None
+    if schema.verdict_enum is not None:
+        allowed = {v.value for v in schema.verdict_enum}
+        verdict = find_verdict(content, allowed)
+        if verdict is None:
+            issues.append(
+                f"missing or invalid verdict line; expected one of: "
+                f"{sorted(allowed)}"
+            )
 
     h2s = find_h2_sections(content)
     for required in schema.required_h2:
         if required not in h2s:
             issues.append(f"missing required '## {required}' section")
+
+    if schema.max_lines is not None:
+        n_lines = len(content.splitlines())
+        if n_lines > schema.max_lines:
+            issues.append(
+                f"{n_lines} lines exceeds the {schema.max_lines}-line cap — "
+                f"this digest must be OVERWRITTEN small each iteration, never appended"
+            )
 
     return ValidationResult(
         matched=True,
@@ -225,11 +250,17 @@ def _cmd_validate(argv: list[str]) -> int:
 
 def _cmd_list(_argv: list[str]) -> int:
     for s in SCHEMAS:
-        verdicts = ", ".join(v.value for v in s.verdict_enum)
+        verdicts = (
+            ", ".join(v.value for v in s.verdict_enum)
+            if s.verdict_enum is not None
+            else "(none — digest artifact)"
+        )
         print(f"{s.artifact_type:16s}  {s.description}")
         print(f"{'':16s}  verdicts: {verdicts}")
         if s.required_h2:
             print(f"{'':16s}  required H2: {', '.join(s.required_h2)}")
+        if s.max_lines is not None:
+            print(f"{'':16s}  max lines: {s.max_lines}")
     return 0
 
 
@@ -303,6 +334,35 @@ _FIXTURES = {
         "reports/some-other-file.md",
         "Whatever.\n",
         True,  # silently passes
+    ),
+    "iteration_state_pass": (
+        "runs/goal-session-x/state/iteration-state.md",
+        "# Iteration State — x\n\n"
+        "**After iteration:** 3 · **Date:** 2026-07-17 · **Verdict:** CONTINUE\n\n"
+        "## Journeys\n\n2 passing (J-01 J-02) · 1 failing (J-03) — 3 total\n\n"
+        "## Active blockers\n\n- none\n\n"
+        "## Last 2 verdicts\n\n"
+        "- iter 3: CONTINUE — J-02 newly passing\n"
+        "- iter 2: CONTINUE — J-01 newly passing\n\n"
+        "## Do not redo\n\n- J-01 auth flow (verified iter 2)\n",
+        True,  # no verdict line required — digest artifact, sections + cap only
+    ),
+    "iteration_state_over_cap": (
+        "runs/goal-session-x/state/iteration-state.md",
+        "# Iteration State — x\n\n"
+        "## Journeys\n\n1 failing (J-01) — 1 total\n\n"
+        "## Active blockers\n\n- none\n\n"
+        "## Last 2 verdicts\n\n- iter 1: CONTINUE — x\n- iter 0: CONTINUE — x\n\n"
+        "## Do not redo\n\n" + "- filler bullet (appended, not overwritten)\n" * 40,
+        False,  # >40 lines — the ≤40-line cap is a validation failure (REL-6 stop-and-ask)
+    ),
+    "iteration_state_missing_section": (
+        "runs/goal-session-x/state/iteration-state.md",
+        "# Iteration State — x\n\n"
+        "## Journeys\n\n1 failing (J-01) — 1 total\n\n"
+        "## Active blockers\n\n- none\n\n"
+        "## Last 2 verdicts\n\n- iter 1: CONTINUE — x\n- iter 0: CONTINUE — x\n",
+        False,  # missing '## Do not redo'
     ),
 }
 

@@ -1687,9 +1687,43 @@ benchmark (or a real session's telemetry) before AND after (G8).
   (rc 6 then lands in the generic non-zero fallback exactly as pre-REL-5).
 
 ### REL-6 · Iteration-state synthesis
-- **Priority:** P1 · **Effort:** M · **Risk:** MED · **Status:** TODO *(absorbed:
+- **Priority:** P1 · **Effort:** M · **Risk:** MED · **Status:** IN-PROGRESS
+  *(implemented + sandbox-proven 2026-07-17; G9 gate run same day: goal-evaluator
+  judgment fixtures 5/5 under the extended prompt (user-approved spend; the frozen
+  trees carry no iteration-state file, so every case exercised the absent-file path —
+  no verdict-class flip). REMAINING: G8 fresh-session certification (M item —
+  implementer never self-certifies) + first real-session iteration-state file.
+  Refreshed anchors: evaluator dispatch = run-goal.sh Step 3 (`~:1980` era; new
+  "Iteration state:" line in the Prior-session-state block + the closing
+  update-instruction line), decomposer dispatch `~:1698` era (inline lands after the
+  journey-digest block), state vars `~:237-245`; the judgment builder mirrors the
+  evaluator prompt in `run-judgment-evals.sh` `_prepare_goal_evaluator`, and the
+  prompt-mirror byte-gate now covers the evaluator PAIR
+  (test-project-template-slice.sh §7; sole sanctioned rename
+  `$VERDICT_FILE`↔`$EVAL_OUTPUT`; frozen fixture trees untouched). Implemented:
+  `templates/iteration-state.md` (34-line template — journey one-liner, active
+  blockers, last 2 verdicts + why, Do-not-redo; placeholder variant documented);
+  evaluator body step 7 (OVERWRITE after eval.md, single writer, cap named) v1.6.0;
+  decomposer body read-first item 5 (verbatim inline, "Do not redo" BINDING unless
+  goal.md changed, never writes the file) v2.2.0; mirrors resynced. The ≤40-line cap
+  is ENFORCED by `lib/artifact_schemas.py` (the stop-and-ask condition): new
+  verdict-less iteration-state schema (first Optional-enum schema; required H2s
+  Journeys / Active blockers / Last 2 verdicts / Do not redo; `max_lines=40`) whose
+  violations are validation issues (CLI `validate` exit 1) — enforcement lives in the
+  validator + evals while runtime keeps the module's documented hook-advisory
+  convention; 3 new self-test fixtures (pass / over-cap / missing-section).
+  Decomposer inline via `_tail_or_placeholder` (40-line budget ≡ the whole
+  cap-conforming file; its 48KiB byte cap guards a rogue oversized write; absent →
+  "(first iteration — no prior state)"). Sandbox proof
+  `tests/automation/test-goal-iteration-state.sh` 14/14 (registered run-evals §2c):
+  ONE real engine run (--max-iter 2, role-aware stub claude, paths parsed FROM the
+  prompts) — iter-0 baseline prompt inlines the placeholder; the obedient evaluator
+  stub writes a conforming file at the PROMPT-named path; schema CLI accepts it and
+  rejects an over-cap copy; iter-1's decomposer prompt carries the file byte-for-byte
+  (fenced block diffed against disk) plus the binding rule; engine pauses
+  AWAITING_PUMP cleanly. run-evals 126/126. Absorbed:
   README Pipeline-Hardening deferred item — it explicitly called this "where the weaker
-  model degrades most")*
+  model degrades most".)*
 - **Problem:** long goal loops drift: repeated work, forgotten journeys, re-testing
   fixed regressions — because each iteration's agents reconstruct state from many
   artifacts instead of one fresh distillation.

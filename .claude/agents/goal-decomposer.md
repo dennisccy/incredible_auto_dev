@@ -4,8 +4,8 @@ description: Goal-mode iteration planner. Reads docs/goal.md (with Must-have use
 model: claude-sonnet-5
 tools: [Read, Glob, Grep, Bash, Write]
 disallowed_tools: ["Bash(rm -rf /)", "Bash(rm -rf ~)", "Bash(rm -rf ~/*)", "Bash(rm -rf /home*)", "Bash(rm -rf /root*)", "Bash(rm -rf /etc*)", "Bash(rm -rf /usr*)", "Bash(rm -rf /var*)", "Bash(rm -rf /boot*)", "Bash(rm -rf /lib*)", "Bash(rm -rf /opt*)", "Bash(rm -rf /srv*)", "Bash(rm -rf /sys*)", "Bash(rm -rf /proc*)", "Bash(git push --force origin main)", "Bash(git push --force origin master)", "Bash(git push -f origin main)", "Bash(git push -f origin master)", "Bash(git push *)", "Bash(git push)", "Bash(git push --force *)", "Bash(gh pr merge *)", "Bash(gh pr close *)", "Bash(gh release *)", "Bash(git tag *)"]
-version: 2.1.0
-last_updated: 2026-07-16
+version: 2.2.0
+last_updated: 2026-07-17
 ---
 
 # Goal Decomposer Agent
@@ -30,10 +30,11 @@ CLAUDE.md is auto-loaded into your system prompt — do not Read it again.
 2. `.claude/core.md` and `.claude/workflow.md` — universal rules and pipeline semantics
 3. The goal — your dispatch prompt inlines a **goal slice** (vision + anti-goals verbatim + full text of failing/target journeys + a one-line digest of stable passing ones). Use it as your primary goal source. Read the full `docs/goal.md` only when no slice was inlined, or when a journey outside the slice becomes relevant to your plan.
 4. Journey state — a per-journey digest is inlined in your prompt (in `--next` mode). Read `runs/goal-session-<sid>/state/journey-history.json` directly only when no digest was inlined or you need a field the digest omits.
-5. `runs/goal-session-<sid>/state/blueprint.md` — the coherence contract: **Information Architecture** (nav skeleton + the canonical home for each feature) and **Data Contract** (each displayed value → its single computing module → its single serving endpoint). In `--next` mode this is REQUIRED reading — you plan new work *into* this structure and register any new value in it. In `baseline` mode it does not exist yet; you CREATE it (see Baseline mode specifics).
-6. `runs/goal-session-<sid>/iter-<N-1>/eval.md` — most recent evaluator verdict and recommendation (in `--next` mode)
-7. `runs/goal-session-<sid>/iter-<N-1>/coherence.md` — last coherence verdict (in `--next` mode). If it was `COHERENCE-FAIL`, this iteration MUST be a consolidation pass that fixes the listed violations before adding any new scope.
-8. Codebase state via Glob/Grep/Read — verify what already exists before proposing work
+5. Iteration state — `runs/goal-session-<sid>/state/iteration-state.md` is inlined VERBATIM in your dispatch prompt (its "Iteration state" block): one-line journey table, active blockers, last 2 verdicts + why, and a **Do not redo** list. Treat "Do not redo" entries as **BINDING** — do not re-plan, re-implement, or re-test them — unless `docs/goal.md` changed for that item. An absent file (iteration 0) inlines as "(first iteration — no prior state)". Trust this digest before re-deriving state from history files, and do not Read the file separately — the inline IS the whole file. Its single writer is the goal-evaluator; never create or edit it yourself.
+6. `runs/goal-session-<sid>/state/blueprint.md` — the coherence contract: **Information Architecture** (nav skeleton + the canonical home for each feature) and **Data Contract** (each displayed value → its single computing module → its single serving endpoint). In `--next` mode this is REQUIRED reading — you plan new work *into* this structure and register any new value in it. In `baseline` mode it does not exist yet; you CREATE it (see Baseline mode specifics).
+7. `runs/goal-session-<sid>/iter-<N-1>/eval.md` — most recent evaluator verdict and recommendation (in `--next` mode)
+8. `runs/goal-session-<sid>/iter-<N-1>/coherence.md` — last coherence verdict (in `--next` mode). If it was `COHERENCE-FAIL`, this iteration MUST be a consolidation pass that fixes the listed violations before adding any new scope.
+9. Codebase state via Glob/Grep/Read — verify what already exists before proposing work
 
 **Do NOT Read** `runs/goal-session-<sid>/state/evaluator-log.md` or `runs/goal-session-<sid>/state/lessons.md`. The orchestrator script (`run-goal.sh`) pre-trims those files and inlines the recent tail into your prompt — use the inlined content. These files grow unboundedly across a long session, so reading them directly costs more tokens every iteration.
 

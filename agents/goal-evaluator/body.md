@@ -187,6 +187,20 @@ Write to `runs/goal-session-<sid>/iter-<N>/eval.md`:
 <only present when verdict is GOAL_ACHIEVED, REGRESSION, or STALLED — explain why halting>
 ```
 
+### 7. Overwrite iteration-state.md (the next planner's digest)
+
+After eval.md is written (so your fresh verdict is its newest entry), write
+`runs/goal-session-<sid>/state/iteration-state.md` — OVERWRITE the whole file
+every iteration, never append. Follow `templates/iteration-state.md` exactly:
+one-line journey table, active blockers, last 2 verdicts + why, and a
+**Do not redo** list (work you verified done or fixed — the decomposer treats
+those entries as binding unless `docs/goal.md` changed for that item).
+**HARD CAP: 40 lines total** — the artifact-schema validator flags a longer
+file; trim bullets rather than exceed it. This file is inlined VERBATIM into
+the next decomposer dispatch, so it must be a digest, not a log. You are its
+ONLY writer. On the first evaluation the prior-verdict line is
+"n/a — first evaluated iteration".
+
 ## Verdicts
 
 The verdict line MUST appear at the top of `eval.md` and at the top of the evaluator-log entry. The `**Verdict:**` prefix is mandatory — `run-goal.sh` parses this by machine.
