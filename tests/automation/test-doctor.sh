@@ -283,6 +283,13 @@ rc=0; out=$(run_doctor -- --only pump-heartbeat 2>&1) || rc=$?
 echo "$out" | grep -Eq 'PASS +pump-heartbeat ' \
   && assert "fresh heartbeat PASSes (live pump)" "pass" \
   || assert "fresh heartbeat PASSes (live pump)" "fail"
+
+# REL-3 polish: a v3 heartbeat carries the pump ident — the row surfaces it.
+printf 'pid=4242\nhost=pumphost\n' > "$DISP/.pump-alive"
+rc=0; out=$(run_doctor -- --only pump-heartbeat 2>&1) || rc=$?
+echo "$out" | grep -Eq 'PASS +pump-heartbeat +.*pump pid 4242' \
+  && assert "v3 heartbeat ident (pid) surfaces in the pump row" "pass" \
+  || assert "v3 heartbeat ident (pid) surfaces in the pump row" "fail"
 rm -rf "$FREPO/runs"
 
 # engine-lock (REL-4 live): fresh → WARN naming the holder (a running session

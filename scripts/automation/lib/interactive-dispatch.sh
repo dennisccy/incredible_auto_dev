@@ -75,7 +75,7 @@ fi
 # cost measurable (analyze_telemetry.py --wall). Uses the caller's dynamically
 # scoped locals (agent, _dispatch_start, _claim_epoch). No-op when telemetry
 # isn't sourced (phase mode / standalone self-test).
-#   $1 status (ok | pickup-timeout | inflight-timeout | inflight-timeout-requeued)
+#   $1 status (ok | pickup-timeout | inflight-timeout | inflight-timeout-requeued | pump-dead)
 #   $2 rc
 _interactive_dispatch_wait_event() {
   declare -F record_telemetry_event >/dev/null 2>&1 || return 0
@@ -207,11 +207,16 @@ _interactive_invoke() {
   local req res out usage_f pfile _built
   local _requeued=""
   local _dispatch_start _claim_epoch hb started _now _ref _age _busy _s
+  # REL-3 (protocol v3): pump identity parsed once per claim from the .started
+  # marker; liveness is then one kill -0 per poll. _local_host resolved once.
+  local _pump_checked="" _pump_pid="" _pump_host="" _pump_stt="" _pump_gone _stt_now _local_host
+  _local_host="$(hostname 2>/dev/null || uname -n 2>/dev/null || echo '?')"
   # Dispatch-attempt loop: normally one pass; a Tier B inflight timeout may
   # republish the request ONCE (fresh req/res paths — the pump reads res_path
   # from the JSON, so a requeue must mint new ones) before giving up with 70.
   while :; do
     _claim_epoch=""
+    _pump_checked=""; _pump_pid=""; _pump_host=""; _pump_stt=""
     req="$(mktemp "$dir/req.XXXXXX")"
     res="$req.res"
     out="$req.out"
@@ -290,6 +295,41 @@ print(json.dumps(d))' < "$pfile" > "$req" || true
       if [[ -f "$started" ]]; then
         if [[ -z "$_claim_epoch" ]]; then
           _claim_epoch="$(stat -c %Y "$started" 2>/dev/null || stat -f %m "$started" 2>/dev/null || echo "$_now")"
+        fi
+        # REL-3 fast path (protocol v3): a claim written by a v3 pump names the
+        # long-lived pump process (pid/host, optionally its /proc starttime).
+        # Same host + provably-gone pid → pause NOW through the standard exit-70
+        # machinery instead of waiting out the inflight cap. This is a fast
+        # path, NOT a replacement: absent fields (pre-v3 pump), a foreign host,
+        # or an unprovable verdict all fall through to the two timeout nets
+        # below/above unchanged — the nets remain the cross-host story. No
+        # requeue on this path (Tier A's rationale): a dead pump cannot service
+        # a republished request; resume regenerates it anyway.
+        if [[ -z "$_pump_checked" ]]; then
+          _pump_checked=1
+          _pump_pid="$(sed -n 's/^pid=//p' "$started" 2>/dev/null | head -n1 | tr -dc 0-9)"
+          _pump_host="$(sed -n 's/^host=//p' "$started" 2>/dev/null | head -n1)"
+          _pump_stt="$(sed -n 's/^starttime=//p' "$started" 2>/dev/null | head -n1 | tr -dc 0-9)"
+        fi
+        if [[ -n "$_pump_pid" && -n "$_pump_host" && "$_pump_host" == "$_local_host" ]]; then
+          _pump_gone=""
+          if ! kill -0 "$_pump_pid" 2>/dev/null && [[ ! -e "/proc/$_pump_pid" ]]; then
+            _pump_gone="pump pid $_pump_pid is dead"
+          elif [[ -n "$_pump_stt" && -r "/proc/$_pump_pid/stat" ]]; then
+            # pid-reuse paranoia: same pid, different process start time →
+            # the original pump is gone and the pid was recycled.
+            _stt_now="$(sed 's/.*) //' "/proc/$_pump_pid/stat" 2>/dev/null | awk '{print $20}')"
+            if [[ -n "$_stt_now" && "$_stt_now" != "$_pump_stt" ]]; then
+              _pump_gone="pump pid $_pump_pid was recycled (proc starttime $_stt_now != claimed $_pump_stt)"
+            fi
+          fi
+          if [[ -n "$_pump_gone" ]]; then
+            echo "[interactive-dispatch] pump is gone: ${_pump_gone} on ${_pump_host} (claimed dispatch, agent '$agent') — pausing now instead of waiting out the ${_inflight_cap}s inflight cap." >&2
+            printf 'pump dead: %s (agent=%s)\n' "$_pump_gone" "$agent" > "$dir/.awaiting-pump"
+            rm -f "$req.ready" "$started" "$usage_f" 2>/dev/null || true
+            _interactive_dispatch_wait_event "pump-dead" "${DISPATCH_UNAVAILABLE_EXIT_CODE:-70}"
+            return "${DISPATCH_UNAVAILABLE_EXIT_CODE:-70}"
+          fi
         fi
         # Tier B: claimed → inflight cap measured from the claim time.
         if [[ "$_inflight_cap" -gt 0 ]]; then
@@ -784,6 +824,124 @@ _interactive_dispatch_self_test() {
     echo "  PASS interactive-dispatch: builder failure → rc 2, loud stderr, nothing published"
   else
     echo "  FAIL interactive-dispatch: publish guard (rc=$rc, ready=$(find "$d" -maxdepth 1 -name 'req.*.ready' 2>/dev/null | wc -l | tr -d ' '), stderr=$(head -c 200 "$d/err" 2>/dev/null))"; fails=1
+  fi
+  rm -rf "$d"
+
+  # Tests 16-19 — REL-3 pump PID-liveness (protocol v3). The claim marker MAY
+  # carry pid=/host=/starttime= lines; same-host + provably-dead pid must pause
+  # within ~a poll interval instead of waiting out the inflight cap. Absent or
+  # cross-host fields must leave the two timeout nets byte-identical (16 is the
+  # discriminating red; 17-19 pin the invariants).
+  local _lhost _vpid _vstt _t0 _el
+  _lhost="$(hostname 2>/dev/null || uname -n)"
+
+  # Test 16 — claimed + SAME-host DEAD pid → 70 within ~one poll, not the cap.
+  # Cap deliberately 8s with requeue off: the old code exits 70 via Tier B at
+  # ~8s (same rc!), so the assertions discriminate on ELAPSED and the log line.
+  d="$(mktemp -d)"; export CHAIN_DISPATCH_DIR="$d"; rc=0
+  CHAIN_PUMP_HEARTBEAT_TIMEOUT=3600; CHAIN_DISPATCH_INFLIGHT_TIMEOUT=8; CHAIN_DISPATCH_POLL_SECONDS=0.2
+  CHAIN_DISPATCH_REQUEUE_ON_TIMEOUT=false
+  ( exit 0 ) & _vpid=$!; wait "$_vpid" 2>/dev/null || true   # guaranteed-dead pid
+  ( for _ in $(seq 1 60); do
+      r="$(find "$d" -maxdepth 1 -name 'req.*.ready' 2>/dev/null | head -1)"
+      if [[ -n "$r" ]]; then
+        printf 'pid=%s\nhost=%s\n' "$_vpid" "$_lhost" > "${r%.ready}.started.tmp"
+        mv "${r%.ready}.started.tmp" "${r%.ready}.started"
+        break
+      fi
+      sleep 0.1
+    done ) &
+  pump=$!
+  _t0="$(date +%s)"
+  _interactive_invoke -p "dead pump fast-pause" 2>"$d/err" || rc=$?
+  _el=$(( $(date +%s) - _t0 ))
+  wait "$pump" 2>/dev/null || true
+  CHAIN_DISPATCH_REQUEUE_ON_TIMEOUT=true
+  if [[ "$rc" -eq "${DISPATCH_UNAVAILABLE_EXIT_CODE:-70}" && "$_el" -le 4 ]] \
+     && grep -q "pump is gone" "$d/err" && grep -q "$_vpid" "$d/err" \
+     && grep -q 'pump dead' "$d/.awaiting-pump" 2>/dev/null; then
+    echo "  PASS interactive-dispatch: dead same-host pump pid → 70 within one poll (${_el}s), log names pid"
+  else
+    echo "  FAIL interactive-dispatch: dead-pid fast-pause (rc=$rc elapsed=${_el}s stderr=$(head -c 160 "$d/err" 2>/dev/null))"; fails=1
+  fi
+  rm -rf "$d"
+
+  # Test 17 — CROSS-host dead pid → the pid is ignored; Tier B cap semantics
+  # byte-identical (rc 70 via 'inflight timeout', never the pump-dead line).
+  d="$(mktemp -d)"; export CHAIN_DISPATCH_DIR="$d"; rc=0
+  CHAIN_PUMP_HEARTBEAT_TIMEOUT=3600; CHAIN_DISPATCH_INFLIGHT_TIMEOUT=1; CHAIN_DISPATCH_POLL_SECONDS=0.2
+  CHAIN_DISPATCH_REQUEUE_ON_TIMEOUT=false
+  ( exit 0 ) & _vpid=$!; wait "$_vpid" 2>/dev/null || true
+  ( for _ in $(seq 1 60); do
+      r="$(find "$d" -maxdepth 1 -name 'req.*.ready' 2>/dev/null | head -1)"
+      if [[ -n "$r" ]]; then
+        printf 'pid=%s\nhost=%s\n' "$_vpid" "definitely-not-$_lhost" > "${r%.ready}.started.tmp"
+        mv "${r%.ready}.started.tmp" "${r%.ready}.started"
+        touch -d '120 seconds ago' "${r%.ready}.started" 2>/dev/null || true
+        break
+      fi
+      sleep 0.1
+    done ) &
+  pump=$!
+  _interactive_invoke -p "cross-host dead pid" 2>"$d/err" || rc=$?
+  wait "$pump" 2>/dev/null || true
+  CHAIN_DISPATCH_REQUEUE_ON_TIMEOUT=true
+  if [[ "$rc" -eq "${DISPATCH_UNAVAILABLE_EXIT_CODE:-70}" ]] \
+     && grep -q 'inflight timeout' "$d/err" && ! grep -q 'pump is gone' "$d/err"; then
+    echo "  PASS interactive-dispatch: cross-host claim pid ignored — inflight net unchanged"
+  else
+    echo "  FAIL interactive-dispatch: cross-host pid handling (rc=$rc stderr=$(head -c 160 "$d/err" 2>/dev/null))"; fails=1
+  fi
+  rm -rf "$d"
+
+  # Test 18 — OLD-format claim (empty .started, pre-v3 pump): byte-identical
+  # today-behavior — the claimed round-trip completes, no pump-liveness chatter.
+  # (Tests 1-15 above all use empty .started markers too — they are the broader
+  # regression net for this same property.)
+  d="$(mktemp -d)"; export CHAIN_DISPATCH_DIR="$d"; rc=0
+  CHAIN_PUMP_HEARTBEAT_TIMEOUT=3600; CHAIN_DISPATCH_INFLIGHT_TIMEOUT=3600; CHAIN_DISPATCH_POLL_SECONDS=0.2
+  ( for _ in $(seq 1 60); do
+      r="$(find "$d" -maxdepth 1 -name 'req.*.ready' 2>/dev/null | head -1)"
+      if [[ -n "$r" ]]; then
+        touch "${r%.ready}.started"
+        sleep 0.6
+        echo 0 > "${r%.ready}.res"
+        break
+      fi
+      sleep 0.1
+    done ) &
+  pump=$!
+  _interactive_invoke -p "old-format claim" 2>"$d/err" || rc=$?
+  wait "$pump" 2>/dev/null || true
+  if [[ "$rc" -eq 0 ]] && ! grep -qi 'pump' "$d/err"; then
+    echo "  PASS interactive-dispatch: old-format (empty) claim → byte-identical behavior"
+  else
+    echo "  FAIL interactive-dispatch: old-format claim (rc=$rc stderr=$(head -c 160 "$d/err" 2>/dev/null))"; fails=1
+  fi
+  rm -rf "$d"
+
+  # Test 19 — LIVE same-host pid (with real starttime): the waiter must keep
+  # waiting — no false-positive pause — and return the pump's rc.
+  d="$(mktemp -d)"; export CHAIN_DISPATCH_DIR="$d"; rc=0
+  _vstt="$(sed 's/.*) //' "/proc/$$/stat" 2>/dev/null | awk '{print $20}')"
+  ( for _ in $(seq 1 60); do
+      r="$(find "$d" -maxdepth 1 -name 'req.*.ready' 2>/dev/null | head -1)"
+      if [[ -n "$r" ]]; then
+        printf 'pid=%s\nhost=%s\nstarttime=%s\n' "$$" "$_lhost" "$_vstt" > "${r%.ready}.started.tmp"
+        mv "${r%.ready}.started.tmp" "${r%.ready}.started"
+        sleep 0.6
+        echo 0 > "${r%.ready}.res"
+        break
+      fi
+      sleep 0.1
+    done ) &
+  pump=$!
+  _interactive_invoke -p "live pump pid" 2>"$d/err" || rc=$?
+  wait "$pump" 2>/dev/null || true
+  if [[ "$rc" -eq 0 ]] && ! grep -q 'pump is gone' "$d/err"; then
+    echo "  PASS interactive-dispatch: live same-host pump pid → keeps waiting, rc flows"
+  else
+    echo "  FAIL interactive-dispatch: live-pid false positive (rc=$rc stderr=$(head -c 160 "$d/err" 2>/dev/null))"; fails=1
   fi
   rm -rf "$d"
 

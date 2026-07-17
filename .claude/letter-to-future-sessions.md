@@ -63,9 +63,11 @@ pain into its §16 staging section.
 
 ## Known limitations we chose NOT to fix (so you don't rediscover them as bugs)
 
-- A pump that dies during a CLAIMED dispatch waits out `CHAIN_DISPATCH_INFLIGHT_TIMEOUT`
-  (default 2h) before pausing — distinguishing "dead pump" from "long agent" needs a
-  PID-liveness protocol change we judged not worth it yet.
+- *(closed by REL-3, 2026-07-17 — stub-proven, G8 certification pending)* A pump that
+  dies during a CLAIMED dispatch used to wait out `CHAIN_DISPATCH_INFLIGHT_TIMEOUT`
+  (default 2h) before pausing. Protocol v3 claims carry the pump pid: a same-host dead
+  (or pid-recycled) pump now fast-pauses `AWAITING_PUMP` within one poll. Cross-host
+  pumps and pre-v3 claims still ride the 2h cap — pid liveness cannot cross hosts.
 - `scan_diff.py` is regex-grade: it catches the common credential shapes and paid-SaaS
   manifests, not exotic secrets. It reduces the evaluator's burden; it does not replace the
   anti-goal checklist.

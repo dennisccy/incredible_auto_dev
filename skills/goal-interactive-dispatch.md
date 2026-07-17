@@ -1,6 +1,6 @@
 # Goal Mode — Interactive Dispatch (Pump Protocol)
 
-version: 2.0.0 (protocol v2 — usage sidecar; bump with every change to this file)
+version: 3.0.0 (protocol v3 — pump pid-liveness ident; bump with every change to this file)
 
 This skill defines how the foreground Claude Code session (the "pump") runs the
 existing goal-mode engine so that every agent executes as an interactive
@@ -17,6 +17,22 @@ protocol change** — pump behavior comes from this file as loaded at pump start
 so after upgrading it, restart the pump session before resuming
 (`.claude/letter-to-future-sessions.md`, "How this system degrades": *"The pump
 protocol changes but a running pump predates it"*).
+
+**Protocol version 3** (REL-3) adds an optional pump identity to the files
+`goal-await-dispatch.sh` already maintains: the heartbeat (`.pump-alive`) and
+each claim marker (`<req>.started`) may now carry `pid=` / `host=`
+(/ `starttime=`) lines naming the long-lived pump process — the `claude`
+session binary, resolved once per await call by /proc ancestry
+(`CHAIN_PUMP_PID` overrides it; set-but-empty disables ident entirely). The
+engine uses it for one thing: on a CLAIMED dispatch whose `host` matches, a
+provably dead — or starttime-recycled — pid pauses the session `AWAITING_PUMP`
+within one poll interval instead of waiting out the inflight cap. Every field
+is optional and the writes preserve the old mtime semantics, so an older pump
+(contentless files) or a cross-host pump keeps the two timeout tiers below
+byte-identical to protocol v2; you as the pump do nothing new — the helper
+writes the fields. Same restart rule as v2: a RUNNING pump predates the
+protocol — restart the pump session after upgrading this file
+(`.claude/letter-to-future-sessions.md`, "How this system degrades").
 
 ## When this runs
 
@@ -213,7 +229,11 @@ never mistaken for a dead pump:
   stops cleanly, leaving an `.awaiting-pump` marker.
 - **Claimed** (`.started` present): the subagent is running; it is bounded only by
   `CHAIN_DISPATCH_INFLIGHT_TIMEOUT` (default 2h), NOT the idle heartbeat — so a
-  30+ minute INITIAL BUILD does not trip a false "pump stale" abort.
+  30+ minute INITIAL BUILD does not trip a false "pump stale" abort. Protocol v3:
+  when the claim carries the pump ident (`pid=`/`host=`/`starttime=`) and the
+  host matches the engine's, a provably dead or pid-recycled pump fast-pauses
+  `AWAITING_PUMP` within one poll — the 2h cap remains the net for cross-host
+  pumps and pre-v3 claims.
 
 Either way, a genuine pump loss pauses the session as `AWAITING_PUMP` (resumable)
 rather than hanging. You do not manage these markers — `goal-await-dispatch.sh`

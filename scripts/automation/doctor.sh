@@ -244,7 +244,7 @@ check_pump_heartbeat() {
   local hbto="${CHAIN_PUMP_HEARTBEAT_TIMEOUT:-1800}" now dir sid hb age
   [[ "$hbto" =~ ^[0-9]+$ ]] || hbto=1800
   now="$(date +%s)"
-  local channels=0 bad="" fresh=""
+  local channels=0 bad="" fresh="" ident=""
   for dir in "$ROOT"/runs/goal-session-*/dispatch; do
     [[ -d "$dir" ]] || continue
     channels=$((channels + 1))
@@ -268,7 +268,11 @@ check_pump_heartbeat() {
         bad="$bad $sid($pending waiting, heartbeat ${age}s > ${hbto}s)"
       fi
     fi
-    [[ "$age" -ge 0 && "$age" -le "$hbto" ]] && fresh="$fresh $sid(${age}s)"
+    if [[ "$age" -ge 0 && "$age" -le "$hbto" ]]; then
+      # REL-3 (protocol v3): a heartbeat may carry the pump ident — surface it.
+      ident="$(sed -n 's/^pid=//p' "$hb" 2>/dev/null | head -n1 | tr -dc 0-9)"
+      fresh="$fresh $sid(${age}s${ident:+, pump pid $ident})"
+    fi
   done
   if [[ -n "$bad" ]]; then
     echo "WARN|wedged channel(s):${bad} — dispatches will time out; resume the pump (/goal) or clean the channel"

@@ -65,6 +65,40 @@ if [[ "${1:-}" == "--self-test" ]]; then
   # Heartbeat file is created.
   if [[ -f "$t/.pump-alive" ]]; then echo "  PASS await: touches pump heartbeat"; else echo "  FAIL await: no heartbeat"; fails=1; fi
 
+  # Scenario 6 (REL-3, protocol v3): with a resolvable pump pid (CHAIN_PUMP_PID
+  # seam), the claim marker AND the heartbeat carry pid/host(/starttime) so the
+  # engine can kill -0 the pump during a claimed dispatch.
+  t6=$(mktemp -d)
+  r6="$t6/req.cccccc.ready"; printf '{"agent":"developer","prompt":"z"}\n' > "$r6"
+  out=$(CHAIN_PUMP_PID="$$" "$0" --dispatch-dir "$t6" --engine-pid "$$" --poll 1 2>/dev/null || true)
+  stt="$(sed 's/.*) //' "/proc/$$/stat" 2>/dev/null | awk '{print $20}')"
+  if grep -q "^pid=$$\$" "${r6%.ready}.started" 2>/dev/null \
+     && grep -q "^host=$(hostname)\$" "${r6%.ready}.started" 2>/dev/null \
+     && grep -q "^starttime=${stt}\$" "${r6%.ready}.started" 2>/dev/null; then
+    echo "  PASS await: claim marker carries pid+host+starttime (protocol v3)"
+  else
+    echo "  FAIL await: claim marker ident (got: $(tr '\n' ' ' < "${r6%.ready}.started" 2>/dev/null || echo empty))"; fails=1
+  fi
+  if grep -q "^pid=$$\$" "$t6/.pump-alive" 2>/dev/null; then
+    echo "  PASS await: heartbeat carries the pump ident"
+  else
+    echo "  FAIL await: heartbeat ident (got: $(tr '\n' ' ' < "$t6/.pump-alive" 2>/dev/null || echo empty))"; fails=1
+  fi
+  rm -rf "$t6"
+
+  # Scenario 7 (REL-3): resolution DISABLED (CHAIN_PUMP_PID set empty — the
+  # old-format seam): claim marker and heartbeat stay contentless, exactly the
+  # pre-v3 files an old engine expects.
+  t7=$(mktemp -d)
+  r7="$t7/req.dddddd.ready"; printf '{"agent":"developer","prompt":"w"}\n' > "$r7"
+  out=$(CHAIN_PUMP_PID="" "$0" --dispatch-dir "$t7" --engine-pid "$$" --poll 1 2>/dev/null || true)
+  if [[ -f "${r7%.ready}.started" && ! -s "${r7%.ready}.started" && ! -s "$t7/.pump-alive" ]]; then
+    echo "  PASS await: ident disabled → contentless claim + heartbeat (pre-v3 format)"
+  else
+    echo "  FAIL await: disabled ident leaked content (started: $(wc -c < "${r7%.ready}.started" 2>/dev/null || echo missing)B, hb: $(wc -c < "$t7/.pump-alive" 2>/dev/null || echo missing)B)"; fails=1
+  fi
+  rm -rf "$t7"
+
   rm -rf "$t"
   [[ "$fails" -eq 0 ]] && echo "goal-await-dispatch self-test: OK" || echo "goal-await-dispatch self-test: FAILED"
   exit "$fails"
@@ -82,6 +116,59 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 [[ -n "$DIR" ]] || { echo "ERROR: --dispatch-dir is required" >&2; exit 2; }
+
+# ── Pump identity (REL-3, protocol v3) ───────────────────────────────────────
+# This helper is SHORT-LIVED (it exits the moment it hands work to the pump),
+# so its own $$ is useless as a liveness anchor. The process that stays alive
+# for the whole claimed dispatch is the pump's `claude` session binary — our
+# ancestor. Resolve it once: CHAIN_PUMP_PID wins when SET (empty value = ident
+# disabled, the pre-v3 format — deterministic test seam), else walk /proc
+# ancestry for the first cmdline containing 'claude'. Unresolvable → write the
+# contentless files of protocol v2 and the engine keeps its timeout nets: every
+# field is OPTIONAL, absence must mean exactly today's behavior.
+# starttime (/proc/<pid>/stat field 22) rides along so the engine can rule out
+# a recycled pid, not just a missing one.
+_PUMP_PID=""
+if [[ -n "${CHAIN_PUMP_PID+set}" ]]; then
+  _PUMP_PID="$(printf '%s' "$CHAIN_PUMP_PID" | tr -dc 0-9)"
+else
+  _anc="$PPID"
+  for _ in $(seq 1 15); do
+    { [[ -n "$_anc" ]] && [[ "$_anc" -gt 1 ]]; } 2>/dev/null || break
+    if grep -qa 'claude' "/proc/$_anc/cmdline" 2>/dev/null; then _PUMP_PID="$_anc"; break; fi
+    _anc="$(sed 's/.*) //' "/proc/$_anc/stat" 2>/dev/null | awk '{print $2}')"
+  done
+fi
+_PUMP_HOST=""; _PUMP_STT=""
+if [[ -n "$_PUMP_PID" ]]; then
+  _PUMP_HOST="$(hostname 2>/dev/null || uname -n 2>/dev/null || echo '')"
+  if [[ -r "/proc/$_PUMP_PID/stat" ]]; then
+    _PUMP_STT="$(sed 's/.*) //' "/proc/$_PUMP_PID/stat" 2>/dev/null | awk '{print $20}')"
+  fi
+  [[ -z "$_PUMP_HOST" ]] && _PUMP_PID=""
+fi
+
+# _write_ident <target> — write the pump ident atomically (tmp + mv, so a
+# mid-write read never sees a torn file and the mv sets the fresh mtime the
+# engine's epoch/staleness logic has always keyed on). No ident → plain touch,
+# byte-identical to protocol v2.
+_write_ident() {
+  local target="$1" _t
+  if [[ -z "$_PUMP_PID" ]]; then
+    touch "$target" 2>/dev/null || true
+    return 0
+  fi
+  if ! _t="$(mktemp "$DIR/.ident.XXXXXX" 2>/dev/null)"; then
+    touch "$target" 2>/dev/null || true
+    return 0
+  fi
+  {
+    printf 'pid=%s\n' "$_PUMP_PID"
+    printf 'host=%s\n' "$_PUMP_HOST"
+    if [[ -n "$_PUMP_STT" ]]; then printf 'starttime=%s\n' "$_PUMP_STT"; fi
+  } > "$_t" 2>/dev/null || true
+  mv -f "$_t" "$target" 2>/dev/null || { rm -f "$_t" 2>/dev/null || true; touch "$target" 2>/dev/null || true; }
+}
 
 # Print unanswered, unclaimed ready requests: a .ready file with neither a .res
 # sibling (already answered) nor a .started sibling (already handed to the pump
@@ -107,7 +194,7 @@ _claim_and_emit() {
   local f
   while IFS= read -r f; do
     [[ -n "$f" ]] || continue
-    touch "${f%.ready}.started" 2>/dev/null || true
+    _write_ident "${f%.ready}.started"
     printf '%s\n' "$f"
   done <<< "$1"
 }
@@ -116,8 +203,16 @@ _claim_and_emit() {
 # request that appears at the last moment is always returned, never masked by the
 # bounded-wait sentinel.
 START_EPOCH=$(date +%s)
+_HB_IDENT_WRITTEN=""
 while true; do
-  touch "$DIR/.pump-alive" 2>/dev/null || true
+  # First beat of this invocation writes the ident (content survives later
+  # touches); subsequent beats just refresh the mtime, same as always.
+  if [[ -n "$_PUMP_PID" && -z "$_HB_IDENT_WRITTEN" ]]; then
+    _write_ident "$DIR/.pump-alive"
+    _HB_IDENT_WRITTEN=1
+  else
+    touch "$DIR/.pump-alive" 2>/dev/null || true
+  fi
   pending="$(_list_pending)"
   if [[ -n "$pending" ]]; then
     _claim_and_emit "$pending"

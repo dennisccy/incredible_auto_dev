@@ -1518,8 +1518,31 @@ benchmark (or a real session's telemetry) before AND after (G8).
 - **Rollback:** knob / remove call.
 
 ### REL-3 · Pump PID-liveness
-- **Priority:** P1 · **Effort:** M · **Risk:** MED · **Status:** TODO *(absorbed known
-  gap: letter "Known limitations", `letter-to-future-sessions.md:60-72`)*
+- **Priority:** P1 · **Effort:** M · **Risk:** MED · **Status:** IN-PROGRESS
+  *(implemented + stub-proven 2026-07-17; REMAINING: G8 fresh-session certification (M
+  item — implementer never self-certifies) + first real dead-pump rescue. Absorbed known
+  gap: the letter's pump-liveness limitation bullet is now annotated closed. Protocol v3
+  (skill 3.0.0, mirrors resynced, restart rule restated): `goal-await-dispatch.sh`
+  resolves the long-lived pump process once per call — the `claude` session via /proc
+  ancestry walk; `CHAIN_PUMP_PID` overrides, set-but-empty disables — and writes
+  pid/host/starttime into `.pump-alive` + each `.started` atomically (tmp+mv preserves
+  the mtime semantics every pre-v3 reader keys on). Engine waiter
+  (`lib/interactive-dispatch.sh`): on a CLAIMED dispatch, same-host + provably-dead pid
+  (kill -0 + /proc existence, EPERM-safe) or starttime-recycled pid → the STANDARD
+  exit-70 machinery (log line naming pid/host/agent, `.awaiting-pump` marker, channel
+  cleanup, `dispatch_wait` status `pump-dead`, no requeue — a dead pump can't service
+  one) within one poll; absent fields / cross-host / unprovable verdicts leave both
+  timeout nets byte-identical (dispatch self-tests 1-15 pass unchanged; explicit
+  cross-host, old-format, and live-pid invariant tests added as 16-19; pump-side ident
+  + disabled-seam tests in the await self-test). Integration proof
+  (`tests/automation/test-pump-liveness.sh`, run-evals §2c): the real engine paused
+  AWAITING_PUMP in 1s against the default 7200s cap, REL-4's lock released, no
+  retro-input.md (EVO-2 terminal-only filter untouched), resume re-acquired + re-ran
+  the iteration + fast-paused again — downstream-indistinguishable from a timeout
+  pause. Doctor pump-heartbeat row surfaces the v3 ident (test-doctor 50/50). Residual
+  pid-reuse window, noted honestly: a recycled pid is caught only when starttime was
+  recorded at claim time and /proc stays readable — otherwise plain kill -0 semantics,
+  i.e. the entry's original spec.)*
 - **Problem:** a pump that dies during a CLAIMED dispatch makes the engine wait out the
   full in-flight timeout (default 2h) before pausing.
 - **Current state:** two-tier liveness: pickup heartbeat staleness
