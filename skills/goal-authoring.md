@@ -49,6 +49,14 @@ failure mode (`.claude/anti-patterns.md` #1, #18).
    "correctly"); the end state is visible on the page — not "the data is saved" but
    "the new row shows `<the value entered>`". 2-6 journeys is the right starting
    size; each must be independently runnable from a fresh page load.
+   Merge advisory (throughput): when two candidate journeys exercise the SAME
+   screen/surface and the same risk class (e.g., "add an item" and "edit that
+   item's name" on one CRUD page), prefer ONE journey with multiple numbered
+   acceptance bullets over two separate journeys — each journey is the unit the
+   engine plans, verifies, and iterates on, so needless splits buy extra
+   iterations, not extra safety. Keep journeys separate when they cross surfaces,
+   differ in risk (payment vs display), or would stop being independently
+   runnable from a fresh page load when merged.
 10. **Anti-goals** — veto rules the evaluator enforces even when every journey
     passes. Concrete and checkable, never aspirations ("secure" ✗ → "no credentials
     in source files" ✓). ⊕ offer the template's defaults: no hard-coded secrets; no

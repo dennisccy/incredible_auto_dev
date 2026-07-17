@@ -32,6 +32,11 @@ paste-ready. Do not launch the engine, dispatch agents, or edit any other file.
      or input value, where a browser agent would have to invent one.
    - **Not independently runnable** — a journey that silently depends on state a
      prior journey created, with no setup step of its own from a fresh page load.
+   - **Mergeable journey pair (advisory)** — two journeys whose steps drive the
+     same page/module and the same risk class, where one journey with combined
+     acceptance bullets would still be a small, lean-classable change. Suggest the
+     merged journey text (steps + one Acceptance line per absorbed outcome).
+     Advisory only — splitting is never an error.
    - **Risky surface with no anti-goal coverage** — journeys or Vision mention auth,
      payments, uploads, personal data, or external network calls, and no anti-goal
      bounds that surface.

@@ -10,6 +10,6 @@ tools_allowed:
 - Grep
 - Bash
 - Write
-version: 2.2.0
+version: 2.3.0
 last_updated: '2026-07-17'
 body: body.md

@@ -873,6 +873,41 @@ escalate_model_off() {
   return 0
 }
 
+# ── Hardening cadence (SPEED-4) ───────────────────────────────────────────────
+# The sharpened depth rubric makes lean the default; the cadence guarantees a
+# periodic full hardening pass so audit coverage cannot silently vanish on a
+# long lean streak. run-goal.sh writes $ITER_DIR/depth-dispatched (the depth
+# that actually ran, incl. the legacy fallback-to-lean) per iteration; the
+# streak is recomputed from those idempotent files every pass, so resume
+# re-entry cannot double-count.
+
+# goal_lean_streak <session_dir> <current_iter>
+# Echoes the count of consecutive trailing `lean` dispatches over
+# iter-(N-1)..iter-1. A missing file or any non-lean value breaks the streak.
+# iter-0 (baseline) is never counted — the loop floor is iter-1.
+goal_lean_streak() {
+  local session_dir="$1" current_iter="$2"
+  local streak=0 i v
+  for (( i = current_iter - 1; i >= 1; i-- )); do
+    v="$(cat "$session_dir/iter-$i/depth-dispatched" 2>/dev/null || true)"
+    [[ "$v" == "lean" ]] || break
+    streak=$((streak + 1))
+  done
+  echo "$streak"
+}
+
+# goal_cadence_forces_full <streak> <current_iter>
+# True iff the hardening cadence demands a full pass now: K>0 AND
+# current_iter>K (never fires in a session's opening window, where iter-0 is
+# the baseline) AND streak>=K. K = CHAIN_HARDENING_CADENCE, default 4, 0
+# disables the cadence entirely.
+goal_cadence_forces_full() {
+  local streak="$1" current_iter="$2"
+  local k="${CHAIN_HARDENING_CADENCE:-4}"
+  [[ "$k" =~ ^[0-9]+$ ]] || k=4
+  (( k > 0 && current_iter > k && streak >= k ))
+}
+
 # ── Idempotent service bootstrap (shared by qa-phase.sh and browser-qa-phase.sh) ──
 #
 # Starts the backend (and optionally frontend) if they are not already running.

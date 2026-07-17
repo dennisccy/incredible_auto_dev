@@ -129,6 +129,10 @@ signal that says "do this now").
    session) and verify together via the §9 benchmark rerun; REL-12 staged 2026-07-14
    (prereq for a resolvable SPEED flip re-measurement at lean depth).
 7. **EXP-** items only with explicit human sign-off and a written design doc first.
+8. **SPEED-4…7** shipped 2026-07-17 (one user-approved package session; plan
+   sign-off = EVO-1 promotion + G6 multi-S exception). **SPEED-8** waits for SPEED-4
+   to bed in one real session; **REL-14** (absorbs CAND-BQA-PREFLIGHT) schedules
+   with the REL block — both are weaker-model-ready mini-specs.
 
 ---
 
@@ -889,6 +893,188 @@ benchmark (or a real session's telemetry) before AND after (G8).
   processes (check `pgrep` in the test), stop.
 - **Depends on:** SPEED-2. Expected saving ≈ min(review, browser-qa) ≈ up to ~20m on
   clean iterations.
+  *Scope note (2026-07-17, SPEED-6):* this item's scope is `goal-iter-lean.sh` only —
+  "full" in this entry names the `CHAIN_LEAN_PARALLEL_BROWSER_QA=full` knob STAGE
+  (fork the whole browser-qa section of a LEAN iteration), not full pipeline depth.
+  run-phase.sh full depth has never had review ∥ browser-qa (review completes inside
+  the sequential Step 3 dev+review loop, `run-phase.sh:674-726`); what full depth
+  does parallelize is the post-dev Branch-UI ∥ Branch-QA fanout
+  (`_run_post_dev_fanout`, `run-phase.sh:254`, call `:745`). Porting a review-overlap
+  fork to the full pipeline is staged as §16 CAND-FULL-BQA-OVERLAP — re-check demand
+  after SPEED-4, which makes full iterations rare.
+
+### SPEED-4 · Depth rubric sharpened — lean-first + deterministic hardening cadence
+- **Priority:** P1 · **Effort:** S · **Risk:** LOW-MED · **Status:** DONE 2026-07-17
+  *(user-approved throughput package; implemented same session as SPEED-5/6/7 — plan
+  sign-off served as the EVO-1 promotion for direct §9 placement and the G6
+  multiple-S-items exception.)*
+- **Problem:** the depth rubric sent an iteration full when it "requires new tests
+  beyond browser smoke" — post-REL-9 every spec must carry ≥3 `TC-` scenario lines,
+  so the trigger fired on every real journey. Evidence (tapeology
+  `goal-session-fast_wall`, 299-event telemetry): 0 lean / 7 full post-baseline
+  iterations at ~3-4h each vs ~2h lean (§9 header) — ~1.5-2h/iteration of
+  full-pipeline overhead (orchestrator, qa ×2, ui chain, auditor, closure) spent on
+  single-module work that lean's own definition covers.
+- **Current state (as built):** rubric rewritten `agents/goal-decomposer/body.md:143-170`
+  — lean is the default; full only on numbered triggers (1 structural/cross-cutting
+  ≥3 modules, 2 data model / Data-Contract value, 3 prior ESCALATE, 4 hardening
+  cadence); "needs unit tests" explicitly NOT a trigger (lean's developer still
+  executes every TC- scenario — depth selects the agent set, not testing).
+  Self-check #4 updated (`body.md:226` — full cites its numbered trigger; lean
+  states "no full trigger holds"). Engine cadence: every dispatch branch writes
+  `$ITER_DIR/depth-dispatched` (`run-goal.sh:1884/:1888/:1893` — the depth that
+  actually ran, legacy fallback included; idempotent overwrite → resume-proof);
+  `goal_lean_streak` + `goal_cadence_forces_full` (`lib/common.sh:888/:904`) compute
+  the trailing-lean streak (missing file or non-lean breaks it; iter-0 never
+  counted); the streak is inlined into the decomposer prompt (`run-goal.sh:1719` —
+  the prompt only carries the last 3 evaluator entries, so the engine must supply
+  the count) and a post-parse backstop (`run-goal.sh:1845-1848`) overrides
+  `lean → full` when K consecutive leans have run (K=`CHAIN_HARDENING_CADENCE`,
+  default 4, `0` disables), logging loudly + telemetry `depth_cadence_override`.
+  When the backstop fires the spec still reads lean — dispatch + telemetry carry
+  the effective depth (intended: a hardening pass audits the ACCUMULATED tree, so a
+  lean-scoped spec is exactly right).
+- **DoD (met):** `tests/automation/test-depth-cadence.sh` (17 asserts, TDD
+  red→green: streak semantics incl. reset / missing-file / idempotent re-entry,
+  cadence decision matrix incl. K=0 and the current_iter>K floor, engine wiring
+  greps, rubric greps) green + registered in run-evals §2c; sync `--check` clean;
+  rendered mirror carries the new rubric.
+- **Verify:** `bash tests/automation/test-depth-cadence.sh` ·
+  `python3 scripts/automation/sync-cli-assets.py --cli claude --check` ·
+  `grep -n "Hardening cadence" .claude/agents/goal-decomposer.md`
+- **Files:** `agents/goal-decomposer/body.md` (+ rendered mirror, version 2.3.0),
+  `scripts/automation/run-goal.sh`, `scripts/automation/lib/common.sh`,
+  `tests/automation/test-depth-cadence.sh`, `scripts/automation/run-evals.sh`.
+- **Rollback:** revert the body + engine edits; `CHAIN_HARDENING_CADENCE=0` disables
+  the cadence alone (rubric stays).
+- **Stop-and-ask:** if any file besides `agents/goal-decomposer/body.md` + its
+  rendered mirror turns out to describe the depth triggers, stop and resync them
+  together (grep across docs/.claude/skills/commands/templates proved only those two
+  today). A lean-classified structural change slipping through is the accepted risk;
+  mitigations = cadence full pass + the evaluator's existing ESCALATE⇒full path.
+- **Before/after (G8 via telemetry, no paid benchmark — rubric fix, not a knob
+  experiment):** BEFORE = fast_wall 0:7 lean:full post-baseline, ~19.9h over iters
+  0-5. AFTER = first real session on this rubric: record its lean:full ratio +
+  wall/iter here from telemetry. Expected ~1.5-2h saved per correctly-lean-classed
+  iteration.
+
+### SPEED-5 · Goal-mode full iterations ran the iteration-summarizer twice
+- **Priority:** P1 · **Effort:** S · **Risk:** LOW · **Status:** DONE 2026-07-17
+  *(same user-approved package as SPEED-4.)*
+- **Problem:** a goal-mode FULL iteration dispatched the summarizer twice onto the
+  same file: run-phase.sh Step 10.5 (pre-evaluator, inside the executor) and the
+  goal engine's post-evaluator showcase tail (`run-goal.sh:267` writes the identical
+  `reports/phase-<iter>-iteration-summary.md`; run-phase's `$PHASE` IS run-goal's
+  `$ITER_NAME`). Write #2 overwrites write #1. fast_wall: 135 min of summarizer
+  wall across 6 iterations, ×2 dispatches each — the largest pure-overhead sink.
+- **Current state (as built):** `_summary_deferred_to_goal_showcase`
+  (`run-phase.sh:134`) gates BOTH call sites — Step 10.5 (`:1073`, loud deferral
+  log) and `fail()` (`:279`; on executor failure run-goal still proceeds to the
+  evaluator and the showcase runs for every verdict, so the summary still gets
+  written) — on the CONJUNCTION `NO_FINALIZE=true` AND phase name
+  `^goal-.+-iter-[0-9]+$`; escape hatch `CHAIN_FULL_ITER_SUMMARY=true` (mirrors
+  `CHAIN_README_EVERY_ITER`). Both signals required: `--no-finalize` alone also
+  serves standalone phase runs (test-engine-lock drives `lockphase --no-finalize`);
+  the name alone also serves manual reruns. Reader map (why write #1 was safe to
+  drop): every consumer — readme-maintainer (`run-goal.sh:430`), delivered wrap
+  (`:481`), intent-review links (`:887-891`), session-index, the next iteration's
+  summarizer — reads AFTER the showcase write; the executor→evaluator gap has ZERO
+  readers (the evaluator dispatch prompt, `run-goal.sh:2012` region, lists its
+  inputs explicitly and the summary is absent; coherence/decomposer/gate libs grep
+  clean). Accepted loss: a hard engine crash between executor and showcase leaves
+  that iteration without a summary — the exposure lean mode already has
+  (equalization, not regression).
+- **DoD (met):** `tests/automation/test-summary-dedupe.sh` (11 asserts, TDD
+  red→green: deferral + loud log naming the escape hatch + pipeline completion in
+  the goal case; summarizer KEPT for standalone `--no-finalize` phases, manual
+  goal-name reruns, and the escape hatch) green + registered in run-evals §2c;
+  neighbors green (test-engine-lock / test-testplan-skip / test-goal-async-tail).
+- **Verify:** `bash tests/automation/test-summary-dedupe.sh` ·
+  `bash tests/automation/test-engine-lock.sh`
+- **Files:** `scripts/automation/run-phase.sh`,
+  `tests/automation/test-summary-dedupe.sh`, `scripts/automation/run-evals.sh`.
+- **Rollback:** `CHAIN_FULL_ITER_SUMMARY=true` (behavioral) or revert (structural).
+- **Stop-and-ask:** if any consumer of the PRE-evaluator summary ever surfaces (a
+  reader inside the executor→evaluator window), stop — re-check against the reader
+  map above.
+- **Saving:** one summarizer dispatch + render per full iteration (~15-30 min/iter
+  observed in fast_wall; the showcase copy is unchanged).
+
+### SPEED-6 · SPEED-3 scope reconciliation (docs-only)
+- **Priority:** P2 · **Effort:** S · **Risk:** LOW · **Status:** DONE 2026-07-17.
+- **Problem:** SPEED-3's headline "stage 'full' (headless)" invites misreading as
+  full-DEPTH parallelism; this week's session forensics initially flagged
+  run-phase.sh's sequential review → browser-qa ordering as "SPEED-3 not engaged".
+- **Change (as built):** scope note appended to the SPEED-3 entry above (knob stage
+  vs pipeline depth, with run-phase.sh anchors); the genuine full-depth port is
+  staged as §16 CAND-FULL-BQA-OVERLAP behind a demand gate (post-SPEED-4, full
+  iterations should be rare).
+- **Files:** this file only. **Rollback:** docs-only.
+- **Verify:** `grep -n "Scope note (2026-07-17" docs/improvement-roadmap.md`
+
+### SPEED-7 · Journey merge advisory at authoring time
+- **Priority:** P2 · **Effort:** S · **Risk:** LOW · **Status:** DONE 2026-07-17
+  *(same user-approved package as SPEED-4.)*
+- **Problem:** each Must-have journey is the unit the engine plans, verifies, and
+  iterates on, but nothing at authoring time says so — needless journey splits buy
+  extra iterations, not extra safety. fast_wall evidence: J-02 + J-06 (both durable
+  SQLite accelerators; goal.md itself notes J-06 rides on J-02's precedent) were
+  authored separately and cost one ~3h full iteration each.
+- **Current state (as built):** merge advisory in the authoring interview
+  (`skills/goal-authoring.md:52-59` — merge same-surface/same-risk pairs into ONE
+  journey with multiple acceptance bullets; keep them split when surfaces or risk
+  class differ, or when merging would break fresh-page independence) + a
+  `Mergeable journey pair (advisory)` semantic-pass bullet in
+  `commands/goal-lint.md:35-39` (suggests the merged journey text; splitting is
+  never an error). Report-only by construction — goal-lint never edits goal.md;
+  deterministic `goal_lint.py` untouched.
+- **DoD (met):** both inserts render in mirrors; sync `--check` clean.
+- **Verify:** `grep -n "Merge advisory" .claude/skills/goal-authoring.md` ·
+  `grep -n "Mergeable journey pair" .claude/commands/goal-lint.md`
+- **Files:** `skills/goal-authoring.md`, `commands/goal-lint.md` (+ mirrors).
+- **Rollback:** docs-only revert.
+- **Saving:** ~1 full iteration (~3h) per journey pair a future goal merges.
+
+### SPEED-8 · Passenger batching — one risky journey + up to 2 disjoint trivial passengers
+- **Priority:** P1 · **Effort:** M · **Risk:** MED · **Status:** TODO
+  *(mini-spec authored 2026-07-17 in the same user-approved package; implement in a
+  later session.)*
+- **Problem:** priority-rubric rule 5 (`agents/goal-decomposer/body.md:136`) is an
+  exclusive OR — "several trivial journeys OR one risky journey" — so a goal whose
+  journeys are mostly risky marches strictly 1/iteration even when small
+  independent journeys could ride along. fast_wall: 7 journeys → 7 iterations.
+- **Change spec:** (1) Replace rule 5 with: an iteration carries at most ONE risky
+  journey (data-model change, provider integration, cross-cutting refactor) and MAY
+  additionally carry up to 2 trivial "passenger" journeys ONLY IF each passenger
+  (a) touches no module/page the risky journey touches, (b) is independently
+  scoreable from its own evidence, and (c) is droppable — a failed passenger is
+  simply not done; it never blocks or muddies the risky journey's verdict. Never
+  two risky journeys (unchanged — a joint failure is undiagnosable). Update the
+  "Stay tight" rule (`body.md:237`) to reference rule 5's passenger form.
+  (2) NEW optional Goal Mode Metadata line
+  `Journey complexity: J-07=normal, J-03=trivial` — its OWN line, NEVER annotations
+  inside `Target journeys:` (that raw line feeds `goal_gate.py goal-slice
+  --targets`, `run-goal.sh:1978`, and the display/telemetry at `:1851-1856`;
+  annotations would corrupt both). Same `trivial|normal` vocabulary as §16
+  CAND-TIER — whichever lands first defines the line; cross-reference on landing.
+  (3) Evaluator (`agents/goal-evaluator/body.md`, methodology section + CONTINUE
+  verdict bullet): score each target journey from its own evidence; a passenger
+  failure is recorded on the passenger only, never downgrades the risky journey's
+  earned verdict, and never alone justifies ESCALATE.
+- **DoD:** rubric + metadata + evaluator guidance rendered in mirrors (decomposer +
+  evaluator version bumps); a goal-evaluator judgment fixture where a passenger
+  fails while the risky journey passes yields CONTINUE with independent per-journey
+  rows; evals green; G8 fresh-session certification.
+- **Verify:** sync `--check` · `./scripts/automation/run-evals.sh` · judgment
+  fixture run (G9 spend approval).
+- **Files:** `agents/goal-decomposer/body.md`, `agents/goal-evaluator/body.md`
+  (+ mirrors), `tests/judgment/goal-evaluator/` (new case), this file.
+- **Rollback:** revert the body edits — the metadata line is optional, old specs
+  parse unchanged.
+- **Stop-and-ask:** any change that would touch an engine parse of
+  `Target journeys:`; any judgment-fixture verdict-class flip.
+- **Depends on:** SPEED-4 (the sharpened rubric defines what "trivial" means in
+  practice); synergizes with §16 CAND-TIER (same complexity vocabulary).
 
 ### TOKEN-1 · Per-agent project-template slicing
 - **Priority:** P1 · **Effort:** M · **Risk:** LOW · **Status:** DONE 2026-07-14 —
@@ -2223,6 +2409,69 @@ benchmark (or a real session's telemetry) before AND after (G8).
   fallback chain for harness compat). Delivers REL-2's disk-space row;
   rest of the doctor remains TODO.)*
 
+### REL-14 · Browser-infra make-up lane (primary browser-qa preflight + screenshot-only recovery)
+- **Priority:** P1 · **Effort:** M · **Risk:** MED · **Status:** TODO
+  *(mini-spec authored 2026-07-17 in the user-approved throughput package; absorbs
+  §16 CAND-BQA-PREFLIGHT — see its absorption note. Implement in a later session.)*
+- **Problem:** a browser-infra failure in the PRIMARY browser-qa lane costs a whole
+  iteration. REL-5 gave the golden-replay lane SKIPPED-INFRA discipline
+  (`lib/replay-lane.sh:185-215`: rc-6 → services re-check → ONE retry → second rc-6
+  = SKIPPED-INFRA, never FAIL), but the primary LLM lane
+  (`goal-iter-lean.sh:616-676` `run_browser_qa_llm`; full depth via Branch-A →
+  `browser-qa-phase.sh`) has no preflight, no retry, and no infra state. Evidence:
+  tapeology `goal-session-fast_wall` iter-4 (~4h, 0 journeys moved): code complete
+  and API/CLI-proven, but Chrome MCP died → no screenshot → J-04 scored `partial` →
+  iter-5 forced a full re-target (browser-qa ran twice across the pair, ~65m).
+  Cross-repo chronic evidence: the harvest quotes in §16 CAND-BQA-PREFLIGHT
+  (trendora ×2, tapeology structure_ui).
+- **Change spec:** (1) *Preflight:* deterministic services probe (frontend 200 +
+  backend health + headless-Chrome readiness where checkable; overlap-check vs
+  `ensure_services_running`, `lib/common.sh:770`, per the candidate's triage note)
+  immediately before `run_browser_qa_llm` and before Branch-A's browser-qa; on
+  failure re-check + ONE retry (mirror `replay-lane.sh:196-203`); knob
+  `CHAIN_BQA_PREFLIGHT`, default off for its first session (G4). (2) *Infra token,
+  out-of-band:* a second preflight failure — or a post-scan classifier (results
+  file whose rows are all SKIP with infra-taxonomy reasons, or a missing results
+  file plus a captured MCP/Chrome error; catches mid-run Chrome death that no
+  preflight can) — writes `$ITER_DIR/browser-infra.json`
+  `{journeys, reason, attempts, detected_by}`. The merged `ui-test-results.md`
+  verdict line stays `PASS|FAIL|SKIPPED` — the checkpoint greps in
+  goal-iter-lean.sh and `verdicts.py` BrowserQAVerdict must NEVER see a new enum
+  value. (3) *Evaluator contract:* one new dispatch input line (evaluator prompt,
+  `run-goal.sh:2012` region) + body edit (`agents/goal-evaluator/body.md`):
+  journeys named in `browser-infra.json` with no fresh screenshot score `partial`
+  with gap text `pending-infra` and journey-history boolean `pending_infra: true` —
+  NOT a new status enum (no `goal_gate.py` / renderer ripple). The
+  no-screenshot-no-pass rail stays absolute; `partial` blocks GOAL_ACHIEVED exactly
+  as today. (4) *Make-up scheduling:* next iteration, pre-decomposer, run-goal.sh
+  reads the prior journey-history `pending_infra` set; if non-empty it inlines a
+  BINDING decomposer line ("include these as verify-only targets; do NOT re-plan
+  their implementation — code is present, only browser evidence is missing") AND,
+  as an engine safety net, unions them into the executor's browser-qa journey set
+  (the Required-set union mechanism). No developer work; the normal evaluator flips
+  `partial(pending-infra)` → `passing` or `failing`, honestly. (5) *Two-strike
+  rule:* `attempts` counts across iterations; 2 consecutive infra-blocked
+  iterations for the same journey ⇒ the evaluator treats it as a human-owned
+  blocker (STALLED-class, decomposer rule 6) — the engine never silently loops on
+  dead infra.
+- **DoD:** sandbox test forces a preflight double-failure → token written, merged
+  verdict enum untouched, checkpoint greps still parse; a goal-evaluator judgment
+  fixture scores `partial` + `pending_infra: true`; the make-up path re-verifies
+  WITHOUT a developer dispatch; evals green; G8 fresh-session certification + one
+  real-session observation.
+- **Verify:** new `tests/automation/test-browser-infra-makeup.sh` ·
+  `./scripts/automation/run-evals.sh` · judgment fixture run (G9 spend).
+- **Files:** `scripts/automation/goal-iter-lean.sh`,
+  `scripts/automation/browser-qa-phase.sh`, `scripts/automation/run-goal.sh`,
+  `agents/goal-evaluator/body.md` (+ mirror, version bump),
+  `scripts/automation/lib/replay-lane.sh` (shared probe helper), tests, this file.
+- **Rollback:** preflight behind the knob; token/consumer edits revert cleanly —
+  an absent `browser-infra.json` is byte-for-byte today's behavior everywhere.
+- **Stop-and-ask:** anything that would touch the `PASS|FAIL|SKIPPED` verdict greps
+  or `verdicts.py`; any judgment-fixture verdict-class flip; G9 for fixture spend.
+- **Expected saving:** an iter-4-class infra loss becomes a ~30m screenshot-only
+  make-up instead of a ~4h re-target iteration.
+
 ---
 
 ## 11. P1 — Security
@@ -2836,6 +3085,9 @@ but appreciated.
   the audit's skeptical checks itself before declaring GOAL_ACHIEVED.
 
 ### CAND-BQA-PREFLIGHT · Browser-qa dispatch lacks a services/fixture preflight gate (staged — do not start)
+- *(Absorbed into REL-14 on 2026-07-17 — the user-approved throughput package
+  promoted the preflight as REL-14's component (1); the harvest evidence + triage
+  note below remain as the historical record. Do not implement from this block.)*
 - *(EVO-5 first real harvest, 2026-07-12 — cross-repo recurring symptom drafted
   from the digest; promotion human, EVO-1.)*
 - **Proposed:** P1 · Effort M · Risk MED.
@@ -2860,6 +3112,42 @@ but appreciated.
   state mutation) — check overlap with `ensure_services_running`
   (`lib/common.sh:770`) before promoting: the engine may have partial cover the
   vendored snapshots lacked.
+
+### CAND-FULL-BQA-OVERLAP · Port review ∥ browser-qa overlap to the full pipeline (staged — do not start)
+- *(Staged 2026-07-17 from the SPEED-6 reconciliation: SPEED-2/3's fork exists only
+  in `goal-iter-lean.sh`; run-phase.sh full depth reviews sequentially inside Step 3
+  (`run-phase.sh:674-726`) and only parallelizes the post-dev Branch-UI ∥ Branch-QA
+  fanout (`_run_post_dev_fanout` `:254`, call `:745`).)*
+- **Proposed:** P2 · Effort M · Risk MED.
+- **Sketch:** port the SPEED-2/3 fork machinery so run-phase.sh forks browser-qa
+  (or the whole Branch-A chain) after the first dev attempt to overlap the review
+  rounds; headless-only, knob'd, kill-then-invalidate on review FAIL (SPEED-3's
+  join/reap semantics, including the rc-70 pause translation). Companion
+  measurement: the fanout-QA double-dispatch cost (fanout Branch-QA + the
+  sequential Step 7 retry when its verdict fails there, `run-phase.sh:745` ff.).
+- **Why staged:** re-check demand after SPEED-4 — the sharpened rubric makes full
+  iterations the exception, shrinking the addressable saving; and the same
+  real-session telemetry gate that parked SPEED-3's flip applies (the benchmark
+  fixture failed to price the overlap three times).
+
+### CAND-DEV-CONTEXT · Developer dispatch context slims as sessions grow (staged — do not start)
+- *(Staged 2026-07-17 from tapeology `fast_wall` forensics: developer run time grew
+  monotonically 31 → 77 min across 6 iterations — the #1 wall-clock sink in every
+  single iteration, 6.5h total.)*
+- **Proposed:** P1 · Effort M · Risk MED.
+- **Current state:** the lean developer dispatch feeds the FULL `docs/goal.md`
+  (`goal-iter-lean.sh:757-776`) while decomposer + evaluator already receive the
+  token-lean goal-slice (`run-goal.sh:1691-1692` / `:1978`); no per-dispatch
+  file-scope digest exists (contrast TOKEN-7's pre-baked reviewer packet).
+- **Sketch:** (a) cheapest first — point the developer dispatch at
+  `$GOAL_SLICE_PATH` (targets verbatim, stable journeys digested); (b) REL-6-style
+  scoped digest: blueprint slice + an iteration-relevant file list derived from the
+  spec's IN SCOPE; (c) BEFORE building (b), add telemetry splitting developer
+  read/context time vs build/test execution time — the growth may be project
+  compile/test cost that no context digest fixes.
+- **Why staged:** needs measurement (c) first to avoid optimizing the wrong term;
+  D7's diff-only-context warning applies in spirit to over-slicing the developer's
+  view of the product.
 
 ### CAND-VENDORED-SCAN-SCOPE · Vendored framework subtree trips adopter secret scans (staged — do not start)
 - *(EVO-5 first real harvest, 2026-07-12 — cross-repo recurring symptom drafted

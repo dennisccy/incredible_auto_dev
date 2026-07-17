@@ -1668,6 +1668,12 @@ PY
     DECOMPOSER_MODE="next"
   fi
 
+  # SPEED-4: hardening-cadence input. The decomposer prompt only inlines the
+  # last 3 evaluator entries, so a K-long lean streak is invisible to the agent
+  # unless the engine supplies the count; the post-parse backstop below
+  # enforces the cadence even if the agent ignores it.
+  LEAN_STREAK=$(goal_lean_streak "$GOAL_SESSION_DIR_LOCAL" "$CURRENT_ITER")
+
   echo "[run-goal] Step 1: goal-decomposer (mode: $DECOMPOSER_MODE)"
   # Pre-trim historical state — pass only the tail to the decomposer so token
   # usage stays flat as the session grows. Spec asks for "last 3 entries";
@@ -1710,6 +1716,7 @@ Iteration index: $CURRENT_ITER
 Iter name: $ITER_NAME
 Prior verdict: $PRIOR_VERDICT
 Prior depth: $PRIOR_DEPTH
+Consecutive lean iterations dispatched: $LEAN_STREAK (hardening cadence: ${CHAIN_HARDENING_CADENCE:-4}; 0 = disabled)
 
 Project template: .claude/project-template.md
 Project goal (SLICED — vision + anti-goals + failing/target journeys verbatim; stable passing journeys digested to one line): $GOAL_SLICE_PATH
@@ -1832,6 +1839,15 @@ Do NOT write code or implement anything. The iteration spec and any blueprint ed
     DEPTH="lean"
   fi
 
+  # SPEED-4 hardening-cadence backstop: a K-long lean streak forces a full
+  # hardening pass even when the spec says lean. The spec text stays as
+  # written; dispatch + telemetry carry the effective depth.
+  if [[ "$DEPTH" == "lean" ]] && goal_cadence_forces_full "$LEAN_STREAK" "$CURRENT_ITER"; then
+    echo "[run-goal] Hardening cadence: $LEAN_STREAK consecutive lean iterations — overriding spec depth lean → full (CHAIN_HARDENING_CADENCE=${CHAIN_HARDENING_CADENCE:-4}; 0 disables)."
+    DEPTH="full"
+    record_telemetry_event "depth_cadence_override" "$(jq -cn --arg s "$LEAN_STREAK" --arg k "${CHAIN_HARDENING_CADENCE:-4}" '{lean_streak:$s, cadence:$k}' 2>/dev/null || printf '{"lean_streak":"%s"}' "$LEAN_STREAK")"
+  fi
+
   TARGET_JOURNEYS=$(grep -m1 -E '^[[:space:]]*-?[[:space:]]*\*\*Target journeys:\*\*' "$ITER_SPEC_PATH" \
                       | sed -E 's/.*\*\*Target journeys:\*\*[[:space:]]*//' || echo "")
 
@@ -1865,13 +1881,16 @@ Do NOT write code or implement anything. The iteration spec and any blueprint ed
     _full_extra_args=(--no-finalize)
     echo "[run-goal] Dispatching FULL pipeline via run-phase.sh ${_full_extra_args[*]} ..."
     if grep -q '\-\-no-finalize' "$SCRIPT_DIR/run-phase.sh"; then
+      printf 'full' > "$ITER_DIR/depth-dispatched"   # SPEED-4: cadence streak input (depth that actually runs)
       bash "$SCRIPT_DIR/run-phase.sh" "$ITER_NAME" "${_full_extra_args[@]}" || _exec_rc=$?
     else
       echo "[run-goal] run-phase.sh does not yet support --no-finalize. Falling back to lean for safety." >&2
+      printf 'lean' > "$ITER_DIR/depth-dispatched"
       bash "$SCRIPT_DIR/goal-iter-lean.sh" "$ITER_NAME" || _exec_rc=$?
     fi
   else
     echo "[run-goal] Dispatching LEAN pipeline via goal-iter-lean.sh ..."
+    printf 'lean' > "$ITER_DIR/depth-dispatched"
     bash "$SCRIPT_DIR/goal-iter-lean.sh" "$ITER_NAME" || _exec_rc=$?
   fi
 

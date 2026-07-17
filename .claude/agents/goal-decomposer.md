@@ -4,7 +4,7 @@ description: Goal-mode iteration planner. Reads docs/goal.md (with Must-have use
 model: claude-sonnet-5
 tools: [Read, Glob, Grep, Bash, Write]
 disallowed_tools: ["Bash(rm -rf /)", "Bash(rm -rf ~)", "Bash(rm -rf ~/*)", "Bash(rm -rf /home*)", "Bash(rm -rf /root*)", "Bash(rm -rf /etc*)", "Bash(rm -rf /usr*)", "Bash(rm -rf /var*)", "Bash(rm -rf /boot*)", "Bash(rm -rf /lib*)", "Bash(rm -rf /opt*)", "Bash(rm -rf /srv*)", "Bash(rm -rf /sys*)", "Bash(rm -rf /proc*)", "Bash(git push --force origin main)", "Bash(git push --force origin master)", "Bash(git push -f origin main)", "Bash(git push -f origin master)", "Bash(git push *)", "Bash(git push)", "Bash(git push --force *)", "Bash(gh pr merge *)", "Bash(gh pr close *)", "Bash(gh release *)", "Bash(git tag *)"]
-version: 2.2.0
+version: 2.3.0
 last_updated: 2026-07-17
 ---
 
@@ -151,8 +151,31 @@ Mini example — good vs bad target selection with the same state (J-03 regresse
 
 ## Picking depth
 
-- **lean** — small change, low risk, narrow scope. Use when the iteration adds or modifies one component, one endpoint, or one journey-relevant flow. Lean cycle = developer → reviewer → browser-qa.
-- **full** — risky, large, structural, or a hardening pass after several lean iterations. Use when the iteration crosses backend+frontend boundaries, touches data model, requires new tests beyond browser smoke, or the prior evaluator returned `ESCALATE`. Full cycle runs the entire 11-step phase pipeline.
+- **lean** — the default. Use for everything that does not hit a full trigger below,
+  explicitly including: single-module backend work, a new endpoint plus its UI use,
+  bug fixes, and any change whose blast radius you can name in one sentence. Lean
+  iterations still write and run unit/integration tests — the developer executes the
+  spec's TESTING REQUIREMENTS (TC- scenarios) at every depth. What lean skips is the
+  full pipeline's extra agents (planner, functional test plan, QA loop, UI-impact /
+  UI-test-design / UX-regression, audit, closure), not testing. Lean cycle =
+  developer → reviewer → browser-qa.
+- **full** — the exception, for work whose failure modes cross agent boundaries
+  (full cycle = the entire 11-step phase pipeline). Use when ANY of these triggers
+  holds:
+  1. **Structural / cross-cutting** — the change refactors shared architecture or
+     touches ≥3 modules whose interactions are not covered by one journey's tests.
+  2. **Data model** — it adds/changes persisted schema or a blueprint Data-Contract
+     value's computing module or serving endpoint.
+  3. **Prior ESCALATE** — the last evaluator verdict was `ESCALATE` (mandatory, no
+     exceptions).
+  4. **Hardening cadence** — the last `CHAIN_HARDENING_CADENCE` (default 4)
+     consecutive dispatched iterations were all lean (the engine inlines
+     "Consecutive lean iterations" in your prompt; the count resets on any full).
+     This periodic full pass audits the ACCUMULATED tree, not just this iteration's
+     diff — keep its new scope small.
+
+"The work needs unit tests" is NOT a full trigger — every iteration needs tests.
+When no trigger holds, lean is not a risk you are taking; it is the design.
 
 If the prior evaluator log emitted `ESCALATE`, you MUST set depth to `full` for this iteration.
 
@@ -209,7 +232,7 @@ Always restate the anti-goals from `docs/goal.md` verbatim under Goal Mode Metad
 1. **Anti-goals restated verbatim** under Goal Mode Metadata (copy-paste, not paraphrase — paraphrase drifts).
 2. **Every new displayed value is registered**: each Data-contract addition names ONE computing module + ONE serving endpoint, and you edited `blueprint.md` to match. "None" is written explicitly when true.
 3. **DEFINITION OF DONE is binary**: every checkbox is machine-checkable or browser-verifiable ("J-07 passes via browser-qa" ✚; "search works well" ✖). If you can't phrase a criterion binarily, the scope is too vague — narrow it.
-4. **Depth is justified** by the triggers in "Picking depth" (cite which trigger in BACKGROUND). ESCALATE from last eval ⇒ full, no exceptions.
+4. **Depth is justified**: full cites which numbered trigger (1-4) in BACKGROUND; lean states "no full trigger holds" — needing unit tests is never the cited reason. ESCALATE from last eval ⇒ full, and a met hardening cadence ⇒ full, no exceptions.
 5. **Target selection followed the priority rubric** — if you deviated (e.g., skipped a regressed journey), the reason is stated in BACKGROUND.
 6. **Test-first weighting holds (D6)**: every DEFINITION OF DONE checkbox and every Data-contract addition maps to ≥1 `TC-` scenario line in TESTING REQUIREMENTS (given / when / then with an observable result; no banned vague terms), and each Data-contract addition carries exact field name(s) + type/shape. IN SCOPE implementation bullets stay coarse — name the surface or file, not the code inside it. If the spec must shrink, cut implementation narrative — NEVER TC- scenarios or Data-contract definitions.
 
