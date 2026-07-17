@@ -1518,9 +1518,20 @@ benchmark (or a real session's telemetry) before AND after (G8).
 - **Rollback:** knob / remove call.
 
 ### REL-3 · Pump PID-liveness
-- **Priority:** P1 · **Effort:** M · **Risk:** MED · **Status:** IN-PROGRESS
-  *(implemented + stub-proven 2026-07-17; REMAINING: G8 fresh-session certification (M
-  item — implementer never self-certifies) + first real dead-pump rescue. Absorbed known
+- **Priority:** P1 · **Effort:** M · **Risk:** MED · **Status:** DONE 2026-07-17
+  *(implemented + stub-proven 2026-07-17; certified DONE 2026-07-17 by a fresh
+  non-implementer session per G8: dispatch self-test OK with tests 16-19 discriminating
+  on elapsed time (dead same-host pid → 70 within one poll, 0s observed; cross-host
+  inflight net unchanged; old-format claim byte-identical; live pid keeps waiting),
+  await self-test OK (v3 ident scenarios + the set-but-empty disabled seam),
+  test-pump-liveness 12/12 (real engine paused AWAITING_PUMP in 2s against the 7200s
+  cap, REL-4 lock released, no retro-input.md, resume re-acquired the lock + re-ran the
+  iteration + fast-paused again), test-doctor 50/50, run-evals 125/125; waiter diff
+  read for the additive-only property — fast path gated on pid+host present AND same
+  host, EPERM-safe dead check (kill -0 + /proc absence), standard exit-70 machinery,
+  both timeout nets untouched; skill 3.0.0 + mirror byte-identical + restart rule
+  restated. The DoD never required a real incident — the first real dead-pump rescue
+  rides the next actual incident as live validation, not as a DoD gate. Absorbed known
   gap: the letter's pump-liveness limitation bullet is now annotated closed. Protocol v3
   (skill 3.0.0, mirrors resynced, restart rule restated): `goal-await-dispatch.sh`
   resolves the long-lived pump process once per call — the `claude` session via /proc

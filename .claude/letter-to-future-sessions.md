@@ -63,7 +63,7 @@ pain into its §16 staging section.
 
 ## Known limitations we chose NOT to fix (so you don't rediscover them as bugs)
 
-- *(closed by REL-3, 2026-07-17 — stub-proven, G8 certification pending)* A pump that
+- *(closed by REL-3, 2026-07-17 — stub-proven, G8-certified same day by a fresh session)* A pump that
   dies during a CLAIMED dispatch used to wait out `CHAIN_DISPATCH_INFLIGHT_TIMEOUT`
   (default 2h) before pausing. Protocol v3 claims carry the pump pid: a same-host dead
   (or pid-recycled) pump now fast-pauses `AWAITING_PUMP` within one poll. Cross-host
