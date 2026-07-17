@@ -66,8 +66,6 @@ pain into its §16 staging section.
 - A pump that dies during a CLAIMED dispatch waits out `CHAIN_DISPATCH_INFLIGHT_TIMEOUT`
   (default 2h) before pausing — distinguishing "dead pump" from "long agent" needs a
   PID-liveness protocol change we judged not worth it yet.
-- Two different sessions on the same repo race (no cross-session lock). One repo, one live
-  session.
 - `scan_diff.py` is regex-grade: it catches the common credential shapes and paid-SaaS
   manifests, not exotic secrets. It reduces the evaluator's burden; it does not replace the
   anti-goal checklist.

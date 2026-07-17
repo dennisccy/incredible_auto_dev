@@ -1480,8 +1480,9 @@ benchmark (or a real session's telemetry) before AND after (G8).
   ambient CHAIN_* vars via a snapshot taken at the very top of run-goal.sh before the
   engine's own exports (`_CHAIN_AMBIENT_AT_START` → `CHAIN_DOCTOR_AMBIENT`; §9
   measurement discipline records "no ambient CHAIN_ vars" as a precondition).
-  `engine-lock` SKIPs naming REL-4 until that lock ships (staleness verdict when a
-  lock file is present). Chrome MCP detection is config-file truth, zero dispatch
+  `engine-lock` row live since REL-4 (2026-07-17): absent→PASS, fresh→WARN naming the
+  holder, stale→FAIL — verdicts from the lock lib's own `engine_lock_classify`, both
+  goal-session and phase lock paths. Chrome MCP detection is config-file truth, zero dispatch
   spend: `.claude/settings.json` enabledPlugins/allow + plugin cache dir +
   `.mcp.json`/`~/.claude.json` mcpServers. First real-machine run: 10 PASS / 3 WARN
   (gh not logged in; uutils timeout, not GNU; 17 chrome-family processes) / 1 SKIP in
@@ -1541,8 +1542,35 @@ benchmark (or a real session's telemetry) before AND after (G8).
   pump mid-session, coordinate timing with the user.
 
 ### REL-4 · Cross-session lock
-- **Priority:** P1 · **Effort:** S · **Risk:** LOW · **Status:** TODO *(absorbed known
-  gap: letter)*
+- **Priority:** P1 · **Effort:** S · **Risk:** LOW · **Status:** DONE 2026-07-17 *(S item —
+  implementer flips DONE (G8 fresh-session certification is M/L-only). Absorbed known gap:
+  letter — its "no cross-session lock" limitation bullet is now removed.
+  `lib/engine-lock.sh`: mkdir-atomic lock DIR with pid/host/epoch/cmd metadata inside;
+  same-host staleness = `kill -0` plus a /proc-cmdline pid-recycle sanity (the engine.pid
+  self-heal precedent, `run-goal.sh:190`); cross-host = age vs
+  `CHAIN_ENGINE_LOCK_CROSS_HOST_TTL` (default 86400s — longer than any plausible session
+  incl. quota sleeps; a crashed remote holder blocks only until TTL or documented manual
+  removal); metadata-free dirs get a 60s init grace (`CHAIN_ENGINE_LOCK_INIT_GRACE`).
+  FRESH → refuse fast with exit 86 (`ENGINE_LOCK_REFUSED_EXIT`, distinct from 70
+  transport / 75 quota / 130-137-143 signals) naming pid/host/age + the TROUBLESHOOTING
+  section; STALE → replace with ONE logged warning. run-goal acquires after its traps arm
+  and before the doctor/tmp/disk/GitHub preflights; run-phase (including goal-driven
+  full-depth children — the shared-worktree critical section) right after its EXIT trap
+  registration; release is appended LAST inside the EXISTING composed EXIT handlers — no
+  new `trap` registrations anywhere, so REL-13 tmp cleanup + engine.pid removal +
+  showcase reaping still run (asserted explicitly). AWAITING_* pause exits release; resume
+  re-acquires; the resume self-heal composes (SIGTERM takeover → clean release; SIGKILL →
+  stale-replace on next start). Doctor `engine-lock` row un-SKIPped — PASS absent / WARN
+  fresh naming the holder / FAIL stale, verdicts from the same `engine_lock_classify`.
+  `tests/automation/test-engine-lock.sh` 40/40 (registered in run-evals §2c): helper
+  units (refuse code+message, owner-only release, cross-host TTL both ways, init grace)
+  plus REAL engines under a stub claude — hold, refuse-fast, SIGKILL→stale→replace→
+  proceed, faithful Ctrl-C via process-group INT with SIGINT restored to SIG_DFL through
+  an exec shim (bash backgrounds children INT-ignored, and an entry-ignored signal can
+  never be re-trapped — without the shim the test INTs a disposition no terminal
+  produces), AWAITING_PUMP + AWAITING_GITHUB_AUTH releases, resume-after-pause
+  re-acquire, and the repo-level phase twin incl. cross-phase refusal; test-doctor.sh
+  49/49 with the new absent/fresh/stale/cross-host fixtures.)*
 - **Problem:** two engine sessions on one repo race silently ("one repo, one live
   session" is currently just a convention).
 - **Current state:** no lock anywhere.

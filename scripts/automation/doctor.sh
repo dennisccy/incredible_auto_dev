@@ -49,9 +49,12 @@ set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # check_git_push_access (the engine's own ls-remote semantics) + chain-tmp
-# helpers (_chain_tmp_free_mb) come from common.sh.
+# helpers (_chain_tmp_free_mb) come from common.sh; engine_lock_classify (the
+# SAME staleness verdict the engines acquire with) from engine-lock.sh.
 # shellcheck source=lib/common.sh
 source "$SCRIPT_DIR/lib/common.sh"
+# shellcheck source=lib/engine-lock.sh
+source "$SCRIPT_DIR/lib/engine-lock.sh"
 ROOT="${CHAIN_DOCTOR_REPO_ROOT:-$REPO_ROOT}"
 
 CHECKS=(python3 node playwright chrome-mcp gh-auth git-remote disk timeout jq
@@ -278,30 +281,40 @@ check_pump_heartbeat() {
   fi
 }
 
-# REL-4 (cross-session engine lock) has NOT shipped: with no lock on disk
-# there is no protocol to verify, so the row SKIPs naming REL-4 — never a
-# fabricated PASS. When a lock IS present (REL-4 lands, or by hand), give the
-# staleness verdict REL-4 specifies: pid+host, kill -0 on same host.
+# REL-4 cross-session lock, live protocol: goal sessions hold
+# runs/goal-session-<sid>/.engine.lock, the phase runner holds the repo-level
+# runs/.phase.lock. Verdicts come from the SAME engine_lock_classify the
+# engines acquire with (lib/engine-lock.sh) — no second staleness opinion.
+# Absent → PASS. FRESH → WARN naming the holder: a live session is legitimate
+# (this doctor may be running INSIDE it as the engine preflight). STALE →
+# FAIL: a session crashed hard (SIGKILL skips the release trap); the next
+# engine start replaces it automatically — docs/TROUBLESHOOTING.md
+# ("Engine refuses to start — lock held") covers manual removal.
 check_engine_lock() {
-  local locks=() l
+  local locks=() l verdict state pid host age fresh="" stale=""
   for l in "$ROOT"/runs/goal-session-*/.engine.lock "$ROOT"/runs/.phase.lock; do
     [[ -e "$l" ]] && locks+=("$l")
   done
   if [[ ${#locks[@]} -eq 0 ]]; then
-    echo "SKIP|REL-4 cross-session lock not yet shipped and no lock file present — nothing to verify"
+    echo "PASS|no engine locks under runs/ (goal-session + phase paths checked)"
     return
   fi
-  l="${locks[0]}"
-  local pid=""
-  if [[ -d "$l" && -f "$l/pid" ]]; then pid="$(head -n1 "$l/pid" 2>/dev/null | tr -dc 0-9)"
-  elif [[ -f "$l" ]]; then pid="$(head -n1 "$l" 2>/dev/null | tr -dc 0-9)"
-  fi
-  if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then
-    echo "WARN|engine lock $l held by LIVE pid $pid — another session appears to be running this repo"
-  elif [[ -n "$pid" ]]; then
-    echo "WARN|stale engine lock $l (pid $pid dead) — safe to remove if you know that session is gone"
+  for l in "${locks[@]}"; do
+    verdict="$(engine_lock_classify "$l")"
+    state="${verdict%%|*}"
+    pid="$(printf '%s' "$verdict" | cut -d'|' -f2)"
+    host="$(printf '%s' "$verdict" | cut -d'|' -f3)"
+    age="$(printf '%s' "$verdict" | cut -d'|' -f4)"
+    if [[ "$state" == "STALE" ]]; then
+      stale="$stale ${l#"$ROOT"/}(pid ${pid:-?})"
+    else
+      fresh="$fresh ${l#"$ROOT"/}(pid ${pid:-?} on ${host:-?}, age ${age:-?}s)"
+    fi
+  done
+  if [[ -n "$stale" ]]; then
+    echo "FAIL|stale lock(s):${stale} — a session crashed hard; the next engine start replaces them (manual removal: docs/TROUBLESHOOTING.md)"
   else
-    echo "WARN|engine lock $l present but unreadable (no pid) — inspect before starting a session"
+    echo "WARN|live engine lock(s):${fresh} — a session appears to be running this repo (legitimate if it is yours, or if this doctor runs inside it)"
   fi
 }
 

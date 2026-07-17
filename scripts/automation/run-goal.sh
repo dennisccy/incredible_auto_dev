@@ -80,6 +80,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/lib/common.sh"
 source "$SCRIPT_DIR/lib/telemetry.sh"
 source "$SCRIPT_DIR/lib/goal-gates.sh"
+source "$SCRIPT_DIR/lib/engine-lock.sh"
 
 # Pull --cli (and --force-cli) out of the args BEFORE the existing parse loop,
 # so the loop below sees only its known flags.
@@ -1411,6 +1412,9 @@ _goal_engine_on_exit() {
   _join_showcase_tail --kill 2>/dev/null || true
   rm -f "$ENGINE_PID_FILE" 2>/dev/null || true
   chain_tmp_cleanup
+  # REL-4: release LAST so the lock covers the whole cleanup window. Owner-
+  # checked no-op when this process never acquired (e.g. a refused start).
+  release_engine_lock
 }
 trap _goal_engine_on_exit EXIT
 
@@ -1423,6 +1427,15 @@ on_abort() {
   exit 130
 }
 trap on_abort INT TERM
+
+# ── Cross-session engine lock (REL-4) ─────────────────────────────────────
+# One live engine per session id. Taken AFTER the traps above are armed (so
+# every exit from here on releases it — including the AWAITING_* pause exits,
+# which end this process; resume re-acquires) and BEFORE anything that costs
+# time (doctor, tmp janitor, disk/GitHub preflights, the loop). A live holder
+# refuses fast with exit $ENGINE_LOCK_REFUSED_EXIT; a dead one is replaced
+# loudly (lib/engine-lock.sh; docs/TROUBLESHOOTING.md "lock held").
+acquire_engine_lock "$GOAL_SESSION_DIR_LOCAL/.engine.lock" "engine for goal session '$SESSION_ID'" || exit $?
 
 # Advisory preflight doctor (REL-2): one PASS/WARN/FAIL table of environment
 # truth into the engine log BEFORE anything mutates state (tmp init/janitor

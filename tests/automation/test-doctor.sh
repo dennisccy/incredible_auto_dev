@@ -149,17 +149,17 @@ echo ""
 rc=0; out=$(run_doctor 2>&1) || rc=$?
 [[ $rc -eq 0 ]] && assert "healthy table exits 0" "pass" \
                 || assert "healthy table exits 0 (got $rc; out: $(printf '%s' "$out" | head -c 300))" "fail"
-echo "$out" | grep -Eq '\[doctor\] summary: pass=[0-9]+ warn=0 fail=0 skip=1' \
-  && assert "healthy summary: warn=0 fail=0 skip=1 (engine-lock)" "pass" \
+echo "$out" | grep -Eq '\[doctor\] summary: pass=[0-9]+ warn=0 fail=0 skip=0' \
+  && assert "healthy summary: warn=0 fail=0 skip=0 (every row live since REL-4)" "pass" \
   || assert "healthy summary line (got: $(echo "$out" | grep -F '[doctor] summary' || echo none))" "fail"
-echo "$out" | grep -Eq 'SKIP +engine-lock +.*REL-4' \
-  && assert "engine-lock row SKIPs naming REL-4 (no fabricated PASS)" "pass" \
-  || assert "engine-lock SKIP row names REL-4" "fail"
+echo "$out" | grep -Eq 'PASS +engine-lock +.*no engine locks' \
+  && assert "engine-lock row PASSes when no lock is held (REL-4 protocol live)" "pass" \
+  || assert "engine-lock row PASSes when no lock is held (REL-4 protocol live)" "fail"
 echo "$out" | grep -Eq 'PASS +chrome-mcp +.*settings\.json' \
   && assert "chrome-mcp PASS says HOW it detected (settings.json)" "pass" \
   || assert "chrome-mcp detection detail" "fail"
 for key in python3 node playwright gh-auth git-remote disk timeout jq \
-           pump-heartbeat tmp-health chrome-exclusive ambient-env; do
+           pump-heartbeat engine-lock tmp-health chrome-exclusive ambient-env; do
   echo "$out" | grep -Eq "PASS +$key " \
     && assert "row $key PASS on healthy fixture" "pass" \
     || assert "row $key PASS on healthy fixture" "fail"
@@ -212,7 +212,7 @@ echo "$out" | grep -Eq 'FAIL +jq ' \
 echo "$out" | grep -Eq 'PASS +python3 ' && echo "$out" | grep -Eq 'PASS +git-remote ' \
   && assert "missing jq: other checks still run and PASS" "pass" \
   || assert "missing jq: other checks still run and PASS" "fail"
-echo "$out" | grep -Eq '\[doctor\] summary: pass=[0-9]+ warn=0 fail=1 skip=1' \
+echo "$out" | grep -Eq '\[doctor\] summary: pass=[0-9]+ warn=0 fail=1 skip=0' \
   && assert "missing jq: summary counts exactly one FAIL" "pass" \
   || assert "missing jq: summary counts exactly one FAIL" "fail"
 
@@ -285,14 +285,52 @@ echo "$out" | grep -Eq 'PASS +pump-heartbeat ' \
   || assert "fresh heartbeat PASSes (live pump)" "fail"
 rm -rf "$FREPO/runs"
 
-# engine-lock: a present lock gets a staleness verdict (dead pid → WARN stale).
+# engine-lock (REL-4 live): fresh → WARN naming the holder (a running session
+# is legitimate — the doctor may be running inside it); stale → FAIL (crashed
+# session left it); cross-host locks rule by the age TTL.
 LOCK="$FREPO/runs/goal-session-t1/.engine.lock"
 mkdir -p "$LOCK"
-printf '999999999\n' > "$LOCK/pid"
+printf '%s\n' "$$" > "$LOCK/pid"
+hostname > "$LOCK/host"
+date +%s > "$LOCK/epoch"
 rc=0; out=$(run_doctor -- --only engine-lock 2>&1) || rc=$?
-echo "$out" | grep -Eq 'WARN +engine-lock +.*stale' \
-  && assert "present lock with dead pid → WARN stale (not SKIP)" "pass" \
-  || assert "present lock with dead pid → WARN stale (not SKIP)" "fail"
+echo "$out" | grep -Eq "WARN +engine-lock +.*$$" \
+  && assert "fresh lock (live pid) → WARN naming the holder pid" "pass" \
+  || assert "fresh lock (live pid) → WARN naming the holder pid" "fail"
+rm -rf "$FREPO/runs"
+
+# Stale phase lock (dead pid) → FAIL; also proves the repo-level twin is read.
+PLOCK="$FREPO/runs/.phase.lock"
+mkdir -p "$PLOCK"
+printf '999999999\n' > "$PLOCK/pid"
+hostname > "$PLOCK/host"
+date +%s > "$PLOCK/epoch"
+rc=0; out=$(run_doctor -- --only engine-lock 2>&1) || rc=$?
+if echo "$out" | grep -Eq 'FAIL +engine-lock +.*stale' \
+   && echo "$out" | grep -q 'phase.lock'; then
+  assert "stale phase lock (dead pid) → FAIL naming the lock" "pass"
+else
+  assert "stale phase lock (dead pid) → FAIL naming the lock" "fail"
+fi
+[[ $rc -eq 0 ]] && assert "stale lock FAIL is still advisory (exit 0)" "pass" \
+                || assert "stale lock FAIL is still advisory (got $rc)" "fail"
+rm -rf "$FREPO/runs"
+
+# Cross-host: young (under the TTL) → WARN fresh; older than TTL → FAIL stale.
+LOCK="$FREPO/runs/goal-session-t2/.engine.lock"
+mkdir -p "$LOCK"
+printf '4242\n' > "$LOCK/pid"
+printf 'some-other-host\n' > "$LOCK/host"
+date +%s > "$LOCK/epoch"
+rc=0; out=$(run_doctor -- --only engine-lock 2>&1) || rc=$?
+echo "$out" | grep -Eq 'WARN +engine-lock ' \
+  && assert "cross-host lock under the TTL → WARN (liveness unprovable)" "pass" \
+  || assert "cross-host lock under the TTL → WARN (liveness unprovable)" "fail"
+printf '%s\n' "$(( $(date +%s) - 200000 ))" > "$LOCK/epoch"
+rc=0; out=$(run_doctor -- --only engine-lock 2>&1) || rc=$?
+echo "$out" | grep -Eq 'FAIL +engine-lock +.*stale' \
+  && assert "cross-host lock past the TTL → FAIL stale" "pass" \
+  || assert "cross-host lock past the TTL → FAIL stale" "fail"
 rm -rf "$FREPO/runs"
 
 echo ""

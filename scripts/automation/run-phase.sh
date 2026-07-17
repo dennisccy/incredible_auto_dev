@@ -32,6 +32,7 @@ source "$SCRIPT_DIR/lib/parallel.sh"
 # lets claude_with_quota_retry forward each dispatch's usage sidecar into the
 # session's per-agent economics (TOKEN-8).
 source "$SCRIPT_DIR/lib/telemetry.sh"
+source "$SCRIPT_DIR/lib/engine-lock.sh"
 
 # Pull --cli (and --force-cli) out of the args BEFORE the existing parse loop,
 # so the loop below sees only its known flags. CHAIN_CLI defaults to claude.
@@ -402,8 +403,20 @@ _run_phase_on_exit() {
     done
   fi
   chain_tmp_cleanup
+  # REL-4: release LAST so the lock covers the whole cleanup window. Owner-
+  # checked no-op when this process never acquired (e.g. a refused start).
+  release_engine_lock
 }
 trap '_run_phase_on_exit $?' EXIT
+
+# ── Cross-session phase lock (REL-4) ──────────────────────────────────────
+# Repo-level: ONE phase pipeline per repo at a time, whatever the phase name —
+# concurrent pipelines race on the shared worktree, not just on runs/<phase>/.
+# Taken right after the EXIT trap above is armed (signal traps at their
+# registration site exit through it), so every exit path — fail(), quota 75,
+# transport 70, Ctrl-C — releases. A live holder refuses fast with exit
+# $ENGINE_LOCK_REFUSED_EXIT; a dead one is replaced loudly.
+acquire_engine_lock "$REPO_ROOT/runs/.phase.lock" "phase runner (this one: $PHASE)" || exit $?
 
 # ── Resume detection ────────────────────────────────────────────────────────
 if [[ "$FORCE_RESET" == "true" ]]; then
