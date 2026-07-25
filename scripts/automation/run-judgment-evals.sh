@@ -290,8 +290,6 @@ Recent assumption entries (pre-trimmed):
 $ASSUMPTIONS_TAIL
 \`\`\`
 
-Apply the TOKEN AND QUESTIONING POLICY from .claude/core.md strictly.
-
 Write your verdict to: $VERDICT_FILE
 
 The verdict line MUST appear at the top of $VERDICT_FILE and start exactly with:
@@ -372,8 +370,6 @@ Bounded diff packet (read FIRST if present): $REVIEW_PACKET — hunks capped, no
 Run these only for files the packet marks truncated or excluded (or if the packet file is absent):
 $DIFF_HINT
 
-Apply the TOKEN AND QUESTIONING POLICY from .claude/core.md strictly.
-
 Write your review report to: $VERDICT_FILE
 
 The report MUST start with a line matching exactly:
@@ -446,7 +442,6 @@ Project template: .claude/project-template.md  <-- read for test commands and ar
 Agent instructions: .claude/agents/auditor.md  <-- read this first
 (CLAUDE.md is already in your system prompt — do not Read it again.)
 
-Apply the TOKEN AND QUESTIONING POLICY from .claude/core.md strictly.
 Do not ask questions — assess from evidence in the code and artifacts.
 
 Write your audit report to: $VERDICT_FILE

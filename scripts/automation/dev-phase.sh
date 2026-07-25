@@ -98,8 +98,6 @@ Execution plan: $PLAN_FILE  <-- read this to understand what to build
 $FIX_CONTEXT
 Mode: $MODE_LABEL
 
-Apply the TOKEN AND QUESTIONING POLICY from .claude/core.md strictly.
-
 When complete:
 - Write dev handoff to: docs/handoffs/${PHASE}-dev.md
 - If frontend work was done, also write: docs/handoffs/${PHASE}-frontend.md

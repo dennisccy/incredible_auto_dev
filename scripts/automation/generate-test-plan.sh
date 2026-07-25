@@ -50,7 +50,6 @@ Agent instructions: .claude/agents/qa.md  <-- read this first, follow MODE 1 ins
 
 Frontend Present for this phase: $FRONTEND_PRESENT
 
-Apply the TOKEN AND QUESTIONING POLICY from .claude/core.md strictly.
 Do not ask questions — derive all test cases from the phase spec.
 
 Write the functional test plan to: $TEST_PLAN

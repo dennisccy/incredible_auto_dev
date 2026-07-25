@@ -60,8 +60,6 @@ Bounded diff packet (read FIRST if present): $REVIEW_PACKET — hunks capped, no
 Run these only for files the packet marks truncated or excluded (or if the packet file is absent):
 $(review_diff_hint HEAD)
 
-Apply the TOKEN AND QUESTIONING POLICY from .claude/core.md strictly.
-
 Write your review report to: reports/reviews/${PHASE}-review.md
 
 The report MUST start with a line matching exactly:

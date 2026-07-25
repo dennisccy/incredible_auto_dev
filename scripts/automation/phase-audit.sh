@@ -77,7 +77,6 @@ Project template: .claude/project-template.md  <-- read for test commands and ar
 Agent instructions: .claude/agents/auditor.md  <-- read this first
 (CLAUDE.md is already in your system prompt — do not Read it again.)
 
-Apply the TOKEN AND QUESTIONING POLICY from .claude/core.md strictly.
 Do not ask questions — assess from evidence in the code and artifacts.
 
 Write your audit report to: $AUDIT_REPORT

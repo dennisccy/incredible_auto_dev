@@ -549,8 +549,6 @@ $(review_diff_hint "${_snap:-HEAD~1}")
 (Also \`git status\` for uncommitted changes. If the snapshot SHA is empty, diff against HEAD~1.)
 UI surface map (read if it exists): reports/phase-${_name}-ui-surface-map.md
 
-Apply the TOKEN AND QUESTIONING POLICY from .claude/core.md strictly.
-
 Write your verdict to: $_out
 The verdict line MUST appear first and start exactly with:
 **Verdict:** COHERENCE-PASS

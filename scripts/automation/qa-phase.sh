@@ -144,8 +144,6 @@ $(project_template_slice qa)
 Agent instructions: .claude/agents/qa.md  <-- read this first, follow MODE 2 instructions
 (CLAUDE.md is already in your system prompt — do not Read it again.)
 
-Apply the TOKEN AND QUESTIONING POLICY from .claude/core.md strictly.
-
 Frontend Present for this phase: $FRONTEND_PRESENT
 $(if [[ "$FRONTEND_PRESENT" == "yes" ]]; then
   echo "Chrome MCP browser checks ARE required. The frontend should be accessible at $FRONTEND_URL."

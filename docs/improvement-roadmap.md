@@ -3504,7 +3504,7 @@ heading in core.md, and the security hooks' deny logic.
   heading; any verdict-class flip in the spot-run; land between sessions (cache).
 
 ### CTX-8 · Dispatch-prompt concision + pump no-reread note
-- **Priority:** P1 · **Effort:** S · **Risk:** MED · **Status:** TODO
+- **Priority:** P1 · **Effort:** S · **Risk:** MED · **Status:** DONE 2026-07-25 — refinement found during implementation: the pump note is CONDITIONAL on the `Agent instructions: .claude/agents/` pointer being present in the prompt, so non-agent dispatches (two-key confirms, ad-hoc) and the self-test's byte-exact round-trips stay untouched
 - **Problem:** every dispatch prompt repeats "Apply the TOKEN AND QUESTIONING POLICY
   from .claude/core.md strictly." although all 18 agent bodies already carry that exact
   directive (rule 4). Separately, on the interactive backend the subagent's system

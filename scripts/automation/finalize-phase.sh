@@ -158,8 +158,6 @@ Agent instructions: .claude/agents/release-manager.md  <-- read this first
 
 GH_AUTH_AVAILABLE: $GH_AUTH_AVAILABLE
 
-Apply the TOKEN AND QUESTIONING POLICY from .claude/core.md strictly.
-
 Perform the release flow:
 1. Create branch: phase/$PHASE  (if not already on it)
 2. Stage and commit all phase changes (read dev handoff for file list)

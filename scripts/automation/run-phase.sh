@@ -165,8 +165,6 @@ Agent instructions: .claude/agents/iteration-summarizer.md  <-- read this first
 Template: templates/iteration-summary.md  <-- exact section structure your output must follow
 (CLAUDE.md is already in your system prompt -- do not Read it again.)
 
-Apply the TOKEN AND QUESTIONING POLICY from .claude/core.md strictly.
-
 Read every relevant input listed in your agent instructions. Files that don't
 exist should be silently skipped -- do not warn, do not ask. Use what is present.
 The dispatch wrapper has pre-trimmed evaluator-log.md (last 300 lines below);

@@ -184,6 +184,16 @@ _interactive_invoke() {
     prompt+=$'\n\n'"Environment note: this pipeline run isolates temp files. Before running tests or any command that writes temporary files, run: export TMPDIR=\"$CHAIN_TMPDIR\" TMP=\"$CHAIN_TMPDIR\" TEMP=\"$CHAIN_TMPDIR\""
   fi
 
+  # CTX-8: on this backend the subagent's system prompt IS its rendered
+  # .claude/agents/<name>.md definition — stop it re-Reading its own 8-20 KB
+  # file every dispatch. Conditional on the pointer line being present so
+  # non-agent prompts (two-key confirms, ad-hoc dispatches — and the
+  # self-test's byte-exact round-trips) pass through untouched. Headless
+  # prompts keep the pointer as-is (there the file is NOT pre-loaded).
+  if [[ "$prompt" == *"Agent instructions: .claude/agents/"* ]]; then
+    prompt+=$'\n\n'"Note: your agent definition (the .claude/agents/*.md file named above) is already loaded as your system prompt — do not Read it again; treat its 'read this first' pointer as satisfied."
+  fi
+
   # Optional per-dispatch model override (escalation ladder / two-key confirm).
   # Empty means "no override — the subagent's frontmatter tier applies".
   local model_override="${CHAIN_MODEL_OVERRIDE:-}"

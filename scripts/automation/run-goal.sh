@@ -297,8 +297,6 @@ Agent instructions: .claude/agents/iteration-summarizer.md  <-- read this first
 Template: templates/iteration-summary.md  <-- exact section structure your output must follow
 (CLAUDE.md is already in your system prompt -- do not Read it again.)
 
-Apply the TOKEN AND QUESTIONING POLICY from .claude/core.md strictly.
-
 Read every relevant input listed in your agent instructions. Files that don't
 exist should be silently skipped. Use what is present. The dispatch wrapper
 has pre-trimmed evaluator-log.md below — use the inline content.
@@ -361,8 +359,6 @@ Retro input (your ONLY input file): $retro_input
 Output path (the retro report): $retro_report
 Agent instructions: .claude/agents/retro-analyst.md  <-- read this first
 (CLAUDE.md is already in your system prompt -- do not Read it again.)
-
-Apply the TOKEN AND QUESTIONING POLICY from .claude/core.md strictly.
 
 Read the retro input file and NOTHING else. Draft at most 5 candidate
 framework-improvement items per your agent instructions — proposals only,
@@ -430,8 +426,6 @@ Capabilities inputs (read what exists, silently skip what doesn't):
 - reports/phase-${iter_name}-iteration-summary.md
 (CLAUDE.md is already in your system prompt -- do not Read it again.)
 
-Apply the TOKEN AND QUESTIONING POLICY from .claude/core.md strictly.
-
 Refresh README.md so it reflects the CURRENT project and includes a 'How to run'
 section. Edit ONLY the marker-delimited AUTO blocks described in your skill;
 never delete human-written prose outside them. Ground every install/run/test
@@ -472,8 +466,6 @@ Session id: $sid
 Output path: $delivered_md
 Agent instructions: .claude/agents/iteration-summarizer.md  <-- read this first; specifically the 'Delivered wrap' section
 (CLAUDE.md is already in your system prompt -- do not Read it again.)
-
-Apply the TOKEN AND QUESTIONING POLICY from .claude/core.md strictly.
 
 This is the one-time GOAL_ACHIEVED delivered wrap. Read:
 - runs/goal-session-${sid}/state/journey-history.json (all currently passing journeys)
@@ -1782,8 +1774,6 @@ $( [[ -n "${CHAIN_BQA_MAKEUP_JOURNEYS:-}" ]] && echo "Pending-infra make-up targ
 
 $( [[ $CURRENT_ITER -gt 0 && -f "$GOAL_SESSION_DIR_LOCAL/iter-$((CURRENT_ITER-1))/eval.md" ]] && echo "Last iteration eval: $GOAL_SESSION_DIR_LOCAL/iter-$((CURRENT_ITER-1))/eval.md")
 
-Apply the TOKEN AND QUESTIONING POLICY from .claude/core.md strictly.
-
 Write the iteration spec to: docs/phases/${ITER_NAME}.md
 $( if [[ "$DECOMPOSER_MODE" == "baseline" ]]; then echo "BASELINE also: draft the coherence blueprint to $BLUEPRINT_FILE per your agent instructions (Information Architecture + Data Contract, ~one screen, from docs/goal.md's Product Shape + Must-have journeys + Key Capabilities). The blueprint is auto-approved by default and the loop proceeds; pass --require-blueprint-approval to pause for human review after baseline."; else echo "Also keep $BLUEPRINT_FILE current per your agent instructions: register any new displayed value in the Data Contract and place new pages under an existing Information-Architecture home (additive edits only). For a nav-skeleton change, make the edit AND write a one-line reason to $BLUEPRINT_REAPPROVAL."; fi )
 
@@ -2089,8 +2079,6 @@ Recent assumption entries (pre-trimmed):
 $ASSUMPTIONS_TAIL
 \`\`\`
 
-Apply the TOKEN AND QUESTIONING POLICY from .claude/core.md strictly.
-
 Write your verdict to: $EVAL_OUTPUT
 
 The verdict line MUST appear at the top of $EVAL_OUTPUT and start exactly with:
@@ -2384,7 +2372,7 @@ requirements into each journey's Acceptance). If nothing new survives, leave the
 Then write $GOAL_SESSION_DIR_LOCAL/state/proposer-result.json with keys extended, n_new_journeys,
 n_proposals, dry.
 
-Apply the TOKEN AND QUESTIONING POLICY from .claude/core.md strictly. Do NOT write product code or start services." || _prop_rc=$?
+Do NOT write product code or start services." || _prop_rc=$?
         record_agent_invocation_end "goal-proposer" "$_prop_start" "$_prop_rc"
         # 3. continue the loop iff the proposer extended the goal with new buildable journey(s).
         _prop_extended=$(python3 -c "import json,sys; print('yes' if json.load(open('$_state_dir/proposer-result.json')).get('extended') else 'no')" 2>/dev/null || echo "no")
