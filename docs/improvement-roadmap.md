@@ -14,7 +14,7 @@ codebase and a feasibility review of every P0 design. Line anchors reference com
 ## 1. Purpose & audience
 
 - **Audience:** future maintainer sessions — interactive Claude Code sessions on
-  Opus 4.8 / Sonnet 5 (or whatever `config/model-tiers.yaml` says when you read this).
+  whatever models `config/model-tiers.yaml` names when you read this.
   Items are written so you do NOT need to re-derive context: each one carries its own
   problem statement, evidence anchors, change spec, definition of done, verification
   commands, and rollback.
@@ -133,6 +133,10 @@ signal that says "do this now").
    sign-off = EVO-1 promotion + G6 multi-S exception). **SPEED-8** waits for SPEED-4
    to bed in one real session; **REL-14** (absorbs CAND-BQA-PREFLIGHT) schedules
    with the REL block — both are weaker-model-ready mini-specs.
+9. **CTX-1…14** — context engineering (§18, promoted 2026-07-25 as a user-approved
+   package): S items CTX-1/2/4/5/6/8/13 first, then CTX-3 and CTX-12; CTX-7 requires
+   its judgment spot-run; CTX-9/10/11/14 as capacity allows. CTX-15 staged as
+   CAND-RICHREF in §16.
 
 ---
 
@@ -3199,6 +3203,26 @@ but appreciated.
   hand-worked around it (fixture relocation; path-prefix splitting by convention) —
   cheap to close structurally, and the scan stays CRITICAL-capable on product paths.
 
+### CAND-RICHREF · Rich-reference fields: spec mockups + journey-tagged failing tests (staged — do not start)
+- *(Staged 2026-07-25 by the context-engineering planning session — §18's source plan;
+  blog rule 6 "simple specs → rich references"; promotion human, EVO-1.)*
+- **Proposed:** P2 · Effort M · Risk MED.
+- **Sketch (two independent halves):** (a) an optional
+  `Reference: <path-to-html-mockup-or-screenshot>` line in the phase-spec header and in
+  the decomposer's Goal Mode Metadata block — always its OWN line (the REL-14/CAND
+  precedent: never annotate machine-parsed lines like `Target journeys:`);
+  `ui-test-designer` + `browser-qa-agent` bodies gain "when a Reference is present,
+  compare the rendered UI against it and cite divergences". Old specs parse unchanged
+  (spec-optional = naturally inert). (b) the developer — NOT the decomposer, whose Rules
+  (`agents/goal-decomposer/body.md:234`) forbid writing code — materializes
+  journey-tagged TCs as failing tests first, named `tests/journeys/j<NN>_*`, making
+  journeys executable acceptance (a TDD extension, not a new mechanism).
+- **Why staged:** both halves touch dispatch-adjacent agent bodies and the spec grammar;
+  promotion needs a fixture spec proving the Reference line flows through
+  `goal_gate.py goal-slice` unchanged (G3) and a decision on where mockups live.
+- **Verify idea:** run-evals + one fixture goal-iteration dry parse with a Reference
+  line present and absent.
+
 ---
 
 ## 17. Absorbed-from-README ledger (traceability)
@@ -3228,3 +3252,470 @@ Also absorbed from `.claude/letter-to-future-sessions.md` "known limitations we 
 not to fix": pump PID-liveness → **REL-3**; cross-session lock → **REL-4**; scan_diff
 is regex-grade → **SEC-1**; stall-detector blind spot → noted, no item (the evaluator's
 STALLED judgment covers it; revisit only if it bites in practice → §16).
+
+---
+
+## 18. P1 — Context engineering (CTX-*, promoted 2026-07-25)
+
+Source: Anthropic's blog "The new rules of context engineering for Claude 5 generation
+models" (claude.com/blog, 2026-07-24) — six rule inversions: rules→judgment (delete
+guardrail piles and conflicting directives), examples→interface design,
+upfront→progressive disclosure, repetition→concision, manual memory→auto-memory,
+simple specs→rich references. Mapped against this repo by the 2026-07-25 Fable-5
+planning session; user approval of that plan = EVO-1 promotion of this section
+(SPEED-4…7 approved-package precedent for the G6 multi-item exception).
+
+Two constraints every CTX item respects: (1) **tier-aware relaxation** — standard
+(sonnet-5) and strong (opus-5) are 5-gen models where judgment-style applies; the light
+tier (haiku-4-5: qa, release-manager, retro-analyst) is NOT — literal checklists stay
+literal for anything light-tier agents execute. (2) **Judges are protected** —
+goal-evaluator, reviewer, auditor get NO semantic body edits in this series; changes to
+the context they receive are validated by a G9-approved judgment spot-run (1 golden
+case × 3 judges, abort if the printed estimate exceeds ~US$5). Frozen surfaces no CTX
+item may touch: verdict formats (`.claude/workflow.md` §Verdict Formats,
+`lib/verdicts.py`, `**Verdict:**` templates), the `Agent instructions:
+.claude/agents/<name>.md` dispatch line (pump parses it,
+`skills/goal-interactive-dispatch.md:130-139`), the `## Token and Questioning Policy`
+heading in core.md, and the security hooks' deny logic.
+
+### CTX-1 · Revive the PostToolUse hooks on Claude (stdin protocol, SEC-7 pattern)
+- **Priority:** P0 · **Effort:** S · **Risk:** MED · **Status:** TODO
+- **Problem:** both PostToolUse hooks no-op on every fire on the Claude backend: the
+  rendered settings pass `"$CLAUDE_TOOL_INPUT_FILE_PATH"` — an env var that never
+  existed — so the hooks see an empty path and exit. The live artifact-schema feedback
+  channel (schema warnings at the point of tool use — blog rule 2) is dead; it fires
+  only inside run-evals, never in a real session.
+- **Current state:** fake arg emitted by `_hooks_block_for_claude`
+  (`adapters/claude/sync.py:204-209`, known FIXME; rendered into
+  `.claude/settings.json` PostToolUse entries). Hooks read `$1` only:
+  `hooks/post-edit-lint.sh:3`, `hooks/post-write-artifact-quality.sh:11-14`. The
+  PreToolUse pair already has the fix pattern (SEC-7): argv `$1` preserved for
+  Codex/tests, stdin JSON `.tool_input.command` with jq-primary/python3-fallback
+  (`hooks/guard-dangerous-commands.sh:17-31`). Eval coverage for the PostToolUse pair
+  is argv-only (`run-evals.sh` §5 ~:405-443).
+- **Change spec:** (1) in `hooks/post-edit-lint.sh` and
+  `hooks/post-write-artifact-quality.sh` add the guard's dual-mode input block: use
+  `$1` when non-empty (Codex/argv contract unchanged), else read stdin JSON and extract
+  `.tool_input.file_path // .tool_input.path // empty` (jq primary, python3 fallback);
+  empty result → exit 0. Hooks stay advisory — warnings to stderr, always exit 0,
+  NO decision JSON. (2) in `adapters/claude/sync.py` `_hooks_block_for_claude` delete
+  the fake-arg branch so the rendered command is
+  `bash "$CLAUDE_PROJECT_DIR/.claude/hooks/<name>" 2>/dev/null || true`; remove the
+  FIXME. (3) resync. (4) add 4 stdin smokes to `run-evals.sh` §5: well-formed review
+  via stdin → silent; malformed review via stdin → schema warning on stderr;
+  syntax-error `.py` via stdin → lint warning; garbage/empty stdin → silent exit 0.
+  Keep every existing argv smoke.
+- **DoD:** printf-pipe smoke surfaces the schema warning; argv behavior byte-identical;
+  evals green including the new checks.
+- **Verify:** `printf '{"tool_input":{"file_path":"<bad-review-fixture>"}}' | bash
+  .claude/hooks/post-write-artifact-quality.sh` shows the warning; then
+  `./scripts/automation/run-evals.sh && python3 scripts/automation/sync-cli-assets.py
+  --cli claude --check`
+- **Files:** `hooks/post-edit-lint.sh`, `hooks/post-write-artifact-quality.sh`,
+  `adapters/claude/sync.py`, `scripts/automation/run-evals.sh`, regenerated
+  `.claude/hooks/*` + `.claude/settings.json` (+ codex mirrors via default sync).
+- **Rollback:** revert hooks + adapter, resync — settings regenerate to the prior
+  (inert) form.
+- **Stop-and-ask:** if the live PostToolUse stdin payload turns out not to carry
+  `.tool_input.file_path` for Write/Edit; if any smoke would require changing the
+  PreToolUse guards' deny-JSON protocol.
+
+### CTX-2 · Routing-table truth pass (CLAUDE.md "who reads what")
+- **Priority:** P1 · **Effort:** S · **Risk:** MED · **Status:** TODO
+- **Problem:** the constitution's routing table over-claims readership, so agents hold
+  contradictory directives (blog rule 1): "all agents read X" vs their own bodies.
+- **Current state:** `CLAUDE.md` INSTRUCTION FILES table: workflow.md row says "All
+  agents" (real inbound: `agents/goal-decomposer/body.md:21`,
+  `agents/reviewer/body.md:73`, `ui-audit-phase.sh`); judgment-rubrics row says
+  "evaluator, auditor, decomposer, reviewer" (real: `agents/auditor/body.md:177`
+  direct; goal-evaluator transitively via `skills/goal-evaluation-methodology.md`);
+  architecture/ row says "Reference (all agents)" — directly contradicted by
+  `agents/orchestrator/body.md:16` "Do NOT read `.claude/architecture/*.md`";
+  delegation-templates row says "Anyone dispatching agents" (real inbound:
+  `model-orchestration.md:63` only). `.claude/workflow.md:70` artifact row claims
+  architecture docs are read by "All agents (reference)".
+- **Change spec:** edit the four CLAUDE.md reader cells to verified truth: workflow.md →
+  "goal-decomposer, reviewer; on-demand pipeline reference for others";
+  judgment-rubrics → "auditor (direct); goal-evaluator (via its methodology skill);
+  anyone making verdict-class calls"; architecture/ → "framework maintainers only —
+  pipeline agents must NOT read these (orchestrator rule)"; delegation-templates →
+  "interactive maintainer sessions dispatching ad-hoc subagents". Same commit: fix
+  `.claude/workflow.md:70` readers cell to "framework maintainers (reference)".
+  `docs/cli-providers.md`: only if it claims AGENTS.md is committed, correct it
+  (AGENTS.md is gitignored — `.gitignore:3-4` — and rendered at sync). Truth-only
+  edits; no format churn.
+- **DoD:** every "Who reads it" cell backed by a grep hit in a body/skill/script or
+  explicitly marked on-demand; no cell contradicts an agent body.
+- **Verify:** `./scripts/automation/run-evals.sh` (includes doc-drift checks).
+- **Files:** `CLAUDE.md`, `.claude/workflow.md`, possibly `docs/cli-providers.md`.
+- **Rollback:** revert.
+- **Stop-and-ask:** CLAUDE.md is ask-first class — the 2026-07-25 plan approval is that
+  ask; STOP if the edit grows beyond reader cells. Land between sessions (cache prefix).
+
+### CTX-3 · Single-source the three duplicated tables + stale-value sweep
+- **Priority:** P1 · **Effort:** M · **Risk:** MED · **Status:** TODO
+- **Problem:** the model-tier table is restated 4×, the pipeline stage table and the
+  artifact map 2× each — and the copies have already diverged (decomposer tier, audit
+  retry count), so different agents read contradictory facts (blog rules 1+4).
+- **Current state:** tier table: `config/model-tiers.yaml` (authoritative) +
+  `.claude/model-orchestration.md:22-26` (correct, reflects TOKEN-2
+  decomposer=standard) + `.claude/workflow.md:238-246` (:242 wrongly lists
+  decomposition under strong) + `.claude/architecture/agents.md:7-11` (:9 same
+  staleness; `agents/goal-decomposer/agent.yaml` says `model_tier: standard`). Stage
+  table: `.claude/workflow.md:15-29` (has the TOKEN-3 skip note) duplicated by
+  `.claude/architecture/pipeline.md` (:57 "max 2 attempts" contradicts
+  `run-phase.sh:102` `MAX_AUDIT_RETRIES=3`). Artifact map: `.claude/workflow.md:46-71`
+  duplicated by `.claude/architecture/artifacts.md`. Stale model name:
+  `docs/goal-mode-interactive.md:109-110` "strong tier is Opus 4.8".
+- **Change spec:** direction — runtime copies live in `.claude/workflow.md` +
+  `.claude/model-orchestration.md`; `architecture/` docs point, never restate.
+  (1) workflow.md:238-246 tier table → 3-line pointer (resolution: `agent.yaml
+  model_tier` → `config/model-tiers.yaml`; prose table only in model-orchestration §1,
+  maintained per maintenance-protocol §6). (2) architecture/agents.md:7-11 → same
+  pointer; spot-fix any stale per-agent tier in the catalog below (decomposer =
+  standard). (3) architecture/pipeline.md → drop duplicated stage/retry specifics,
+  point to workflow.md §Pipeline + §Retry Policy; fix or delete the ":57 max 2" text.
+  (4) architecture/artifacts.md → drop rows verbatim-duplicating workflow.md:48-71;
+  keep goal-mode-only rows + a pointer. (5) goal-mode-interactive.md:109-110 →
+  tier-neutral wording ("the strong tier resolves via config/model-tiers.yaml").
+  NEVER touch workflow.md §Verdict Formats. Pre-check
+  `grep -rn "workflow.md" scripts/` for any cell-text dependency first.
+- **DoD:** exactly one prose tier table remains (model-orchestration.md); no
+  stage/artifact/tier fact stated in two files; decomposer shown standard everywhere or
+  nowhere; `grep -rn "Opus 4.8" docs/ .claude/` → 0.
+- **Verify:** the grep above + `./scripts/automation/run-evals.sh`.
+- **Files:** `.claude/workflow.md`, `.claude/architecture/{agents,pipeline,artifacts}.md`,
+  `docs/goal-mode-interactive.md` (all hand-authored — direct edits; default sync
+  refreshes the AGENTS.md embed).
+- **Rollback:** revert files.
+- **Stop-and-ask:** any script found grepping workflow.md stage-table cell text.
+
+### CTX-4 · Count-claims fix + doc-drift eval extended to `.claude/architecture/`
+- **Priority:** P1 · **Effort:** S · **Risk:** LOW · **Status:** TODO
+- **Problem:** architecture docs assert wrong inventory numbers and nothing gates them,
+  so they re-rot after every agent/skill addition.
+- **Current state:** real counts: 20 `agents/*/` dirs, 15 `skills/*.md`, 5 `hooks/*.sh`,
+  7 `commands/*.md`. Wrong: `.claude/architecture/README.md:12` "All 19 agents", `:14`
+  "13 skills and 5 hooks"; `configuration.md:28` "19 agents … (12 phase-mode + 2 goal
+  -mode)"; `skills-and-hooks.md:3` "Skills (9 total)"; `system-overview.md:~37` same
+  "9 total" + the :35 grouping paragraph (real grouping per agents.md:3: 12 phase +
+  4 goal + 4 showcase). `tests/automation/test-doc-drift.sh` scans README.md +
+  CLAUDE.md only.
+- **Change spec:** (1) fix every count to match the tree; prefer deleting hard numbers
+  where they add nothing (rule 4), keep them where the doc is an inventory. (2) extend
+  `test-doc-drift.sh` to scan `.claude/architecture/*.md` "N agents/skills/commands/
+  hooks" claims against neutral-source counts, with a broken-fixture assertion first
+  (file's existing pattern); it is already wired into run-evals §2c.
+- **DoD:** drift test red on a seeded wrong count, green on the fixed tree.
+- **Verify:** `bash tests/automation/test-doc-drift.sh && ./scripts/automation/run-evals.sh`
+- **Files:** `.claude/architecture/{README,configuration,skills-and-hooks,system-overview}.md`,
+  `tests/automation/test-doc-drift.sh`.
+- **Rollback:** revert.
+
+### CTX-5 · Stop requiring reads of nonexistent `docs/architecture/`
+- **Priority:** P1 · **Effort:** S · **Risk:** LOW · **Status:** TODO
+- **Problem:** three "always read first" lists and two workflow rows require
+  `docs/architecture/*.md`, but the directory does not exist until `update-docs.sh`
+  creates it after the first finalized phase — every early dispatch burns a failed
+  lookup plus "am I missing context?" doubt.
+- **Current state:** required by `agents/developer/body.md:12`,
+  `agents/orchestrator/body.md:12`, `.claude/workflow.md:17` and `:69`. Producer:
+  `scripts/automation/update-docs.sh` (project mode, header :5-8).
+- **Change spec:** append to all four sites: "(if present; created by update-docs.sh
+  from the first finalized phase — absence is normal early on, skip silently)".
+  Version-bump `agents/{developer,orchestrator}/agent.yaml`, resync.
+- **DoD:** no instruction file lists docs/architecture/ as unconditional; mirrors
+  regenerated.
+- **Verify:** `python3 scripts/automation/sync-cli-assets.py --cli claude --check &&
+  ./scripts/automation/run-evals.sh`
+- **Files:** `agents/developer/body.md`, `agents/orchestrator/body.md`,
+  `.claude/workflow.md`, two `agent.yaml` bumps, regenerated mirrors.
+- **Rollback:** revert + resync.
+
+### CTX-6 · Make the repo's own `docs/goal.md` pass its own validator (dogfooding)
+- **Priority:** P1 · **Effort:** S · **Risk:** MED · **Status:** TODO
+- **Problem:** the framework hard-fails adopters whose goal.md lacks `## Must-have user
+  journeys` + `## Anti-goals` (anti-pattern #18), yet this repo's own `docs/goal.md`
+  has neither — `/goal` on this repo dies at validation, and the in-repo exemplar
+  teaches the wrong shape (blog rule 6: the spec artifact IS the reference).
+- **Current state:** `docs/goal.md` (1,705 B) has `## Non-Goals`, no journeys section.
+  Validator: `validate_goal_file`, `run-goal.sh:658-699` (error strings :667/:673,
+  journey-entry check ending :695). `render_iteration_summary.py:110-113` reads
+  `## Vision` + `## Must-have user journeys` when present.
+- **Change spec:** keep Vision/Target Users/Key Capabilities and the adopter note;
+  rename `## Non-Goals` → `## Anti-goals` (entries already are veto-class); add
+  `## Must-have user journeys` with the four journeys approved in the 2026-07-25 plan,
+  in the exact `- **J-NN: <name>**` format, each with a verify: line naming observable
+  evidence: J-01 adopter ships phase-1 to CLOSURE-PASS with all 6 UI artifacts
+  (evidence: `runs/phase-1/status.json` + `reports/phase-1-*`); J-02 a goal session on
+  a small goal reaches GOAL_ACHIEVED only through deterministic gates + two-key confirm
+  (evidence: telemetry halt event + `gate-report.md` + confirm verdict); J-03 an
+  interrupted session resumes from checkpoint without repeating completed steps
+  (evidence: checkpoint markers + engine log skips); J-04 `run-evals.sh` runs offline
+  <30 s, red on seeded mirror drift, green after resync (evidence: exit codes both
+  states).
+- **DoD:** the three validator greps pass; goal-lint deterministic pass clean.
+- **Verify:** `grep -q '^## Must-have user journeys' docs/goal.md && grep -q
+  '^## Anti-goals' docs/goal.md && grep -qE '^- \*\*J-[0-9]+:' docs/goal.md &&
+  ./scripts/automation/run-evals.sh`
+- **Files:** `docs/goal.md`.
+- **Rollback:** revert file.
+- **Stop-and-ask:** goal.md journeys/anti-goals are ask-first class — the 2026-07-25
+  plan approval covered these four drafts; STOP if changing them materially.
+
+### CTX-7 · core.md restructure: intent + gotchas + tier-aware checklists (~10.8 KB → ≤6 KB)
+- **Priority:** P1 · **Effort:** M · **Risk:** HIGH · **Status:** TODO
+- **Problem:** ~17 dispatch sites and all agent bodies route to `.claude/core.md`
+  (10,775 B ≈ 2.7 K tokens per dispatch), and roughly a third of it duplicates content
+  owned elsewhere. Anthropic removed >80% of Claude Code's system prompt for 5-gen
+  models with no eval loss — this is the repo's equivalent move (rules 1+3+4).
+- **Current state (measured section map):** behavioral principles :1-48 (2,153 B);
+  code-quality checklist :50-63 (729 B); env-errors gotcha :66-73 (395 B); visual
+  checklist :76-90 (1,038 B); testing :93-108 (773 B); external-integration :111-121
+  (655 B); security :124-134 (531 B); `## Token and Questioning Policy` :137-163
+  (1,224 B — HEADING IS LOAD-BEARING, named by ~20 dispatch sites + agent bodies);
+  Definition of Done :166-189 (1,406 B — duplicates workflow.md verdict gates +
+  judgment-rubrics §2); Handoff Requirements :192-203 (521 B — duplicates
+  `agents/developer/body.md` handoff format); UI Visibility Rules :206-220 (1,304 B —
+  overlaps workflow.md §UI Evolution Policy + UI-chain bodies/skills). No script greps
+  any core.md section name except the policy heading.
+- **Change spec:** rewrite `.claude/core.md` (hand-authored, direct edit):
+  (1) behavioral principles → ~6 intent lines ("write code that reads like the
+  surrounding code; build only what the spec names; when uncertain, state the
+  assumption in the plan artifact and proceed unless it's irreversible…").
+  (2) KEEP verbatim in checklist form — light-tier agents execute these literally:
+  Code Quality, Visual Quality, Testing Requirements, External Integration Testing,
+  Security Baseline, env-errors gotcha. (3) KEEP the `## Token and Questioning Policy`
+  heading EXACTLY; trim its body to ~900 B. (4) DELETE Definition of Done (→ 2-line
+  pointer to workflow.md §Verdict Formats + judgment-rubrics §2) and Handoff
+  Requirements (developer body owns it); compress UI Visibility Rules to ~4 intent
+  lines + pointer to workflow.md §UI Evolution Policy. (5) keep anti-pattern cites
+  (#21, #15/#16) — pointing at the CTX-12 tree paths if that landed first. Target
+  ≤6 KB. Default sync afterwards (AGENTS.md embeds core.md).
+- **DoD:** `grep -c '^## Token and Questioning Policy' .claude/core.md` = 1;
+  `wc -c` ≤ 6000; every deleted fact has a named live single source (commit message
+  lists them); evals green; judgment spot-run shows no verdict-class flip.
+- **Verify:** the two greps + `./scripts/automation/run-evals.sh` + the G9-approved
+  spot-run (1 case × 3 judges); G8: pre-register predicted ~−1.2 K tokens/dispatch in
+  `benchmarks/experiments.md` before a real-session/benchmark observation.
+- **Files:** `.claude/core.md` (+ AGENTS.md regenerates via sync).
+- **Rollback:** revert core.md, resync.
+- **Stop-and-ask:** any script grepping core.md section names beyond the policy
+  heading; any verdict-class flip in the spot-run; land between sessions (cache).
+
+### CTX-8 · Dispatch-prompt concision + pump no-reread note
+- **Priority:** P1 · **Effort:** S · **Risk:** MED · **Status:** TODO
+- **Problem:** every dispatch prompt repeats "Apply the TOKEN AND QUESTIONING POLICY
+  from .claude/core.md strictly." although all 18 agent bodies already carry that exact
+  directive (rule 4). Separately, on the interactive backend the subagent's system
+  prompt IS `.claude/agents/<name>.md`, yet the prompt still says "read this first" —
+  pump-path agents re-Read their own 8-20 KB definition every dispatch.
+- **Current state:** 17 engine sites: `dev-phase.sh:101`, `review-phase.sh:63`,
+  `qa-phase.sh:147`, `generate-test-plan.sh:53`, `phase-audit.sh:80`,
+  `run-phase.sh:168`, `render-summary.sh:91`, `finalize-phase.sh:161`,
+  `goal-iter-lean.sh:840`, `run-goal.sh:300,365,433,476,1785,2092,2387`,
+  `lib/common.sh:552`; plus 3 verbatim-parity copies in
+  `run-judgment-evals.sh:293,375,449`. The `Agent instructions:` line is load-bearing
+  (pump identity derivation) — untouchable. Backend-conditional prompt-note precedent:
+  the TMPDIR bridge in `lib/interactive-dispatch.sh:183-185`.
+- **Change spec:** (1) delete the policy line at all 17 engine sites AND the 3
+  judgment-builder sites in the SAME commit (verbatim parity). (2) in
+  `_interactive_invoke` (`lib/interactive-dispatch.sh`, directly after the TMPDIR
+  bridge) append to the prompt: "Note: your agent definition (.claude/agents/… named
+  above) is already loaded as your system prompt — do not Read it again; treat its
+  'read this first' pointer as satisfied." (3) no other prompt-template changes.
+- **DoD:** `grep -rn "TOKEN AND QUESTIONING" scripts/automation/ | wc -l` → 0 (agent
+  bodies keep theirs); interactive self-test green; saving ~8-20 KB avoided re-read
+  per interactive dispatch.
+- **Verify:** the grep + `bash scripts/automation/lib/interactive-dispatch.sh
+  --self-test && ./scripts/automation/run-evals.sh`; then the G9 spot-run (shared with
+  CTX-7 when adjacent).
+- **Files:** the 13 engine scripts, `scripts/automation/lib/interactive-dispatch.sh`,
+  `scripts/automation/run-judgment-evals.sh`.
+- **Rollback:** revert (pure line removals + one additive note).
+- **Stop-and-ask:** if any judgment-builder prompt already diverges from its engine
+  twin beyond this line — report the broken parity, don't paper over it.
+
+### CTX-9 · iteration-summarizer rightsizing: goal-only templates → skill
+- **Priority:** P1 · **Effort:** M · **Risk:** MED · **Status:** TODO
+- **Problem:** the summarizer runs every iteration on both backends, but 3.3 KB of its
+  18 KB body is templates used only in goal mode ("Cumulative project story") or once
+  per session ("Delivered wrap", GOAL_ACHIEVED only) — detail that should load at the
+  right time (rule 3), mirroring the goal-evaluator's body+methodology-skill pattern.
+- **Current state:** `agents/iteration-summarizer/body.md` 18,038 B; `## Cumulative
+  project story — goal mode only` :207 and `## Delivered wrap — goal mode,
+  GOAL_ACHIEVED only` :255 (together :207-290 ≈ 3,299 B). Body already names
+  `skills/visible-change-summarizer.md` (:23). Machine-parsed constraints living
+  OUTSIDE the moved block: `render_iteration_summary.py` hard-requires `## In plain
+  words` (:2402-2414 self-test); `lint_contracts.py` requires the body to name its
+  verdict enum values.
+- **Change spec:** (1) create `skills/iteration-story-templates.md` — H1 + the two H2
+  sections moved verbatim (byte-identical templates ⇒ identical emitted artifacts;
+  ≥20 content lines satisfies validate_skills). (2) replace the two body sections
+  with: "Goal mode: read `.claude/skills/iteration-story-templates.md` and emit its
+  Project-story section per its rules; on GOAL_ACHIEVED additionally its Delivered-wrap
+  section. Phase mode: skip that skill entirely." (3) keep `## Verdict resolution`,
+  `## Output contract`, `## In plain words` templates in the body untouched.
+  (4) version-bump `agent.yaml`, resync.
+- **DoD:** body ≤15 KB; renderer self-test green; lint_contracts green; skills
+  validator green.
+- **Verify:** `python3 scripts/automation/lib/render_iteration_summary.py self-test &&
+  python3 scripts/automation/lib/lint_contracts.py lint &&
+  ./scripts/automation/run-evals.sh`
+- **Files:** `agents/iteration-summarizer/{body.md,agent.yaml}`, new
+  `skills/iteration-story-templates.md`, regenerated mirrors.
+- **Rollback:** move the sections back, delete the skill, resync.
+- **Stop-and-ask:** any script grepping the summarizer BODY for the moved headings;
+  renderer self-test failing after the move.
+
+### CTX-10 · developer body "18 Rules" → intent + gotchas
+- **Priority:** P1 · **Effort:** S · **Risk:** LOW · **Status:** TODO
+- **Problem:** the developer (standard tier = sonnet-5, 5-gen — judgment applies)
+  carries 18 flat imperative rules, 10 of which are "Frontend:" restatements of the
+  DESIGN SYSTEM config and core.md's visual checklist (rule 1: guardrail duplication).
+  The body also contradicts itself: :8 "CLAUDE.md is auto-loaded — do not Read it
+  again" vs :37 process step 1 "Read CLAUDE.md, project-template.md, …".
+- **Current state:** `agents/developer/body.md:111-129` (Rules), :8 vs :37 (conflict).
+  Hard operational gotchas mixed into the rules: server-cleanup pkill list,
+  `--skip-git` on create-next-app, never-commit list, backend-enforced state
+  transitions.
+- **Change spec:** rewrite `## Rules` as (a) GOTCHAS kept verbatim (the four above);
+  (b) one intent paragraph replacing the 10 Frontend bullets: "UI work follows the
+  DESIGN SYSTEM in `.claude/project-template.md` and the Visual Quality checklist in
+  `.claude/core.md` — tokens not arbitrary values, library components not div soup,
+  all interaction/loading/empty/error states, visually consistent with prior pages";
+  (c) keep the scope/test-exactness lines (top failure modes — the allowed "highly
+  important area" restatement). Fix the :37 conflict: drop CLAUDE.md from process
+  step 1's read list. Version-bump, resync.
+- **DoD:** every hard gotcha still present verbatim; no rule contradicts core.md; no
+  internal contradiction; body ≤7.5 KB.
+- **Verify:** `python3 scripts/automation/lib/lint_contracts.py lint &&
+  ./scripts/automation/run-evals.sh`
+- **Files:** `agents/developer/{body.md,agent.yaml}`, mirrors.
+- **Rollback:** revert + resync.
+
+### CTX-11 · goal-decomposer body split (evaluator pattern) — consistency, not tokens
+- **Priority:** P2 · **Effort:** M · **Risk:** MED · **Status:** TODO
+- **Problem:** the decomposer body (19,786 B, largest) interleaves its machine-parsed
+  output-template contract with 9.1 KB of methodology; the evaluator already models
+  the right shape (small contract body + mandatory methodology skill). Honest
+  accounting: the methodology is needed on every planning dispatch, so this saves
+  ~0 tokens — the payoff is structural consistency, safer future edits (methodology
+  edits stop touching the parsed template), and enabling later conditional loading.
+- **Current state:** methodology block `agents/goal-decomposer/body.md:130-231`
+  (journey-priority rubric :130, depth :143, required-still-passing :173, baseline
+  :199-216, anti-goal handling :217, pre-write self-check :221). Template :34-129 is
+  machine-parsed downstream (`goal_gate.py goal-slice --targets` reads the raw
+  `Target journeys:` line; `run-goal.sh:1978`) — MUST stay in the body byte-exact.
+  Body names no skills today.
+- **Change spec:** move :130-231 verbatim into new
+  `skills/goal-decomposition-methodology.md` (H1 + existing H2s); body gains the
+  evaluator-style header line: "Your methodology is
+  `.claude/skills/goal-decomposition-methodology.md` — read it FIRST; in
+  `Mode: baseline` you need only its Baseline section." plus a numbered input-list
+  entry. Keep `## Rules`, the template, and `## Token and Questioning Policy` in the
+  body. Pure move ONLY — the decomposer has no judgment fixtures, so semantic edits
+  here are unvalidated. Version-bump, resync; note the shifted anchors on the §16
+  CAND-TIER sketch (roadmap tolerates re-grep per its header).
+- **DoD:** body ≤11 KB; template region byte-identical (diff shows pure move); skill
+  passes validate_skills; evals green.
+- **Verify:** `python3 scripts/automation/lib/lint_contracts.py lint &&
+  ./scripts/automation/run-evals.sh` + `git diff` inspection for move-purity.
+- **Files:** `agents/goal-decomposer/{body.md,agent.yaml}`, new
+  `skills/goal-decomposition-methodology.md`, mirrors, roadmap anchor note.
+- **Rollback:** fold the skill back, resync.
+- **Stop-and-ask:** if the diff is not a pure move — any wording change to the rubric
+  is a semantic judge-adjacent edit needing its own review.
+
+### CTX-12 · anti-patterns.md → `.claude/anti-patterns/` tree (index + per-entry files)
+- **Priority:** P1 · **Effort:** M · **Risk:** MED · **Status:** TODO
+- **Problem:** a 36,104 B monolith of 23 entries; CLAUDE.md routes orchestrator +
+  reviewer + auditor to it — up to ~9 K tokens per reader for content where any one
+  dispatch needs 1-2 entries. Textbook progressive disclosure (rule 3).
+- **Current state:** entries `## <N>. <title>`. Verified: NO script parses entry
+  boundaries (all references are error-message/comment strings; `harvest-lessons.sh`
+  is read-only; `condense.sh` touches the file only under `--human`). Reference
+  inventory: `run-goal.sh:667,673,695` (#18); `run-phase.sh:292,310`,
+  `ui-test-design-phase.sh:111,126`, `browser-qa-phase.sh:370` (#20);
+  `lib/chain-tmp.sh:10` (#21); `lib/goal-gates.sh:45`; `lib/common.sh:404` (#12);
+  `lib/checkpoint.sh:7` (#5); `lib/condense.sh:14,17`; `harvest-lessons.sh:18`;
+  `CLAUDE.md:33`; `core.md:72` (#21) + `:120` (#15/#16); `maintenance-protocol.md`
+  §2 + §4; `letter-to-future-sessions.md:54`; `skills/goal-authoring.md:7`.
+- **Change spec:** (1) create `.claude/anti-patterns/README.md`: 3-line intro (what
+  this is; read the index, open only matching entries; append protocol) + index table
+  `| # | Title | Applies when | Rule (one line) |` (~2.5 KB). (2) move each entry
+  verbatim to `.claude/anti-patterns/<NN>-<slug>.md` (zero-padded; numbering frozen;
+  next entry = 24). (3) delete the monolith. (4) update every reference above (script
+  strings → the entry file path; CLAUDE.md row → the README index;
+  maintenance-protocol §2 → "create the next-numbered file + add an index row", §4
+  condense clause adjusted). `skills/goal-authoring.md` is neutral-source — resync
+  after. (5) add an eval check (test-doc-drift.sh or run-evals §3c): every `NN-*.md`
+  has exactly one index row and vice versa, no numbering gaps/dupes (fixture-red
+  first). ONE commit — atomic revert.
+- **DoD:** monolith gone; `grep -rn "\.claude/anti-patterns\.md" scripts/ .claude/*.md
+  CLAUDE.md skills/ agents/` → 0 live references; new eval check proven red-able;
+  evals green.
+- **Verify:** the grep + `./scripts/automation/run-evals.sh`.
+- **Files:** `.claude/anti-patterns.md` → `.claude/anti-patterns/*` (24 files),
+  ~10 scripts, `CLAUDE.md`, `.claude/{core,maintenance-protocol,
+  letter-to-future-sessions}.md`, `skills/goal-authoring.md` (+resync),
+  `tests/automation/test-doc-drift.sh` or `run-evals.sh`.
+- **Rollback:** `git revert` of the single commit restores monolith + references.
+- **Stop-and-ask:** any parser (not citation) of entry boundaries found → fall back to
+  the in-file index variant (index table at top of the monolith) and record that here.
+
+### CTX-13 · `escalate_model_on` must fail loud
+- **Priority:** P1 · **Effort:** S · **Risk:** LOW · **Status:** TODO
+- **Problem:** when strong-tier resolution errors, the escalation ladder silently
+  degrades — the retry runs on the default tier while logs claim nothing.
+- **Current state:** `scripts/automation/lib/common.sh:857-869`:
+  `tier-model strong 2>/dev/null || true` then `if [[ -n "$_m" ]]` with no else —
+  empty result = silent no-op; the `[escalation]` line prints only on success.
+- **Change spec:** add the else branch: stderr
+  `[escalation] WARNING: strong-tier model resolution FAILED — retry continues on the
+  agent's default tier (check config/model-tiers.yaml / agent_permissions.py)` plus a
+  guarded `record_telemetry_event "model_escalation"
+  '{"escalated":false,"reason":"tier-resolution-failed"}'`. Return 0 unchanged. Add a
+  simulated-failure case (PATH-shadowed python3 or bad module path in a subshell) to
+  `tests/automation/test-quota-retry.sh` or a sibling test.
+- **DoD:** simulated failure prints the warning + emits the event; success path
+  byte-identical.
+- **Verify:** the new test + `./scripts/automation/run-evals.sh`.
+- **Files:** `scripts/automation/lib/common.sh`, one test file.
+- **Rollback:** revert.
+
+### CTX-14 · GENERATED markers on rendered mirrors (without breaking `--check`)
+- **Priority:** P2 · **Effort:** M · **Risk:** MED · **Status:** TODO
+- **Problem:** `.claude/agents|skills|hooks|commands` + `.claude/settings.json` carry
+  no in-file DO-NOT-EDIT signal although hand-editing mirrors is the documented #1
+  silent-corruption risk (maintenance-protocol §3); a session landing in a mirror file
+  has no point-of-use warning (rule 2: make the interface carry the instruction).
+- **Current state:** agents are rendered (`render_agent_md`,
+  `adapters/claude/sync.py:84-115`; straggler delete globs `*.md` :137-143);
+  skills/hooks/commands are byte-verbatim `mirror_directory` copies
+  (`adapters/lib/translate.py:237-267`, deletes dst files absent from src); settings
+  fully rendered (:264-289). Constraints verified: a sentinel `.md` in skills would
+  FAIL `validate_skills.py` (≥20 lines) — sentinel must be a dotfile;
+  `mirror_directory` would stale-delete unknown dst files — needs an ignore rule.
+- **Change spec:** all renderer-owned so `--check` stays truthful: (1) agents:
+  `render_agent_md` emits `<!-- GENERATED from agents/<name>/ — edit the neutral
+  source, then: python3 scripts/automation/sync-cli-assets.py -->` as the first body
+  line after frontmatter (confirm validate_agents + the subagent loader tolerate it on
+  ONE agent first). (2) skills/hooks/commands: each sync fn writes
+  `.claude/<dir>/.GENERATED-DO-NOT-EDIT` (fixed 2-line content, idempotent);
+  `mirror_directory` gains `ignore={".GENERATED-DO-NOT-EDIT"}` in its stale-delete
+  set. Same for the codex adapter. (3) settings.json: `"_generated"` key via the
+  passthrough header. Update maintenance-protocol §3 naming the markers. Commit
+  regenerated mirrors.
+- **DoD:** every mirror dir carries a marker; fresh sync reproduces them; `--check`
+  green immediately after sync; hooks still execute; evals green.
+- **Verify:** `python3 scripts/automation/sync-cli-assets.py && python3
+  scripts/automation/sync-cli-assets.py --cli claude --check &&
+  ./scripts/automation/run-evals.sh`
+- **Files:** `adapters/claude/sync.py`, `adapters/codex/sync.py`,
+  `adapters/lib/translate.py`, `adapters/claude/passthrough/*`,
+  `.claude/maintenance-protocol.md`, regenerated mirrors.
+- **Rollback:** revert adapters + resync (markers disappear on next render).
+- **Stop-and-ask:** if `validate_agents.py` or Claude Code's subagent loader chokes on
+  the post-frontmatter comment; if `mirror_directory` semantics are shared with a
+  consumer that enumerates dst files.
