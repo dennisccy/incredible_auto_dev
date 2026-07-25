@@ -3353,7 +3353,7 @@ heading in core.md, and the security hooks' deny logic.
   ask; STOP if the edit grows beyond reader cells. Land between sessions (cache prefix).
 
 ### CTX-3 · Single-source the three duplicated tables + stale-value sweep
-- **Priority:** P1 · **Effort:** M · **Risk:** MED · **Status:** TODO
+- **Priority:** P1 · **Effort:** M · **Risk:** MED · **Status:** IN-PROGRESS — implemented 2026-07-25, awaiting fresh-session verify (G8). Note: the DoD's "Opus 4.8 → 0" grep is satisfied for live docs; the only remaining hits are this item's own defect quotes in this file.
 - **Problem:** the model-tier table is restated 4×, the pipeline stage table and the
   artifact map 2× each — and the copies have already diverged (decomposer tier, audit
   retry count), so different agents read contradictory facts (blog rules 1+4).

@@ -67,7 +67,7 @@ Agents ONLY communicate through filesystem artifacts. No free-form messages betw
 | Closure verdict | `reports/phase-{N}-closure-verdict.md` | phase-closure-auditor | finalize-phase.sh |
 | Project goal | `docs/goal.md` | Human | orchestrator, developer, reviewer, qa |
 | Project architecture | `docs/architecture/*.md` (if present; created after the first finalized phase — absence is normal early on) | update-docs.sh | orchestrator, developer |
-| Framework architecture | `.claude/architecture/*.md` | update-docs.sh | All agents (reference) |
+| Framework architecture | `.claude/architecture/*.md` | update-docs.sh | Framework maintainers (reference) |
 
 ---
 
@@ -237,13 +237,12 @@ The `Frontend Present:` line is machine-read by `qa-phase.sh` to decide whether 
 
 ## Model Tier Rationale
 
-| Tier | Model | Used for |
-|------|-------|----------|
-| strong | claude-opus-5 | Judgment: goal evaluation/decomposition, skeptical audit, confirms |
-| standard | claude-sonnet-5 | Solid tasks: code review, test plan generation |
-| light | claude-haiku-4-5 | Routine workflow: QA execution, git/GitHub operations |
-
-Model assignments: each agent picks a tier (`model_tier`) in `agents/<name>/agent.yaml`; the tier resolves to a concrete model in `config/model-tiers.yaml`. Edit those, then re-render with `python3 scripts/automation/sync-cli-assets.py --cli claude` and commit the regenerated `.claude/agents/*.md`.
+Each agent picks a tier (`model_tier`) in `agents/<name>/agent.yaml`; the tier resolves
+to a concrete model in `config/model-tiers.yaml` — the ONLY place model ids live. The
+prose tier table (which model, which class of work, why) is maintained once, in
+`.claude/model-orchestration.md` §1, kept current per maintenance-protocol §6. After
+editing tiers: re-render with `python3 scripts/automation/sync-cli-assets.py --cli claude`
+and commit the regenerated `.claude/agents/*.md`.
 
 ---
 

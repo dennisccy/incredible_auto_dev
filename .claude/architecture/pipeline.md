@@ -54,7 +54,7 @@ Phase spec (docs/phases/<phase>.md)
     |
     v
 [Step 9] auditor --> audit-report
-         (loop: max 2 attempts on FAIL)
+         (loop: max 3 attempts on FAIL; retry caps authoritative in workflow.md §Retry Policy)
     |
     v
 [Step 10] phase-closure-auditor --> closure-verdict

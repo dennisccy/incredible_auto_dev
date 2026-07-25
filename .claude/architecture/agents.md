@@ -4,11 +4,10 @@ The framework defines 20 agents in `.claude/agents/` (rendered from `agents/<nam
 
 ## Model Tiers
 
-| Tier | Model | Used for |
-|------|-------|----------|
-| strong | claude-opus-5 | Judgment: goal evaluation/decomposition, skeptical audit, confirms |
-| standard | claude-sonnet-5 | Solid tasks: code review, UI analysis, test design |
-| light | claude-haiku-4-5 | Routine workflow: QA execution, git operations |
+Tier→model resolution lives in `config/model-tiers.yaml` (via `model_tier` in each
+`agents/<name>/agent.yaml`); the prose rationale table — which model, which class of
+work, why — is maintained once, in `.claude/model-orchestration.md` §1. The per-agent
+tier notes below restate the agent.yaml facts only.
 
 ## Core Pipeline Agents (7)
 

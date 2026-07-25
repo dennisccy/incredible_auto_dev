@@ -105,10 +105,11 @@ programmatic path with an API key** (`run-goal.sh` without `--interactive`).
   the run pauses; continue after it resets. (The headless path's
   sleep-until-reset does **not** apply in interactive mode.)
 - **Model tiering becomes live.** Each agent runs on its `.claude/agents/<name>.md`
-  model tier (Opus for strong agents, Sonnet for standard, Haiku for light), so
-  cost follows the tier. The **strong tier is Opus 4.8** — Anthropic's most capable
-  Opus-tier model. It runs on Max; Pro may not grant it. If a
-  tier's model is unavailable, set an interactive tier override (see Troubleshooting).
+  model tier, so cost follows the tier. The **strong tier** resolves via
+  `config/model-tiers.yaml` (`python3 scripts/automation/lib/agent_permissions.py
+  tier-model strong` prints the current id). Strong-tier models run on Max; Pro may
+  not grant them. If a tier's model is unavailable, set an interactive tier override
+  (see Troubleshooting).
   Do **not** set
   `CLAUDE_CODE_SUBAGENT_MODEL` — it overrides every subagent and flattens the tiers.
 - **Fidelity gaps vs headless.** The per-agent `--effort` downgrade is **not**
