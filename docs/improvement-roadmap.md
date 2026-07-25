@@ -3279,7 +3279,7 @@ item may touch: verdict formats (`.claude/workflow.md` §Verdict Formats,
 heading in core.md, and the security hooks' deny logic.
 
 ### CTX-1 · Revive the PostToolUse hooks on Claude (stdin protocol, SEC-7 pattern)
-- **Priority:** P0 · **Effort:** S · **Risk:** MED · **Status:** TODO
+- **Priority:** P0 · **Effort:** S · **Risk:** MED · **Status:** DONE 2026-07-25
 - **Problem:** both PostToolUse hooks no-op on every fire on the Claude backend: the
   rendered settings pass `"$CLAUDE_TOOL_INPUT_FILE_PATH"` — an env var that never
   existed — so the hooks see an empty path and exit. The live artifact-schema feedback

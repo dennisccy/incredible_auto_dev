@@ -438,6 +438,37 @@ if [[ "$out" == *"missing or invalid verdict"* ]]; then
 else
   _fail "hook: malformed review did not surface warning (got: $out)"
 fi
+
+# CTX-1: stdin mode — the live Claude PostToolUse protocol (same fixtures as JSON)
+out=$(printf '{"tool_input":{"file_path":"%s"}}' "$tmpdir/reports/reviews/eval-good-review.md" \
+  | bash .claude/hooks/post-write-artifact-quality.sh 2>&1)
+if [[ -z "$out" ]]; then
+  _pass "hook: stdin-mode well-formed review is silent"
+else
+  _fail "hook: stdin-mode well-formed review produced output: $out"
+fi
+out=$(printf '{"tool_input":{"file_path":"%s"}}' "$tmpdir/reports/reviews/eval-bad-review.md" \
+  | bash .claude/hooks/post-write-artifact-quality.sh 2>&1 || true)
+if [[ "$out" == *"missing or invalid verdict"* ]]; then
+  _pass "hook: stdin-mode malformed review surfaces schema warning"
+else
+  _fail "hook: stdin-mode malformed review did not surface warning (got: $out)"
+fi
+_lint_bad=$(mktemp /tmp/eval-lint-bad-XXXX.py); echo "def broken(:" > "$_lint_bad"
+out=$(printf '{"tool_input":{"file_path":"%s"}}' "$_lint_bad" \
+  | bash .claude/hooks/post-edit-lint.sh 2>&1 || true)
+if [[ "$out" == *"syntax error"* ]]; then
+  _pass "hook: stdin-mode post-edit-lint warns on a broken .py file"
+else
+  _fail "hook: stdin-mode post-edit-lint missed a broken .py file (got: $out)"
+fi
+rm -f "$_lint_bad"
+if out=$(printf 'not json at all' | bash .claude/hooks/post-write-artifact-quality.sh 2>&1) \
+   && [[ -z "$out" ]]; then
+  _pass "hook: stdin-mode garbage input is silent rc=0"
+else
+  _fail "hook: stdin-mode garbage input misbehaved (rc=$? out: $out)"
+fi
 rm -rf "$tmpdir"
 
 # ── 6. Stream-renderer fixture roundtrip ─────────────────────────────────────

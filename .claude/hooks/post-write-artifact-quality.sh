@@ -10,6 +10,20 @@ set -e
 
 FILE_PATH="${1:-}"
 
+# Claude Code PostToolUse passes JSON on stdin (.tool_input.file_path);
+# $CLAUDE_TOOL_INPUT_FILE_PATH never existed. argv ($1) remains the
+# test-harness / Codex path (SEC-7 pattern, mirrors guard-dangerous-commands.sh).
+if [[ -z "$FILE_PATH" && ! -t 0 ]]; then
+  _payload=$(cat 2>/dev/null || true)
+  if [[ -n "$_payload" ]]; then
+    if command -v jq >/dev/null 2>&1; then
+      FILE_PATH=$(printf '%s' "$_payload" | jq -r '.tool_input.file_path // .tool_input.path // empty' 2>/dev/null) || FILE_PATH=""
+    else
+      FILE_PATH=$(printf '%s' "$_payload" | python3 -c 'import json,sys; ti=json.load(sys.stdin).get("tool_input",{}); print(ti.get("file_path") or ti.get("path") or "")' 2>/dev/null) || FILE_PATH=""
+    fi
+  fi
+fi
+
 if [[ -z "$FILE_PATH" ]]; then exit 0; fi
 if [[ ! -f "$FILE_PATH" ]]; then exit 0; fi
 

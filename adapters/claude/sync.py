@@ -191,31 +191,27 @@ def _hooks_block_for_claude() -> dict:
         entries = []
         for matcher, basename in by_event[event]:
             # Claude Code passes hook input as JSON on stdin (.tool_input.*);
-            # $CLAUDE_TOOL_INPUT_COMMAND was never a real env var, so the Bash
-            # guards read stdin themselves (argv remains the test-harness /
-            # Codex path) and return decisions as hookSpecificOutput JSON on
-            # stdout with exit 0 (SEC-7). Every hook is wrapped `|| true`: on
-            # Claude the exit code carries no signal (exit 1 is a NON-blocking
-            # error; the stdout JSON is the decision channel) and a hook crash
-            # must never surface into the transcript. install-security-gate
-            # keeps stderr un-redirected so its warn banners reach debug logs.
+            # $CLAUDE_TOOL_INPUT_COMMAND / $CLAUDE_TOOL_INPUT_FILE_PATH were
+            # never real env vars, so every hook reads stdin itself (argv
+            # remains the test-harness / Codex path): the PreToolUse guards
+            # extract .tool_input.command and return decisions as
+            # hookSpecificOutput JSON on stdout with exit 0 (SEC-7); the
+            # PostToolUse hooks extract .tool_input.file_path and stay
+            # advisory (stderr warnings only, CTX-1). Every hook is wrapped
+            # `|| true`: on Claude the exit code carries no signal (exit 1 is
+            # a NON-blocking error; stdout JSON is the decision channel) and a
+            # hook crash must never surface into the transcript.
+            # install-security-gate keeps stderr un-redirected so its warn
+            # banners reach debug logs.
             tail = " || true" if basename == "install-security-gate.sh" else " 2>/dev/null || true"
             cmd_path = f"$CLAUDE_PROJECT_DIR/.claude/hooks/{basename}"
-            if event == "PostToolUse":
-                # FIXME(follow-up): $CLAUDE_TOOL_INPUT_FILE_PATH is likewise not
-                # a real env var — the PostToolUse hooks need the stdin
-                # (.tool_input.file_path) treatment; they are advisory-only, so
-                # their inertness is not a security hole (roadmap SEC-7 note).
-                arg = ' "$CLAUDE_TOOL_INPUT_FILE_PATH"'
-            else:
-                arg = ""
             entries.append(
                 {
                     "matcher": matcher,
                     "hooks": [
                         {
                             "type": "command",
-                            "command": f'bash "{cmd_path}"{arg}{tail}',
+                            "command": f'bash "{cmd_path}"{tail}',
                         }
                     ],
                 }
