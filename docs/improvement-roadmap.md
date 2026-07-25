@@ -3321,7 +3321,7 @@ heading in core.md, and the security hooks' deny logic.
   PreToolUse guards' deny-JSON protocol.
 
 ### CTX-2 · Routing-table truth pass (CLAUDE.md "who reads what")
-- **Priority:** P1 · **Effort:** S · **Risk:** MED · **Status:** TODO
+- **Priority:** P1 · **Effort:** S · **Risk:** MED · **Status:** DONE 2026-07-25
 - **Problem:** the constitution's routing table over-claims readership, so agents hold
   contradictory directives (blog rule 1): "all agents read X" vs their own bodies.
 - **Current state:** `CLAUDE.md` INSTRUCTION FILES table: workflow.md row says "All
@@ -3433,7 +3433,7 @@ heading in core.md, and the security hooks' deny logic.
 - **Rollback:** revert + resync.
 
 ### CTX-6 · Make the repo's own `docs/goal.md` pass its own validator (dogfooding)
-- **Priority:** P1 · **Effort:** S · **Risk:** MED · **Status:** TODO
+- **Priority:** P1 · **Effort:** S · **Risk:** MED · **Status:** DONE 2026-07-25
 - **Problem:** the framework hard-fails adopters whose goal.md lacks `## Must-have user
   journeys` + `## Anti-goals` (anti-pattern #18), yet this repo's own `docs/goal.md`
   has neither — `/goal` on this repo dies at validation, and the in-repo exemplar
