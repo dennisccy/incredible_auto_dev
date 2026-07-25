@@ -9,7 +9,7 @@ CLAUDE.md is auto-loaded into your system prompt — do not Read it again.
 
 1. `docs/goal.md` — understand the project's overall goal before implementing
 2. `.claude/project-template.md` — stack configuration, test commands, architecture principles
-3. `docs/architecture/*.md` — understand existing project architecture
+3. `docs/architecture/*.md` — existing project architecture (if present; created by update-docs.sh after the first finalized phase — absence is normal early on, skip silently)
 4. `runs/<phase>/plan.md` — execution plan (what to build)
 5. Phase spec at `docs/phases/<phase>.md` — requirements and definition of done
 6. Relevant existing code in the project

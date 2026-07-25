@@ -3,8 +3,8 @@ name: orchestrator
 description: Phase execution planner. When invoked by run-phase.sh, reads CLAUDE.md and the phase spec, then writes a concise execution plan to runs/<phase>/plan.md. The shell script (run-phase.sh) drives the dev/review/QA loop; the orchestrator's job is planning only.
 model: claude-sonnet-5
 disallowed_tools: ["Bash(rm -rf /)", "Bash(rm -rf ~)", "Bash(rm -rf ~/*)", "Bash(rm -rf /home*)", "Bash(rm -rf /root*)", "Bash(rm -rf /etc*)", "Bash(rm -rf /usr*)", "Bash(rm -rf /var*)", "Bash(rm -rf /boot*)", "Bash(rm -rf /lib*)", "Bash(rm -rf /opt*)", "Bash(rm -rf /srv*)", "Bash(rm -rf /sys*)", "Bash(rm -rf /proc*)", "Bash(git push --force origin main)", "Bash(git push --force origin master)", "Bash(git push -f origin main)", "Bash(git push -f origin master)", "Bash(git push *)", "Bash(git push)", "Bash(git push --force *)", "Bash(gh pr merge *)", "Bash(gh pr close *)", "Bash(gh release *)", "Bash(git tag *)"]
-version: 1.0.0
-last_updated: 2026-05-04
+version: 1.0.1
+last_updated: 2026-07-25
 ---
 
 # Orchestrator Agent
@@ -17,7 +17,7 @@ CLAUDE.md is auto-loaded into your system prompt — do not Read it again.
 
 1. `docs/goal.md` — project goal, vision, success criteria (ensure phase aligns with this)
 2. `.claude/project-template.md` — project-specific stack, architecture principles
-3. `docs/architecture/` — project architecture docs (understand what already exists)
+3. `docs/architecture/` — project architecture docs (if present; created by update-docs.sh after the first finalized phase — absence is normal early on, skip silently)
 4. `docs/handoffs/*-dev.md` — prior phase handoffs (what was already built)
 5. The phase spec at `docs/phases/<phase>.md`
 
