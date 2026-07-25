@@ -20,11 +20,41 @@ Developers and teams who want to automate their development lifecycle with AI ag
 6. Artifact-based inter-agent communication (no free-form conversation)
 7. Configurable model tiers (strong/standard/light) per agent
 
-## Non-Goals
+## Must-have user journeys
 
-- Being a general-purpose coding assistant — this is a structured, phase-gated pipeline, not a freeform agent
-- Replacing human judgment on architecture, product direction, or critical design decisions
-- Supporting non-Claude AI providers (Gemini, GPT, etc.) — Claude-only by design
+The framework's own acceptance journeys — operator-observable and evidence-backed. They
+also make this file pass the same validation (`run-goal.sh validate_goal_file`) the
+framework enforces on every adopter's goal.md.
+
+- **J-01: Adopter ships phase 1**
+  1. Fill `.claude/project-template.md` and author `docs/phases/phase-1.md` from `templates/phase-spec.md`.
+  2. Run `./scripts/automation/run-phase.sh phase-1`.
+  Acceptance: the run ends with CLOSURE-PASS; `runs/phase-1/status.json` reaches the
+  final step; all 6 `reports/phase-1-*` UI-visibility artifacts exist.
+- **J-02: Goal session achieves a demo goal**
+  1. Author a small adopter-style `docs/goal.md` (journeys + anti-goals).
+  2. Run `./scripts/automation/run-goal.sh --session-id demo`.
+  Acceptance: the session halts GOAL_ACHIEVED only through the deterministic gates plus
+  the two-key confirm — `telemetry.jsonl` halt event, `iter-<N>/gate-report.md`, and the
+  CONFIRM_ACHIEVED verdict line all present.
+- **J-03: Interrupted session resumes**
+  1. Ctrl-C a running goal session mid-iteration.
+  2. Relaunch `./scripts/automation/run-goal.sh --session-id <same-sid>`.
+  Acceptance: the engine resumes from checkpoint without repeating completed steps —
+  checkpoint markers present in the session dir; `engine.log` shows completed steps
+  skipped on re-entry.
+- **J-04: Offline evals protect edits**
+  1. Run `./scripts/automation/run-evals.sh` with no API access.
+  2. Seed a mirror edit (hand-edit one `.claude/agents/*.md`), run it again, then resync
+     with `python3 scripts/automation/sync-cli-assets.py --cli claude` and run it a third time.
+  Acceptance: exit 0 on the clean tree, exit 1 on the seeded drift, exit 0 again after
+  the resync.
+
+## Anti-goals
+
+- No freeform-assistant mode: every change enters through a phase spec or a goal-mode iteration spec — work with no spec behind it is rejected in review
+- No autonomous decisions on what the product IS: changes to `CLAUDE.md`, `docs/goal.md` journeys/anti-goals, model spend, or gate defaults require explicit human approval (maintenance-protocol §1) — an agent-made change there without a matching approved task is a violation
+- No third AI provider: the backends are exactly Claude Code and OpenAI Codex CLI (`docs/cli-providers.md`) — a change adding another provider integration is out of scope
 
 ## Note for Projects Using This Framework
 
