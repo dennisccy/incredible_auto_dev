@@ -3203,6 +3203,35 @@ but appreciated.
   hand-worked around it (fixture relocation; path-prefix splitting by convention) —
   cheap to close structurally, and the scan stays CRITICAL-capable on product paths.
 
+### CAND-JUDGE-REBASE · Judge goldens never re-validated on the Opus-5 cutover (staged — evidence attached)
+- *(Staged 2026-07-25 by the CTX package session after its G9-approved judgment spot-run;
+  promotion human, EVO-1.)*
+- **Proposed:** P1 · Effort S (1 diagnostic dispatch + triage) or M (full re-baseline) ·
+  Risk LOW (spend-gated).
+- **Evidence:** `398bff9` moved the strong tier to `claude-opus-5` but its verification
+  was `run-judgment-evals.sh --list` — an enumeration, not a dispatch; the 14 golden
+  cases have NEVER been dispatched on Opus 5. The 2026-07-25 spot-run: goal-evaluator
+  case-01 PASS (GOAL_ACHIEVED, 240 s); auditor case-01 expected PASS, got
+  PASS_WITH_GAPS (247 s). The auditor's own verdict text shows it independently
+  re-verified the product end-to-end ("confirmed the served HTML … across five states
+  plus an HTML-injection attempt"), agreed the product is correct, and downgraded SOLELY
+  on fixture-evidence fidelity (the planted QA screenshots are "stylized, annotated
+  renderings rather than faithful captures") — precisely the over-verification the
+  cutover commit's follow-up note predicted ("Opus 5 self-verifies without being told;
+  the explicit 'verify your work' scaffolding in the judge bodies may now cause
+  over-verification"). CTX-8's removed dispatch line has no plausible causal path to
+  screenshot skepticism, and the goal-evaluator — same class of prompt edit —
+  reproduced its golden exactly. Kept sandbox:
+  `~/.cache/iad/shared/judgment-auditor-case-01-clean-pass-XhPIFr` (dispatch.log +
+  verdict artifact).
+- **Sketch:** (a) counterfactual first (~$2.38): re-run auditor case-01 with the
+  pre-CTX-8 prompt line restored — same PASS_WITH_GAPS formally exonerates CTX-8;
+  (b) full 14-case run on Opus 5 (~$29.52 est) to re-baseline the goldens;
+  (c) per-failure triage: stale fixture evidence (upgrade the planted screenshots to
+  faithful captures) vs judge-body "verify your work" scaffolding trimming per the
+  cutover note — any judge-body edit then requires the full-run validation (G9/D4).
+- **Why staged:** spend-class (G9) and judge-body scope — human promotion required.
+
 ### CAND-RICHREF · Rich-reference fields: spec mockups + journey-tagged failing tests (staged — do not start)
 - *(Staged 2026-07-25 by the context-engineering planning session — §18's source plan;
   blog rule 6 "simple specs → rich references"; promotion human, EVO-1.)*
@@ -3504,7 +3533,7 @@ heading in core.md, and the security hooks' deny logic.
   heading; any verdict-class flip in the spot-run; land between sessions (cache).
 
 ### CTX-8 · Dispatch-prompt concision + pump no-reread note
-- **Priority:** P1 · **Effort:** S · **Risk:** MED · **Status:** DONE 2026-07-25 — refinement found during implementation: the pump note is CONDITIONAL on the `Agent instructions: .claude/agents/` pointer being present in the prompt, so non-agent dispatches (two-key confirms, ad-hoc) and the self-test's byte-exact round-trips stay untouched
+- **Priority:** P1 · **Effort:** S · **Risk:** MED · **Status:** DONE 2026-07-25 — refinement found during implementation: the pump note is CONDITIONAL on the `Agent instructions: .claude/agents/` pointer being present in the prompt, so non-agent dispatches (two-key confirms, ad-hoc) and the self-test's byte-exact round-trips stay untouched. G9 spot-run (2 of 3 judges, $4.76 est ≤ the $5 guard; reviewer covered by the offline verbatim-parity eval instead): goal-evaluator case-01 PASS; auditor case-01 flipped PASS→PASS_WITH_GAPS — evidence attributes the flip to the un-re-baselined Opus-5 cutover, NOT this change (see CAND-JUDGE-REBASE in §16; user decides revert vs re-baseline).
 - **Problem:** every dispatch prompt repeats "Apply the TOKEN AND QUESTIONING POLICY
   from .claude/core.md strictly." although all 18 agent bodies already carry that exact
   directive (rule 4). Separately, on the interactive backend the subagent's system
