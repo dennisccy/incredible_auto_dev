@@ -3413,7 +3413,7 @@ heading in core.md, and the security hooks' deny logic.
 - **Rollback:** revert.
 
 ### CTX-5 · Stop requiring reads of nonexistent `docs/architecture/`
-- **Priority:** P1 · **Effort:** S · **Risk:** LOW · **Status:** TODO
+- **Priority:** P1 · **Effort:** S · **Risk:** LOW · **Status:** DONE 2026-07-25
 - **Problem:** three "always read first" lists and two workflow rows require
   `docs/architecture/*.md`, but the directory does not exist until `update-docs.sh`
   creates it after the first finalized phase — every early dispatch burns a failed
@@ -3665,7 +3665,7 @@ heading in core.md, and the security hooks' deny logic.
   the in-file index variant (index table at top of the monolith) and record that here.
 
 ### CTX-13 · `escalate_model_on` must fail loud
-- **Priority:** P1 · **Effort:** S · **Risk:** LOW · **Status:** TODO
+- **Priority:** P1 · **Effort:** S · **Risk:** LOW · **Status:** DONE 2026-07-25
 - **Problem:** when strong-tier resolution errors, the escalation ladder silently
   degrades — the retry runs on the default tier while logs claim nothing.
 - **Current state:** `scripts/automation/lib/common.sh:857-869`:

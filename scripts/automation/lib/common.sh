@@ -864,6 +864,13 @@ escalate_model_on() {
     if declare -F record_telemetry_event >/dev/null 2>&1; then
       record_telemetry_event "model_escalation" "$(jq -cn --arg m "$_m" '{model:$m, escalated:true}' 2>/dev/null || printf '{"model":"%s","escalated":true}' "$_m")" || true
     fi
+  else
+    # CTX-13: fail LOUD — a silent no-op here means the fix-mode retry runs on
+    # the default tier while everyone believes it escalated.
+    echo "[escalation] WARNING: strong-tier model resolution FAILED — retry continues on the agent's default tier (check config/model-tiers.yaml and scripts/automation/lib/agent_permissions.py)" >&2
+    if declare -F record_telemetry_event >/dev/null 2>&1; then
+      record_telemetry_event "model_escalation" '{"escalated":false,"reason":"tier-resolution-failed"}' || true
+    fi
   fi
   return 0
 }
