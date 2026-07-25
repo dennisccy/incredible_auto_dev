@@ -65,7 +65,7 @@ CLAUDE.md (constitution)
     +-- .claude/core.md (universal rules)
     +-- .claude/workflow.md (pipeline definition)
     +-- .claude/project-template.md (project config)
-    +-- .claude/anti-patterns.md (failure modes)
+    +-- .claude/anti-patterns/ (failure modes: index + per-entry files)
     |
     +-- .claude/agents/*.md (12 agent definitions)
     |       |

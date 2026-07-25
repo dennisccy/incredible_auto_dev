@@ -7,7 +7,7 @@
 # machine as the same user. Tools the agents run (pytest, playwright/chromium,
 # mktemp) used to write to shared /tmp — on some machines a QUOTA'D tmpfs
 # (EDQUOT long before the fs looks full) — and race each other's pruning (see
-# .claude/anti-patterns.md #21). Each run now gets its own short-lived dir
+# .claude/anti-patterns/21-shared-tmp-accumulation.md). Each run now gets its own short-lived dir
 # under CHAIN_TMP_ROOT (default ~/.cache/iad: big, unquota'd disk — NOT /tmp),
 # exported as TMPDIR, so cleanup is a single owner-guarded rm. /tmp remains a
 # LEGACY janitor root so pre-relocation strays still get reaped.

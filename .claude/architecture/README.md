@@ -21,7 +21,7 @@ This directory contains the framework's architecture documentation. These docs d
 - **.claude/core.md** -- universal quality rules, testing requirements, security baseline.
 - **.claude/workflow.md** -- pipeline stages, retry policy, verdict formats.
 - **.claude/project-template.md** -- project-specific config (filled in per project).
-- **.claude/anti-patterns.md** -- 18 documented failure modes.
+- **.claude/anti-patterns/** -- failure-mode tree: README index + one file per numbered entry.
 - **docs/goal.md** -- project vision and success criteria (filled in per project).
 - **docs/architecture/** -- project-specific architecture docs (auto-updated per phase).
 

@@ -51,9 +51,11 @@ pain into its §16 staging section.
   (`claude -p --model <id> 'reply OK'`), flip the tier, resync, update
   `.claude/model-orchestration.md`'s table in the same commit. Never re-pin a per-agent
   `model_override` except as a commented temporary exception — the evals fail on it.
-- **Append-only files grow until they poison prompts.** `lessons.md`, `anti-patterns.md`,
-  goal.md journeys. The dispatch wrappers pre-trim/slice the big ones, but condensation
-  (maintenance protocol §4) still has to happen — a 500-line lessons file is a smell.
+- **Append-only files grow until they poison prompts.** `lessons.md`, the
+  anti-patterns index, goal.md journeys. The dispatch wrappers pre-trim/slice the big
+  ones, but condensation (maintenance protocol §4) still has to happen — a 500-line
+  lessons file is a smell. (The anti-patterns monolith itself was split into
+  `.claude/anti-patterns/` per-entry files for this reason.)
 - **Skills edited without version bumps.** The rendered agent frontmatter carries
   `version:`; bump it with every body/skill change so drift between what an agent file says
   and what a long-running session loaded is diagnosable.

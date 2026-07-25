@@ -3628,7 +3628,7 @@ heading in core.md, and the security hooks' deny logic.
   is a semantic judge-adjacent edit needing its own review.
 
 ### CTX-12 · anti-patterns.md → `.claude/anti-patterns/` tree (index + per-entry files)
-- **Priority:** P1 · **Effort:** M · **Risk:** MED · **Status:** TODO
+- **Priority:** P1 · **Effort:** M · **Risk:** MED · **Status:** IN-PROGRESS — implemented 2026-07-25 (verbatim split byte-proven; pathless `#N` citations kept — numbers are frozen IDs), awaiting fresh-session verify (G8)
 - **Problem:** a 36,104 B monolith of 23 entries; CLAUDE.md routes orchestrator +
   reviewer + auditor to it — up to ~9 K tokens per reader for content where any one
   dispatch needs 1-2 entries. Textbook progressive disclosure (rule 3).

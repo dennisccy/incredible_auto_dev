@@ -30,7 +30,7 @@ Both modes run on **Claude Code** (default) or **OpenAI Codex CLI** (`--cli code
 | `.claude/judgment-rubrics.md` | Executable judgment criteria (escalation, definition-of-done, stop-and-ask, wrong-direction signals, evidence floors, honesty) with ✚/✖ examples | auditor (direct); goal-evaluator (via its methodology skill); anyone making verdict-class calls |
 | `.claude/delegation-templates.md` | Fill-in dispatch templates (search/implement/refactor/research/review) | Interactive maintainer sessions dispatching ad-hoc subagents |
 | `.claude/maintenance-protocol.md` | Which files may be edited autonomously vs. need the user; the resync invariant; lessons format; condensation rule | Anyone editing framework/instruction files |
-| `.claude/anti-patterns.md` | Documented failure modes from production use | Orchestrator, reviewer, auditor; add new ones per maintenance protocol §2 |
+| `.claude/anti-patterns/` | Failure-mode tree: README index + one file per numbered entry — scan the index, open only matching entries | Orchestrator, reviewer, auditor; add new ones per maintenance protocol §2 |
 | `.claude/letter-to-future-sessions.md` | How this system degrades and what to check first | New sessions doing framework work |
 | `.claude/architecture/` | System architecture, agent catalog, pipeline flow, artifact map | Framework maintainers only — pipeline agents must NOT read these (orchestrator rule) |
 

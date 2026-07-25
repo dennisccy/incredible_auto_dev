@@ -15,7 +15,7 @@
 # READ-ONLY AND JUDGMENT-FREE by contract (roadmap EVO-5): the script writes
 # nothing anywhere and draws no conclusions — it is a digest for a human+session
 # to review. Recurring symptoms across repos become either numbered
-# .claude/anti-patterns.md entries (maintenance protocol §2 format: symptom →
+# .claude/anti-patterns/ entries (maintenance protocol §2 format: symptom →
 # root cause → checkable rule) or docs/improvement-roadmap.md §16 staging items,
 # drafted by the reviewing session and promoted only by the human (EVO-1).
 #

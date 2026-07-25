@@ -367,7 +367,7 @@ fi
 # the step but closure-check would flag the stub as missing real content. By
 # exiting without stubs, the working tree is unchanged so resume re-runs the
 # step and run-phase.sh's signal-aware retry guard aborts the run cleanly.
-# See .claude/anti-patterns.md #20.
+# See .claude/anti-patterns/20-next-build-against-dev.md.
 if [[ $_bqa_rc -eq 130 || $_bqa_rc -eq 137 || $_bqa_rc -eq 143 ]]; then
   echo "[browser-qa] Killed by signal (exit $_bqa_rc) — leaving artifacts untouched so resume can re-run this step." >&2
   exit "$_bqa_rc"

@@ -289,7 +289,7 @@ fail() {
 # Without this, the warn-and-advance retry pattern (intended for transient
 # agent errors) wrongly treats a signal kill as "step done" and the resume
 # skips an unrun step, leaving SKIPPED stub artifacts that closure-check
-# flags. See .claude/anti-patterns.md #20.
+# flags. See .claude/anti-patterns/20-next-build-against-dev.md.
 _is_signal_exit() {
   local rc="$1"
   [[ $rc -eq 130 || $rc -eq 137 || $rc -eq 143 ]]

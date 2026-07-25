@@ -347,4 +347,4 @@ Then:
 - [`templates/project-goal.md`](../templates/project-goal.md) — full goal template with all required sections
 - [`.claude/architecture/goal-mode.md`](../.claude/architecture/goal-mode.md) — internal architecture
 - [`docs/goal-mode-telemetry.md`](goal-mode-telemetry.md) — telemetry event schema
-- [`.claude/anti-patterns.md`](../.claude/anti-patterns.md) — common authoring pitfalls (especially #18)
+- [`.claude/anti-patterns/`](../.claude/anti-patterns/) — common authoring pitfalls (especially `18-goal-journeys-anti-goals.md`)

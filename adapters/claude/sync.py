@@ -9,7 +9,7 @@ Generates:
   .claude/commands/<name>.md   (slash commands, mirrored from commands/)
 
 Leaves alone:
-  .claude/core.md, workflow.md, anti-patterns.md, project-template.md
+  .claude/core.md, workflow.md, the anti-patterns/ tree, project-template.md
   .claude/architecture/
   .claude/settings.local.json, .example
 """

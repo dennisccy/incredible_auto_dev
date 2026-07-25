@@ -42,7 +42,7 @@ _GOAL_GATES_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # Harness bookkeeping namespaces NEVER fed to the secret scanner: the gate must
 # scan product changes, not the pipeline's own generated output (scan-report /
 # iter-diff / trace / summaries quote findings → self-referential CRITICAL
-# recursion; see .claude/anti-patterns.md). Same set as CHAIN_STEP_HASH_EXCLUDES
+# recursion; see .claude/anti-patterns/22-scanner-flags-own-output.md). Same set as CHAIN_STEP_HASH_EXCLUDES
 # (lib/checkpoint.sh). Space-separated, env-overridable; note ':=' re-applies
 # the default when the var is exported EMPTY (a single space means "no
 # exclusions").

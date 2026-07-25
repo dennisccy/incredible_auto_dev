@@ -69,7 +69,7 @@ On `No space left on device` / `Disk quota exceeded`: run
 `bash scripts/automation/tmp-doctor.sh --aggressive`, retry the failed command
 ONCE, and continue. Never `rm` arbitrary `/tmp` files (concurrent sessions own
 some of them) and never halt to ask the user about disk space — the doctor
-only removes temp dirs proven dead or stale (`.claude/anti-patterns.md` #21).
+only removes temp dirs proven dead or stale (`.claude/anti-patterns/21-shared-tmp-accumulation.md`).
 
 ---
 
@@ -117,7 +117,7 @@ When a phase introduces or modifies code that calls external systems (scrapers, 
 - [ ] Known failures (bot detection, geo-blocking, auth requirements) are documented in the dev handoff as "Known Issues" — not silently passed over
 - [ ] The dev handoff explicitly states whether live testing was successful or not
 
-See anti-patterns #15 and #16 for detailed failure modes and prevention strategies.
+See `.claude/anti-patterns/15-mocked-only-external-tests.md` and `16-hardcoded-localhost.md` for detailed failure modes and prevention strategies.
 
 ---
 

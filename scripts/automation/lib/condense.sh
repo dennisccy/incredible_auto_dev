@@ -11,10 +11,13 @@
 #     ## iter-<N> — <ISO timestamp>     state/lessons.md      (evaluator body §5)
 #     ## iter-<N> — <agent>             state/assumptions.md  (evaluator body §5b)
 #     ## Iteration <N> — <phase>        iteration-keyed logs
-#     ## <N>. <title>                   .claude/anti-patterns.md numbering
+#     ## <N>. <title>                   numbered-entry style (the retired
+#                                       anti-patterns monolith; now a per-entry
+#                                       tree at .claude/anti-patterns/, which
+#                                       never needs condensing)
 #   A block runs to the next unfenced `## ` heading or EOF. Everything before
 #   the first `## ` heading (title/preamble) is never touched. `## ` lines
-#   inside ``` fences are content, not boundaries (anti-patterns quotes goal.md
+#   inside ``` fences are content, not boundaries (entries may quote goal.md
 #   sections inside fences).
 #
 # WHAT MOVES: blocks whose key is NOT among the newest KEEP distinct keys in the

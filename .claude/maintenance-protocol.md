@@ -28,9 +28,11 @@ state files. When this protocol and momentum conflict, the protocol wins.
 
 - **Goal-session lessons** (product/project-specific): the evaluator appends to
   `runs/goal-session-<sid>/state/lessons.md` per its format. Signal only — no routine entries.
-- **Framework lessons** (pipeline/tooling pitfalls that transcend one project): append a
-  numbered entry to `.claude/anti-patterns.md` following its existing format (symptom → root
-  cause → rule). One entry per distinct failure mode; cite the session/iteration where it bit.
+- **Framework lessons** (pipeline/tooling pitfalls that transcend one project): create the
+  next-numbered file under `.claude/anti-patterns/` (`<NN>-<slug>.md` — numbering is frozen,
+  take one past the highest) following the existing format (symptom → root cause → rule),
+  AND add its row to the `README.md` index there (the index↔entries eval enforces the pair).
+  One entry per distinct failure mode; cite the session/iteration where it bit.
 - Format discipline: every lesson states (a) the trigger condition ("Applies to:"), (b) the
   concrete mistake, (c) the checkable rule that prevents it. A lesson without a checkable
   rule is a war story — rewrite it until it's a rule.
@@ -57,7 +59,7 @@ sync is a no-op when the mirrors already exist, so:
 ## 4. Condensation rule (growth control)
 
 When any append-only knowledge file exceeds **~200 lines** (`lessons.md`,
-`.claude/anti-patterns.md`, `letter-to-future-sessions.md` handoff section):
+`letter-to-future-sessions.md` handoff section):
 1. Condense duplicate/superseded entries into their general rule (keep the rule, drop the
    retelling); move historical examples to `<file>.archive.md` beside the original.
 2. Do it in a dedicated commit touching nothing else, message `chore(<file>): condense`.
@@ -69,10 +71,10 @@ When any append-only knowledge file exceeds **~200 lines** (`lessons.md`,
    `**AGENT RULE …:**`) stay in place, no LLM involved. The goal engine runs it warn-only
    at session start for session state files (`lessons.md`, `assumptions.md`) over 200
    lines (knob `CHAIN_AUTO_CONDENSE`, default true). It structurally REFUSES paths under
-   `.claude/` unless `--human` is passed — so `.claude/anti-patterns.md` is condensed
-   ONLY by a human running
-   `bash scripts/automation/lib/condense.sh --human .claude/anti-patterns.md`
-   in its own dedicated commit per rule 2; it also refuses rule 3's files outright.
+   `.claude/` unless `--human` is passed; it also refuses rule 3's files outright.
+   (The anti-patterns monolith this clause used to govern was split into the per-entry
+   tree `.claude/anti-patterns/` — entries stay small, so condensation no longer
+   applies there.)
 
 ## 5. Cache stability
 
@@ -96,4 +98,4 @@ The full ordered checklist — spend gates, per-step evidence, rollback — is `
 2. `./scripts/automation/run-evals.sh` must be green before commit.
 3. If the change alters an artifact format (verdict line, report path, JSON schema): grep for
    every reader of that artifact and update them in the SAME commit (see
-   `.claude/anti-patterns.md` — writer/reader drift is a documented failure class).
+   `.claude/anti-patterns/` — writer/reader drift is a documented failure class).

@@ -664,13 +664,13 @@ validate_goal_file() {
 
   if ! grep -q "^## Must-have user journeys" "$GOAL_FILE"; then
     echo "Error: $GOAL_FILE is missing the '## Must-have user journeys' section." >&2
-    echo "  See templates/project-goal.md for the format. See .claude/anti-patterns.md #18." >&2
+    echo "  See templates/project-goal.md for the format. See .claude/anti-patterns/18-goal-journeys-anti-goals.md." >&2
     exit 1
   fi
 
   if ! grep -q "^## Anti-goals" "$GOAL_FILE"; then
     echo "Error: $GOAL_FILE is missing the '## Anti-goals' section." >&2
-    echo "  See templates/project-goal.md for the format. See .claude/anti-patterns.md #18." >&2
+    echo "  See templates/project-goal.md for the format. See .claude/anti-patterns/18-goal-journeys-anti-goals.md." >&2
     exit 1
   fi
 
@@ -692,7 +692,7 @@ non_placeholder = [ln for ln in items if 'TODO' not in ln and 'placeholder' not 
 if not non_placeholder:
     print("Error: Anti-goals section has no concrete entries (only placeholders or empty bullets).",
           file=sys.stderr)
-    print("  See .claude/anti-patterns.md #18 for examples.", file=sys.stderr)
+    print("  See .claude/anti-patterns/18-goal-journeys-anti-goals.md for examples.", file=sys.stderr)
     sys.exit(1)
 PY
 }

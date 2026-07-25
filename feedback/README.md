@@ -12,7 +12,7 @@ That loop is **not implemented yet**. The current goal-mode pipeline only writes
 ## What is deferred (Part B, separate plan)
 
 - An opt-in `--telemetry github` flag on `run-goal.sh` that posts a sanitized digest of the JSONL as a GitHub issue or `feedback/incoming/` PR against this repo.
-- A `framework-improvement-proposer` agent that periodically reads accumulated `feedback/incoming/` and proposes targeted changes to `.claude/agents/*.md`, `.claude/anti-patterns.md`, default halt config, etc.
+- A `framework-improvement-proposer` agent that periodically reads accumulated `feedback/incoming/` and proposes targeted changes to `.claude/agents/*.md`, `.claude/anti-patterns/`, default halt config, etc.
 - PR-only application: the proposer's output is always a PR against `main`, never a direct commit. Existing reviewer/auditor agents review it. A human merges. There is no auto-merge of framework changes.
 
 These were intentionally deferred because:

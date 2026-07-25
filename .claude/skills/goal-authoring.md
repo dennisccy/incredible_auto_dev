@@ -4,7 +4,7 @@ Used by `/goal-init` (interview → author) and, once it ships, by `/goal-lint` 
 reuse). `docs/goal.md` is the product constitution: the goal-evaluator treats its
 Must-have journeys as objective ground truth and its Anti-goals as veto rules, so its
 quality decides every downstream iteration. Vague journeys are the documented #1
-failure mode (`.claude/anti-patterns.md` #1, #18).
+failure mode (`.claude/anti-patterns/01-vague-acceptance-criteria.md`, `18-goal-journeys-anti-goals.md`).
 
 ## Interview ground rules
 

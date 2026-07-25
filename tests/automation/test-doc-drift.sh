@@ -103,6 +103,36 @@ _table_check() {
   return 0
 }
 
+# _antipattern_tree_status <tree-dir>
+# CTX-12: .claude/anti-patterns/ index ↔ entry files. README.md rows (| N | …)
+# must match NN-*.md files 1:1, and numbering must be 1..max with no gaps or
+# dupes (numbering is frozen; next entry = max+1).
+# rc 0: in sync · 1: file without index row (stdout: numbers) · 2: index row
+# without file (stdout: numbers) · 3: numbering gap/dupe · 4: no README/rows
+_antipattern_tree_status() {
+  local dir="$1" idx="$1/README.md"
+  [[ -f "$idx" ]] || { echo "no README.md"; return 4; }
+  local file_nums row_nums
+  file_nums=$(for f in "$dir"/[0-9][0-9]-*.md; do [[ -f "$f" ]] && basename "$f"; done \
+    | grep -oE '^[0-9]+' | sort)
+  row_nums=$(grep -oE '^\| *[0-9]+ *\|' "$idx" | grep -oE '[0-9]+' | awk '{printf "%02d\n",$1}' | sort)
+  [[ -z "$row_nums" ]] && { echo "no index rows"; return 4; }
+  local missing ghosts
+  missing=$(comm -23 <(printf '%s\n' "$file_nums") <(printf '%s\n' "$row_nums"))
+  ghosts=$(comm -13 <(printf '%s\n' "$file_nums") <(printf '%s\n' "$row_nums"))
+  [[ -n "$missing" ]] && { echo "$missing" | tr '\n' ' '; return 1; }
+  [[ -n "$ghosts" ]] && { echo "$ghosts" | tr '\n' ' '; return 2; }
+  local cnt uniq_cnt max
+  cnt=$(printf '%s\n' "$file_nums" | grep -c .)
+  uniq_cnt=$(printf '%s\n' "$file_nums" | sort -u | grep -c .)
+  max=$(printf '%s\n' "$file_nums" | sort -n | tail -1 | sed 's/^0*//')
+  if [[ "$uniq_cnt" -ne "$cnt" || "$max" -ne "$cnt" ]]; then
+    echo "numbering: count=$cnt unique=$uniq_cnt max=$max"
+    return 3
+  fi
+  return 0
+}
+
 # ── Claim patterns (anchored: number must directly modify the noun) ──────────
 AGENTS_CLAIM='\b[0-9]+ (specialized |neutral |focused )?agents\b'
 SKILLS_CLAIM='\b[0-9]+ (reusable )?skills\b'
@@ -197,6 +227,46 @@ rc=0; _table_check "$FIX/readme-good.md" "$FIX/agents" >/dev/null || rc=$?
 [[ $rc -eq 3 ]] && pass "fixture: missing Agent Roles section goes red" \
                 || fail "fixture: missing section NOT caught (rc=$rc)"
 
+# Anti-pattern tree: coherent / orphan file / ghost row / numbering gap
+mkdir -p "$FIX/ap"
+printf '## 1. alpha\n' > "$FIX/ap/01-alpha.md"
+printf '## 2. beta\n'  > "$FIX/ap/02-beta.md"
+cat > "$FIX/ap/README.md" <<'EOF'
+| # | Entry | Applies when | Rule |
+|---|-------|--------------|------|
+| 1 | [01-alpha.md](01-alpha.md) | x | y |
+| 2 | [02-beta.md](02-beta.md) | x | y |
+EOF
+
+rc=0; _antipattern_tree_status "$FIX/ap" >/dev/null || rc=$?
+[[ $rc -eq 0 ]] && pass "fixture: coherent anti-pattern tree accepted" \
+                || fail "fixture: coherent tree rejected (rc=$rc)"
+
+printf '## 3. gamma\n' > "$FIX/ap/03-gamma.md"
+rc=0; out=$(_antipattern_tree_status "$FIX/ap") || rc=$?
+[[ $rc -eq 1 && "$out" == *03* ]] && pass "fixture: entry file without index row goes red" \
+                                  || fail "fixture: orphan entry NOT caught (rc=$rc out=$out)"
+rm "$FIX/ap/03-gamma.md"
+
+printf '| 4 | [04-delta.md](04-delta.md) | x | y |\n' >> "$FIX/ap/README.md"
+rc=0; out=$(_antipattern_tree_status "$FIX/ap") || rc=$?
+[[ $rc -eq 2 && "$out" == *04* ]] && pass "fixture: index row without file goes red" \
+                                  || fail "fixture: ghost row NOT caught (rc=$rc out=$out)"
+sed -i '$ d' "$FIX/ap/README.md"
+
+# Gap: files 01+03 with matching rows 1+3 — sets agree, numbering doesn't
+rm "$FIX/ap/02-beta.md"
+printf '## 3. gamma\n' > "$FIX/ap/03-gamma.md"
+cat > "$FIX/ap/README.md" <<'EOF'
+| # | Entry | Applies when | Rule |
+|---|-------|--------------|------|
+| 1 | [01-alpha.md](01-alpha.md) | x | y |
+| 3 | [03-gamma.md](03-gamma.md) | x | y |
+EOF
+rc=0; out=$(_antipattern_tree_status "$FIX/ap") || rc=$?
+[[ $rc -eq 3 ]] && pass "fixture: numbering gap goes red" \
+                || fail "fixture: numbering gap NOT caught (rc=$rc out=$out)"
+
 echo ""
 echo "-- live tree --"
 
@@ -226,6 +296,21 @@ for doc in "$REPO_ROOT/.claude/architecture/"*.md; do
   check_claims "commands ($base)" "$doc" "$COMMANDS_CLAIM" "$COMMAND_COUNT"
   check_claims "hooks ($base)"    "$doc" "$HOOKS_CLAIM"    "$HOOK_COUNT"
 done
+
+# CTX-12: anti-patterns tree — index ↔ entries, frozen numbering, monolith retired
+rc=0; out=$(_antipattern_tree_status "$REPO_ROOT/.claude/anti-patterns") || rc=$?
+case $rc in
+  0) pass "anti-patterns tree: index ↔ entries in sync" ;;
+  1) fail "anti-patterns tree: entry files missing an index row: $out" ;;
+  2) fail "anti-patterns tree: index rows without a file: $out" ;;
+  3) fail "anti-patterns tree: numbering broken ($out)" ;;
+  *) fail "anti-patterns tree: README/index missing ($out)" ;;
+esac
+if [[ -f "$REPO_ROOT/.claude/anti-patterns.md" ]]; then
+  fail "anti-patterns: retired monolith .claude/anti-patterns.md re-appeared (the tree is canonical)"
+else
+  pass "anti-patterns: monolith retired (tree is canonical)"
+fi
 
 rc=0; STEP_COUNT=$(_pipeline_step_count "$REPO_ROOT/scripts/automation/run-phase.sh") || rc=$?
 if [[ $rc -eq 0 ]]; then
