@@ -217,6 +217,16 @@ for doc in "$README" "$CLAUDEMD"; do
   check_claims "hooks ($base)"    "$doc" "$HOOKS_CLAIM"    "$HOOK_COUNT"
 done
 
+# CTX-4: the architecture docs carry the same inventory claims and rot the
+# same way — same checkers, same fixtures prove they can go red.
+for doc in "$REPO_ROOT/.claude/architecture/"*.md; do
+  base="architecture/$(basename "$doc")"
+  check_claims "agents ($base)"   "$doc" "$AGENTS_CLAIM"   "$AGENT_COUNT"
+  check_claims "skills ($base)"   "$doc" "$SKILLS_CLAIM"   "$SKILL_COUNT"
+  check_claims "commands ($base)" "$doc" "$COMMANDS_CLAIM" "$COMMAND_COUNT"
+  check_claims "hooks ($base)"    "$doc" "$HOOKS_CLAIM"    "$HOOK_COUNT"
+done
+
 rc=0; STEP_COUNT=$(_pipeline_step_count "$REPO_ROOT/scripts/automation/run-phase.sh") || rc=$?
 if [[ $rc -eq 0 ]]; then
   pass "pipeline: run-phase.sh banners declare $STEP_COUNT steps (coherent)"

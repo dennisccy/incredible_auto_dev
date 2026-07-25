@@ -183,11 +183,11 @@ your-project/
     workflow.md                      # Pipeline definition
     project-template.md              # Project config (you fill this in)
     anti-patterns.md                 # Failure modes
-    agents/                          # 14 agent definitions (12 phase + 2 goal)
-    skills/                          # 13 skills
+    agents/                          # agent definitions (rendered from agents/<name>/)
+    skills/                          # 15 skills
     hooks/                           # 5 hooks
     architecture/                    # Framework architecture docs (incl. goal-mode.md)
-  scripts/automation/                # 18 automation scripts (incl. run-goal.sh, goal-iter-lean.sh)
+  scripts/automation/                # automation scripts (incl. run-goal.sh, goal-iter-lean.sh)
     lib/                             # quota-retry.sh, common.sh, telemetry.sh
   config/                            # model-tiers.yaml, security policy
   templates/                         # 15 artifact templates

@@ -1,6 +1,6 @@
 # Skills and Hooks
 
-## Skills (9 total, in `.claude/skills/`)
+## Skills (in `.claude/skills/`)
 
 Skills are reusable instruction files that agents read during their workflow. They are not agents -- they are methodologies.
 

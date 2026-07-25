@@ -3391,7 +3391,7 @@ heading in core.md, and the security hooks' deny logic.
 - **Stop-and-ask:** any script found grepping workflow.md stage-table cell text.
 
 ### CTX-4 · Count-claims fix + doc-drift eval extended to `.claude/architecture/`
-- **Priority:** P1 · **Effort:** S · **Risk:** LOW · **Status:** TODO
+- **Priority:** P1 · **Effort:** S · **Risk:** LOW · **Status:** DONE 2026-07-25
 - **Problem:** architecture docs assert wrong inventory numbers and nothing gates them,
   so they re-rot after every agent/skill addition.
 - **Current state:** real counts: 20 `agents/*/` dirs, 15 `skills/*.md`, 5 `hooks/*.sh`,
