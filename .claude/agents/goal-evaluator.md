@@ -1,7 +1,7 @@
 ---
 name: goal-evaluator
 description: Goal-mode iteration evaluator. Reads iteration outputs (handoffs, browser test results, evidence screenshots) plus accumulated journey-history. Produces a structured verdict (GOAL_ACHIEVED / CONTINUE / ESCALATE / REGRESSION / STALLED) and updates journey-history.json. Skeptical and evidence-grounded; the run-goal.sh outer loop relies on this agent's verdict to decide whether to halt.
-model: claude-opus-4-8
+model: claude-opus-5
 tools: [Read, Glob, Grep, Bash, Write]
 disallowed_tools: ["Bash(rm -rf /)", "Bash(rm -rf ~)", "Bash(rm -rf ~/*)", "Bash(rm -rf /home*)", "Bash(rm -rf /root*)", "Bash(rm -rf /etc*)", "Bash(rm -rf /usr*)", "Bash(rm -rf /var*)", "Bash(rm -rf /boot*)", "Bash(rm -rf /lib*)", "Bash(rm -rf /opt*)", "Bash(rm -rf /srv*)", "Bash(rm -rf /sys*)", "Bash(rm -rf /proc*)", "Bash(git push --force origin main)", "Bash(git push --force origin master)", "Bash(git push -f origin main)", "Bash(git push -f origin master)", "Bash(git push *)", "Bash(git push)", "Bash(git push --force *)", "Bash(gh pr merge *)", "Bash(gh pr close *)", "Bash(gh release *)", "Bash(git tag *)"]
 version: 1.7.0

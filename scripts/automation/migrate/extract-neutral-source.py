@@ -112,6 +112,7 @@ def _split_top_level(s: str) -> list[str]:
 # Inverse mapping from current Claude model ids → neutral tier name.
 # Source of truth lives in config/agent-models.yaml; this is just for migration.
 CLAUDE_MODEL_TO_TIER = {
+    "claude-opus-5": "strong",
     "claude-opus-4-8": "strong",
     "claude-opus-4-7": "strong",
     "claude-sonnet-4-6": "standard",
@@ -295,7 +296,7 @@ def write_model_tiers() -> None:
     # Codex equivalents — operator can refine in adapters/codex/passthrough/profiles.toml later.
     tiers = {
         "strong": {
-            "claude": legacy_tiers.get("strong", "claude-opus-4-8"),
+            "claude": legacy_tiers.get("strong", "claude-opus-5"),
             "codex": "gpt-5.1-codex",
         },
         "standard": {

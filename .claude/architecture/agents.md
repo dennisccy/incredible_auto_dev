@@ -6,7 +6,7 @@ The framework defines 20 agents in `.claude/agents/` (rendered from `agents/<nam
 
 | Tier | Model | Used for |
 |------|-------|----------|
-| strong | claude-opus-4-8 | Judgment: goal evaluation/decomposition, skeptical audit, confirms |
+| strong | claude-opus-5 | Judgment: goal evaluation/decomposition, skeptical audit, confirms |
 | standard | claude-sonnet-5 | Solid tasks: code review, UI analysis, test design |
 | light | claude-haiku-4-5 | Routine workflow: QA execution, git operations |
 
@@ -48,7 +48,7 @@ The framework defines 20 agents in `.claude/agents/` (rendered from `agents/<nam
 
 ### auditor
 - **File:** `.claude/agents/auditor.md`
-- **Model:** strong (claude-opus-4-8)
+- **Model:** strong (claude-opus-5)
 - **Pipeline step:** 9 (Audit)
 - **Inputs:** phase spec, plan, dev handoff, review report, QA report, test plan, actual source files
 - **Output:** `docs/handoffs/<phase>-audit.md`
@@ -133,7 +133,7 @@ These agents are invoked only by the goal-mode pipeline (`run-goal.sh` and `goal
 
 ### goal-evaluator
 - **File:** `.claude/agents/goal-evaluator.md`
-- **Model:** strong (claude-opus-4-8)
+- **Model:** strong (claude-opus-5)
 - **Pipeline step:** Goal-mode iteration step 3 (judgment)
 - **Inputs:** `docs/goal.md`, the iter spec, all iteration artifacts (dev handoff, review report, QA report, audit handoff for full mode), browser-qa results, evidence screenshots, prior `journey-history.json`, prior evaluator-log entries
 - **Output:** `runs/goal-session-<sid>/iter-<N>/eval.md` (verdict + recommendation), updated `journey-history.json` (full atomic write), appended `evaluator-log.md` entry
