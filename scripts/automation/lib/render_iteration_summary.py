@@ -785,6 +785,7 @@ body {
 .badge.pass { background: #dafbe1; color: #1a7f37; }
 .badge.fail { background: #ffebe9; color: #cf222e; }
 .badge.inprogress { background: #fff8c5; color: #9a6700; }
+.badge .badge-enum { font-size: 0.68em; opacity: 0.7; font-weight: 500; margin-left: 6px; }
 .signal-badge { padding: 6px 14px; border-radius: 999px; font-weight: 600; font-size: 0.9rem; }
 .signal-badge.improving { background: #dafbe1; color: #1a7f37; }
 .signal-badge.holding { background: #ddf4ff; color: #0969da; }
@@ -1130,6 +1131,41 @@ def _verdict_icon(verdict: str) -> str:
     return SVG_CLOCK
 
 
+# PLAIN-1: plain-word badge text. The raw code stays visible as a small suffix so
+# it can still be copied/grepped; wording mirrors lib/plain-language.sh.
+_PLAIN_BADGE: dict[str, str] = {
+    "GOAL_ACHIEVED": "Goal achieved",
+    "CONTINUE": "Building — on track",
+    "ESCALATE": "Needs a deeper pass",
+    "REGRESSION": "Something broke",
+    "STALLED": "Stuck — needs you",
+    "PASS": "Passed",
+    "FAIL": "Failed",
+    "IN-PROGRESS": "Running",
+    "BUDGET_EXHAUSTED": "Stopped at the limit",
+    "REGRESSION_HALT": "Stopped — something broke",
+    "ABORTED": "Interrupted",
+    "GATE_BLOCKED": "Paused by a project gate",
+    "AWAITING_BLUEPRINT_APPROVAL": "Waiting for your review",
+    "AWAITING_INTENT_REVIEW": "Waiting for your review",
+    "AWAITING_PUMP": "Paused — session lost",
+    "AWAITING_GITHUB_AUTH": "Paused — GitHub login",
+    "AWAITING_DISK": "Paused — low disk",
+}
+
+
+def _plain_badge(verdict: str) -> str:
+    return _PLAIN_BADGE.get(verdict, verdict)
+
+
+def _badge_inner(verdict: str) -> str:
+    """Badge body: plain words first, raw code as a small suffix when they differ."""
+    plain = _plain_badge(verdict)
+    if plain == verdict:
+        return f"<span>{escape(verdict)}</span>"
+    return f"<span>{escape(plain)}</span><span class='badge-enum'>{escape(verdict)}</span>"
+
+
 def _signal_class(signal: str) -> str:
     return signal if signal in ("improving", "holding", "stalling", "regressing") else "na"
 
@@ -1329,8 +1365,8 @@ def _render_hero(data: IterationData) -> str:
             if status in ("passing", "already_passing"):
                 pass_count += 1
             pills.append(
-                f"<span class='journey-pill {cls_j}' title='{escape(j['name'])}'>"
-                f"{escape(j['id'])} · {escape(status)}</span>"
+                f"<span class='journey-pill {cls_j}' title='{escape(j['name'])} — {escape(status)}'>"
+                f"{escape(j['id'])} · {escape(_feature_status_pill(status)[1])}</span>"
             )
         journey_pills = f"<div class='journey-row'>{''.join(pills)}</div>"
     journey_summary = (
@@ -1352,7 +1388,7 @@ def _render_hero(data: IterationData) -> str:
     return (
         f"<section class='hero {cls}'>"
         f"<div class='badge-row'>"
-        f"<div class='badge {cls}'>{icon}<span>{escape(data.verdict)}</span></div>"
+        f"<div class='badge {cls}'>{icon}{_badge_inner(data.verdict)}</div>"
         f"{signal_html}"
         f"</div>"
         f"<h1>{escape(title)}</h1>"
@@ -1560,7 +1596,8 @@ def render_html_session_index(data: SessionData) -> str:
         _render_story_so_far(data),
         _render_feature_manual(data),
         _render_developer_view(data),
-        f"<div class='footer-note'>Generated {escape(_dt.datetime.now().strftime('%Y-%m-%d %H:%M'))}</div>",
+        f"<div class='footer-note'>Generated {escape(_dt.datetime.now().strftime('%Y-%m-%d %H:%M'))}"
+        " · What do these codes mean? See <code>docs/READING-REPORTS.md</code></div>",
         "</div></body></html>",
     ]
     return "\n".join(p for p in parts if p)
@@ -1872,7 +1909,7 @@ def _render_cover(data: SessionData) -> str:
 
     return (
         f"<section class='hero {cls}'>"
-        f"<div class='badge-row'><div class='badge {cls}'>{icon}<span>{escape(data.final_verdict)}</span></div></div>"
+        f"<div class='badge-row'><div class='badge {cls}'>{icon}{_badge_inner(data.final_verdict)}</div></div>"
         f"<h1>{escape(title)}</h1>"
         f"{vision_html}"
         f"<h2>Session <code>{escape(data.session_id)}</code></h2>"
@@ -2591,8 +2628,10 @@ def _cmd_self_test(_argv: list[str]) -> int:
             )
         for expect in (
             "CONTINUE",
+            "Building — on track",
+            "badge-enum",
             "Direction: improving",
-            "J-04 · passing",
+            "J-04 · ✓ working",
             "What was done",
             "Direction signal",
             "Latest evaluator reasoning",
@@ -2639,6 +2678,7 @@ def _cmd_self_test(_argv: list[str]) -> int:
         html_p = render_html_iteration(data_p)
         for expect in (
             "PASS",
+            "Passed",
             "Added user profile page",
             "Quick verify",
             "class='plain-words'",
@@ -2773,6 +2813,7 @@ def _cmd_self_test(_argv: list[str]) -> int:
         for expect in (
             # Cover + vision
             "class='cover-vision'",
+            "Running",
             "Let users sign in",
             # Story (unchanged)
             "class='story-so-far'",
