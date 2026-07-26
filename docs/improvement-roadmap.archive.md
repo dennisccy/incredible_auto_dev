@@ -713,3 +713,22 @@ legend: active file §4.
   `run-evals.sh` §2c: suite went 83 → 84 pass / 0 fail, verbose line
   `PASS: unit: tests/automation/test-doc-drift.sh`. Effort S → self-verified per
   §2.7/G8 (fresh-session rule is M/L only).
+
+### DOC-5 · "Reading the reports" guide
+- **Priority:** P1 · **Effort:** S · **Risk:** LOW · **Status:** absorbed into PLAIN-1 (§19) 2026-07-26
+- **Problem:** the chain produces MD summaries, HTML reports, demo galleries, a session
+  index, gate reports — nothing tells the owner which one to open and what to look for.
+- **Current state:** partial coverage spread across README sections + `runs/SCHEMA.md`
+  (machine-oriented).
+- **Change spec:** `docs/READING-REPORTS.md`: per artifact — what it is, who it's for
+  (owner vs maintainer), when it appears, the 3 things to check (e.g. session index:
+  journey matrix trend, latest verdict, assumptions section once NEED-6 lands).
+  One screenshot-free page; link from README "Outputs" table and the session-index
+  footer if the renderer has one.
+- **DoD:** every report artifact in `runs/SCHEMA.md`'s human-facing set has an entry.
+- **Verify:** cross-check list vs `runs/SCHEMA.md`; link greps.
+- **Files:** `docs/READING-REPORTS.md` (new), README.
+- **Rollback:** docs-only.
+- **Absorption note (2026-07-26):** delivered as PLAIN-1 slice 1 — the guide gained a
+  status/verdict glossary and a code legend, and the renderer footer link became part
+  of PLAIN-1 slice 4 (renderer commit).

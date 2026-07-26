@@ -137,6 +137,9 @@ signal that says "do this now").
    package): S items CTX-1/2/4/5/6/8/13 first, then CTX-3 and CTX-12; CTX-7 requires
    its judgment spot-run; CTX-9/10/11/14 as capacity allows. CTX-15 staged as
    CAND-RICHREF in §16.
+10. **PLAIN-1** — plain-language output (§19, promoted 2026-07-26 by direct user
+    request; absorbs DOC-5). One bundled session; evaluator sub-slice gated by its
+    judgment spot-run.
 
 ---
 
@@ -2854,21 +2857,7 @@ territory).
 - **Files:** `docs/FIRST-RUN.md` (new), README link.
 - **Rollback:** docs-only.
 
-### DOC-5 · "Reading the reports" guide
-- **Priority:** P1 · **Effort:** S · **Risk:** LOW · **Status:** TODO
-- **Problem:** the chain produces MD summaries, HTML reports, demo galleries, a session
-  index, gate reports — nothing tells the owner which one to open and what to look for.
-- **Current state:** partial coverage spread across README sections + `runs/SCHEMA.md`
-  (machine-oriented).
-- **Change spec:** `docs/READING-REPORTS.md`: per artifact — what it is, who it's for
-  (owner vs maintainer), when it appears, the 3 things to check (e.g. session index:
-  journey matrix trend, latest verdict, assumptions section once NEED-6 lands).
-  One screenshot-free page; link from README "Outputs" table and the session-index
-  footer if the renderer has one.
-- **DoD:** every report artifact in `runs/SCHEMA.md`'s human-facing set has an entry.
-- **Verify:** cross-check list vs `runs/SCHEMA.md`; link greps.
-- **Files:** `docs/READING-REPORTS.md` (new), README.
-- **Rollback:** docs-only.
+### DOC-5 — absorbed into PLAIN-1 (§19) 2026-07-26, archived
 
 ### DOC-6 · Architecture docs refresh
 - **Priority:** P1 · **Effort:** M · **Risk:** LOW · **Status:** TODO
@@ -3766,3 +3755,111 @@ heading in core.md, and the security hooks' deny logic.
 - **Stop-and-ask:** if `validate_agents.py` or Claude Code's subagent loader chokes on
   the post-frontmatter comment; if `mirror_directory` semantics are shared with a
   consumer that enumerates dst files.
+
+---
+
+## 19. P1 — Plain-language output (PLAIN-*, promoted 2026-07-26)
+
+Source: direct user request 2026-07-26 — "the language to explain to me is very hard to
+understand; make it simpler and clearer without impacting quality." Scoped by a Fable-5
+planning session; user approval of that plan = EVO-1 promotion of this section
+(SPEED-4…7 / §18 precedent). User-locked decisions: plain layer in **simple English**
+(no bilingual layer for now); console rework covers **halts + pauses + verdicts only**
+(diagnostic/tripwire lines stay technical); **goal-evaluator prose IS in scope** behind
+a ~US$5 judgment spot-run; reviewer/auditor bodies untouched (judges-are-protected,
+§18 constraint 2).
+
+Hard rule for every PLAIN item: machine-parsed surfaces stay **byte-identical** — enum
+tokens, `**Verdict:**`-class lines, H2 names, plain-words labels, JSON keys, artifact
+paths, exit codes. Plain language is ADDED next to the codes, never replacing them.
+Single source for the plain wording: the sentence table in
+`scripts/automation/lib/plain-language.sh`; `docs/READING-REPORTS.md` and
+`skills/plain-language.md` copy from it, never fork it.
+
+### PLAIN-1 · Plain-English explanation layer (absorbs DOC-5)
+- **Priority:** P1 · **Effort:** M · **Risk:** MED · **Status:** IN-PROGRESS
+- **Problem:** every surface the owner actually reads is written for the machine or for
+  maintainer AIs: ~20 SHOUTING status/verdict codes with no gloss at point of use
+  (STALLED vs AWAITING_PUMP vs REGRESSION_HALT vs ABORT_MALFORMED all mean "stopped"
+  with different remedies), roadmap codenames leaking into terminal output and retros
+  (REL-14, EVO-1, §16), 35–50-word sentences with env-vars inline, five unlegended
+  severity scales (P0-2 / S-M-L / LOW-MED-HIGH / CRITICAL-IMPORTANT-GAP-OBSERVATION /
+  anti-goal critical-minor). The friendly layer that exists (`## In plain words`, HTML
+  story pages, pause banners) reaches only 2 of 20 agents, and nothing tells the owner
+  which file to open.
+- **Current state:** (anchors @ 4181629) run-goal.sh: 253 ad-hoc echo sites, no style
+  policy, halt lines are bare codes (`:1458` BUDGET_EXHAUSTED, `:1465`/`:2448` STALLED,
+  `:2442` REGRESSION_HALT, `:2458` ABORT_MALFORMED); only the pause banners
+  (`:1511-1532`, `:1581-1596`) are owner-readable. The ONLY enum→sentence translation
+  in the repo is `skills/goal-interactive-dispatch.md:242-254` (pump-only).
+  goal-evaluator body: zero style guidance; `## Next-Step Recommendation` mandates
+  ID-speak. Renderer prints raw enums in hero/cover/pills
+  (`render_iteration_summary.py:1355`, `:1875`, `:1326-1334`) though a plain-word pill
+  map already exists (`:1586-1592`). Style guidance overall: 2 UI-scoped skills + one
+  core.md line — no shared standard, no glossary doc.
+- **Change spec:** six commits, each independently eval-green:
+  1. this roadmap entry (+ DOC-5 absorbed → archive).
+  2. `docs/READING-REPORTS.md` (new; DOC-5's guide + status/verdict glossary + code
+     legend), linked from README outputs area + `docs/goal-mode-quickstart.md` top.
+  3. NEW `scripts/automation/lib/plain-language.sh` (`explain_goal_status STATUS [SID]
+     [ROOT]`, `explain_goal_verdict VERDICT DEPTH`, `explain_phase KEY`, `plain_*_keys`
+     list fns; case-based; every fn `return 0`) + additive call-sites at every
+     run-goal.sh halt/pause/verdict echo and run-phase.sh Review/QA/final-banner lines
+     (existing echoes byte-untouched; `run-goal.sh:1793` is test-pinned) + NEW
+     `tests/automation/test-plain-language.sh` (map completeness; coverage of every
+     `write_session_summary "X"` / `d["status"] = "X"` status; output purity — no
+     `**Verdict:**`/`## `/parse-marker strings; pinned-literal re-asserts) wired into
+     the `run-evals.sh` §2c list.
+  4. renderer: `_PLAIN_BADGE` map + `badge-enum` suffix at hero/cover, plain pill text
+     with raw status in `title=`, session-index footer link to READING-REPORTS.md;
+     update the 4 affected self-test expect-list pins in the same commit
+     (`"J-04 · passing"` → `"J-04 · ✓ working"` etc.); the `:2402-2438` MD-contract
+     assertions must pass UNCHANGED.
+  5. NEW `skills/plain-language.md` (audience profile, hard rules, plain-word table
+     copied from the lib, 3 bad→good pairs, never-simplify list) wired via one
+     "always read" line into iteration-summarizer, retro-analyst (haiku tier → plus
+     LITERAL paste-ready legend line + "first Problem sentence is plain" rule),
+     demo-narrator, readme-maintainer; `commands/goal-status.md` gains "translate the
+     status, raw code in parentheses"; bump each touched agent.yaml version; fix the
+     eval-enforced "15 skills" claims → 16 (architecture README/adoption-guide/
+     system-overview) + skills-and-hooks row; resync mirrors.
+  6. goal-evaluator: ONE additive block `### 6b. Plain-language rule for prose fields`
+     (scope: Reasoning / Next-step recommendation / `## Summary` /
+     `## Next-Step Recommendation` / `## Halt Justification` ONLY; short sentences;
+     journey IDs always carry their short name; describe what the user would see; the
+     block must NOT contain a literal verdict-marker string, lint_contracts
+     `:169-199`); agent.yaml 1.7.0 → 1.8.0; resync; then the judgment spot-run below
+     BEFORE push.
+- **Spot-run gate (commit 6):** `run-judgment-evals.sh --list --judge goal-evaluator`
+  first (free); STOP if 2 × per-case estimate > ~US$5. Then exactly two bracketing
+  cases with `--keep-sandbox`: `case-01-clean-goal-achieved` and
+  `case-03-regression-broken-journey` (≈ $4.76 projected). Both must exit 0 with
+  GOT == EXPECTED; eyeball sandbox eval.md for the new style. Any class flip →
+  `git revert` commit 6 + resync, stop.
+- **DoD:** every terminal halt/pause and the per-iteration verdict line print a plain
+  what-happened / is-the-product-OK / what-to-do block + a `docs/READING-REPORTS.md`
+  pointer; every status in READING-REPORTS.md glossary; renderer hero/cover/pills show
+  plain words (enum still visible); the 4 writer agents name the skill; evaluator
+  prose rule landed with spot-run green; evals green; machine contracts byte-identical
+  (self-test (c) proves it).
+- **Verify:** `./scripts/automation/run-evals.sh` after every commit;
+  `python3 scripts/automation/sync-cli-assets.py --cli claude --check`;
+  `bash -c 'source scripts/automation/lib/plain-language.sh; explain_goal_status
+  STALLED demo /tmp'`; renderer self-test; the spot-run.
+- **Files:** `docs/improvement-roadmap.md`, `docs/READING-REPORTS.md` (new), README,
+  `docs/goal-mode-quickstart.md`, `scripts/automation/lib/plain-language.sh` (new),
+  `scripts/automation/{run-goal.sh,run-phase.sh,run-evals.sh}`,
+  `tests/automation/test-plain-language.sh` (new),
+  `scripts/automation/lib/render_iteration_summary.py`, `skills/plain-language.md`
+  (new), `agents/{iteration-summarizer,retro-analyst,demo-narrator,readme-maintainer,
+  goal-evaluator}/{body.md,agent.yaml}`, `commands/goal-status.md`,
+  `.claude/architecture/{README,adoption-guide,system-overview,skills-and-hooks}.md`,
+  regenerated mirrors.
+- **Rollback:** per-commit `git revert` (each slice is independent); commit 6 revert
+  must be followed by a resync.
+- **Stop-and-ask:** spot-run projected cost > ~US$5; any golden verdict class flip;
+  any place where a plain line cannot be ADDED without editing a test-pinned or
+  machine-parsed line.
+- **Non-goals:** diagnostic/tripwire console lines; enum/schema/path renames; length
+  budgets on specs (D6); reviewer/auditor bodies; roadmap/commit-message prose; a
+  中文 layer (possible later on top of the same single-source table).
