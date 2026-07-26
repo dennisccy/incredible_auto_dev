@@ -3245,8 +3245,12 @@ but appreciated.
     text the app never emits, styling the CSS cannot produce). Capture script:
     session scratchpad `capture_fixture_screens.py` (boots the fixture app, asserts the
     summary text, screenshots via headless chromium).
-  - Outstanding: ONE confirmation dispatch of auditor case-01 (~$2.38, G9) to flip the
-    suite to 14/14 on record. · Rich-reference fields: spec mockups + journey-tagged failing tests (staged — do not start)
+  - Confirmation dispatch (2026-07-26, user-approved): auditor case-01 on the fixed
+    fixture → **PASS** (228 s). The golden suite stands **14/14 validated on
+    claude-opus-5**. This candidate is CLOSED — the only surviving follow-up idea from
+    the cutover note (trimming judge-body "verify your work" scaffolding) is NOT
+    warranted on this evidence: the judges hold their goldens; only the fixture was
+    stale. · Rich-reference fields: spec mockups + journey-tagged failing tests (staged — do not start)
 - *(Staged 2026-07-25 by the context-engineering planning session — §18's source plan;
   blog rule 6 "simple specs → rich references"; promotion human, EVO-1.)*
 - **Proposed:** P2 · Effort M · Risk MED.
