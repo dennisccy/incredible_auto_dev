@@ -81,6 +81,7 @@ source "$SCRIPT_DIR/lib/common.sh"
 source "$SCRIPT_DIR/lib/telemetry.sh"
 source "$SCRIPT_DIR/lib/goal-gates.sh"
 source "$SCRIPT_DIR/lib/engine-lock.sh"
+source "$SCRIPT_DIR/lib/plain-language.sh"
 
 # Pull --cli (and --force-cli) out of the args BEFORE the existing parse loop,
 # so the loop below sees only its known flags.
@@ -753,6 +754,7 @@ PY
   echo "Resume:  ./scripts/automation/run-goal.sh --resume --session-id $SESSION_ID"
   echo "Skip this check:  export CHAIN_SKIP_GITHUB_PREFLIGHT=true   (exotic credential setups)"
   echo "Run without pushing:  add --no-push-per-iter"
+  explain_goal_status "AWAITING_GITHUB_AUTH" "$SESSION_ID" "$REPO_ROOT"
   echo "════════════════════════════════════════════════════════════════════"
   exit 0
 }
@@ -785,6 +787,7 @@ PY
   echo ""
   echo "Free disk space (or: ./scripts/automation/tmp-doctor.sh --aggressive), then resume:"
   echo "  ./scripts/automation/run-goal.sh --resume --session-id $SESSION_ID"
+  explain_goal_status "AWAITING_DISK" "$SESSION_ID" "$REPO_ROOT"
   echo "════════════════════════════════════════════════════════════════════"
   exit 0
 }
@@ -1419,6 +1422,7 @@ on_abort() {
   echo "[run-goal] Aborted by user signal. Writing summary." >&2
   _join_showcase_tail --kill 2>/dev/null || true
   write_session_summary "ABORTED" "$CURRENT_ITER"
+  explain_goal_status "ABORTED" "$SESSION_ID" "$REPO_ROOT" >&2
   exit 130
 }
 trap on_abort INT TERM
@@ -1458,6 +1462,7 @@ while true; do
     echo "[run-goal] BUDGET_EXHAUSTED — reached max-iter cap of $MAX_ITER."
     record_telemetry_event "halt" '{"reason":"BUDGET_EXHAUSTED","detected_at_step":"pre_decomposer"}'
     write_session_summary "BUDGET_EXHAUSTED" "$CURRENT_ITER"
+    explain_goal_status "BUDGET_EXHAUSTED" "$SESSION_ID" "$REPO_ROOT"
     exit 0
   fi
 
@@ -1465,6 +1470,7 @@ while true; do
     echo "[run-goal] STALLED — last $STALL_WINDOW iterations made no journey progress."
     record_telemetry_event "halt" '{"reason":"STALLED","detected_at_step":"pre_decomposer"}'
     write_session_summary "STALLED" "$CURRENT_ITER"
+    explain_goal_status "STALLED" "$SESSION_ID" "$REPO_ROOT"
     exit 0
   fi
 
@@ -1476,6 +1482,7 @@ while true; do
     echo "[run-goal]   Free space (or run ./scripts/automation/tmp-doctor.sh --aggressive), then: /goal-resume $SESSION_ID"
     record_telemetry_event "halt" '{"reason":"AWAITING_DISK","detected_at_step":"pre_decomposer"}'
     write_session_summary "AWAITING_DISK" "$CURRENT_ITER"
+    explain_goal_status "AWAITING_DISK" "$SESSION_ID" "$REPO_ROOT"
     exit 0
   fi
 
@@ -1529,6 +1536,7 @@ PY
     echo ""
     echo "Resume:  ./scripts/automation/run-goal.sh --resume --session-id $SESSION_ID"
     echo "Skip the review next time:  add --auto-approve-blueprint"
+    explain_goal_status "AWAITING_BLUEPRINT_APPROVAL" "$SESSION_ID" "$REPO_ROOT"
     echo "════════════════════════════════════════════════════════════════════"
     exit 0
   fi
@@ -1593,6 +1601,7 @@ PY
     echo ""
     echo "Resume:  ./scripts/automation/run-goal.sh --resume --session-id $SESSION_ID"
     echo "(The checkpoint fires once per session; resuming acknowledges it.)"
+    explain_goal_status "AWAITING_INTENT_REVIEW" "$SESSION_ID" "$REPO_ROOT"
     echo "════════════════════════════════════════════════════════════════════"
     exit 0
   fi
@@ -1797,6 +1806,7 @@ Do NOT write code or implement anything. The iteration spec and any blueprint ed
     echo "[run-goal]   Resume after re-opening the pump session:  /goal-resume $SESSION_ID" >&2
     record_telemetry_event "halt" '{"reason":"AWAITING_PUMP","detected_at_step":"decomposer"}'
     write_session_summary "AWAITING_PUMP" "$CURRENT_ITER"
+    explain_goal_status "AWAITING_PUMP" "$SESSION_ID" "$REPO_ROOT" >&2
     exit 0
   fi
 
@@ -1804,12 +1814,14 @@ Do NOT write code or implement anything. The iteration spec and any blueprint ed
     echo "[run-goal] goal-decomposer failed with exit $_decomp_rc — aborting." >&2
     record_telemetry_event "halt" '{"reason":"DECOMPOSER_FAILED","detected_at_step":"decomposer"}'
     write_session_summary "ABORTED" "$CURRENT_ITER"
+    explain_goal_status "ABORTED" "$SESSION_ID" "$REPO_ROOT" >&2
     exit "$_decomp_rc"
   fi
 
   if [[ ! -f "$ITER_SPEC_PATH" ]]; then
     echo "[run-goal] goal-decomposer did not write spec at $ITER_SPEC_PATH — aborting." >&2
     write_session_summary "ABORTED" "$CURRENT_ITER"
+    explain_goal_status "ABORTED" "$SESSION_ID" "$REPO_ROOT" >&2
     exit 1
   fi
 
@@ -1843,6 +1855,7 @@ Do NOT write code or implement anything. The iteration spec and any blueprint ed
       fi
       record_telemetry_event "halt" '{"reason":"GATE_BLOCKED_POST_DECOMPOSE","detected_at_step":"post_decomposer"}'
       write_session_summary "GATE_BLOCKED" "$CURRENT_ITER"
+      explain_goal_status "GATE_BLOCKED" "$SESSION_ID" "$REPO_ROOT" >&2
       exit 0
     fi
   fi
@@ -1931,6 +1944,7 @@ Do NOT write code or implement anything. The iteration spec and any blueprint ed
     echo "[run-goal]   (or: ./scripts/automation/run-goal.sh --resume --session-id $SESSION_ID --interactive)" >&2
     record_telemetry_event "halt" '{"reason":"AWAITING_PUMP","detected_at_step":"executor"}'
     write_session_summary "AWAITING_PUMP" "$CURRENT_ITER"
+    explain_goal_status "AWAITING_PUMP" "$SESSION_ID" "$REPO_ROOT" >&2
     exit 0
   fi
 
@@ -1965,6 +1979,7 @@ Do NOT write code or implement anything. The iteration spec and any blueprint ed
       echo "[run-goal] Interactive pump/dispatch unavailable during coherence audit — pausing (resume re-runs iteration $CURRENT_ITER)." >&2
       record_telemetry_event "halt" '{"reason":"AWAITING_PUMP","detected_at_step":"coherence_auditor"}'
       write_session_summary "AWAITING_PUMP" "$CURRENT_ITER"
+      explain_goal_status "AWAITING_PUMP" "$SESSION_ID" "$REPO_ROOT" >&2
       exit 0
     fi
     fi  # end of the coherence resume-skip guard
@@ -2103,12 +2118,14 @@ STOP." || _eval_rc=$?
     echo "[run-goal] Interactive pump/dispatch unavailable during evaluation — pausing (resume re-runs iteration $CURRENT_ITER)." >&2
     record_telemetry_event "halt" '{"reason":"AWAITING_PUMP","detected_at_step":"goal_evaluator"}'
     write_session_summary "AWAITING_PUMP" "$CURRENT_ITER"
+    explain_goal_status "AWAITING_PUMP" "$SESSION_ID" "$REPO_ROOT" >&2
     exit 0
   fi
 
   if [[ ! -f "$EVAL_OUTPUT" ]]; then
     echo "[run-goal] goal-evaluator did not write $EVAL_OUTPUT — treating as ABORTED." >&2
     write_session_summary "ABORTED" "$CURRENT_ITER"
+    explain_goal_status "ABORTED" "$SESSION_ID" "$REPO_ROOT" >&2
     exit 1
   fi
   fi  # end .evaluated reuse guard
@@ -2138,6 +2155,7 @@ STOP." || _eval_rc=$?
   VERDICT="$(goal_gate_filter_verdict "$_raw_verdict" "$ITER_DIR" "$EVAL_OUTPUT" "$JOURNEY_HISTORY" "$COHERENCE_OUTPUT" "$_coherence_expected" "$REPO_ROOT/reports/phase-${ITER_NAME}-ui-test-results.md" "$GOAL_SESSION_DIR_LOCAL" "$GOAL_SLICE_PATH")"
   if [[ "$VERDICT" != "$_raw_verdict" ]]; then
     echo "[run-goal] Verdict gate: evaluator said '$_raw_verdict' → final verdict '$VERDICT'."
+    echo "[run-goal]   (A safety rule overrode the evaluator's claim — the stricter verdict wins.)"
     record_telemetry_event "deterministic_gate" "$(jq -cn --arg r "$_raw_verdict" --arg f "$VERDICT" '{raw:$r, final:$f}' 2>/dev/null || printf '{"raw":"%s","final":"%s"}' "$_raw_verdict" "$VERDICT")"
   fi
 
@@ -2225,6 +2243,7 @@ except Exception as e:
   fi
 
   echo "[run-goal] Verdict: $VERDICT (next depth: $NEXT_DEPTH)"
+  explain_goal_verdict "$VERDICT" "$NEXT_DEPTH"
 
   # 4b. Push per iter (if enabled). Direct git only — no model invocation.
   # Eligibility: CONTINUE / ESCALATE / GOAL_ACHIEVED. REGRESSION / STALLED
@@ -2389,6 +2408,7 @@ Do NOT write product code or start services." || _prop_rc=$?
       # delivered.html and surface a prominent link to it. Non-blocking.
       _render_final_delivered "$SESSION_ID"
       write_session_summary "GOAL_ACHIEVED" "$((CURRENT_ITER+1))"
+      explain_goal_status "GOAL_ACHIEVED" "$SESSION_ID" "$REPO_ROOT"
       if [[ "$AUTO_RELEASE" == "true" ]]; then
         # Direct gh pr create from $PUSH_BRANCH — every iter commit is already
         # there from the per-iter push, so we only need to open the PR. We
@@ -2440,12 +2460,14 @@ PY
       record_telemetry_event "halt" '{"reason":"REGRESSION_HALT","detected_at_step":"post_evaluator"}'
       write_session_summary "REGRESSION_HALT" "$((CURRENT_ITER+1))"
       echo "[run-goal] REGRESSION_HALT — review $EVAL_OUTPUT, fix the regression, then resume with --acknowledge-regression." >&2
+      explain_goal_status "REGRESSION_HALT" "$SESSION_ID" "$REPO_ROOT" >&2
       exit 1
       ;;
     STALLED)
       record_telemetry_event "halt" '{"reason":"STALLED","detected_at_step":"post_evaluator"}'
       write_session_summary "STALLED" "$((CURRENT_ITER+1))"
       echo "[run-goal] STALLED per evaluator. Edit goal.md and resume with --resume." >&2
+      explain_goal_status "STALLED" "$SESSION_ID" "$REPO_ROOT" >&2
       exit 0
       ;;
     CONTINUE|ESCALATE)
@@ -2458,6 +2480,7 @@ PY
       echo "[run-goal] ABORT_MALFORMED — two consecutive malformed evaluator verdicts. Inspect $ITER_DIR/eval.md, fix the cause (or run with CHAIN_GOAL_GATES=false to bypass), then --resume." >&2
       record_telemetry_event "halt" '{"reason":"ABORT_MALFORMED","detected_at_step":"verdict_gate"}'
       write_session_summary "ABORTED" "$CURRENT_ITER"
+      explain_goal_status "ABORT_MALFORMED" "$SESSION_ID" "$REPO_ROOT" >&2
       exit 1
       ;;
     *)

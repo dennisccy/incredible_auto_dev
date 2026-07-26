@@ -36,6 +36,7 @@ source "$SCRIPT_DIR/lib/parallel.sh"
 # session's per-agent economics (TOKEN-8).
 source "$SCRIPT_DIR/lib/telemetry.sh"
 source "$SCRIPT_DIR/lib/engine-lock.sh"
+source "$SCRIPT_DIR/lib/plain-language.sh"
 
 # Pull --cli (and --force-cli) out of the args BEFORE the existing parse loop,
 # so the loop below sees only its known flags. CHAIN_CLI defaults to claude.
@@ -709,6 +710,7 @@ if [[ "$SKIP_DEV_REVIEW" == "false" ]]; then
 
     if verdict_passes "$REVIEW_REPORT"; then
       log "  Review: PASS"
+      log "    $(explain_phase review_pass)"
       break
     fi
 
@@ -717,6 +719,7 @@ if [[ "$SKIP_DEV_REVIEW" == "false" ]]; then
     fi
 
     log "  Review: FAIL (attempt $ATTEMPT) -- looping back to dev..."
+    log "    $(explain_phase review_fail)"
   done
 
   update_status "$PHASE" "in_progress" "review_passed"
@@ -889,6 +892,7 @@ if [[ "$SKIP_QA" == "false" ]]; then
 
     if verdict_passes "$QA_REPORT"; then
       log "  QA: PASS"
+      log "    $(explain_phase qa_pass)"
       break
     fi
 
@@ -897,6 +901,7 @@ if [[ "$SKIP_QA" == "false" ]]; then
     fi
 
     log "  QA: FAIL (attempt $QA_ATTEMPT) -- fixing then re-reviewing..."
+    log "    $(explain_phase qa_fail)"
     qd_rc=0
     escalate_model_on
     _run_step "$SCRIPT_DIR/dev-phase.sh" "$PHASE" || qd_rc=$?
@@ -1102,6 +1107,8 @@ echo ""
 echo "========================================"
 echo "  Phase $PHASE: ALL CHECKS PASSED"
 echo "========================================"
+explain_phase all_passed
+echo "  New to these terms? See docs/READING-REPORTS.md"
 echo ""
 echo "Artifacts:"
 echo "  Plan:                     runs/${PHASE}/plan.md"
