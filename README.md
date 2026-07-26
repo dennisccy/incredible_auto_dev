@@ -230,6 +230,10 @@ means it's an early or backend-only iteration with no features to walk through.
 
 ### Outputs produced
 
+**New to these files and the status codes inside them?** Read
+[`docs/READING-REPORTS.md`](docs/READING-REPORTS.md) — a plain-language guide to
+which report to open and what every code means.
+
 | Artifact | Where | Audience |
 |----------|-------|----------|
 | Plain-language section + Watch-it-work gallery + technical accordions | `reports/phase-<phase>-summary.html` | Everyone |

@@ -4,6 +4,10 @@ Goal mode is an autonomous, continuous mode of the AI Multi-Agent Dev Chain. You
 
 For phase-by-phase mode (still fully supported), see the main [README](../README.md). For the architecture details, see [`.claude/architecture/goal-mode.md`](../.claude/architecture/goal-mode.md).
 
+New to the terms and status codes (STALLED, `J-01`, lean/full…)? Keep
+[`READING-REPORTS.md`](READING-REPORTS.md) open next to your first run — it explains
+every report file and every code in plain words.
+
 ## When to use goal mode vs phase mode
 
 | Use **phase mode** when … | Use **goal mode** when … |
