@@ -27,3 +27,7 @@ the engine, dispatch agents, or write anything.
    the opt-in `--intent-checkpoint` "is this the product you wanted?" pause —
    resuming acknowledges it), **orphaned** (dead engine PID — `/goal-resume`),
    or **finished** (and the final verdict).
+7. **Plain words first:** lead the summary with the status translated into a
+   plain sentence (the wording table lives in `docs/READING-REPORTS.md`), with
+   the raw code in parentheses — e.g. "The chain is paused and waiting for your
+   blueprint review (`AWAITING_BLUEPRINT_APPROVAL`)." Same for the last verdict.

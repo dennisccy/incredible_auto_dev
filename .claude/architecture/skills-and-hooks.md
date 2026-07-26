@@ -9,6 +9,7 @@ Skills are reusable instruction files that agents read during their workflow. Th
 | Diff-to-UI Impact | `diff-to-ui-impact.md` | ui-impact-analyst | Classify file changes by UI impact type (frontend-direct, backend-api, backend-internal, config, full-stack) |
 | UI Workflow Inference | `ui-workflow-inference.md` | ui-impact-analyst | Infer user journeys from changed routes, components, and entry points |
 | Visible Change Summarizer | `visible-change-summarizer.md` | ui-impact-analyst | Write plain-language user-facing change summaries for operators |
+| Plain Language | `plain-language.md` | iteration-summarizer, demo-narrator, readme-maintainer | Shared plain-English writing standard for owner-facing prose: short sentences, IDs with friendly names, the canonical status/verdict word table (single source: `lib/plain-language.sh`) |
 | Manual UI Test Plan Generator | `manual-ui-test-plan-generator.md` | ui-test-designer | Create human-executable test plans with exact steps and expected outcomes |
 | What-to-Click Writer | `what-to-click-writer.md` | ui-test-designer | Write fast operator verification guides (5-minute check) |
 | Browser Workflow Executor | `browser-workflow-executor.md` | browser-qa-agent | Execute browser flows via Chrome MCP (navigate, click, type, screenshot) |

@@ -4,8 +4,8 @@ description: Post-session retrospective analyst. Reads ONLY the frozen retro-inp
 model: claude-haiku-4-5
 tools: [Read, Write]
 disallowed_tools: ["Bash(rm -rf /)", "Bash(rm -rf ~)", "Bash(rm -rf ~/*)", "Bash(rm -rf /home*)", "Bash(rm -rf /root*)", "Bash(rm -rf /etc*)", "Bash(rm -rf /usr*)", "Bash(rm -rf /var*)", "Bash(rm -rf /boot*)", "Bash(rm -rf /lib*)", "Bash(rm -rf /opt*)", "Bash(rm -rf /srv*)", "Bash(rm -rf /sys*)", "Bash(rm -rf /proc*)", "Bash(git push --force origin main)", "Bash(git push --force origin master)", "Bash(git push -f origin main)", "Bash(git push -f origin master)", "Bash(git push *)", "Bash(git push)", "Bash(git push --force *)", "Bash(gh pr merge *)", "Bash(gh pr close *)", "Bash(gh release *)", "Bash(git tag *)"]
-version: 1.0.0
-last_updated: 2026-07-10
+version: 1.1.0
+last_updated: 2026-07-26
 ---
 
 # Retro Analyst
@@ -47,6 +47,14 @@ Number items RETRO-1 … RETRO-5, at most 5, each ≤20 lines, in this exact sha
 
 Hard rule: no Evidence line → no item. Every Evidence entry names the digest section and quotes the line(s) verbatim, e.g. `Evidence: Friction counters — "Quota pauses: 3"`. Zero items is a valid output: when nothing recurred, the Candidate items body is exactly `nothing recurred worth proposing` plus one sentence saying why (e.g. all counters zero, lessons product-only).
 
+Plain-writing rules (the report is read by a non-developer owner first):
+- The FIRST sentence of every **Problem:** must be plain English: short, everyday
+  words, says who hits the pain and when. Technical detail goes in the second
+  sentence.
+- Never use a bare internal codename (EVO-1, §16, REL-n, a lane or tripwire name)
+  without saying in words what it is.
+- Keep the header's code legend line exactly as the skeleton shows it.
+
 ## Output
 
 Write exactly ONE file — the output path from your dispatch prompt (`reports/goal-session-<sid>-retro.md`), overwriting any existing file:
@@ -54,8 +62,11 @@ Write exactly ONE file — the output path from your dispatch prompt (`reports/g
 ```
 # Session retro — <sid>
 
-> **PROPOSALS ONLY** — a human promotes candidates into docs/improvement-roadmap.md §16
-> per EVO-1; nothing here is scheduled work.
+> **Ideas only — nothing here is scheduled work.** These are suggestions for
+> improving the build system itself, not your product. A human reviews them and
+> decides (promotion into docs/improvement-roadmap.md §16, the staging list).
+> Codes: P0/P1/P2 = how urgent · Effort S/M/L = how much work · Risk LOW/MED/HIGH
+> = chance a change breaks something else.
 
 **Session:** <sid> · **Terminal status:** <from Outcome> · **Iterations:** <from Outcome>
 

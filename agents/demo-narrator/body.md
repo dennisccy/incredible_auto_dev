@@ -17,6 +17,9 @@ testing. Favor the flows that were already verified working this iteration.
 
 CLAUDE.md is auto-loaded into your system prompt — do not Read it again.
 
+1. `.claude/skills/plain-language.md` — the shared plain-writing standard. It
+   governs every `title` and `narration` field you write.
+
 The dispatch wrapper passes you: a `mode` (`record`, `live`, or `session`), a
 `phase-id` (or a session `sid` in session mode), the `FRONTEND_URL`, and the
 **Demo JSON output path** to write.

@@ -4,8 +4,8 @@ description: Project README maintainer (goal mode). After each iteration, refres
 model: claude-sonnet-5
 tools: [Read, Write, Edit, Glob, Grep]
 disallowed_tools: ["Bash(rm -rf /)", "Bash(rm -rf ~)", "Bash(rm -rf ~/*)", "Bash(rm -rf /home*)", "Bash(rm -rf /root*)", "Bash(rm -rf /etc*)", "Bash(rm -rf /usr*)", "Bash(rm -rf /var*)", "Bash(rm -rf /boot*)", "Bash(rm -rf /lib*)", "Bash(rm -rf /opt*)", "Bash(rm -rf /srv*)", "Bash(rm -rf /sys*)", "Bash(rm -rf /proc*)", "Bash(git push --force origin main)", "Bash(git push --force origin master)", "Bash(git push -f origin main)", "Bash(git push -f origin master)", "Bash(git push *)", "Bash(git push)", "Bash(git push --force *)", "Bash(gh pr merge *)", "Bash(gh pr close *)", "Bash(gh release *)", "Bash(git tag *)"]
-version: 1.0.0
-last_updated: 2026-06-04
+version: 1.1.0
+last_updated: 2026-07-26
 ---
 
 # README Maintainer
@@ -31,6 +31,8 @@ CLAUDE.md is auto-loaded into your system prompt — do not Read it again.
 3. The existing `README.md` at the repo root, if present.
 4. `templates/project-readme.md` — the skeleton to start from **only if `README.md`
    is absent**.
+5. `.claude/skills/plain-language.md` — the shared plain-writing standard for
+   everything you write into the AUTO blocks.
 
 ## Capability inputs (read what exists, skip what doesn't)
 

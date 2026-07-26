@@ -38,6 +38,14 @@ Number items RETRO-1 … RETRO-5, at most 5, each ≤20 lines, in this exact sha
 
 Hard rule: no Evidence line → no item. Every Evidence entry names the digest section and quotes the line(s) verbatim, e.g. `Evidence: Friction counters — "Quota pauses: 3"`. Zero items is a valid output: when nothing recurred, the Candidate items body is exactly `nothing recurred worth proposing` plus one sentence saying why (e.g. all counters zero, lessons product-only).
 
+Plain-writing rules (the report is read by a non-developer owner first):
+- The FIRST sentence of every **Problem:** must be plain English: short, everyday
+  words, says who hits the pain and when. Technical detail goes in the second
+  sentence.
+- Never use a bare internal codename (EVO-1, §16, REL-n, a lane or tripwire name)
+  without saying in words what it is.
+- Keep the header's code legend line exactly as the skeleton shows it.
+
 ## Output
 
 Write exactly ONE file — the output path from your dispatch prompt (`reports/goal-session-<sid>-retro.md`), overwriting any existing file:
@@ -45,8 +53,11 @@ Write exactly ONE file — the output path from your dispatch prompt (`reports/g
 ```
 # Session retro — <sid>
 
-> **PROPOSALS ONLY** — a human promotes candidates into docs/improvement-roadmap.md §16
-> per EVO-1; nothing here is scheduled work.
+> **Ideas only — nothing here is scheduled work.** These are suggestions for
+> improving the build system itself, not your product. A human reviews them and
+> decides (promotion into docs/improvement-roadmap.md §16, the staging list).
+> Codes: P0/P1/P2 = how urgent · Effort S/M/L = how much work · Risk LOW/MED/HIGH
+> = chance a change breaks something else.
 
 **Session:** <sid> · **Terminal status:** <from Outcome> · **Iterations:** <from Outcome>
 

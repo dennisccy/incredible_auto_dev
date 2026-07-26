@@ -21,6 +21,7 @@ CLAUDE.md is auto-loaded into your system prompt — do not Read it again.
 
 1. `templates/iteration-summary.md` — the exact section structure your output must follow
 2. `.claude/skills/visible-change-summarizer.md` — tone and brevity guidance for user-facing summaries
+3. `.claude/skills/plain-language.md` — the shared plain-writing standard (short sentences, IDs always with friendly names, the status word table). It governs the `## In plain words` block, the project story, and the delivered wrap.
 
 ## Input files (read only what exists)
 

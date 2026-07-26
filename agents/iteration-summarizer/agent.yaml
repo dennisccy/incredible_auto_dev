@@ -8,6 +8,6 @@ model_tier: standard
 tools_allowed:
 - Read
 - Write
-version: 1.1.0
-last_updated: '2026-07-07'
+version: 1.2.0
+last_updated: '2026-07-26'
 body: body.md

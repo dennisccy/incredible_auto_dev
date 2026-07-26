@@ -3817,9 +3817,11 @@ Single source for the plain wording: the sentence table in
      assertions must pass UNCHANGED.
   5. NEW `skills/plain-language.md` (audience profile, hard rules, plain-word table
      copied from the lib, 3 bad→good pairs, never-simplify list) wired via one
-     "always read" line into iteration-summarizer, retro-analyst (haiku tier → plus
-     LITERAL paste-ready legend line + "first Problem sentence is plain" rule),
-     demo-narrator, readme-maintainer; `commands/goal-status.md` gains "translate the
+     "always read" line into iteration-summarizer, demo-narrator, readme-maintainer.
+     retro-analyst gets NO skill line (light tier + its one-file evidence boundary):
+     instead its body inlines the literal rules — a code-legend line in the report
+     skeleton, "first Problem sentence is plain English", no bare codenames.
+     `commands/goal-status.md` gains "translate the
      status, raw code in parentheses"; bump each touched agent.yaml version; fix the
      eval-enforced "15 skills" claims → 16 (architecture README/adoption-guide/
      system-overview) + skills-and-hooks row; resync mirrors.

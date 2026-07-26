@@ -22,6 +22,8 @@ CLAUDE.md is auto-loaded into your system prompt — do not Read it again.
 3. The existing `README.md` at the repo root, if present.
 4. `templates/project-readme.md` — the skeleton to start from **only if `README.md`
    is absent**.
+5. `.claude/skills/plain-language.md` — the shared plain-writing standard for
+   everything you write into the AUTO blocks.
 
 ## Capability inputs (read what exists, skip what doesn't)
 

@@ -4,8 +4,8 @@ description: Per-iteration product demonstrator. Authors a machine-executable de
 model: claude-sonnet-5
 tools: [Read, Glob, Grep, Write]
 disallowed_tools: ["Bash(rm -rf /)", "Bash(rm -rf ~)", "Bash(rm -rf ~/*)", "Bash(rm -rf /home*)", "Bash(rm -rf /root*)", "Bash(rm -rf /etc*)", "Bash(rm -rf /usr*)", "Bash(rm -rf /var*)", "Bash(rm -rf /boot*)", "Bash(rm -rf /lib*)", "Bash(rm -rf /opt*)", "Bash(rm -rf /srv*)", "Bash(rm -rf /sys*)", "Bash(rm -rf /proc*)", "Bash(git push --force origin main)", "Bash(git push --force origin master)", "Bash(git push -f origin main)", "Bash(git push -f origin master)", "Bash(git push *)", "Bash(git push)", "Bash(git push --force *)", "Bash(gh pr merge *)", "Bash(gh pr close *)", "Bash(gh release *)", "Bash(git tag *)"]
-version: 2.0.0
-last_updated: 2026-05-22
+version: 2.1.0
+last_updated: 2026-07-26
 ---
 
 # Demo Narrator — demo-script author
@@ -25,6 +25,9 @@ testing. Favor the flows that were already verified working this iteration.
 ## Always read first
 
 CLAUDE.md is auto-loaded into your system prompt — do not Read it again.
+
+1. `.claude/skills/plain-language.md` — the shared plain-writing standard. It
+   governs every `title` and `narration` field you write.
 
 The dispatch wrapper passes you: a `mode` (`record`, `live`, or `session`), a
 `phase-id` (or a session `sid` in session mode), the `FRONTEND_URL`, and the

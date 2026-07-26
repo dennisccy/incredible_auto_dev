@@ -69,7 +69,7 @@ CLAUDE.md (constitution)
     |
     +-- .claude/agents/*.md (12 agent definitions)
     |       |
-    |       +-- read .claude/skills/*.md (15 skills)
+    |       +-- read .claude/skills/*.md (16 skills)
     |
     +-- .claude/hooks/*.sh (5 hooks, triggered by Claude Code)
     |
