@@ -198,6 +198,17 @@ Write to `runs/goal-session-<sid>/iter-<N>/eval.md`:
 <only present when verdict is GOAL_ACHIEVED, REGRESSION, or STALLED — explain why halting>
 ```
 
+### 6b. Plain-language rule for prose fields
+
+The session owner is not a native English reader. In the PROSE fields only — `Reasoning` and `Next-step recommendation` in evaluator-log.md (step 4), and the `## Summary`, `## Next-Step Recommendation`, and `## Halt Justification` sections of eval.md (step 6) — write plain English:
+
+- Short sentences. Everyday words. No idioms.
+- Whenever you name a journey ID, put its short name next to it: J-04 "Sign in with email" — never a bare ID list.
+- Describe what the user would see, not internal code: "the login page rejects a correct password", not a function, class, or variable name. (Evidence references keep their file paths — that rule is unchanged.)
+- End the recommendation with one sentence saying what should happen next, phrased so a non-programmer could act on it or approve it.
+
+This rule changes WORDING ONLY. It does not change any machine-parsed format: the verdict lines and their allowed values defined elsewhere in this document, the depth-recommendation line, all headings, table shapes, JSON schemas, and file paths stay exactly as specified.
+
 ### 7. Overwrite iteration-state.md (the next planner's digest)
 
 After eval.md is written (so your fresh verdict is its newest entry), write
