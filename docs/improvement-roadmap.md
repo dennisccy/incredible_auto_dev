@@ -3231,8 +3231,22 @@ but appreciated.
   faithful captures) vs judge-body "verify your work" scaffolding trimming per the
   cutover note — any judge-body edit then requires the full-run validation (G9/D4).
 - **Why staged:** spend-class (G9) and judge-body scope — human promotion required.
-
-### CAND-RICHREF · Rich-reference fields: spec mockups + journey-tagged failing tests (staged — do not start)
+- **RESOLVED (user-promoted 2026-07-25, executed 2026-07-25/26):**
+  - Counterfactual (auditor case-01, pre-CTX-8 prompt restored): **FAIL** (316 s) —
+    WORSE than the current prompt's PASS_WITH_GAPS ⇒ **CTX-8 formally exonerated**.
+  - Full 14-case re-baseline on claude-opus-5: **13/14 PASS** — goal-evaluator 6/6,
+    reviewer 4/4, auditor 3/4. Sole failure: auditor case-01-clean-pass (expected PASS,
+    got PASS_WITH_GAPS, 270 s — same evidence-fidelity downgrade as the spot-run).
+    Judges are stable on Opus 5; NO judge-body changes warranted.
+  - Fixture fix: the case's two planted screenshots were regenerated as faithful
+    Playwright captures of the fixture app's real states (UT-02 fresh-db
+    `0 open · 0 done`; UT-01 seeded `1 open · 1 done` with Milk×2 open + Eggs×1 done) —
+    all three of the auditor's cited objections addressed (missing "Open only" control,
+    text the app never emits, styling the CSS cannot produce). Capture script:
+    session scratchpad `capture_fixture_screens.py` (boots the fixture app, asserts the
+    summary text, screenshots via headless chromium).
+  - Outstanding: ONE confirmation dispatch of auditor case-01 (~$2.38, G9) to flip the
+    suite to 14/14 on record. · Rich-reference fields: spec mockups + journey-tagged failing tests (staged — do not start)
 - *(Staged 2026-07-25 by the context-engineering planning session — §18's source plan;
   blog rule 6 "simple specs → rich references"; promotion human, EVO-1.)*
 - **Proposed:** P2 · Effort M · Risk MED.
@@ -3533,7 +3547,7 @@ heading in core.md, and the security hooks' deny logic.
   heading; any verdict-class flip in the spot-run; land between sessions (cache).
 
 ### CTX-8 · Dispatch-prompt concision + pump no-reread note
-- **Priority:** P1 · **Effort:** S · **Risk:** MED · **Status:** DONE 2026-07-25 — refinement found during implementation: the pump note is CONDITIONAL on the `Agent instructions: .claude/agents/` pointer being present in the prompt, so non-agent dispatches (two-key confirms, ad-hoc) and the self-test's byte-exact round-trips stay untouched. G9 spot-run (2 of 3 judges, $4.76 est ≤ the $5 guard; reviewer covered by the offline verbatim-parity eval instead): goal-evaluator case-01 PASS; auditor case-01 flipped PASS→PASS_WITH_GAPS — evidence attributes the flip to the un-re-baselined Opus-5 cutover, NOT this change (see CAND-JUDGE-REBASE in §16; user decides revert vs re-baseline).
+- **Priority:** P1 · **Effort:** S · **Risk:** MED · **Status:** DONE 2026-07-25 — refinement found during implementation: the pump note is CONDITIONAL on the `Agent instructions: .claude/agents/` pointer being present in the prompt, so non-agent dispatches (two-key confirms, ad-hoc) and the self-test's byte-exact round-trips stay untouched. G9 spot-run (2 of 3 judges, $4.76 est ≤ the $5 guard; reviewer covered by the offline verbatim-parity eval instead): goal-evaluator case-01 PASS; auditor case-01 flipped PASS→PASS_WITH_GAPS. User-promoted follow-up (2026-07-25/26): counterfactual with the old prompt scored WORSE (FAIL) and the full 14-case Opus-5 re-baseline passed 13/14 with the same single fixture-evidence failure — CTX-8 exonerated, fixture screenshots regenerated as faithful captures (see CAND-JUDGE-REBASE, §16).
 - **Problem:** every dispatch prompt repeats "Apply the TOKEN AND QUESTIONING POLICY
   from .claude/core.md strictly." although all 18 agent bodies already carry that exact
   directive (rule 4). Separately, on the interactive backend the subagent's system
