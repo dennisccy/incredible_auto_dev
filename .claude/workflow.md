@@ -23,7 +23,7 @@ Plan → Test Plan → Dev+Review loop → QA loop → Audit loop → Finalize
 | 7. QA | `qa-phase.sh` | qa (mode: validate) | `reports/qa/<phase>-qa.md` |
 | 8. UX Regression Review | `ux-regression-phase.sh` | ux-regression-reviewer | `reports/phase-{N}-ux-regression.md` |
 | 9. Audit | `phase-audit.sh` | auditor | `docs/handoffs/<phase>-audit.md` |
-| 10. Phase Closure | `phase-closure-check.sh` | phase-closure-auditor | `reports/phase-{N}-closure-verdict.md` |
+| 10. Phase Closure | `phase-closure-check.sh` | phase-closure-auditor (deterministic since 2026-07-28 — `closure_gate.py`; `CHAIN_CLOSURE_LLM=true` restores the agent dispatch) | `reports/phase-{N}-closure-verdict.md` |
 | 11. Finalize | `finalize-phase.sh` | release-manager | `runs/<phase>/summary.json`, PR (then updates `docs/architecture/` via `update-docs.sh`, non-blocking) |
 
 *Stages 5, 6, 8 are skipped for backend-only phases (`Frontend Present: no`) — N/A stubs are written automatically.*
@@ -64,7 +64,7 @@ Agents ONLY communicate through filesystem artifacts. No free-form messages betw
 | UI test results | `reports/phase-{N}-ui-test-results.md` | browser-qa-agent | ux-regression-reviewer, phase-closure-auditor |
 | What to click | `reports/phase-{N}-what-to-click.md` | ui-test-designer | operator (human), phase-closure-auditor |
 | UX regression report | `reports/phase-{N}-ux-regression.md` | ux-regression-reviewer | phase-closure-auditor |
-| Closure verdict | `reports/phase-{N}-closure-verdict.md` | phase-closure-auditor | finalize-phase.sh |
+| Closure verdict | `reports/phase-{N}-closure-verdict.md` | closure_gate.py (phase-closure-auditor when `CHAIN_CLOSURE_LLM=true`) | finalize-phase.sh |
 | Project goal | `docs/goal.md` | Human | orchestrator, developer, reviewer, qa |
 | Project architecture | `docs/architecture/*.md` (if present; created after the first finalized phase — absence is normal early on) | update-docs.sh | orchestrator, developer |
 | Framework architecture | `.claude/architecture/*.md` | update-docs.sh | Framework maintainers (reference) |

@@ -5,6 +5,11 @@
 # Verifies all required artifacts exist and are non-vague.
 # Blocks phases from completing when UI artifacts are missing or inconsistent.
 # Runs after the audit loop, before finalize.
+#
+# SPEED-17: the default path is the deterministic gate (lib/closure_gate.py) —
+# the LLM phase-closure-auditor added no new judgment over existence/count/
+# cross-consistency checks and cost ~5 min per iteration plus a flake source
+# on a HARD gate. Set CHAIN_CLOSURE_LLM=true to restore the agent dispatch.
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -16,7 +21,6 @@ source "$SCRIPT_DIR/lib/telemetry.sh"
 
 PHASE="${1:-}"
 require_phase_arg "$PHASE"
-require_claude
 
 SPEC=$(phase_spec_path "$PHASE")
 if [[ -z "$SPEC" ]]; then
@@ -32,27 +36,31 @@ CLOSURE_VERDICT="$REPO_ROOT/reports/phase-${PHASE}-closure-verdict.md"
 
 echo "[closure-check] Running phase closure audit for: $PHASE"
 
-# Verify standard pipeline gates are present before invoking agent
-MISSING_GATES=()
-[[ -f "$REVIEW_REPORT" ]] || MISSING_GATES+=("$REVIEW_REPORT")
-[[ -f "$QA_REPORT" ]]     || MISSING_GATES+=("$QA_REPORT")
+if [[ "${CHAIN_CLOSURE_LLM:-false}" == "true" ]]; then
+  # ── Escape hatch: LLM phase-closure-auditor dispatch (pre-SPEED-17 path) ──
+  require_claude
 
-if [[ ${#MISSING_GATES[@]} -gt 0 ]]; then
-  echo "Error: Required pipeline artifacts missing:" >&2
-  for f in "${MISSING_GATES[@]}"; do echo "  $f" >&2; done
-  echo "Complete the pipeline stages before running closure check." >&2
-  exit 1
-fi
+  # Verify standard pipeline gates are present before invoking agent
+  MISSING_GATES=()
+  [[ -f "$REVIEW_REPORT" ]] || MISSING_GATES+=("$REVIEW_REPORT")
+  [[ -f "$QA_REPORT" ]]     || MISSING_GATES+=("$QA_REPORT")
 
-# Check backend-only claim consistency (non-fatal — agent will assess)
-check_backend_only_claim "$PHASE" || \
-  echo "[closure-check] Warning: user-visible-changes may be inconsistent with actual file changes."
+  if [[ ${#MISSING_GATES[@]} -gt 0 ]]; then
+    echo "Error: Required pipeline artifacts missing:" >&2
+    for f in "${MISSING_GATES[@]}"; do echo "  $f" >&2; done
+    echo "Complete the pipeline stages before running closure check." >&2
+    exit 1
+  fi
 
-cd "$REPO_ROOT"
-record_agent_invocation_start phase-closure-auditor
-_agent_t0="$CHAIN_AGENT_START_EPOCH"
-_agent_rc=0
-claude_with_quota_retry -p "You are the phase-closure-auditor for phased development.
+  # Check backend-only claim consistency (non-fatal — agent will assess)
+  check_backend_only_claim "$PHASE" || \
+    echo "[closure-check] Warning: user-visible-changes may be inconsistent with actual file changes."
+
+  cd "$REPO_ROOT"
+  record_agent_invocation_start phase-closure-auditor
+  _agent_t0="$CHAIN_AGENT_START_EPOCH"
+  _agent_rc=0
+  claude_with_quota_retry -p "You are the phase-closure-auditor for phased development.
 
 Phase: $PHASE
 Phase spec: $SPEC
@@ -92,8 +100,26 @@ Verdict line MUST appear at the top of the file:
 For CLOSURE-FAIL: list exact blocking issues and specific remediation steps.
 
 Then STOP." || _agent_rc=$?
-record_agent_invocation_end phase-closure-auditor "$_agent_t0" "$_agent_rc"
-(( _agent_rc == 0 )) || exit "$_agent_rc"
+  record_agent_invocation_end phase-closure-auditor "$_agent_t0" "$_agent_rc"
+  (( _agent_rc == 0 )) || exit "$_agent_rc"
+else
+  # ── Default: deterministic gate (SPEED-17) — no LLM dispatch ──────────────
+  echo "[closure-check] ── DETERMINISTIC GATE: lib/closure_gate.py (no LLM dispatch; set CHAIN_CLOSURE_LLM=true to restore the phase-closure-auditor agent) ──"
+  cd "$REPO_ROOT"
+  _gate_rc=0
+  python3 "$SCRIPT_DIR/lib/closure_gate.py" "$PHASE" --repo-root "$REPO_ROOT" || _gate_rc=$?
+  if (( _gate_rc != 0 )); then
+    echo "[closure-check] Deterministic gate reported failure (exit $_gate_rc). See: $CLOSURE_VERDICT" >&2
+    # Fall through to the verdict echo below, then propagate the exit code —
+    # callers (run-phase.sh) treat non-zero as failure and re-check the
+    # verdict file via closure_verdict_passes.
+    if [[ -f "$CLOSURE_VERDICT" ]]; then
+      VERDICT=$(grep -m1 "^\*\*Verdict:\*\*" "$CLOSURE_VERDICT" 2>/dev/null || echo "")
+      [[ -n "$VERDICT" ]] && echo "[closure-check] $VERDICT"
+    fi
+    exit "$_gate_rc"
+  fi
+fi
 
 echo "[closure-check] Done. Verdict: $CLOSURE_VERDICT"
 if [[ -f "$CLOSURE_VERDICT" ]]; then
