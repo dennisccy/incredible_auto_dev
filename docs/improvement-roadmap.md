@@ -144,11 +144,14 @@ signal that says "do this now").
     2026-07-28 by direct user request after the tapeology desk-session diagnosis;
     EVO-1 promotion + G6 multi-item exception, all three judge cuts and the
     ask-first flips explicitly approved). Implemented 2026-07-28 in one bundled
-    session; judgment spot-run + G8 fresh-session certification and one real
+    session; judgment spot-run GREEN 2026-07-29 — 14/14 verdict classes
+    (auditor 4/4 incl. case-03 contradiction-still-FAILs, goal-evaluator 6/6
+    incl. case-04 drift-beats-durability and case-06 make-up-boolean
+    distinction, reviewer 4/4 with the SPEED-18 key removals). Still owed
+    before any item flips to DONE: G8 fresh-session certification and one real
     session's before/after telemetry (PRE speed-package-20260728 in
-    benchmarks/experiments.md) still owed before any item flips to DONE.
-    SPEED-15 slice (b) (trim-mode browser narrowing) stays TODO until a
-    warn-mode session exists.
+    benchmarks/experiments.md). SPEED-15 slice (b) (trim-mode browser
+    narrowing) stays TODO until a warn-mode session exists.
 
 ---
 
