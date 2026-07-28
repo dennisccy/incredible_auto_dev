@@ -330,11 +330,16 @@ marker_field() {  # marker_field <iter-dir> <step> <field> — from a .steps mar
   jq -r --arg f "$3" '.[$f] // empty' "$1/.steps/$2.done" 2>/dev/null || true
 }
 
-# ══ Scenario A: knob unset (default off) — sequential, no fork artifacts ═════
+# ══ Scenario A: knob=off — sequential, no fork artifacts ═════════════════════
+# SPEED-11 flipped the DEFAULT off→replay, so off-mode behavior is now pinned
+# with an explicit export; the default itself is asserted right below.
+grep -q 'CHAIN_LEAN_PARALLEL_BROWSER_QA:-replay' "$ENGINE_ROOT/scripts/automation/goal-iter-lean.sh" \
+  && assert "A: default resolves to replay (SPEED-11 flip)" "pass" \
+  || assert "A: default resolves to replay (SPEED-11 flip)" "fail"
 make_sandbox A
 new_capture A
 start_dummies
-unset CHAIN_LEAN_PARALLEL_BROWSER_QA 2>/dev/null || true
+export CHAIN_LEAN_PARALLEL_BROWSER_QA=off
 export STUB_REPLAY_VERDICT=FAIL   # replay flags J-01 → LLM re-confirms it (both scenarios)
 rc=0; run_lean "$WORK/lean-A.log" || rc=$?
 [[ "$rc" -eq 0 ]] && assert "A: off-mode lean iteration exits 0" "pass" \
@@ -513,7 +518,7 @@ grep -q "Forking browser-qa service boot" "$WORK/lean-D2.log" \
 make_sandbox E
 new_capture E
 start_dummies
-unset CHAIN_LEAN_PARALLEL_BROWSER_QA 2>/dev/null || true
+export CHAIN_LEAN_PARALLEL_BROWSER_QA=off   # pinned: the default is replay since SPEED-11
 export STUB_REPLAY_VERDICT=PASS
 rc=0; run_lean "$WORK/lean-E-seed.log" || rc=$?
 [[ "$rc" -eq 0 ]] && assert "E: headless seed run exits 0" "pass" \
@@ -636,7 +641,7 @@ unset STUB_BQA_SLEEP STUB_BQA_STARTED_STAMP STUB_REVIEW_WAIT_FOR STUB_REVIEW_VER
 make_sandbox H1
 new_capture H1
 start_dummies
-unset CHAIN_LEAN_PARALLEL_BROWSER_QA 2>/dev/null || true
+export CHAIN_LEAN_PARALLEL_BROWSER_QA=off   # pinned: the default is replay since SPEED-11
 export STUB_REPLAY_VERDICT=PASS
 export STUB_BQA_RC=70
 rc=0; run_lean "$WORK/lean-H1.log" || rc=$?
@@ -697,7 +702,7 @@ unset STUB_BQA_RC 2>/dev/null || true
 make_sandbox I
 new_capture I1
 start_dummies
-unset CHAIN_LEAN_PARALLEL_BROWSER_QA 2>/dev/null || true
+export CHAIN_LEAN_PARALLEL_BROWSER_QA=off   # pinned: the default is replay since SPEED-11
 unset STUB_REPLAY_VERDICT STUB_REPLAY_SLEEP STUB_DEV_FIX_RC 2>/dev/null || true
 unset STUB_REVIEW_WAIT_FOR STUB_REVIEW_WITNESS 2>/dev/null || true
 unset STUB_BQA_STARTED_STAMP STUB_BQA_SLEEP STUB_BQA_RC 2>/dev/null || true
@@ -759,7 +764,7 @@ rc=0; run_lean "$WORK/lean-I2.log" || rc=$?
 make_sandbox J
 new_capture J
 start_dummies
-unset CHAIN_LEAN_PARALLEL_BROWSER_QA 2>/dev/null || true
+export CHAIN_LEAN_PARALLEL_BROWSER_QA=off   # pinned: the default is replay since SPEED-11
 export STUB_REPLAY_VERDICT=PASS
 export STUB_REVIEW_VERDICT=PASS
 export CHAIN_FRONTEND_URL="http://localhost:${BE_PORT}"

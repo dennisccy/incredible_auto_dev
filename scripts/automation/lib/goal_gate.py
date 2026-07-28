@@ -421,6 +421,16 @@ def _self_test() -> int:
         assert cmd_coherence(str(coh_fail), False) == 1
         assert cmd_coherence(str(coh_stub), False) == 0, "stub PASS may gate CONTINUE"
         assert cmd_coherence(str(coh_stub), True) == 1, "stub PASS must not certify done"
+        # SPEED-14: the zero-change deterministic PASS is a reasoned verdict
+        # (empty product diff ⇒ no drift possible), NOT a crash stub — it stays
+        # valid for GOAL_ACHIEVED certification.
+        coh_zero = d / "c5.md"; coh_zero.write_text(
+            "**Verdict:** COHERENCE-PASS\n\n(Zero-change iteration: the product diff since the "
+            "iteration snapshot is empty — nothing to audit. Deterministic pass without dispatch; "
+            "set CHAIN_ZERO_CHANGE_SKIPS=false to always dispatch.)\n",
+            encoding="utf-8")
+        assert cmd_coherence(str(coh_zero), False) == 0, "zero-change PASS gates CONTINUE"
+        assert cmd_coherence(str(coh_zero), True) == 0, "zero-change PASS stays valid for certification (SPEED-14)"
         assert cmd_coherence(str(d / "nope.md"), True) == 2
 
         res_ok = d / "r1.md"; res_ok.write_text("| T1 | n | ui | P1 | e | a | PASS | x.png |\n", encoding="utf-8")

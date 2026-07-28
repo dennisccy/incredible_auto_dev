@@ -887,15 +887,18 @@ escalate_model_off() {
 # re-entry cannot double-count.
 
 # goal_lean_streak <session_dir> <current_iter>
-# Echoes the count of consecutive trailing `lean` dispatches over
-# iter-(N-1)..iter-1. A missing file or any non-lean value breaks the streak.
+# Echoes the count of consecutive trailing non-full dispatches over
+# iter-(N-1)..iter-1. A missing file or a `full` value breaks the streak.
 # iter-0 (baseline) is never counted — the loop floor is iter-1.
+# SPEED-9: `evidence` dispatches continue the streak like `lean` — they run no
+# audit either, so the hardening cadence must keep counting toward its next
+# full pass rather than resetting on an evidence hop.
 goal_lean_streak() {
   local session_dir="$1" current_iter="$2"
   local streak=0 i v
   for (( i = current_iter - 1; i >= 1; i-- )); do
     v="$(cat "$session_dir/iter-$i/depth-dispatched" 2>/dev/null || true)"
-    [[ "$v" == "lean" ]] || break
+    [[ "$v" == "lean" || "$v" == "evidence" ]] || break
     streak=$((streak + 1))
   done
   echo "$streak"
@@ -904,12 +907,15 @@ goal_lean_streak() {
 # goal_cadence_forces_full <streak> <current_iter>
 # True iff the hardening cadence demands a full pass now: K>0 AND
 # current_iter>K (never fires in a session's opening window, where iter-0 is
-# the baseline) AND streak>=K. K = CHAIN_HARDENING_CADENCE, default 4, 0
-# disables the cadence entirely.
+# the baseline) AND streak>=K. K = CHAIN_HARDENING_CADENCE, default 6, 0
+# disables the cadence entirely. (SPEED-10 raised the default 4→6: with the
+# full-trigger allowlist keeping the ESCALATE/REGRESSION/structural paths
+# always-full, the cadence is a periodic audit backstop, not the primary
+# trigger — at K=4 it materially drove the 4-of-6-full waste.)
 goal_cadence_forces_full() {
   local streak="$1" current_iter="$2"
-  local k="${CHAIN_HARDENING_CADENCE:-4}"
-  [[ "$k" =~ ^[0-9]+$ ]] || k=4
+  local k="${CHAIN_HARDENING_CADENCE:-6}"
+  [[ "$k" =~ ^[0-9]+$ ]] || k=6
   (( k > 0 && current_iter > k && streak >= k ))
 }
 

@@ -238,6 +238,20 @@ _prepare_goal_evaluator() {
     ASSUMPTIONS_TAIL="(no assumptions recorded yet)"
   fi
 
+  # SPEED-9 deterministic evidence-context lines, derived exactly as run-goal.sh
+  # Step 3 derives them, sandbox-rooted. Fixtures without demo dirs / snapshots
+  # get the same fail-safe defaults production would.
+  _prior_demo_dir="$(ls -1dt "$SANDBOX"/reports/demo/goal-"$SESSION_ID"-iter-* 2>/dev/null | head -1 || true)"
+  _prior_demo_line="(none recorded yet this session)"
+  if [[ -n "$_prior_demo_dir" ]]; then
+    _prior_demo_line="${_prior_demo_dir#"$SANDBOX"/}/ (results: reports/phase-$(basename "$_prior_demo_dir")-demo-results.md)"
+  fi
+  _pdiff_status="non-empty"
+  if declare -F goal_product_diff_empty >/dev/null 2>&1 \
+     && goal_product_diff_empty "$(cat "$ITER_DIR/snapshot-sha" 2>/dev/null || echo "")" "$SANDBOX"; then
+    _pdiff_status="EMPTY"
+  fi
+
   # The engine's goal-evaluator dispatch prompt (run-goal.sh Step 3), verbatim.
   # Unquoted heredoc: $VARs expand; \` keeps literal backticks like the engine's
   # escaped backticks inside its double-quoted prompt string.
@@ -267,6 +281,8 @@ Iteration artifacts (read what exists):
   Browser-infra token: $ITER_DIR/browser-infra.json  <-- if present: its listed journeys hit a browser INFRA failure (services/Chrome), not a product defect. With no fresh screenshot, score them partial with gap 'pending-infra' and set pending_infra: true in journey-history (methodology A.3); attempts >= 2 in the token = treat the browser infrastructure as a human-owned blocker (STALLED-class)
   Coherence audit: $COHERENCE_OUTPUT  <-- COHERENCE-FAIL vetoes GOAL_ACHIEVED and drives a consolidation CONTINUE
   Goal-edit drift note: $ITER_DIR/journeys-changed.md  <-- if present, each listed journey's prior pass is VOID until re-verified against the CURRENT goal text (your step 3)
+  Prior walkthrough recording (methodology A.6 evidence durability — stays valid for journeys whose product code is unchanged since it was recorded): $_prior_demo_line
+  Product diff this iteration (deterministic; bookkeeping excluded): $_pdiff_status
 
 Journey state (inline digest — your methodology's section A table starts here):
 \`\`\`
@@ -299,7 +315,7 @@ The verdict line MUST appear at the top of $VERDICT_FILE and start exactly with:
   or **Verdict:** REGRESSION
   or **Verdict:** STALLED
 
-Also include a 'Depth Recommendation For Next Iteration:' line: lean or full.
+Also include a 'Depth Recommendation For Next Iteration:' line: lean, full, or evidence (evidence = every remaining gap is a capture/recording task on already-working features).
 
 Then update $JOURNEY_HISTORY (full atomic write), OVERWRITE $ITER_STATE_FILE (templates/iteration-state.md shape, ≤40 lines), and append an entry to $EVALUATOR_LOG.
 STOP.

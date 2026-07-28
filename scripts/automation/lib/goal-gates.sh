@@ -100,6 +100,27 @@ goal_gate_build_diff_artifacts() {
   return 0
 }
 
+# SPEED-14: deterministic "did this iteration change the product at all?" probe.
+# Same pathspec discipline as goal_gate_build_diff_artifacts above (bookkeeping
+# namespaces excluded, both layers: tracked diff + untracked enumeration).
+# Returns 0 ONLY when the tracked diff vs the snapshot is empty AND no untracked
+# product files exist. Missing snapshot or any git error → 1 (fail-safe: treat
+# as "changed" so nothing gets skipped on bad data).
+# $1 snapshot_sha   $2 repo_root
+goal_product_diff_empty() {
+  local snapshot_sha="$1" repo_root="$2"
+  [[ -n "$snapshot_sha" && -n "$repo_root" ]] || return 1
+  local _ex
+  local _scan_pathspec=(".")
+  for _ex in $CHAIN_SCAN_BOOKKEEPING_EXCLUDES; do
+    _scan_pathspec+=(":(exclude)$_ex")
+  done
+  local _tracked _untracked
+  _tracked=$(git -C "$repo_root" diff --name-only "$snapshot_sha" -- "${_scan_pathspec[@]}" 2>/dev/null) || return 1
+  _untracked=$(git -C "$repo_root" ls-files --others --exclude-standard -- "${_scan_pathspec[@]}" 2>/dev/null) || return 1
+  [[ -z "$_tracked" && -z "$_untracked" ]]
+}
+
 # Deterministic achievement gate. Writes $1/gate-report.md. Returns 0 iff every
 # check passes. Args:
 #   $1 iter_dir  $2 journey_history  $3 coherence_md  $4 coherence_expected(true|false)

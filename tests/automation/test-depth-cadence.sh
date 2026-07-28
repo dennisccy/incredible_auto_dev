@@ -93,15 +93,18 @@ cadence() {  # cadence <K-or-""> <streak> <iter> -> yes|no
   fi
 }
 
-[[ "$(cadence "" 4 5)" == "yes" ]] \
-  && assert "cadence: default K=4, streak=4, iter=5 -> forces full" "pass" \
-  || assert "cadence: default K=4, streak=4, iter=5 -> forces full" "fail"
-[[ "$(cadence "" 3 5)" == "no" ]] \
-  && assert "cadence: streak=3 < K=4 -> no override" "pass" \
-  || assert "cadence: streak=3 < K=4 -> no override" "fail"
-[[ "$(cadence "" 4 4)" == "no" ]] \
-  && assert "cadence: current_iter must exceed K (iter=4, K=4) -> no override" "pass" \
-  || assert "cadence: current_iter must exceed K (iter=4, K=4) -> no override" "fail"
+[[ "$(cadence "" 6 7)" == "yes" ]] \
+  && assert "cadence: default K=6 (SPEED-10), streak=6, iter=7 -> forces full" "pass" \
+  || assert "cadence: default K=6 (SPEED-10), streak=6, iter=7 -> forces full" "fail"
+[[ "$(cadence "" 5 7)" == "no" ]] \
+  && assert "cadence: streak=5 < K=6 -> no override" "pass" \
+  || assert "cadence: streak=5 < K=6 -> no override" "fail"
+[[ "$(cadence "" 4 5)" == "no" ]] \
+  && assert "cadence: old default K=4 no longer fires (streak=4, iter=5) -> no override" "pass" \
+  || assert "cadence: old default K=4 no longer fires (streak=4, iter=5) -> no override" "fail"
+[[ "$(cadence "" 6 6)" == "no" ]] \
+  && assert "cadence: current_iter must exceed K (iter=6, K=6) -> no override" "pass" \
+  || assert "cadence: current_iter must exceed K (iter=6, K=6) -> no override" "fail"
 [[ "$(cadence 0 9 10)" == "no" ]] \
   && assert "cadence: CHAIN_HARDENING_CADENCE=0 disables" "pass" \
   || assert "cadence: CHAIN_HARDENING_CADENCE=0 disables" "fail"
@@ -123,6 +126,23 @@ grep -q 'depth_cadence_override' "$RG" \
 [[ "$(grep -c 'depth-dispatched' "$RG" || true)" -ge 3 ]] \
   && assert "wiring: depth-dispatched written in the dispatch branches (full/fallback/lean)" "pass" \
   || assert "wiring: depth-dispatched written in the dispatch branches (full/fallback/lean)" "fail"
+
+# ── SPEED-10 full-trigger allowlist wiring ────────────────────────────────────
+grep -q 'CHAIN_DEPTH_ALLOWLIST' "$RG" \
+  && assert "allowlist: knob present in run-goal.sh" "pass" \
+  || assert "allowlist: knob present in run-goal.sh" "fail"
+grep -q 'depth_demoted' "$RG" \
+  && assert "allowlist: demotion records telemetry" "pass" \
+  || assert "allowlist: demotion records telemetry" "fail"
+grep -q 'Full trigger:' "$RG" \
+  && assert "allowlist: spec Full-trigger line is one of the accepted justifications" "pass" \
+  || assert "allowlist: spec Full-trigger line is one of the accepted justifications" "fail"
+grep -q 'prior-coherence-fail' "$RG" \
+  && assert "allowlist: prior coherence FAIL keeps full" "pass" \
+  || assert "allowlist: prior coherence FAIL keeps full" "fail"
+grep -q 'cadence-due' "$RG" \
+  && assert "allowlist: cadence-due keeps full (no ping-pong with the backstop)" "pass" \
+  || assert "allowlist: cadence-due keeps full (no ping-pong with the backstop)" "fail"
 
 # ── decomposer rubric (neutral source) ────────────────────────────────────────
 BODY="$ENGINE_ROOT/agents/goal-decomposer/body.md"
