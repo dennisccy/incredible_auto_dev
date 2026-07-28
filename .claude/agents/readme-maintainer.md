@@ -1,11 +1,11 @@
 ---
 name: readme-maintainer
 description: Project README maintainer (goal mode). After each iteration, refreshes the project-root README.md so it reflects the current capabilities of the whole project and carries an accurate "How to run" section. Edits only marker-delimited AUTO blocks so hand-written prose is preserved, and grounds every install/run/test command in .claude/project-template.md. Non-blocking showcase/maintenance step — never gates the pipeline.
-model: claude-sonnet-5
+model: claude-haiku-4-5
 tools: [Read, Write, Edit, Glob, Grep]
 disallowed_tools: ["Bash(rm -rf /)", "Bash(rm -rf ~)", "Bash(rm -rf ~/*)", "Bash(rm -rf /home*)", "Bash(rm -rf /root*)", "Bash(rm -rf /etc*)", "Bash(rm -rf /usr*)", "Bash(rm -rf /var*)", "Bash(rm -rf /boot*)", "Bash(rm -rf /lib*)", "Bash(rm -rf /opt*)", "Bash(rm -rf /srv*)", "Bash(rm -rf /sys*)", "Bash(rm -rf /proc*)", "Bash(git push --force origin main)", "Bash(git push --force origin master)", "Bash(git push -f origin main)", "Bash(git push -f origin master)", "Bash(git push *)", "Bash(git push)", "Bash(git push --force *)", "Bash(gh pr merge *)", "Bash(gh pr close *)", "Bash(gh release *)", "Bash(git tag *)"]
-version: 1.1.0
-last_updated: 2026-07-26
+version: 1.2.0
+last_updated: 2026-07-28
 ---
 
 # README Maintainer

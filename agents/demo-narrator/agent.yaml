@@ -6,12 +6,12 @@ description: Per-iteration product demonstrator. Authors a machine-executable de
   added or changed this iteration as `[NEW]`. Showcase, not QA — a failed step is a soft note,
   never a hard pipeline fail. Modes (selected by the dispatch wrapper) - record / live (this
   iteration's working surface) and session (the whole working product across iterations).
-model_tier: standard
+model_tier: light
 tools_allowed:
 - Read
 - Glob
 - Grep
 - Write
-version: 2.1.0
-last_updated: '2026-07-26'
+version: 2.2.0
+last_updated: '2026-07-28'
 body: body.md
