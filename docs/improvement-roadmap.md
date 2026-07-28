@@ -140,6 +140,15 @@ signal that says "do this now").
 10. **PLAIN-1** — plain-language output (§19, promoted 2026-07-26 by direct user
     request; absorbs DOC-5). Shipped 2026-07-26 in one bundled session; judgment
     spot-run green; certified DONE per G8 same day.
+11. **SPEED-9…19 + REP-4 + TOKEN-9** — the iteration-speed package (promoted
+    2026-07-28 by direct user request after the tapeology desk-session diagnosis;
+    EVO-1 promotion + G6 multi-item exception, all three judge cuts and the
+    ask-first flips explicitly approved). Implemented 2026-07-28 in one bundled
+    session; judgment spot-run + G8 fresh-session certification and one real
+    session's before/after telemetry (PRE speed-package-20260728 in
+    benchmarks/experiments.md) still owed before any item flips to DONE.
+    SPEED-15 slice (b) (trim-mode browser narrowing) stays TODO until a
+    warn-mode session exists.
 
 ---
 
@@ -1083,6 +1092,234 @@ benchmark (or a real session's telemetry) before AND after (G8).
 - **Depends on:** SPEED-4 (the sharpened rubric defines what "trivial" means in
   practice); synergizes with §16 CAND-TIER (same complexity vocabulary).
 
+<!-- ═══ SPEED-9…19 · the 2026-07-28 iteration-speed package (user-approved
+     promotion per EVO-1 + G6 multi-item exception, same mechanism as
+     SPEED-4..7 / CTX / PLAIN-1). Diagnosis basis: tapeology desk session
+     telemetry — 15 iterations, ~153 agent-min each; verification = 54% of all
+     agent minutes; of iters 10-14 only ONE shipped product code (the rest
+     chased screenshots/recordings); iter-7 blocked 18.3h on a dead pump's
+     claim; full depth ran 4 of the last 6 iterations. Target: typical
+     iterations < 60 min without giving up the judge chain's quality. ═══ -->
+
+### SPEED-9 · Evidence fast path — `evidence` depth + evaluator evidence durability
+- **Priority:** P0 · **Effort:** L (a: engine micro-path; b: evaluator contract;
+  c: decomposer rules) · **Risk:** MED · **Status:** IN-PROGRESS — implemented
+  2026-07-28 (commits 58b93be, 8bd513f, dc86b53); G8 fresh-session certification
+  + one real-session before/after pending.
+- **Problem:** 3 of the desk session's last 5 iterations (~6h) ran full/lean
+  pipelines solely to retake a screenshot or record a walkthrough for features
+  already verified working; lean specs whose deliverable was the walkthrough were
+  structurally unpassable (recording happened AFTER scoring — iter-12 ESCALATE).
+- **Change spec (landed):** (a) third depth token `evidence`
+  (`CHAIN_EVIDENCE_MICRO_PATH`, default on): goal-iter-lean.sh skips
+  developer/reviewer with honest stubs, runs browser-qa unchanged, and records
+  the demo BEFORE returning; engine backstop demotes lean→evidence when every
+  target journey is already recorded passing (telemetry
+  `depth_evidence_override`); evaluator prompt gains deterministic
+  `Prior walkthrough recording` + `Product diff this iteration` lines
+  (judgment-eval mirror updated byte-for-byte). (b) methodology A.6 (evidence
+  expires with CHANGE, not time; goal-edit drift always outranks durability;
+  the no-screenshot rail keeps demanding a citation) + A.7 (`capture-defect`
+  gap, `evidence_makeup` journey-history boolean mirroring `pending_infra`);
+  read-list diet (plan.md dropped; audit/QA reports scoped to verdict blocks).
+  (c) decomposer rubric rule 7: never plan an evidence-only iteration;
+  anti-restatement rules (D6-safe); read-list diet.
+- **DoD:** tests green (`test-evidence-depth.sh` 16 cases); judgment goldens
+  6/6 evaluator cases on the configured model; one real session shows an
+  evidence-class gap resolved in an `evidence` dispatch < 45 min.
+- **Verify:** `bash tests/automation/test-evidence-depth.sh` ·
+  `./scripts/automation/run-evals.sh` · judgment spot-run (G9).
+- **Files:** `scripts/automation/run-goal.sh`, `goal-iter-lean.sh`,
+  `lib/common.sh`, `run-judgment-evals.sh`, `agents/goal-evaluator/*`,
+  `agents/goal-decomposer/*`, `skills/goal-evaluation-methodology.md`, mirrors.
+- **Rollback:** `CHAIN_EVIDENCE_MICRO_PATH=false` (engine); body reverts + version.
+- **Stop-and-ask:** any evaluator golden verdict-class flip (drift-beats-durability
+  case-04 above all); a demo-less project needing more than the SKIPPED-stub path.
+
+### SPEED-10 · Depth discipline — full-trigger allowlist + cadence 4→6
+- **Priority:** P0 · **Effort:** M · **Risk:** LOW-MED · **Status:** IN-PROGRESS —
+  implemented 2026-07-28 (58b93be); G8 certification pending.
+- **Problem:** full depth (~90-120 min over lean) ran on 4 of the desk session's
+  last 6 iterations; at most 2 were justified (one full pass existed to re-record
+  a video).
+- **Change spec (landed):** engine allowlist (`CHAIN_DEPTH_ALLOWLIST`, default
+  on): a full spec stays full only on prior ESCALATE/REGRESSION, prior-iteration
+  COHERENCE-FAIL, a machine-parseable `Full trigger: <1|2|3|4> — reason` line
+  (decomposer contract, dc86b53), or cadence-due; otherwise demoted with
+  `depth_demoted` telemetry. `CHAIN_HARDENING_CADENCE` default 4→6 (evidence
+  dispatches continue the streak).
+- **DoD:** `test-depth-cadence.sh` 23 cases green; first real session shows
+  full-ratio ≤ 1-in-6 with no ESCALATE caused by a demoted full.
+- **Verify:** `bash tests/automation/test-depth-cadence.sh` · run-evals.
+- **Files:** `scripts/automation/run-goal.sh`, `lib/common.sh`,
+  `agents/goal-decomposer/body.md`, tests.
+- **Rollback:** `CHAIN_DEPTH_ALLOWLIST=false`; `CHAIN_HARDENING_CADENCE=4`.
+- **Stop-and-ask:** a demoted-full iteration producing an ESCALATE in the first
+  real session — report before tuning anything.
+
+### SPEED-11 · Lean replay-fork default flip (off→replay)
+- **Priority:** P1 · **Effort:** S · **Risk:** LOW-MED · **Status:** IN-PROGRESS —
+  implemented 2026-07-28 (58b93be); G8 certification pending.
+- **Change spec (landed):** `CHAIN_LEAN_PARALLEL_BROWSER_QA` default off→replay
+  (SPEED-2's fork: built, benchmarked, tripwired — 2-of-3 attempt-1 review FAILs
+  auto-disable per session). Test scenarios pin `off` explicitly now. Recorded
+  decisions: CAND-FULL-BQA-OVERLAP stays staged (post-SPEED-10 fulls too rare to
+  justify the port); decomposer-N+1 ∥ evaluator-N overlap REJECTED (the
+  decomposer consumes evaluator outputs).
+- **Verify:** `bash tests/automation/test-goal-parallel-bqa.sh` (92 cases).
+- **Rollback:** `CHAIN_LEAN_PARALLEL_BROWSER_QA=off`.
+- **Stop-and-ask:** tripwire firing immediately in the first post-flip session.
+
+### SPEED-12 · Dispatch/timeout hardening — busy cap, claim janitor, lanes, timeout table
+- **Priority:** P1 · **Effort:** M · **Risk:** LOW-MED · **Status:** IN-PROGRESS —
+  implemented 2026-07-28; G8 certification pending.
+- **Problem:** iter-7 blocked 18h19m on an UNCLAIMED request while a dead pump's
+  stale sibling `.started` kept the Tier-A wait unbounded
+  (`lib/interactive-dispatch.sh` busy branch); 8 agents fell to the flat 7200s
+  cap; showcase dispatches queued ahead of spine work.
+- **Change spec (landed):** `_dispatch_claim_pump_dead` helper — provably-dead
+  sibling claims cleared on the spot; `CHAIN_DISPATCH_PICKUP_BUSY_TIMEOUT`
+  (default = flat inflight cap, 0=old unlimited) bounds the genuine-busy
+  unclaimed wait resumably (`pickup-busy-timeout` event);
+  `dispatch_channel_janitor` at the iteration boundary; per-agent timeout table
+  filled for the full-pipeline chain (each ≥2.5× observed desk maxima);
+  priority lanes — `req.<lane>-XXXXXX` filenames (`CHAIN_DISPATCH_LANE`,
+  default 5; showcase tail exports 9) ride the pump's sorted glob with zero
+  pump-side changes.
+- **Verify:** `bash scripts/automation/lib/interactive-dispatch.sh --self-test`
+  (23 cases incl. 4 new) · `goal-await-dispatch.sh --self-test` ·
+  `python3 scripts/automation/lib/agent_permissions.py self-test`.
+- **Files:** `lib/interactive-dispatch.sh`, `lib/agent_permissions.py`,
+  `run-goal.sh`, `docs/goal-mode-interactive.md`.
+- **Rollback:** `CHAIN_DISPATCH_PICKUP_BUSY_TIMEOUT=0`; unset
+  `CHAIN_DISPATCH_LANE` semantics revert by deleting the two call-site exports;
+  table rows are per-agent deletes.
+- **Stop-and-ask:** a pickup-busy-timeout pause on a HEALTHY long dispatch in a
+  real session (cap mis-sized) — report before raising it.
+
+### SPEED-13 · Telemetry honesty — quota pauses, active vs wall, full-pipeline attribution
+- **Priority:** P1 · **Effort:** M · **Risk:** LOW · **Status:** IN-PROGRESS —
+  implemented 2026-07-28 (adf5f22); G8 certification pending.
+- **Problem:** quota_pause_start/end documented + consumed but never emitted;
+  `.quota-pause-count` had no increment site; quota sleeps inflated agent
+  durations (the "18.7h evaluator"); full-depth iterations emitted zero
+  per-agent events and rendered as 130-190m "unattributed (glue)".
+- **Change spec (landed):** both events + counter bump at all four sleep sites in
+  `lib/quota-retry.sh`; `agent_invocation_end` gains additive
+  `quota_sleep_seconds`/`active_seconds`; all 16 phase-script dispatch sites
+  wrap with `record_agent_invocation_start/end`; analyzer consumes `engine_step`
+  events, prefers active seconds, renders an honest residual.
+- **Verify:** `bash scripts/automation/lib/telemetry.sh test` ·
+  `python3 scripts/automation/lib/analyze_telemetry.py --self-test`.
+- **Rollback:** revert (additive fields; no behavior change).
+- **Stop-and-ask:** none (measurement only).
+
+### SPEED-14 · Zero-change iteration guards
+- **Priority:** P1 · **Effort:** S · **Risk:** LOW · **Status:** IN-PROGRESS —
+  implemented 2026-07-28 (58b93be); G8 certification pending.
+- **Change spec (landed):** `goal_product_diff_empty` helper (fail-safe,
+  bookkeeping-excluded); readme-maintainer's empty-change hole fixed (a
+  zero-change iteration used to DISPATCH; the empty set now skips); coherence
+  zero-change deterministic PASS with text DISTINCT from the crash stub —
+  `goal_gate.py` certifies it (self-test pins both classifications); demo
+  recording reused on an empty product diff. Knob `CHAIN_ZERO_CHANGE_SKIPS`,
+  default on.
+- **Verify:** `bash tests/automation/test-zero-change-guard.sh` (13 cases) ·
+  `python3 scripts/automation/lib/goal_gate.py self-test`.
+- **Rollback:** `CHAIN_ZERO_CHANGE_SKIPS=false` (readme hole fix stays — bug fix;
+  its escape is the pre-existing `CHAIN_README_EVERY_ITER=true`).
+- **Stop-and-ask:** none.
+
+### SPEED-15 · Wall-clock iteration budget (warn-first)
+- **Priority:** P2 · **Effort:** M (slice a landed; slice b TODO) · **Risk:** LOW
+  (warn) / MED (trim) · **Status:** IN-PROGRESS — slice (a) implemented
+  2026-07-28: knobs `CHAIN_ITER_TIME_BUDGET_SECONDS` (default 0=off; suggest
+  5400) + `CHAIN_ITER_BUDGET_MODE` (warn|trim, default warn), step-boundary
+  checks (never mid-agent), one loud warn + `iter_budget` telemetry, trim ladder
+  for showcase-class steps only (defer demo+readme; summarizer kept; spine and
+  gates NEVER trimmed — grep-pinned by the test).
+- **Slice (b) TODO:** trim-mode browser-set narrowing — drop only the no-golden
+  regression re-drives with mandatory `DEFERRED-BUDGET` result rows + the
+  one-line evaluator contract ("a DEFERRED-BUDGET row keeps prior status;
+  schedule next iteration", pending_infra pattern). Requires one full warn-mode
+  session of telemetry FIRST (G8) — do not build trim-b before that exists.
+- **Verify:** `bash tests/automation/test-iter-budget.sh` (17 cases).
+- **Rollback:** default off — unset the env.
+- **Stop-and-ask:** before enabling trim as any default.
+
+### SPEED-16 · Browser-qa turn diet
+- **Priority:** P0 · **Effort:** S · **Risk:** LOW · **Status:** IN-PROGRESS —
+  implemented 2026-07-28 (b33e21d); G8 certification pending.
+- **Change spec (landed):** 2-attempt selector recovery budget then
+  FAIL-with-evidence (a page that genuinely changed stays a recorded finding);
+  ONE screenshot per test at the acceptance state (+1 on failure; triad
+  deleted); all expected strings verified in ONE get_text; golden-first setup
+  (replay `journey-scripts/` prefixes verbatim; judgment starts at NEW steps).
+- **DoD:** post-session telemetry shows browser-qa ≤ 60 turns/invocation with
+  no journey-status regressions vs the desk baseline.
+- **Verify:** sync `--check` · run-evals · next-session telemetry (TOKEN-8 rows).
+- **Rollback:** revert bodies + versions.
+- **Stop-and-ask:** journeys flipping PASS→FAIL on recovery exhaustion — raise
+  the cap to 3, never delete it.
+
+### SPEED-17 · Deterministic phase-closure gate (LLM retired to an escape hatch)
+- **Priority:** P1 · **Effort:** M · **Risk:** LOW-MED · **Status:** IN-PROGRESS —
+  implemented 2026-07-28; G8 certification pending.
+- **Problem:** the phase-closure-auditor LLM added no new judgment — Step 1
+  re-read three already-gating verdicts; Steps 2-4 were existence/count/
+  consistency checks. ~5 min + one LLM flake source per full iteration on a
+  HARD gate.
+- **Change spec (landed):** `scripts/automation/lib/closure_gate.py` writes the
+  FROZEN CLOSURE-PASS/CLOSURE-FAIL format deterministically (verdict presence,
+  6-UI-artifact existence + substance, ≥3 numbered what-to-click steps,
+  all-SKIPPED with-reason ⇒ WARN / without ⇒ FAIL, backend-only inconsistency,
+  objective vagueness BLOCKING / subtle vagueness WARN — policed upstream by
+  qa's live audit and downstream by the evaluator's evidence walk);
+  `phase-closure-check.sh` calls it; the agent dispatch survives behind
+  `CHAIN_CLOSURE_LLM=true`.
+- **Verify:** `python3 scripts/automation/lib/closure_gate.py self-test` ·
+  `bash tests/automation/test-closure-gate.sh` · run-evals.
+- **Rollback:** `CHAIN_CLOSURE_LLM=true` (single env).
+- **Stop-and-ask:** a real session where the deterministic gate passes an
+  artifact set the LLM would have failed for a SUBSTANTIVE reason — bring the
+  case, don't widen the script silently.
+
+### SPEED-18 · UI-evolution question dedupe (4 askers → 2)
+- **Priority:** P1 · **Effort:** S · **Risk:** MED · **Status:** IN-PROGRESS —
+  implemented 2026-07-28; G8 certification pending.
+- **Problem:** "did the UI evolve / is it reachable" was asked FOUR times per
+  full iteration (reviewer checklist, qa live audit, ux-regression Step 1,
+  coherence Step 2).
+- **Change spec (landed):** owners = qa's live UI Evolution Audit (browser +
+  screenshots, gating) and coherence-auditor Step 2 (blueprint-grounded,
+  objective FAIL, GOAL_ACHIEVED veto) — both UNCHANGED. Reviewer lost its three
+  runtime-guess checklist items + the `ui_evolved_with_capability`/
+  `navigation_updated` YAML keys (verified: no script parses them; auditor
+  golden fixtures carry them only as frozen inputs). Ux-regression Step 1 now
+  CONSUMES qa's audit + coherence.md and judges only what neither covers (label
+  clarity, visual feedback, rendered consistency) + flags audit contradictions.
+  D2 intact — all agents survive; only repeated questions were removed.
+- **Verify:** reviewer judgment goldens 4/4 · sync `--check` · run-evals.
+- **Rollback:** revert bodies + versions.
+- **Stop-and-ask:** a reviewer golden verdict-class flip; a real-session UI miss
+  only the deleted reviewer items would have caught ⇒ restore the first item only.
+
+### SPEED-19 · Auditor risk-ranked spot-verification
+- **Priority:** P1 · **Effort:** S-M · **Risk:** MED-HIGH · **Status:**
+  IN-PROGRESS — implemented 2026-07-28; G8 certification pending.
+- **Problem:** auditor Step 1 re-derived the full spec-compliance trace for
+  EVERY DoD item — the third full pass over ground the reviewer (code) and QA
+  (live rows) already covered (~202 min/session).
+- **Change spec (landed):** full code trace when ANY of: (a) state/data/auth/
+  money risk class; (b) artifact contradiction (the trigger even when QA is
+  green — golden case-03's shape); (c) reviewer `spec_alignment: partial` or a
+  spec-category issue; (d) the auditor's own Steps 2-4 leads. Mechanical items
+  with reviewer PASS + an executed QA row: accepted WITH double citation; no
+  citation ⇒ full trace. Steps 2-5, severity tree, fix authority untouched.
+- **Verify:** auditor judgment goldens 4/4 (case-03 MUST still FAIL) · run-evals.
+- **Rollback:** revert body + version (single hunk).
+- **Stop-and-ask:** any auditor golden verdict-class flip ⇒ revert immediately.
+
 ### TOKEN-1 · Per-agent project-template slicing
 - **Priority:** P1 · **Effort:** M · **Risk:** LOW · **Status:** DONE 2026-07-14 —
   release-manager/reviewer/qa converted; developer conversion deliberately LAST per this
@@ -1608,6 +1845,28 @@ benchmark (or a real session's telemetry) before AND after (G8).
   telemetry correctly carries none of the phase-script rows. Offline half
   re-ran green same day (test-phase-telemetry.sh cases 1+2 inside run-evals
   116/116). Measurement chapter closed.
+
+### TOKEN-9 · Showcase tier demotion — demo-narrator + readme-maintainer → light
+- **Priority:** P2 · **Effort:** S · **Risk:** LOW · **Status:** IN-PROGRESS —
+  implemented 2026-07-28 (part of the SPEED-9..19 package); TOKEN-2-class
+  experiment, G8 before/after via the next real session's TOKEN-8 rows.
+- **Problem:** demo-narrator (373k output tokens/15 iters) and readme-maintainer
+  are schema-constrained procedural writers with deterministic safety nets
+  (demo JSON is linted/executed by `demo_runner.py`; README edits are
+  marker-scoped) — sonnet-priced tokens for haiku-shaped work. ~0 wall-clock
+  (both ride the forked showcase tail), pure token cost.
+- **Change spec (landed):** `model_tier: standard → light` on both agent.yamls
+  (demo-narrator 2.2.0, readme-maintainer 1.2.0); tier prose table in
+  `.claude/model-orchestration.md` updated. **iteration-summarizer deliberately
+  STAYS standard** — REP-4 raised its concreteness bar and it is the human's
+  primary reading surface; demoting it while fixing its top complaint would be
+  self-defeating.
+- **DoD:** after one real session: `demo_runner.py --mode lint` pass-rate
+  unchanged; README AUTO blocks intact; TOKEN-8 rows show the cost drop.
+- **Verify:** sync `--check` · run-evals · next-session artifact checks above.
+- **Rollback:** one-line tier revert per agent (TOKEN-2's watch-item pattern).
+- **Stop-and-ask:** haiku demo JSON failing lint more than occasionally, or ONE
+  README AUTO-block corruption of hand-written prose ⇒ revert that agent.
 
 ---
 
@@ -2813,6 +3072,28 @@ territory).
 - **Files:** `scripts/automation/lib/common.sh`, `scripts/automation/run-goal.sh`,
   docs (env var table).
 - **Rollback:** unset env (no-op by default).
+
+### REP-4 · Iteration summaries must name the concrete change
+- **Priority:** P0 (the user's top reporting complaint) · **Effort:** S ·
+  **Risk:** LOW · **Status:** IN-PROGRESS — implemented 2026-07-28 (e619138,
+  part of the SPEED-9..19 package); G8 certification pending.
+- **Problem:** desk-session summaries never named one source file/screen; the
+  "In plain words" opener was recycled filler ("Behind-the-scenes work —
+  nothing visibly new this round"); "What you can do now" was copied verbatim
+  from the prior summary BY INSTRUCTION.
+- **Change spec (landed):** the opener must name the screen/page and what the
+  user now sees (the generic sentence is allowed ONLY on zero-product-file
+  iterations, and must still name the concrete area); the FIRST "What was done"
+  bullet is fixed-format — `Product changes: <files/routes>` or exactly
+  `No product change this iteration.`; "What you can do now" is re-derived from
+  journey-history every iteration; plain-language skill hard rule 7 ("concrete
+  beats generic"). H2 set unchanged (schema-enforced).
+- **Verify:** run-evals (summary schema self-tests) · eyeball the next real
+  session's summary: named screen in the opener, product-change first bullet.
+- **Files:** `agents/iteration-summarizer/*`, `templates/iteration-summary.md`,
+  `skills/plain-language.md`, mirrors.
+- **Rollback:** revert three files + version.
+- **Stop-and-ask:** none.
 
 ---
 

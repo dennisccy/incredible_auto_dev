@@ -937,3 +937,10 @@ Entry format contract (grep-able; pinned by
   framework-gap candidate as run E flagged: the forked/scripted browser-qa
   Chrome outlives the engine. Kept scratch:
   /home/dennis-chan/.cache/iad/shared/bench-bench-20260716-1436.dNHg0w
+
+## PRE speed-package-20260728 · 2026-07-28T15:30:00Z
+- framework-sha: e619138 (+ the SPEED-12/15/17/18/19/TOKEN-9 commits landing the same day; dirty during authoring)
+- fixture: next REAL tapeology goal session (or an EVO-3 benchmark rerun) vs the desk-session baseline recorded below
+- hypothesis: the SPEED-9..19 + REP-4 + TOKEN-9 package cuts typical goal-mode iteration wall time under 60 min without journey-quality regressions. Baseline (desk, 15 iters): ~153 agent-min/iter; verification = 54% of agent minutes; full depth 4 of last 6 iters; browser-qa >100 turns/invocation; 3 of last 5 iterations were evidence-only waste (~6h); zero quota-pause events recorded (attribution bug).
+- metrics + prediction (manual grading): median wall for lean/evidence/zero-change iterations < 60m; evidence-class gaps resolved in < 45m via the evidence micro-path (no developer dispatch); full-depth ratio <= 1 in 6; browser-qa <= 60 turns/invocation; demo-narrator+readme token cost ~1/3 of sonnet baseline; NO journey regressions or golden verdict-class flips attributable to the package; summaries name concrete files/screens (grep for 'Product changes:' rows).
+- note: pre-registered manually (G8) — the package is engine+contract work, not a run-benchmark.sh invocation; grade against the next session's telemetry with analyze_telemetry.py --wall.
