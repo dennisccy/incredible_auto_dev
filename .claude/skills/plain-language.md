@@ -28,6 +28,8 @@ recommendations). It does not change any machine-parsed format.
    correct password", not a function, class, endpoint, or stack trace.
 6. **End with an action.** Say what happens next, or what the owner should do,
    in one sentence a non-programmer could act on.
+7. **Concrete beats generic:** name the screen and the value the user sees, not
+   "improvements were made".
 
 ## Status words (single source)
 

@@ -95,14 +95,14 @@ Write exactly this skeleton — keep the labels and the order:
 ```
 ## In plain words
 
-**What you can do now:** <Plain-language list of capabilities the product delivers to a user today. In goal mode, aggregate every currently-passing journey. In phase mode, describe the cumulative end-user surface so far. Frame as actions ("Sign in with email", "Save a draft and come back to it"). Comma-separated or 2-4 short sentences, not bullets.>
+**What you can do now:** <Plain-language list of capabilities the product delivers to a user today. In goal mode, re-derive this EVERY iteration from the `name` fields of the currently-passing journeys in `journey-history.json` — never copy the previous summary's sentence verbatim, and any journey whose status changed this iteration must appear or disappear from the list accordingly. In phase mode, describe the cumulative end-user surface so far. Frame as actions ("Sign in with email", "Save a draft and come back to it"). Comma-separated or 2-4 short sentences, not bullets.>
 
-**What changed this time:** <Plain-language description of what is newly available or fixed this iteration. Tie back to user experience ("You can now invite a teammate by email"). If nothing user-facing changed, write: "Behind-the-scenes work — nothing visibly new this round" and name the area in friendly terms (e.g. "made the app faster", "tightened security").>
+**What changed this time:** <MUST name the concrete user-visible change: the screen or page by its visible name and what the user now sees or does there ("The Watchlist page now has an 'Export CSV' button that downloads your list."). Never open with a generic sentence like "improvements were made". The sentence "Behind-the-scenes work — nothing visibly new this round" is permitted ONLY when the iteration changed zero product source files — check `status.json` `changed_files` and the dev handoff's Files Changed list before using it — and even then it must name the concrete area that was worked on ("sped up the price-history loading code", "captured fresh proof screenshots of the Desk screen").>
 
 **What's next:** <Plain-language version of the Next step. Phrase as the next thing the product will gain ("Next we'll let you reset a forgotten password"). One short sentence.>
 ```
 
-**Backend-only iteration** (no `user-visible-changes.md`, or it says "N/A — Backend-only phase"): write "Behind-the-scenes work — nothing visibly new this round." in **What changed this time**, keep the cumulative "What you can do now" unchanged from the prior iteration's plain-words block if you can read it (look at `reports/phase-<prev-phase-id>-iteration-summary.md` if obvious from context; otherwise describe the latest known capabilities or write "Same as before — no user-facing change.").
+**Backend-only iteration** (no `user-visible-changes.md`, or it says "N/A — Backend-only phase"): first check `status.json` `changed_files` and the dev handoff's Files Changed list. If product source files DID change, do NOT use the generic behind-the-scenes sentence — say in friendly words what part of the product the work touched and what it does now ("the price history behind the Desk screen now loads faster"). Only if zero product source files changed may **What changed this time** read "Behind-the-scenes work — nothing visibly new this round" — and it must still name the concrete area worked on ("captured fresh proof screenshots of the Desk screen"). For **What you can do now**, re-derive the list from the passing-journey names in `journey-history.json` EVERY iteration (phase mode: from the cumulative artifacts) — never copy the previous summary's sentence verbatim; a journey whose status changed this iteration must appear or disappear accordingly.
 
 **First iteration of a goal session** (no prior summaries, journey-history may be empty or have only `unknown` statuses): write "Just getting started — nothing for users to try yet." in **What you can do now**, and describe groundwork in **What changed this time**.
 
@@ -138,7 +138,12 @@ Numbers come from counting deltas in the evaluator-log entries. Do not invent jo
 
 ## What was done
 
-3–8 bullets, terse, action-oriented. Sources:
+The FIRST bullet is fixed-format. It MUST be one of these two — nothing else may be first:
+
+- `Product changes: <comma-separated changed product files and/or routes>` — sourced from `status.json` `changed_files` and the dev handoff's Files Changed list (e.g. `Product changes: apps/frontend/app/desk/page.tsx, /api/desk/topup`)
+- exactly `No product change this iteration.` — when neither source lists a changed product file
+
+Then 3–8 further bullets, terse, action-oriented. Sources:
 
 - `implementation-summary.md` "Features Implemented" if present (highest fidelity)
 - else `dev-handoff.md` "Summary" + a synthesized 1-bullet-per-major-file-or-area from "Files Changed"
