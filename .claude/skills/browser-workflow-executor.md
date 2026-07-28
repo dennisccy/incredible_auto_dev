@@ -41,7 +41,7 @@ First click the field, then type.
   "action": "screenshot"
 }
 ```
-Take screenshots at key states: before action, after action, on error.
+Take ONE screenshot per test, at the acceptance state (the state the expected-result describes), plus one on failure.
 
 ### Get page text content
 ```json
@@ -59,7 +59,7 @@ For each test case UT-XX:
 2. Execute each step from the test plan
 3. After each action, verify the expected intermediate state
 4. At the end, verify the expected final state
-5. Take a screenshot of the final state
+5. Take ONE screenshot at the acceptance state (add one more only on failure)
 6. Record: PASS or FAIL with evidence
 
 ## Evidence Collection
@@ -67,13 +67,15 @@ For each test case UT-XX:
 Screenshots directory: `reports/qa/<phase>-evidence/`
 Create before taking screenshots: `mkdir -p reports/qa/<phase>-evidence/`
 
+One screenshot per test, taken at the acceptance state; add one more only on failure.
+
 Naming convention:
-- `UT-01-initial.png` — state before test
-- `UT-01-action.png` — during the test (after key action)
-- `UT-01-result.png` — final state
+- `UT-01-result.png` — acceptance state (one per test)
 - `UT-02-fail.png` — failure state (for FAIL tests)
 
 ## Verification Techniques
+
+Batch assertions: verify ALL of a state's expected strings in ONE `get_text` call over the relevant container — never one call per assertion.
 
 ### Verify text is present
 Get page text and check for the expected string.
@@ -96,7 +98,7 @@ Navigate to list page, check that item name appears in the page text.
 Wait and retry the get_text action. If still not loaded after 3 attempts, mark as SKIPPED — timeout.
 
 ### Element not found
-Try alternative selectors. If still not found, mark specific step as failed with "element not found: <description>".
+A failing selector gets at most 2 recovery attempts: one alternative locator, then one `get_text` to confirm the element truly is not rendered. If still not found, mark specific step as failed with "element not found: <description>". If a selector fails because the page genuinely changed this iteration, that is a finding — record it; the budget exists to stop exploratory wandering, not to suppress real failures.
 
 ### Console error
 Note it as WARN in test results. Only mark as FAIL if it prevents the test from completing.

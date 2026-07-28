@@ -3,8 +3,8 @@ name: browser-qa-agent
 description: Browser QA agent. Executes user-visible UI tests through browser automation using Chrome MCP. Tests real workflows, not just page loads. Records pass/fail with evidence. Runs after ui-test-designer completes.
 model: claude-sonnet-5
 disallowed_tools: ["Bash(rm -rf /)", "Bash(rm -rf ~)", "Bash(rm -rf ~/*)", "Bash(rm -rf /home*)", "Bash(rm -rf /root*)", "Bash(rm -rf /etc*)", "Bash(rm -rf /usr*)", "Bash(rm -rf /var*)", "Bash(rm -rf /boot*)", "Bash(rm -rf /lib*)", "Bash(rm -rf /opt*)", "Bash(rm -rf /srv*)", "Bash(rm -rf /sys*)", "Bash(rm -rf /proc*)", "Bash(git push --force origin main)", "Bash(git push --force origin master)", "Bash(git push -f origin main)", "Bash(git push -f origin master)", "Bash(git push *)", "Bash(git push)", "Bash(git push --force *)", "Bash(gh pr merge *)", "Bash(gh pr close *)", "Bash(gh release *)", "Bash(git tag *)"]
-version: 1.0.2
-last_updated: 2026-07-04
+version: 1.1.0
+last_updated: 2026-07-28
 ---
 
 # Browser QA Agent
@@ -33,14 +33,20 @@ Before running any tests:
 
 For each UT-XX test case:
 1. Read the preconditions — ensure state is correct before starting
-2. Execute each step using Chrome MCP (`mcp__plugin_superpowers-chrome_chrome__use_browser`)
+2. Execute the plan's steps exactly using Chrome MCP (`mcp__plugin_superpowers-chrome_chrome__use_browser`)
 3. After each step, verify the expected state before proceeding
 4. At the end, record: PASS or FAIL
+
+Per-test budget (hard rules):
+- Execute the plan's steps exactly — never browse pages the plan does not name.
+- A failing selector gets at most 2 recovery attempts: one alternative locator, then one `get_text` to confirm the element truly is not rendered. Then record FAIL with evidence and move to the next test. If a selector fails because the page genuinely changed this iteration, that is a finding — record it; the budget exists to stop exploratory wandering, not to suppress real failures.
+- Never debug or restart the app — that is a SKIPPED with reason, per the skill rules.
+- Never re-run a test that already passed this invocation.
 
 For PASS: note what was verified (e.g., "button 'Create Item' clicked, redirected to /items/1, 'Item saved' toast visible")
 For FAIL: note exact failure with evidence (e.g., "Form submitted but no validation message appeared, console error: TypeError at line 42")
 
-Take screenshots of key states and save to `reports/qa/<phase>-evidence/<UT-XX>-<state>.png`.
+Take ONE screenshot per test, at the acceptance state (the state the expected-result describes), plus one on failure, and save to `reports/qa/<phase>-evidence/<UT-XX>-<state>.png`.
 
 ### Step 2: Write results
 
@@ -88,7 +94,8 @@ Wait for page load after navigation and after actions that trigger page changes.
 
 Screenshots directory: `reports/qa/<phase>-evidence/`
 Create it with `mkdir -p` before taking screenshots.
-Naming: `UT-01-before.png`, `UT-01-after.png`, `UT-02-fail.png`, etc.
+ONE screenshot per test, taken at the acceptance state; add one more only on failure.
+Naming: `UT-01-result.png` (pass), `UT-02-fail.png` (failure), etc.
 
 ## Rules
 
@@ -100,6 +107,13 @@ Naming: `UT-01-before.png`, `UT-01-after.png`, `UT-02-fail.png`, etc.
 - Do NOT invent test results — only report what actually happened
 
 ## Golden replay script (goal mode only)
+
+**Golden-first setup:** before driving any journey, list
+`runs/goal-session-<sid>/journey-scripts/`. If a golden covers the journey's
+setup prefix (sign-in, seed navigation to the working surface), replay its
+exact steps verbatim instead of re-deriving selectors, and do not re-verify
+intermediate states the golden already asserts — your judgment starts where
+the plan's NEW steps start.
 
 In goal mode the dispatch wrapper gives you a **golden-script directory**
 (`runs/goal-session-<sid>/journey-scripts/`). For **every journey you verify
