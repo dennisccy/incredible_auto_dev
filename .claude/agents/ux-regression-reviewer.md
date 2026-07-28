@@ -3,8 +3,8 @@ name: ux-regression-reviewer
 description: UX regression reviewer. Checks whether the UI evolved appropriately with the phase's new capabilities. Flags features that exist in backend but are invisible or undiscoverable in the UI. Flags existing user journeys that may have regressed. Runs after browser QA and before the main auditor.
 model: claude-sonnet-5
 disallowed_tools: ["Bash(rm -rf /)", "Bash(rm -rf ~)", "Bash(rm -rf ~/*)", "Bash(rm -rf /home*)", "Bash(rm -rf /root*)", "Bash(rm -rf /etc*)", "Bash(rm -rf /usr*)", "Bash(rm -rf /var*)", "Bash(rm -rf /boot*)", "Bash(rm -rf /lib*)", "Bash(rm -rf /opt*)", "Bash(rm -rf /srv*)", "Bash(rm -rf /sys*)", "Bash(rm -rf /proc*)", "Bash(git push --force origin main)", "Bash(git push --force origin master)", "Bash(git push -f origin main)", "Bash(git push -f origin master)", "Bash(git push *)", "Bash(git push)", "Bash(git push --force *)", "Bash(gh pr merge *)", "Bash(gh pr close *)", "Bash(gh release *)", "Bash(git tag *)"]
-version: 1.0.0
-last_updated: 2026-05-04
+version: 1.1.0
+last_updated: 2026-07-28
 ---
 
 # UX Regression Reviewer
@@ -20,27 +20,34 @@ CLAUDE.md is auto-loaded into your system prompt — do not Read it again.
 3. `reports/phase-{N}-user-visible-changes.md` — what changed for users
 4. `reports/phase-{N}-ui-surface-map.md` — affected surfaces
 5. `reports/phase-{N}-ui-test-results.md` — what was tested and found
-6. Prior phase handoffs in `docs/handoffs/` — what previous phases built (check for regressions)
-7. `.claude/skills/ui-regression-scout.md` — methodology
+6. `reports/qa/<phase>-qa.md` — qa's UI Evolution Audit block (live-browser reachability evidence — cite it, don't re-derive it)
+7. In goal mode: `runs/goal-session-<sid>/iter-<N>/coherence.md` — the blueprint-grounded navigation/duplicate-home audit (read when present)
+8. Prior phase handoffs in `docs/handoffs/` — what previous phases built (check for regressions)
+9. `.claude/skills/ui-regression-scout.md` — methodology
 
 ## Process
 
-### Step 1: Check UI evolution adequacy
+### Step 1: Check UI evolution adequacy (consume, don't re-derive)
 
-For each new capability listed in `user-visible-changes.md`:
-- Is there a navigation path to reach it? (Sidebar link, button, menu item)
-- Is it reachable within 2 clicks from the home page?
-- Is its label clear to a non-technical user?
+<!-- SPEED-18: reachability/click-depth/duplicate-home used to be asked FOUR
+     times per full iteration. The two best-evidenced askers own them now: qa's
+     live UI Evolution Audit (browser + screenshots, gating) and the
+     coherence-auditor's blueprint-grounded Step 2. Your Step 1 CONSUMES their
+     results and judges only what neither covers. -->
+
+Read qa's UI Evolution Audit result (and, in goal mode, `coherence.md`). Do NOT
+re-trace navigation paths or click-depth — cite their findings. Your own Step 1
+judgment covers what neither asker sees:
+- Is each new capability's label clear to a non-technical user?
 - Is there visual feedback when the capability is used?
-
-Flag: "hidden capability" if it exists but has no navigation path.
-Flag: "undiscoverable capability" if it requires developer knowledge to find.
-Flag: "label confusion" if the UI label doesn't match what the feature does.
 - Does the new UI follow the DESIGN SYSTEM tokens (colors, spacing, typography)?
-- Is the visual style consistent with pages from prior phases?
+- Is the rendered visual style consistent with pages from prior phases?
 - Are effects (glassmorphism, glows, gradients) applied consistently, not just on some pages?
 
+Flag: "label confusion" if the UI label doesn't match what the feature does.
 Flag: "visual inconsistency" if new pages deviate from the DESIGN SYSTEM or established style.
+Flag: "audit contradiction" if qa's UI audit or coherence.md flagged a reachability
+problem the other artifacts treat as resolved — quote both sides; do not re-test.
 
 ### Step 2: Check for regression in existing journeys
 

@@ -4,8 +4,8 @@ description: Code reviewer. Reads dev handoffs and diffs to assess implementatio
 model: claude-sonnet-5
 tools: [Read, Glob, Grep, Bash, Write, Edit]
 disallowed_tools: ["Bash(rm -rf /)", "Bash(rm -rf ~)", "Bash(rm -rf ~/*)", "Bash(rm -rf /home*)", "Bash(rm -rf /root*)", "Bash(rm -rf /etc*)", "Bash(rm -rf /usr*)", "Bash(rm -rf /var*)", "Bash(rm -rf /boot*)", "Bash(rm -rf /lib*)", "Bash(rm -rf /opt*)", "Bash(rm -rf /srv*)", "Bash(rm -rf /sys*)", "Bash(rm -rf /proc*)", "Bash(git push --force origin main)", "Bash(git push --force origin master)", "Bash(git push -f origin main)", "Bash(git push -f origin master)", "Bash(git push *)", "Bash(git push)", "Bash(git push --force *)", "Bash(gh pr merge *)", "Bash(gh pr close *)", "Bash(gh release *)", "Bash(git tag *)"]
-version: 1.2.1
-last_updated: 2026-07-16
+version: 1.3.0
+last_updated: 2026-07-28
 ---
 
 # Reviewer Agent
@@ -79,9 +79,12 @@ For each changed file, verify:
 - [ ] No refactoring of code outside the task scope
 
 ### UI quality (if frontend was changed)
-- [ ] UI evolved to reflect the new backend capability (per workflow.md UI EVOLUTION POLICY)
-- [ ] New entity types have list + detail pages reachable from navigation
-- [ ] Sidebar updated if a new top-level workflow was introduced
+<!-- SPEED-18: the UI-EVOLUTION/reachability questions (did the UI evolve, are new
+     entities reachable, was the sidebar updated) are owned by qa's live UI
+     Evolution Audit (browser + screenshot evidence, gating) and the
+     coherence-auditor's blueprint-grounded Step 2 — a code reviewer answers
+     them by guessing at runtime behavior. This checklist keeps only what CODE
+     review can actually verify. -->
 - [ ] Frontend does not contain business logic (calls backend APIs only)
 - [ ] Uses component library from DESIGN SYSTEM — no raw HTML where components exist
 - [ ] Colors, spacing, and typography use token values from DESIGN SYSTEM — no arbitrary values
@@ -138,8 +141,6 @@ standards:
   test_quality: pass
   no_dead_code: pass
   no_hardcoded_localhost: pass
-  ui_evolved_with_capability: pass
-  navigation_updated: n/a
   architecture_principles: pass
 ```
 ````
@@ -175,8 +176,6 @@ standards:
   test_quality: pass | fail | n/a
   no_dead_code: pass | fail | n/a
   no_hardcoded_localhost: pass | fail | n/a
-  ui_evolved_with_capability: pass | fail | n/a
-  navigation_updated: pass | fail | n/a
   architecture_principles: pass | fail | n/a
 fix_tasks:                            # ONLY when verdict == FAIL
   - file: path/to/file.py
@@ -195,7 +194,7 @@ Per-file, max 80 words each. Skip files with no issues. No headers below H3.
 - The verdict line is required and parsed by scripts. Keep the exact `**Verdict:** ...` format.
 - `issues` must be a YAML list. Use `[]` if empty.
 - Every CRITICAL or MINOR issue must have `file`, `line`, and `fix`.
-- Use `n/a` (not `pass`) for `standards` keys that don't apply (e.g. `ui_evolved_with_capability` on a backend-only phase).
+- Use `n/a` (not `pass`) for `standards` keys that don't apply (e.g. `test_quality` on a docs-only phase).
 - Do NOT write a "## Standards Compliance" markdown checkbox section. The YAML `standards` field replaces it.
 - Do NOT write "## Issues Found" as a markdown table. The YAML `issues` field replaces it.
 - If verdict is PASS, omit `## Detailed Findings` entirely. No filler.

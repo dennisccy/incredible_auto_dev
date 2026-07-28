@@ -3,6 +3,6 @@ description: UX regression reviewer. Checks whether the UI evolved appropriately
   capabilities. Flags features that exist in backend but are invisible or undiscoverable in the UI. Flags
   existing user journeys that may have regressed. Runs after browser QA and before the main auditor.
 model_tier: standard
-version: 1.0.0
-last_updated: '2026-05-04'
+version: 1.1.0
+last_updated: '2026-07-28'
 body: body.md
