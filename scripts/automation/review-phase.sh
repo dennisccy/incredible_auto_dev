@@ -41,7 +41,9 @@ else
   rm -f "$REVIEW_PACKET" 2>/dev/null || true
 fi
 
-export CHAIN_CURRENT_AGENT=reviewer
+record_agent_invocation_start reviewer
+_agent_t0="$CHAIN_AGENT_START_EPOCH"
+_agent_rc=0
 claude_with_quota_retry -p "You are the reviewer agent for phased development.
 
 Phase: $PHASE
@@ -67,6 +69,8 @@ The report MUST start with a line matching exactly:
   or
 **Verdict:** PASS_WITH_NOTES
   or
-**Verdict:** FAIL"
+**Verdict:** FAIL" || _agent_rc=$?
+record_agent_invocation_end reviewer "$_agent_t0" "$_agent_rc"
+(( _agent_rc == 0 )) || exit "$_agent_rc"
 
 echo "[review-phase] Done. Report: reports/reviews/${PHASE}-review.md"

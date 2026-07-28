@@ -538,6 +538,36 @@ _sleep_until_epoch() {
   done
 }
 
+# ── Quota-pause telemetry (SPEED-13) ─────────────────────────────────────────
+# Emits the quota_pause_start/end events that docs/goal-mode-telemetry.md
+# documents and analyze_telemetry.py already consumes, accumulates the slept
+# seconds into CHAIN_QUOTA_SLEPT_SECONDS (read by record_agent_invocation_end
+# to split active vs wall duration), and bumps the session pause counter.
+# Everything is best-effort: outside goal mode record_telemetry_event is
+# undefined or disabled and QUOTA_PAUSE_COUNT_FILE is unset — all no-ops.
+_quota_pause_begin() {  # $1 = reset_epoch (informational)
+  _QUOTA_PAUSE_T0=$(date +%s)
+  if declare -F record_telemetry_event >/dev/null 2>&1; then
+    record_telemetry_event "quota_pause_start" \
+      "$(printf '{"agent":"%s","reset_epoch":%d}' "${CHAIN_CURRENT_AGENT:-unknown}" "${1:-0}")" || true
+  fi
+}
+
+_quota_pause_end() {
+  local slept=$(( $(date +%s) - ${_QUOTA_PAUSE_T0:-$(date +%s)} ))
+  CHAIN_QUOTA_SLEPT_SECONDS=$(( ${CHAIN_QUOTA_SLEPT_SECONDS:-0} + slept ))
+  if declare -F record_telemetry_event >/dev/null 2>&1; then
+    record_telemetry_event "quota_pause_end" \
+      "$(printf '{"agent":"%s","sleep_seconds":%d}' "${CHAIN_CURRENT_AGENT:-unknown}" "$slept")" || true
+  fi
+  if [[ -n "${QUOTA_PAUSE_COUNT_FILE:-}" && -f "${QUOTA_PAUSE_COUNT_FILE}" ]]; then
+    local _c
+    _c=$(cat "$QUOTA_PAUSE_COUNT_FILE" 2>/dev/null) || _c=0
+    [[ "$_c" =~ ^[0-9]+$ ]] || _c=0
+    printf '%d\n' $(( _c + 1 )) > "$QUOTA_PAUSE_COUNT_FILE" 2>/dev/null || true
+  fi
+}
+
 # ── Public function ──────────────────────────────────────────────────────────
 
 # Drop-in replacement for `claude`. Accepts the same arguments.
@@ -581,7 +611,9 @@ _claude_invoke() {
     if sentinel_remaining=$(_quota_check_sentinel); then
       sentinel_epoch=$(( $(date +%s) + sentinel_remaining ))
       echo "[quota-retry] $(date -Iseconds) Sentinel active — quota resets in ${sentinel_remaining}s. Sleeping..." >&2
+      _quota_pause_begin "$sentinel_epoch"
       _sleep_until_epoch "$sentinel_epoch"
+      _quota_pause_end
       _quota_clear_sentinel
       echo "[quota-retry] $(date -Iseconds) Sentinel sleep complete. Retrying." >&2
       _quota_run_pre_retry_hook
@@ -880,7 +912,9 @@ _claude_invoke() {
     _human_sleep=$(printf '%dh%02dm%02ds' $(( sleep_secs / 3600 )) $(( (sleep_secs % 3600) / 60 )) $(( sleep_secs % 60 )))
     echo "[quota-retry] $(date -Iseconds) >>> SLEEPING ${_human_sleep} (${sleep_secs}s) — retry ${retry_count}/${max_retries} will follow <<<" >&2
     echo "════════════════════════════════════════════════════════════════════" >&2
+    _quota_pause_begin "$reset_epoch"
     _sleep_until_epoch "$reset_epoch"
+    _quota_pause_end
 
     local actual_sleep=$(( $(date +%s) - sleep_start ))
     echo "" >&2
@@ -1025,7 +1059,9 @@ _codex_invoke() {
         remaining=$(( reset_epoch - now_epoch ))
         if [[ $remaining -gt 0 ]]; then
           echo "[quota-retry/codex] $(date -Iseconds) Sentinel active — quota resets in ${remaining}s. Sleeping..." >&2
+          _quota_pause_begin "$reset_epoch"
           _sleep_until_epoch "$reset_epoch"
+          _quota_pause_end
         fi
       fi
       rm -f "$_CODEX_QUOTA_SENTINEL"
@@ -1174,7 +1210,9 @@ _codex_invoke() {
     local reset_epoch=$(( $(date +%s) + sleep_secs ))
     echo "$reset_epoch" > "$_CODEX_QUOTA_SENTINEL"
     echo "[quota-retry/codex] Sleeping ${sleep_secs}s before retry ${retry_count}/${max_retries}..." >&2
+    _quota_pause_begin "$reset_epoch"
     _sleep_until_epoch "$reset_epoch"
+    _quota_pause_end
     rm -f "$_CODEX_QUOTA_SENTINEL"
     _quota_run_pre_retry_hook
   done

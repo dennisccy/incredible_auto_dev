@@ -58,7 +58,9 @@ _FRONTEND_PORT="${CHAIN_FRONTEND_PORT:-3000}"
 FRONTEND_URL="${CHAIN_FRONTEND_URL:-http://localhost:${_FRONTEND_PORT}}"
 
 cd "$REPO_ROOT"
-export CHAIN_CURRENT_AGENT=ux-regression-reviewer
+record_agent_invocation_start ux-regression-reviewer
+_agent_t0="$CHAIN_AGENT_START_EPOCH"
+_agent_rc=0
 claude_with_quota_retry -p "You are the ux-regression-reviewer for phased development.
 
 Phase: $PHASE
@@ -88,7 +90,9 @@ Verdict must be one of:
   **Verdict:** UX-REGRESSION-WARN
   **Verdict:** UX-REGRESSION-FAIL
 
-Then STOP."
+Then STOP." || _agent_rc=$?
+record_agent_invocation_end ux-regression-reviewer "$_agent_t0" "$_agent_rc"
+(( _agent_rc == 0 )) || exit "$_agent_rc"
 
 echo "[ux-regression] Done. Report: $UX_REGRESSION"
 if [[ -f "$UX_REGRESSION" ]]; then

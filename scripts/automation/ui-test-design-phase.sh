@@ -68,7 +68,8 @@ _FRONTEND_PORT="${CHAIN_FRONTEND_PORT:-3000}"
 FRONTEND_URL="${CHAIN_FRONTEND_URL:-http://localhost:${_FRONTEND_PORT}}"
 
 cd "$REPO_ROOT"
-export CHAIN_CURRENT_AGENT=ui-test-designer
+record_agent_invocation_start ui-test-designer
+_agent_t0="$CHAIN_AGENT_START_EPOCH"
 _utd_rc=0
 claude_with_quota_retry -p "You are the ui-test-designer for phased development.
 
@@ -100,6 +101,7 @@ Write these two reports:
 Every step must be independently executable. No vague steps like 'test the form' or 'verify it works'.
 
 Then STOP." || _utd_rc=$?
+record_agent_invocation_end ui-test-designer "$_agent_t0" "$_utd_rc"
 
 # Signal-induced exit (Ctrl-C, SIGKILL, SIGTERM) → do NOT write SKIPPED stubs.
 # A stub would advertise the step as "ran but produced no real artifact," which

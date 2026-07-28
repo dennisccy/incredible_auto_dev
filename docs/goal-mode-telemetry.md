@@ -74,7 +74,9 @@ Wrap each agent call inside an iteration (developer, reviewer, browser-qa-agent,
 |---|---|---|
 | `agent` | string | Agent name |
 | `exit_status` | number | (end only) Process exit code |
-| `duration_seconds` | number | (end only) Wall time |
+| `duration_seconds` | number | (end only) Wall time, INCLUDING any quota-pause sleep |
+| `quota_sleep_seconds` | number | (end only) Seconds of that wall time spent in quota-pause sleeps (SPEED-13) |
+| `active_seconds` | number | (end only) `duration_seconds − quota_sleep_seconds` — the honest work time (SPEED-13) |
 | `retries` | number | (end only) Quota-retry count for this invocation |
 
 ### `quota_pause_start`, `quota_pause_end`
@@ -83,9 +85,13 @@ Recorded around quota-exhaustion sleeps inside `claude_with_quota_retry`.
 | Field | Type | Description |
 |---|---|---|
 | `agent` | string | Agent that triggered the pause |
+| `reset_epoch` | number | (start only) Epoch the sleep targets |
 | `sleep_seconds` | number | (end only) Total seconds slept |
 
-> Note: The quota-pause events are recorded by goal-mode wrapper logic in `run-goal.sh` and `goal-iter-lean.sh`, not by `lib/quota-retry.sh` directly (so phase mode is unaffected). The wrapper observes the script's exit/retry behavior and emits these events when the wrapper detects a quota-retry path was taken.
+> Note: These events are emitted directly by `lib/quota-retry.sh` at its sleep
+> sites (both claude and codex paths; SPEED-13). They no-op outside goal mode —
+> `record_telemetry_event` is disabled when no goal session is active. The same
+> path increments the session's `.quota-pause-count` file.
 
 ### `evaluator_start`, `evaluator_end`
 Wrap the goal-evaluator agent invocation.

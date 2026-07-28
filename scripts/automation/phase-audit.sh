@@ -62,7 +62,9 @@ fi
 echo "[phase-audit] Running post-phase audit for: $PHASE"
 
 cd "$REPO_ROOT"
-export CHAIN_CURRENT_AGENT=auditor
+record_agent_invocation_start auditor
+_agent_t0="$CHAIN_AGENT_START_EPOCH"
+_agent_rc=0
 claude_with_quota_retry -p "You are the auditor agent for phased development.
 
 Phase: $PHASE
@@ -90,7 +92,9 @@ The report MUST begin with an Executive Verdict section containing exactly one o
 
 IMPORTANT: The **Verdict:** prefix is required — scripts parse this line by machine. Do NOT use **PASS** or **PASS WITH GAPS** without the prefix.
 
-Write the audit report and STOP."
+Write the audit report and STOP." || _agent_rc=$?
+record_agent_invocation_end auditor "$_agent_t0" "$_agent_rc"
+(( _agent_rc == 0 )) || exit "$_agent_rc"
 
 if [[ ! -f "$AUDIT_REPORT" ]]; then
   echo "[phase-audit] Warning: agent did not write audit report file." >&2

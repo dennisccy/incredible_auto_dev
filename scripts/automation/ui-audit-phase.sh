@@ -62,7 +62,9 @@ _FRONTEND_PORT="${CHAIN_FRONTEND_PORT:-3000}"
 FRONTEND_URL="${CHAIN_FRONTEND_URL:-http://localhost:${_FRONTEND_PORT}}"
 
 cd "$REPO_ROOT"
-export CHAIN_CURRENT_AGENT=qa   # interactive dispatch backend maps this call to a subagent
+record_agent_invocation_start qa   # exports CHAIN_CURRENT_AGENT — interactive dispatch backend maps this call to a subagent
+_agent_t0="$CHAIN_AGENT_START_EPOCH"
+_agent_rc=0
 claude_with_quota_retry -p "You are the qa agent for phased development.
 
 Your task is a FOCUSED UI EVOLUTION AUDIT ONLY for phase: $PHASE
@@ -115,7 +117,9 @@ Use this format:
 <action or none>
 \`\`\`
 
-Keep the report focused and actionable. Then STOP."
+Keep the report focused and actionable. Then STOP." || _agent_rc=$?
+record_agent_invocation_end qa "$_agent_t0" "$_agent_rc"
+(( _agent_rc == 0 )) || exit "$_agent_rc"
 
 echo ""
 echo "[ui-audit] ====================================="

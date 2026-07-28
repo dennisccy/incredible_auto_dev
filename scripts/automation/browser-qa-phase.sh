@@ -313,13 +313,14 @@ fi
 
 # ── Run browser QA agent ───────────────────────────────────────────────────
 cd "$REPO_ROOT"
-export CHAIN_CURRENT_AGENT=browser-qa-agent
 # Guard against `set -e` so we can inspect the exit code and fall back to
 # writing a SKIPPED stub when the agent leaves no results file.
 _bqa_rc=0
 if [[ "$_bqa_infra_blocked" == "yes" ]]; then
-  : # REL-14: dispatch skipped — preflight failure recorded above
+  : # REL-14: dispatch skipped — preflight failure recorded above (no dispatch → no agent telemetry)
 else
+record_agent_invocation_start browser-qa-agent
+_agent_t0="$CHAIN_AGENT_START_EPOCH"
 claude_with_quota_retry -p "You are the browser-qa-agent for phased development.
 
 Phase: $PHASE
@@ -358,6 +359,7 @@ The report MUST contain a line at the top:
 **Browser QA Verdict:** SKIPPED
 
 Then STOP." || _bqa_rc=$?
+record_agent_invocation_end browser-qa-agent "$_agent_t0" "$_bqa_rc"
 fi
 
 # Signal-induced exit (Ctrl-C, SIGKILL, SIGTERM) → do NOT write SKIPPED stubs.

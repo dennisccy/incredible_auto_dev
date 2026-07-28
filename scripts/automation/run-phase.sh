@@ -157,7 +157,9 @@ _run_iteration_summarizer() {
   fi
 
   cd "$REPO_ROOT"
-  export CHAIN_CURRENT_AGENT=iteration-summarizer
+  record_agent_invocation_start iteration-summarizer
+  local _agent_t0="$CHAIN_AGENT_START_EPOCH"
+  local _agent_rc=0
   claude_with_quota_retry -p "You are the iteration-summarizer agent.
 
 Phase id: $PHASE
@@ -184,7 +186,8 @@ form '**Verdict:** VALUE' where VALUE is one of: GOAL_ACHIEVED, CONTINUE,
 ESCALATE, REGRESSION, STALLED, PASS, FAIL, IN-PROGRESS.
 
 When finished, STOP." \
-    || log "  Warning: iteration-summarizer call failed (non-blocking)"
+    || { _agent_rc=$?; log "  Warning: iteration-summarizer call failed (non-blocking)"; }
+  record_agent_invocation_end iteration-summarizer "$_agent_t0" "$_agent_rc"
 }
 
 # Render the human-readable HTML summary for this iteration. Always non-blocking
@@ -585,7 +588,9 @@ if [[ "$SKIP_PLAN" == "false" ]]; then
   log "Step 1/11 -- Orchestrator: creating execution plan..."
 
   cd "$REPO_ROOT"
-  export CHAIN_CURRENT_AGENT=orchestrator
+  record_agent_invocation_start orchestrator
+  _agent_t0="$CHAIN_AGENT_START_EPOCH"
+  _agent_rc=0
   claude_with_quota_retry -p "You are acting as the orchestrator for phased development.
 
 Phase: $PHASE
@@ -624,7 +629,9 @@ The plan must include these sections:
    - Navigation changes
 6. Key Test Scenarios
 
-Keep it concise -- 1-2 pages max. Write the plan and STOP."
+Keep it concise -- 1-2 pages max. Write the plan and STOP." || _agent_rc=$?
+  record_agent_invocation_end orchestrator "$_agent_t0" "$_agent_rc"
+  (( _agent_rc == 0 )) || exit "$_agent_rc"
 
   if [[ ! -f "$PLAN_FILE" ]]; then
     mkdir -p "$(dirname "$PLAN_FILE")"

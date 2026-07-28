@@ -61,7 +61,8 @@ if [[ -f "$IMPL_SUMMARY" ]]; then
 fi
 
 cd "$REPO_ROOT"
-export CHAIN_CURRENT_AGENT=ui-impact-analyst
+record_agent_invocation_start ui-impact-analyst
+_agent_t0="$CHAIN_AGENT_START_EPOCH"
 _ui_rc=0
 claude_with_quota_retry -p "You are the ui-impact-analyst for phased development.
 
@@ -97,6 +98,7 @@ Use the templates at templates/user-visible-changes.md and templates/ui-surface-
 Every entry in the surface map MUST have a specific 'What to Test' action (not vague phrases like 'verify it works').
 
 Then STOP." || _ui_rc=$?
+record_agent_invocation_end ui-impact-analyst "$_agent_t0" "$_ui_rc"
 
 # Fall back to SKIPPED stubs if the agent exited without writing its artifacts
 # (commonly due to a transient Anthropic streaming error). Quota exit (75) is

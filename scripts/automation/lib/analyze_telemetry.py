@@ -261,6 +261,8 @@ def _new_iter_record(iter_name: str, ts: float | None) -> dict[str, Any]:
         "depth": None,
         "complete": False,
         "agents": {},          # name → {seconds, calls, retries, failures}
+        "engine_steps": {},    # step → seconds (non-agent engine work; NOT in agent totals —
+                               # the sub-pipeline steps CONTAIN agent invocations)
         "skipped_steps": [],
         "pump_wait_seconds": 0,
         "quota_sleep_seconds": 0,
@@ -301,7 +303,13 @@ def build_wall_report(paths: list[str]) -> dict[str, dict[str, Any]]:
                 a = event.get("agent") or "unattributed"
                 row = cur["agents"].setdefault(
                     a, {"seconds": 0, "calls": 0, "retries": 0, "failures": 0})
-                row["seconds"] += int(event.get("duration_seconds") or 0)
+                # SPEED-13: prefer active_seconds (duration minus quota sleeps)
+                # when the event carries it; quota sleep is reported separately
+                # via quota_pause_end so nothing is lost.
+                secs = event.get("active_seconds")
+                if secs is None:
+                    secs = event.get("duration_seconds")
+                row["seconds"] += int(secs or 0)
                 row["calls"] += 1
                 row["retries"] += int(event.get("retries") or 0)
                 if int(event.get("exit_status") or 0) != 0:
@@ -312,6 +320,11 @@ def build_wall_report(paths: list[str]) -> dict[str, dict[str, Any]]:
                 cur["pump_wait_seconds"] += int(event.get("wait_seconds") or 0)
             elif kind == "quota_pause_end" and cur is not None:
                 cur["quota_sleep_seconds"] += int(event.get("sleep_seconds") or 0)
+            elif kind == "engine_step" and cur is not None:
+                step = event.get("step") or "?"
+                cur["engine_steps"][step] = (
+                    cur["engine_steps"].get(step, 0)
+                    + int(event.get("duration_seconds") or 0))
             elif kind == "review_verdict" and cur is not None:
                 cur["review_verdicts"].append({
                     "verdict": event.get("verdict") or "?",
@@ -384,6 +397,9 @@ def render_wall_text(report: dict[str, dict[str, Any]],
                     extra += f"  retries={row['retries']}"
                 out.append(f"      {a:<24s} {_fmt_m(row['seconds']):>8s}  "
                            f"calls={row['calls']}{extra}")
+            for step, secs in sorted(rec.get("engine_steps", {}).items(),
+                                     key=lambda kv: -kv[1]):
+                out.append(f"      [engine] {step:<15s} {_fmt_m(secs):>8s}  (contains agent time above)")
             if rec["skipped_steps"]:
                 out.append(f"      (resume-skipped: {', '.join(rec['skipped_steps'])})")
             if rec["pump_wait_seconds"]:
@@ -391,10 +407,14 @@ def render_wall_text(report: dict[str, dict[str, Any]],
             if rec["quota_sleep_seconds"]:
                 out.append(f"      quota-pauses           {_fmt_m(rec['quota_sleep_seconds']):>8s}")
             if wall is not None:
-                if agent_total > wall:
-                    out.append(f"      overlap saved          {_fmt_m(agent_total - wall):>8s}  (parallel steps)")
+                # SPEED-13: agent rows are active time (quota sleeps excluded),
+                # so the residual must exclude the quota-pause seconds too or
+                # every pause would be misread as glue.
+                accounted = agent_total + rec["quota_sleep_seconds"]
+                if accounted > wall:
+                    out.append(f"      overlap saved          {_fmt_m(accounted - wall):>8s}  (parallel steps)")
                 else:
-                    out.append(f"      unattributed (glue)    {_fmt_m(wall - agent_total):>8s}")
+                    out.append(f"      unattributed (glue)    {_fmt_m(wall - accounted):>8s}  (wall − agents(active) − quota)")
         completed = [i for i in s["iterations"] if i["complete"] and i["wall_seconds"]]
         if completed and iter_filter is None:
             mean = sum(i["wall_seconds"] for i in completed) / len(completed)
@@ -531,8 +551,15 @@ _WALL_FIXTURE = [
      "ts": "2026-07-01T10:08:00Z"},
     {"event": "agent_invocation_end", "session_id": "w-1", "agent": "goal-decomposer",
      "exit_status": 0, "duration_seconds": 480, "retries": 0, "ts": "2026-07-01T10:08:00Z"},
+    # SPEED-13: developer hit a quota pause — duration keeps wall meaning,
+    # active_seconds excludes the sleep, quota_pause_end reports it separately.
+    {"event": "quota_pause_end", "session_id": "w-1", "agent": "developer",
+     "sleep_seconds": 600, "ts": "2026-07-01T10:40:00Z"},
     {"event": "agent_invocation_end", "session_id": "w-1", "agent": "developer",
-     "exit_status": 0, "duration_seconds": 2400, "retries": 0, "ts": "2026-07-01T10:48:00Z"},
+     "exit_status": 0, "duration_seconds": 2400, "quota_sleep_seconds": 600,
+     "active_seconds": 1800, "retries": 0, "ts": "2026-07-01T10:48:00Z"},
+    {"event": "engine_step", "session_id": "w-1", "step": "lean-pipeline",
+     "duration_seconds": 3000, "ts": "2026-07-01T10:48:00Z"},
     {"event": "step_skipped", "session_id": "w-1", "step": "reviewer",
      "iter_name": "goal-w-iter-1", "ts": "2026-07-01T10:48:01Z"},
     {"event": "dispatch_wait", "session_id": "w-1", "agent": "browser-qa-agent",
@@ -626,8 +653,15 @@ def _self_test() -> int:
         if it1["wall_seconds"] != 5160:  # 10:00:00 → 11:26:00
             print(f"FAIL: iter-1 wall {it1['wall_seconds']} != 5160", file=sys.stderr)
             return 1
-        if it1["agents"]["developer"]["seconds"] != 2400:
-            print("FAIL: developer seconds attribution", file=sys.stderr)
+        # SPEED-13: active_seconds (1800) preferred over duration_seconds (2400)
+        if it1["agents"]["developer"]["seconds"] != 1800:
+            print("FAIL: developer active-seconds attribution", file=sys.stderr)
+            return 1
+        if it1["quota_sleep_seconds"] != 600:
+            print("FAIL: quota_pause_end attribution", file=sys.stderr)
+            return 1
+        if it1["engine_steps"].get("lean-pipeline") != 3000:
+            print(f"FAIL: engine_steps {it1['engine_steps']}", file=sys.stderr)
             return 1
         if it1["skipped_steps"] != ["reviewer"]:
             print(f"FAIL: skipped steps {it1['skipped_steps']}", file=sys.stderr)
@@ -643,7 +677,8 @@ def _self_test() -> int:
             return 1
         text = render_wall_text(report)
         for needle in ("goal-w-iter-1", "developer", "resume-skipped: reviewer",
-                       "pump-wait", "incomplete/interrupted"):
+                       "pump-wait", "incomplete/interrupted",
+                       "[engine] lean-pipeline", "quota-pauses"):
             if needle not in text:
                 print(f"FAIL: wall render missing '{needle}'", file=sys.stderr)
                 return 1

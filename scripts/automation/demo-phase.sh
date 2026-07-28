@@ -248,7 +248,8 @@ if [[ "$REAUTHOR" != "yes" ]] && _demo_json_fresh "$DEMO_JSON_OUT" "${AUTHOR_INP
   echo "[demo] Reusing cached demo script: $(basename "$DEMO_JSON_OUT") (pass --reauthor to rebuild)."
 else
   require_claude
-  export CHAIN_CURRENT_AGENT=demo-narrator
+  record_agent_invocation_start demo-narrator
+  _agent_t0="$CHAIN_AGENT_START_EPOCH"
   export CHAIN_CLAUDE_PRE_RETRY_HOOK="ensure_services_running"
   _author_rc=0
   if [[ "$MODE" == "session" ]]; then
@@ -287,6 +288,7 @@ Inputs (read only what exists):
 
 Write ONLY the JSON file at the output path. Do NOT open a browser. When done, STOP." || _author_rc=$?
   fi
+  record_agent_invocation_end demo-narrator "$_agent_t0" "$_author_rc"
 
   # Signal exit — propagate unchanged (resume logic re-runs). Do not stub.
   if [[ $_author_rc -eq 130 || $_author_rc -eq 137 || $_author_rc -eq 143 ]]; then

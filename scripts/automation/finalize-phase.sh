@@ -142,7 +142,9 @@ else
 fi
 
 cd "$REPO_ROOT"
-export CHAIN_CURRENT_AGENT=release-manager   # needed for the interactive dispatch backend to map this call to a subagent
+record_agent_invocation_start release-manager   # exports CHAIN_CURRENT_AGENT — needed for the interactive dispatch backend to map this call to a subagent
+_agent_t0="$CHAIN_AGENT_START_EPOCH"
+_agent_rc=0
 claude_with_quota_retry -p "You are the release-manager agent for phased development.
 
 Phase to finalize: $PHASE
@@ -166,7 +168,9 @@ Perform the release flow:
 4. If GH_AUTH_AVAILABLE is true: create PR with title: feat: $PHASE -- <one-line summary>
 5. If GH_AUTH_AVAILABLE is false: skip PR creation, print a clear message showing the
    manual command the user can run once they authenticate: gh pr create ...
-6. Report the PR URL (or the manual command if PR was skipped)"
+6. Report the PR URL (or the manual command if PR was skipped)" || _agent_rc=$?
+record_agent_invocation_end release-manager "$_agent_t0" "$_agent_rc"
+(( _agent_rc == 0 )) || exit "$_agent_rc"
 
 # Clean up transient agent-generated files before finalizing
 echo "[finalize] Cleanup: removing temp files..."

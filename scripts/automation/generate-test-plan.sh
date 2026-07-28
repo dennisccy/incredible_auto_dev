@@ -40,7 +40,9 @@ echo "[generate-test-plan] Generating test plan for: $PHASE (frontend: $FRONTEND
 mkdir -p "$REPO_ROOT/reports/qa"
 
 cd "$REPO_ROOT"
-export CHAIN_CURRENT_AGENT=qa
+record_agent_invocation_start qa
+_agent_t0="$CHAIN_AGENT_START_EPOCH"
+_agent_rc=0
 claude_with_quota_retry -p "You are the qa agent operating in TEST PLAN GENERATION mode for phased development.
 
 Phase: $PHASE
@@ -60,7 +62,9 @@ The plan must include:
 - For each test case: type, preconditions, steps, expected outcome, pass criteria
 - A summary of total test cases by type
 
-Keep it concise (1-3 pages). Write the plan and STOP."
+Keep it concise (1-3 pages). Write the plan and STOP." || _agent_rc=$?
+record_agent_invocation_end qa "$_agent_t0" "$_agent_rc"
+(( _agent_rc == 0 )) || exit "$_agent_rc"
 
 if [[ ! -f "$TEST_PLAN" ]]; then
   echo "[generate-test-plan] Warning: agent did not write test plan file." >&2

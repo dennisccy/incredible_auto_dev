@@ -123,6 +123,9 @@ record_agent_invocation_start() {
   export CHAIN_CURRENT_AGENT="$agent"
   record_telemetry_event "agent_invocation_start" "$payload"
   CHAIN_AGENT_START_EPOCH="$(date +%s)"
+  # SPEED-13: quota-retry.sh accumulates quota-sleep seconds here so the end
+  # event can split active work from quota-pause wall time.
+  CHAIN_QUOTA_SLEPT_SECONDS=0
 }
 
 # Convenience: record an agent invocation end with duration and status.
@@ -137,14 +140,23 @@ record_agent_invocation_end() {
   local start_epoch="$2"
   local status="$3"
   local retries="${4:-0}"
-  local now duration
+  local now duration slept active
   now="$(date +%s)"
   duration=$(( now - start_epoch ))
+  # SPEED-13: duration_seconds keeps its historical meaning (wall clock).
+  # quota_sleep_seconds/active_seconds are additive fields so consumers can
+  # separate real work from quota-pause waits (18h "agent durations" were
+  # actually overnight quota sleeps attributed to the agent).
+  slept="${CHAIN_QUOTA_SLEPT_SECONDS:-0}"
+  [[ "$slept" =~ ^[0-9]+$ ]] || slept=0
+  (( slept > duration )) && slept=$duration
+  active=$(( duration - slept ))
   local payload
-  payload=$(printf '{"agent":"%s","exit_status":%d,"duration_seconds":%d,"retries":%d}' \
-    "$agent" "$status" "$duration" "$retries")
+  payload=$(printf '{"agent":"%s","exit_status":%d,"duration_seconds":%d,"quota_sleep_seconds":%d,"active_seconds":%d,"retries":%d}' \
+    "$agent" "$status" "$duration" "$slept" "$active" "$retries")
   record_telemetry_event "agent_invocation_end" "$payload"
   unset CHAIN_CURRENT_AGENT
+  CHAIN_QUOTA_SLEPT_SECONDS=0
 }
 
 # Forward Claude API usage info captured by claude_stream_renderer.py to the

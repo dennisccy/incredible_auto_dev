@@ -85,7 +85,9 @@ trap cleanup_dev_servers EXIT
 
 # ── Developer agent ──────────────────────────────────────────────────────
 cd "$REPO_ROOT"
-export CHAIN_CURRENT_AGENT=developer
+record_agent_invocation_start developer
+_agent_t0="$CHAIN_AGENT_START_EPOCH"
+_agent_rc=0
 claude_with_quota_retry -p "You are the developer agent for phased development.
 
 Phase: $PHASE
@@ -105,6 +107,8 @@ When complete:
   Use the template at templates/implementation-summary.md.
   Include: features implemented, changed behavior, backend-only items, incomplete items, config/env changes, known limitations.
   This report is for operators, not developers — write in plain language, not code.
-- Update runs/${PHASE}/status.json with current_step: dev_complete"
+- Update runs/${PHASE}/status.json with current_step: dev_complete" || _agent_rc=$?
+record_agent_invocation_end developer "$_agent_t0" "$_agent_rc"
+(( _agent_rc == 0 )) || exit "$_agent_rc"
 
 echo "[dev-phase] Done."

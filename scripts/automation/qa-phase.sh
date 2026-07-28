@@ -130,7 +130,9 @@ export CHAIN_CLAUDE_PRE_RETRY_HOOK="ensure_services_running"
 
 # ── Run QA agent ──────────────────────────────────────────────────────────
 cd "$REPO_ROOT"
-export CHAIN_CURRENT_AGENT=qa
+record_agent_invocation_start qa
+_agent_t0="$CHAIN_AGENT_START_EPOCH"
+_agent_rc=0
 claude_with_quota_retry -p "You are the qa agent operating in QA VALIDATION mode for phased development.
 
 Phase: $PHASE
@@ -166,10 +168,12 @@ Write your QA report to: reports/qa/${PHASE}-qa.md
 The report MUST contain a line matching exactly:
 **Verdict:** PASS
   or
-**Verdict:** FAIL"
+**Verdict:** FAIL" || _agent_rc=$?
+record_agent_invocation_end qa "$_agent_t0" "$_agent_rc"
+(( _agent_rc == 0 )) || exit "$_agent_rc"
 
-# REL-11 missing-evidence tripwire: this script runs under `set -e`, so a
-# nonzero dispatch already dies loudly above. The silent failure mode is
+# REL-11 missing-evidence tripwire: a nonzero dispatch already dies loudly
+# above (explicit exit right after the telemetry end event). The silent failure mode is
 # rc=0 with no report on disk (baseline bench-20260710-2117: every qa dispatch
 # exited 0, reports/qa/ stayed empty). Banner + telemetry, never a gate.
 QA_REPORT="$REPO_ROOT/reports/qa/${PHASE}-qa.md"
