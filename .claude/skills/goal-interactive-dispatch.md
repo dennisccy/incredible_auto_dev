@@ -151,19 +151,25 @@ concurrent requests never collide.
 The engine's own self-wrap (run-goal.sh) confines only the HEADLESS engine tree.
 Interactive dispatches — every subagent, and every `pytest`/build/browser those
 subagents run through Bash — execute as descendants of THIS foreground CLI
-session, so they inherit whatever CPU/memory confinement this session was
-launched with, and nothing can retrofit it afterwards. When the project declares
-host caps (`project-extensions/host-guard/host-guard.env`), the session must be
-launched through the wrapper:
+session and inherit ITS confinement. When the project declares host caps
+(`project-extensions/host-guard/host-guard.env`), that confinement is applied
+automatically — no special launch command is required:
 
-    scripts/automation/host-guard-exec.sh claude
+- the `/goal` command runs `scripts/automation/host-guard-adopt.sh
+  --cli-root-of $$` at session start, which confines the RUNNING CLI process
+  tree in place (scope adoption for memory/task/quota ceilings + a hard
+  `taskset` CPU mask on the tree, inherited by all future children);
+- with `HOST_GUARD_REQUIRE_PUMP_CONFINED=1`, the engine re-verifies the pump at
+  every iteration boundary (via the `pid=` line in `.pump-alive` or the CLI
+  root it captured at launch) and auto-confines it again if needed, pausing
+  (`AWAITING_HOST_GUARD`, resumable) only when in-place confinement fails.
 
-With `HOST_GUARD_REQUIRE_PUMP_CONFINED=1`, the engine verifies the pump's cpuset
-(via the `pid=` line in `.pump-alive`) at each iteration boundary and pauses the
-session (`AWAITING_HOST_GUARD`, resumable) if the pump is wider than
-`HOST_GUARD_CPU_LIST`. If that pause fires, relaunch the CLI via the wrapper and
-`/goal-resume` — do not disable the flag to make the pause go away; the caps
-exist because unconfined goal-mode load has hard-reset the host.
+Optional belt-and-braces: launching the CLI through
+`scripts/automation/host-guard-exec.sh claude` confines it from birth and also
+sets the BLAS/OMP thread-cap env vars (those cannot be injected into a running
+process). If the pause ever fires, relaunch via that wrapper and `/goal-resume`
+— do not disable the flag to make the pause go away; the caps exist because
+unconfined goal-mode load has hard-reset the host.
 
 ## Usage sidecar (token telemetry — protocol v2, optional, best-effort)
 

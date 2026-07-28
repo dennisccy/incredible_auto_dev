@@ -107,6 +107,21 @@ if [[ -z "${HOST_GUARD_WRAPPED:-}" && -f "$_HOST_GUARD_ENV_FILE" ]] \
   source "$_HOST_GUARD_ENV_FILE"
   if [[ "${HOST_GUARD_ENABLED:-0}" == "1" && -n "${HOST_GUARD_CPU_LIST:-}" ]]; then
     export HOST_GUARD_WRAPPED=1
+    # Capture the interactive CLI session root (the pump) BEFORE the re-exec
+    # below reparents us: walk the ppid chain for the outermost process whose
+    # cmdline matches HOST_GUARD_CLI_PATTERN. The iteration gate verifies —
+    # and, if needed, confines in place via host-guard-adopt.sh — this pid.
+    if [[ -z "${HOST_GUARD_PUMP_ROOT_PID:-}" ]]; then
+      _hg_p="$PPID" _hg_root=""
+      while [[ "$_hg_p" =~ ^[0-9]+$ ]] && (( _hg_p > 1 )); do
+        if tr '\0' ' ' < "/proc/$_hg_p/cmdline" 2>/dev/null \
+             | grep -qE "${HOST_GUARD_CLI_PATTERN:-claude|codex}"; then
+          _hg_root="$_hg_p"
+        fi
+        _hg_p="$(awk '/^PPid:/{print $2}' "/proc/$_hg_p/status" 2>/dev/null || true)"
+      done
+      if [[ -n "$_hg_root" ]]; then export HOST_GUARD_PUMP_ROOT_PID="$_hg_root"; fi
+    fi
     _HG_PROPS=( -p "CPUQuota=${HOST_GUARD_CPUQUOTA:-800%}"
                 -p "MemoryHigh=${HOST_GUARD_MEMORY_HIGH:-18G}"
                 -p "TasksMax=${HOST_GUARD_TASKS_MAX:-2048}" )
@@ -992,24 +1007,45 @@ host_guard_iteration_gate() {
 
   if [[ "${HOST_GUARD_REQUIRE_PUMP_CONFINED:-0}" == "1" && "${AGENT_BACKEND:-}" == "interactive" ]]; then
     local hb="${CHAIN_DISPATCH_DIR:-$GOAL_SESSION_DIR_LOCAL/dispatch}/.pump-alive"
-    local pump_pid="" hb_age width allowed_list allowed_n
+    local pump_pid="" hb_age=999999 target="" width allowed_list allowed_n
     if [[ -f "$hb" ]]; then
       hb_age=$(( EPOCHSECONDS - $(stat -c %Y "$hb" 2>/dev/null || echo 0) ))
       pump_pid=$(sed -n 's/^pid=\([0-9][0-9]*\)$/\1/p' "$hb" 2>/dev/null | head -n 1)
-      # Heartbeat present but no pid line (ident disabled): confinement cannot be
-      # verified — that must be loud, not a silent bypass.
-      if [[ -z "$pump_pid" && "$hb_age" -le "${HOST_GUARD_PUMP_HB_FRESH:-180}" ]]; then
-        _host_guard_pause "cannot verify pump confinement: $hb has no pid= line (heartbeat ident disabled?) — re-enable the pump ident or set HOST_GUARD_REQUIRE_PUMP_CONFINED=0" "iteration_gate"
-      fi
     fi
-    if [[ -n "$pump_pid" && "$hb_age" -le "${HOST_GUARD_PUMP_HB_FRESH:-180}" && -r "/proc/$pump_pid/status" ]]; then
+    # Verification handle: the CLI session root captured at engine launch wins
+    # (it outlives short-lived heartbeat writers); else the live heartbeat pid.
+    if [[ -n "${HOST_GUARD_PUMP_ROOT_PID:-}" && -r "/proc/${HOST_GUARD_PUMP_ROOT_PID}/status" ]]; then
+      target="$HOST_GUARD_PUMP_ROOT_PID"
+    elif [[ -n "$pump_pid" && "$hb_age" -le "${HOST_GUARD_PUMP_HB_FRESH:-180}" && -r "/proc/$pump_pid/status" ]]; then
+      target="$pump_pid"
+    fi
+    if [[ -n "$target" ]]; then
       width=$(_host_guard_mask_width "${HOST_GUARD_CPU_LIST:-}")
-      allowed_list=$(awk -F'\t' '/^Cpus_allowed_list/{print $2}' "/proc/$pump_pid/status" 2>/dev/null)
+      allowed_list=$(awk -F'\t' '/^Cpus_allowed_list/{print $2}' "/proc/$target/status" 2>/dev/null)
       allowed_n=$(_host_guard_mask_width "$allowed_list")
       if (( width > 0 && allowed_n > width )); then
-        write_session_summary "AWAITING_HOST_GUARD" "$CURRENT_ITER"
-        _host_guard_pause "interactive pump (pid $pump_pid) is unconfined: Cpus_allowed_list=$allowed_list = $allowed_n CPUs > mask width $width — relaunch the pump CLI under the guard, e.g. scripts/automation/host-guard-exec.sh claude" "iteration_gate"
+        # Self-heal first: confine the RUNNING session in place — scope
+        # adoption for memory/task/quota ceilings + taskset for the hard CPU
+        # mask. No relaunch required; the host-guard-exec.sh wrapper remains
+        # the belt-and-braces option (adds BLAS env caps from birth).
+        # HOST_GUARD_ADOPT=0 skips the self-heal and pauses immediately.
+        if [[ "${HOST_GUARD_ADOPT:-1}" == "1" ]]; then
+          echo "[run-goal] host-guard: pump (pid $target) unconfined (Cpus_allowed_list=$allowed_list) — auto-confining in place."
+          HOST_GUARD_ROOT="$REPO_ROOT" bash "$SCRIPT_DIR/host-guard-adopt.sh" --cli-root-of "$target" || true
+          allowed_list=$(awk -F'\t' '/^Cpus_allowed_list/{print $2}' "/proc/$target/status" 2>/dev/null)
+          allowed_n=$(_host_guard_mask_width "$allowed_list")
+        fi
+        if (( allowed_n > width )); then
+          write_session_summary "AWAITING_HOST_GUARD" "$CURRENT_ITER"
+          _host_guard_pause "interactive pump (pid $target) is unconfined (Cpus_allowed_list=$allowed_list = $allowed_n CPUs > mask width $width) and in-place auto-confinement did not take — relaunch the pump CLI via scripts/automation/host-guard-exec.sh (e.g. 'scripts/automation/host-guard-exec.sh claude'), or set HOST_GUARD_REQUIRE_PUMP_CONFINED=0" "iteration_gate"
+        fi
+        record_telemetry_event "host_guard_adopt" "$(printf '{"pid":%s,"cpus":"%s"}' "$target" "$allowed_list")"
+        echo "[run-goal] host-guard: pump (pid $target) confined to $allowed_list."
       fi
+    elif [[ "$hb_age" -le "${HOST_GUARD_PUMP_HB_FRESH:-180}" ]]; then
+      # A live pump we cannot even identify (no pid= line in the heartbeat AND
+      # no CLI root captured at launch): loud pause, never a silent bypass.
+      _host_guard_pause "cannot verify pump confinement: no usable pump pid ($hb has no pid= line and no CLI root was captured at engine launch) — re-enable the pump ident or set HOST_GUARD_REQUIRE_PUMP_CONFINED=0" "iteration_gate"
     fi
   fi
   return 0
