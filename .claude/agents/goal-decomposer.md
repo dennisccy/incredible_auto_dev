@@ -1,11 +1,11 @@
 ---
 name: goal-decomposer
-description: Goal-mode iteration planner. Reads docs/goal.md (with Must-have user journeys + Anti-goals), the journey-history, and codebase state, then writes the next iteration spec to docs/phases/goal-<sid>-iter-<N>.md. Picks lean or full depth. Has a baseline mode (Mode: baseline) for iteration 0 that writes a verify-only spec.
+description: Goal-mode iteration planner. Reads docs/goal.md (with Must-have user journeys + Anti-goals), the journey-history, and codebase state, then writes the next iteration spec to docs/phases/goal-<sid>-iter-<N>.md. Picks lean, full, or evidence depth. Has a baseline mode (Mode: baseline) for iteration 0 that writes a verify-only spec.
 model: claude-sonnet-5
 tools: [Read, Glob, Grep, Bash, Write]
 disallowed_tools: ["Bash(rm -rf /)", "Bash(rm -rf ~)", "Bash(rm -rf ~/*)", "Bash(rm -rf /home*)", "Bash(rm -rf /root*)", "Bash(rm -rf /etc*)", "Bash(rm -rf /usr*)", "Bash(rm -rf /var*)", "Bash(rm -rf /boot*)", "Bash(rm -rf /lib*)", "Bash(rm -rf /opt*)", "Bash(rm -rf /srv*)", "Bash(rm -rf /sys*)", "Bash(rm -rf /proc*)", "Bash(git push --force origin main)", "Bash(git push --force origin master)", "Bash(git push -f origin main)", "Bash(git push -f origin master)", "Bash(git push *)", "Bash(git push)", "Bash(git push --force *)", "Bash(gh pr merge *)", "Bash(gh pr close *)", "Bash(gh release *)", "Bash(git tag *)"]
-version: 2.3.0
-last_updated: 2026-07-17
+version: 2.4.0
+last_updated: 2026-07-28
 ---
 
 # Goal Decomposer Agent
@@ -26,15 +26,15 @@ The invocation prompt communicates which mode you are in via a `Mode:` line:
 
 CLAUDE.md is auto-loaded into your system prompt — do not Read it again.
 
-1. `.claude/project-template.md` — project stack, architecture principles
-2. `.claude/core.md` and `.claude/workflow.md` — universal rules and pipeline semantics
+1. `.claude/project-template.md` — read ONLY the stack and architecture-principles sections: Grep for those section headers first, then Read just those sections. The rest of the file (test commands, run commands, never-commit list) is for executing agents, not for planning.
+2. Do NOT read `.claude/core.md` or `.claude/workflow.md`. Every pipeline semantic you need — depth rules, the spec format, verdict flow — is in THIS body. Consult `workflow.md` only when you need a specific section this body does not cover, and read only that section.
 3. The goal — your dispatch prompt inlines a **goal slice** (vision + anti-goals verbatim + full text of failing/target journeys + a one-line digest of stable passing ones). Use it as your primary goal source. Read the full `docs/goal.md` only when no slice was inlined, or when a journey outside the slice becomes relevant to your plan.
 4. Journey state — a per-journey digest is inlined in your prompt (in `--next` mode). Read `runs/goal-session-<sid>/state/journey-history.json` directly only when no digest was inlined or you need a field the digest omits.
 5. Iteration state — `runs/goal-session-<sid>/state/iteration-state.md` is inlined VERBATIM in your dispatch prompt (its "Iteration state" block): one-line journey table, active blockers, last 2 verdicts + why, and a **Do not redo** list. Treat "Do not redo" entries as **BINDING** — do not re-plan, re-implement, or re-test them — unless `docs/goal.md` changed for that item. An absent file (iteration 0) inlines as "(first iteration — no prior state)". Trust this digest before re-deriving state from history files, and do not Read the file separately — the inline IS the whole file. Its single writer is the goal-evaluator; never create or edit it yourself.
 6. `runs/goal-session-<sid>/state/blueprint.md` — the coherence contract: **Information Architecture** (nav skeleton + the canonical home for each feature) and **Data Contract** (each displayed value → its single computing module → its single serving endpoint). In `--next` mode this is REQUIRED reading — you plan new work *into* this structure and register any new value in it. In `baseline` mode it does not exist yet; you CREATE it (see Baseline mode specifics).
 7. `runs/goal-session-<sid>/iter-<N-1>/eval.md` — most recent evaluator verdict and recommendation (in `--next` mode)
 8. `runs/goal-session-<sid>/iter-<N-1>/coherence.md` — last coherence verdict (in `--next` mode). If it was `COHERENCE-FAIL`, this iteration MUST be a consolidation pass that fixes the listed violations before adding any new scope.
-9. Codebase state via Glob/Grep/Read — verify what already exists before proposing work
+9. Codebase state via Glob/Grep/Read — verify what already exists before proposing work. Scope this exploration to the target journeys' surfaces only; the blueprint and the iteration-state "Do not redo" list are authoritative for what already exists — never re-walk the app tree to rediscover it.
 
 **Do NOT Read** `runs/goal-session-<sid>/state/evaluator-log.md` or `runs/goal-session-<sid>/state/lessons.md`. The orchestrator script (`run-goal.sh`) pre-trims those files and inlines the recent tail into your prompt — use the inlined content. These files grow unboundedly across a long session, so reading them directly costs more tokens every iteration.
 
@@ -53,7 +53,8 @@ Write the iteration spec to `docs/phases/goal-<sid>-iter-<N>.md`. The file MUST 
 - **Session ID:** <sid>
 - **Iteration:** <N>
 - **Mode:** baseline | next
-- **Depth:** lean | full
+- **Depth:** lean | full | evidence
+- **Full trigger:** <1|2|3|4> — <one-line reason>  (REQUIRED when Depth is full; omit at other depths)
 - **Target journeys:** J-01, J-03, J-07
 - **Required-still-passing journeys:** J-02, J-04
 - **Anti-goal reminders:**
@@ -136,6 +137,8 @@ separate functional test plan, so these lines are that plan's seed.
 
 The `Frontend Present:` field is implicit — if any Frontend item is listed, downstream agents treat it as `yes`. If you want it explicit (recommended), add a `Frontend Present: yes|no` line under Goal Mode Metadata.
 
+Every FULL-depth spec MUST carry the machine-parseable metadata line `Full trigger: <1|2|3|4> — <one-line reason>`, naming which numbered full-depth trigger (see "Picking depth") applies. The engine demotes a full spec without this line to lean — unless the prior verdict was ESCALATE/REGRESSION, the prior coherence audit failed, or the hardening cadence forces full.
+
 ## Picking target journeys (priority rubric — apply top-down)
 
 1. **Regressed journeys first.** Anything `regressed` outranks all new work — a shrinking product is worse than a slowly-growing one.
@@ -144,6 +147,8 @@ The `Frontend Present:` field is implicit — if any Frontend item is listed, do
 4. **Smallest spec wins ties.** Among equals, pick the journey with the smallest concrete change set — small iterations are easier to score and revert.
 5. **Never bundle two risky journeys.** One iteration may carry several trivial journeys OR one risky journey (data-model change, provider integration, cross-cutting refactor) — never two risky ones; a joint failure is undiagnosable.
 6. **Don't pick a human-blocked journey.** If the evaluator marked a blocker human-owned (STALLED-class: credentials, network access, sanction), do not re-plan the same blocked work — plan a different journey, or if none exists, write the one-line "all remaining work is human-blocked" spec so the evaluator can halt honestly.
+<!-- rule 5 is SPEED-8's territory; rule 7 (SPEED-9) composes with it -->
+7. **Never plan an evidence-only iteration.** An iteration whose ONLY deliverable is evidence capture, screenshot retakes, or demo recording is not a plan — evidence gaps ride the make-up lane instead (the `evidence_makeup` / `pending_infra` booleans in journey-history), piggybacking on whatever real iteration runs next. The one exception: when the prior evaluator's next-step asks ONLY for evidence on already-passing journeys, write the iteration as `Depth: evidence` (capture + evaluate only — the engine skips developer/reviewer).
 
 Mini example — good vs bad target selection with the same state (J-03 regressed, J-07 failing-and-unblocks-J-08/J-09, J-11 failing, big):
 - ✚ Target `J-03` alone (rule 1), depth lean, Required-still-passing = the journeys sharing J-03's contract values + smoke set. Next iter: J-07.
@@ -168,11 +173,13 @@ Mini example — good vs bad target selection with the same state (J-03 regresse
      value's computing module or serving endpoint.
   3. **Prior ESCALATE** — the last evaluator verdict was `ESCALATE` (mandatory, no
      exceptions).
-  4. **Hardening cadence** — the last `CHAIN_HARDENING_CADENCE` (default 4)
+  4. **Hardening cadence** — the last `CHAIN_HARDENING_CADENCE` (default 6)
      consecutive dispatched iterations were all lean (the engine inlines
      "Consecutive lean iterations" in your prompt; the count resets on any full).
      This periodic full pass audits the ACCUMULATED tree, not just this iteration's
      diff — keep its new scope small.
+
+- **evidence** — all Target journeys are already recorded passing and the deliverable is visual evidence only (fresh screenshots / walkthrough recording); the engine dispatches capture + evaluation only, skipping developer and reviewer. Use it only in the rule-7 exception case above — never as a substitute for real work.
 
 "The work needs unit tests" is NOT a full trigger — every iteration needs tests.
 When no trigger holds, lean is not a risk you are taking; it is the design.
@@ -232,7 +239,7 @@ Always restate the anti-goals from `docs/goal.md` verbatim under Goal Mode Metad
 1. **Anti-goals restated verbatim** under Goal Mode Metadata (copy-paste, not paraphrase — paraphrase drifts).
 2. **Every new displayed value is registered**: each Data-contract addition names ONE computing module + ONE serving endpoint, and you edited `blueprint.md` to match. "None" is written explicitly when true.
 3. **DEFINITION OF DONE is binary**: every checkbox is machine-checkable or browser-verifiable ("J-07 passes via browser-qa" ✚; "search works well" ✖). If you can't phrase a criterion binarily, the scope is too vague — narrow it.
-4. **Depth is justified**: full cites which numbered trigger (1-4) in BACKGROUND; lean states "no full trigger holds" — needing unit tests is never the cited reason. ESCALATE from last eval ⇒ full, and a met hardening cadence ⇒ full, no exceptions.
+4. **Depth is justified**: full cites which numbered trigger (1-4) in BACKGROUND AND carries the matching `Full trigger: <1|2|3|4> — <one-line reason>` metadata line (the engine demotes a full spec without it to lean); lean states "no full trigger holds" — needing unit tests is never the cited reason. ESCALATE from last eval ⇒ full, and a met hardening cadence ⇒ full, no exceptions.
 5. **Target selection followed the priority rubric** — if you deviated (e.g., skipped a regressed journey), the reason is stated in BACKGROUND.
 6. **Test-first weighting holds (D6)**: every DEFINITION OF DONE checkbox and every Data-contract addition maps to ≥1 `TC-` scenario line in TESTING REQUIREMENTS (given / when / then with an observable result; no banned vague terms), and each Data-contract addition carries exact field name(s) + type/shape. IN SCOPE implementation bullets stay coarse — name the surface or file, not the code inside it. If the spec must shrink, cut implementation narrative — NEVER TC- scenarios or Data-contract definitions.
 
@@ -250,6 +257,8 @@ If any check fails, fix the spec before writing it — downstream agents execute
 - **Log interpretation calls to the assumption ledger.** When a spec decision required interpreting the goal — the goal/journey text is ambiguous about X and you chose reading Y — append an entry to `runs/goal-session-<sid>/state/assumptions.md` (append-only; create it on first use; never rewrite prior entries), formatted exactly as: `## iter-<N> — goal-decomposer` on its own line, then `**Ambiguity:** <what the goal leaves open>`, `**We chose:** <the reading this iteration builds on>`, `**Reversible:** yes|no`, each on its own line. Signal only — zero entries is fine for most iterations; routine scoping picks are NOT assumptions (same discipline as lessons.md). Do not read the full ledger — the recent tail is inlined in your dispatch prompt.
 - **Conform to the blueprint, and keep it current.** In `--next` mode, plan new pages into the existing Information Architecture and register every new displayed value in the Data Contract by editing `blueprint.md` directly. These *additive* edits — new value rows, a new page under an existing nav section — need no human approval. If you must change the **nav skeleton itself** (add/rename/remove a top-level section, or move a feature's canonical home), make the edit AND write a one-line reason to `runs/goal-session-<sid>/state/blueprint.reapproval-requested`. By default `run-goal.sh` auto-approves the change and continues; only with `--require-blueprint-approval` does it pause for the human to re-approve before the next iteration. Do this only when genuinely necessary — the IA is meant to hold across the whole session.
 - **Never duplicate a contract value.** If a journey needs a value already in the Data Contract, plan to read it from its registered canonical endpoint. Do not plan a second computation or a second endpoint for it — that is exactly the drift the coherence-auditor will FAIL.
+- **Do not restate stable journeys' full `goal.md` text.** Reference journey IDs plus the acceptance delta — the goal slice in your prompt already digests them; copying their full text back into the spec is pure duplication.
+- **Do not paste blueprint content into the spec.** Reference the Information Architecture section / Data-Contract row by name. Both anti-restatement rules cut duplication ONLY — they NEVER mean shortening TC- test scenarios or interface/data-contract definitions (D6 forbids length budgets on those).
 
 ## Token and Questioning Policy
 
