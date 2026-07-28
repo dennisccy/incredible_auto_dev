@@ -60,6 +60,33 @@ your overall impression of the iteration.
    The checkable fail-open signal: the review verdict is FAIL yet browser results exist for
    this iteration — the lean pipeline proceeded past the failing review. That is an
    ESCALATE signal (tree below).
+6. **Evidence durability (SPEED-9).** Evidence does not expire with time — it expires with
+   CHANGE. When a journey's product code is unchanged since the iteration where its passing
+   evidence was captured, that evidence remains valid: the `last_evidence_path` screenshot,
+   its results row, AND the prior iteration's walkthrough recording (your dispatch prompt's
+   "Prior walkthrough recording" line names the newest one). Check change against
+   `iter-diff.md`'s file list vs the journey's surfaces; when the prompt's "Product diff
+   this iteration" line says EMPTY, ALL prior evidence is automatically still valid. Do not
+   demand a re-capture, and never downgrade a status for evidence age alone.
+   Two precedence rails: (a) goal-edit drift ALWAYS wins over durability — a journey listed
+   in `journeys-changed.md` needs fresh evidence against the CURRENT goal text no matter how
+   unchanged the code is (A.1 rule, unchanged); (b) the no-screenshot rail (A.3) demands a
+   screenshot EXISTS with a citation — durability only relaxes WHICH iteration it may come
+   from, never whether one is needed.
+7. **Capture defect ≠ product failure (SPEED-9).** When the code, tests, and/or replay
+   confirm the behavior but the capture ARTIFACT itself is cosmetically defective — the
+   screenshot shows a different-but-equally-valid data range than the spec's example
+   numbers, the walkthrough recording is missing or badly cropped — score the journey from
+   the code/replay/screenshot evidence that does exist, record the gap as `capture-defect`,
+   and set `evidence_makeup: true` on the journey in journey-history (same shape and
+   clearing rule as `pending_infra`: any fresh capture, pass or fail, clears it). The
+   make-up capture rides the next iteration as a passenger task or a `Depth: evidence`
+   recommendation — NEVER as a new iteration's goal.
+   Distinction: `pending_infra` = the browser infrastructure failed and evidence is OWED;
+   `evidence_makeup` = evidence exists and the product works — only the artifact's
+   presentation is wrong. Rail: this never applies when the asserted BEHAVIOR is unmet — a
+   screenshot showing wrong behavior is a failure, not a capture defect; only presentation
+   (range choice, crop, missing recording) can be defective while the behavior is confirmed.
 
 ## B. Anti-goal checklist (per category — answer each with yes/no + citation)
 
