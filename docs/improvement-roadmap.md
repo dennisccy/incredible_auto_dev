@@ -152,6 +152,9 @@ signal that says "do this now").
     session's before/after telemetry (PRE speed-package-20260728 in
     benchmarks/experiments.md). SPEED-15 slice (b) (trim-mode browser
     narrowing) stays TODO until a warn-mode session exists.
+    *G8 fresh-session certification 2026-07-29 (non-implementer): steps 1-5
+    verified green; items remain IN-PROGRESS pending the real-session
+    telemetry (PRE speed-package-20260728).*
 
 ---
 
