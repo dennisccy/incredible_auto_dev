@@ -596,11 +596,23 @@ _SHOWCASE_ITER=""
 
 _run_showcase_steps() {
   local iter_name="$1" depth="$2"
+  # Guarded: test harnesses extract this function without sourcing common.sh.
+  if declare -F iter_budget_check >/dev/null 2>&1; then
+    iter_budget_check "showcase-tail"
+  fi
+  # SPEED-15 trim ladder (opt-in via CHAIN_ITER_BUDGET_MODE=trim): over-budget
+  # iterations defer the demo recording and README refresh — the summarizer
+  # stays (the human's reading surface), and nothing gate-relevant lives here.
+  local _budget_trim=""
+  if declare -F iter_budget_trim_active >/dev/null 2>&1 && iter_budget_trim_active; then
+    _budget_trim=1
+    echo "[run-goal] iter-budget trim: over budget — deferring demo recording + README refresh this iteration (summarizer still runs)."
+  fi
   # Demo first (lean depth only — full depth records inside run-phase.sh).
   # demo-phase.sh boots its own services idempotently; _join_showcase_tail
   # clears them so the next iteration's browser-qa never reuses a server tree
   # that is still serving iteration N's code.
-  if [[ "$depth" == "lean" ]]; then
+  if [[ "$depth" == "lean" && -z "$_budget_trim" ]]; then
     # SPEED-14: with an empty product diff the app is byte-identical to the
     # last recorded walkthrough — reuse it instead of re-recording (~5-7 min).
     local _demo_skip=""
@@ -621,7 +633,9 @@ _run_showcase_steps() {
     fi
   fi
   _run_iteration_summarizer "$iter_name"
-  _run_readme_maintainer "$iter_name"
+  if [[ -z "$_budget_trim" ]]; then
+    _run_readme_maintainer "$iter_name"
+  fi
   _render_iter_html "$iter_name"
   _render_session_index_html
 }
@@ -629,7 +643,9 @@ _run_showcase_steps() {
 _fork_showcase_tail() {
   local iter_name="$1" depth="$2"
   _SHOWCASE_ITER="$CURRENT_ITER"
-  ( _run_showcase_steps "$iter_name" "$depth" ) &
+  # SPEED-12: showcase dispatches ride the low-priority lane so the next
+  # iteration's spine work (lane 5) is always picked up first by the pump.
+  ( export CHAIN_DISPATCH_LANE=9; _run_showcase_steps "$iter_name" "$depth" ) &
   _SHOWCASE_PID=$!
   echo "[run-goal] Showcase tail (demo → summary → README → renders) running in the background (pid $_SHOWCASE_PID); the loop proceeds."
 }
@@ -1945,6 +1961,10 @@ PY
   PRIOR_DEPTH=$(python3 -c "import json; print(json.load(open('$SESSION_JSON')).get('next_depth') or 'lean')")
 
   record_telemetry_event "iter_start" "$(jq -cn --arg n "$ITER_NAME" --arg pv "$PRIOR_VERDICT" --arg pd "$PRIOR_DEPTH" --arg ss "$(cat "$ITER_DIR/snapshot-sha" 2>/dev/null || echo "")" '{iter_name:$n, prior_verdict:$pv, prior_depth:$pd, snapshot_sha:$ss}' 2>/dev/null || printf '{"iter_name":"%s"}' "$ITER_NAME")"
+  # SPEED-15: wall-clock budget clock starts here; exported so the lean/full
+  # executor child processes measure from the same origin.
+  export CHAIN_ITER_START_EPOCH="$(date +%s)"
+  iter_budget_init "$CHAIN_ITER_START_EPOCH"
 
   # Mark experiment-knob-active iterations so the --tripwire window knows which
   # iterations to judge (opt-in speed experiments, .claude/model-orchestration.md).
@@ -2274,6 +2294,13 @@ PYEOF
   chain_tmp_rotate "$ITER_NAME"
   echo "[run-goal] Tmp cleanup: cleared ${_prev_tmp:-(none)} — iteration tmp dir: ${CHAIN_TMPDIR:-(disabled)}"
 
+  # SPEED-12: dispatch-channel janitor — clear provably-dead-pump claims and
+  # aged orphaned .started markers at the iteration boundary (they used to
+  # survive until engine restart and make unclaimed waits unbounded).
+  if [[ "${CHAIN_AGENT_BACKEND:-}" == "interactive" ]] && declare -F dispatch_channel_janitor >/dev/null 2>&1; then
+    dispatch_channel_janitor
+  fi
+
   # 3. Dispatch. Reset the per-iteration exit code first: _exec_rc is a plain
   # shell var, so a stale 70 from a prior iteration would otherwise survive into
   # this one (the `:-0` default only fills an UNSET var) and mis-fire the
@@ -2337,6 +2364,7 @@ PYEOF
   # consolidation CONTINUE. An auditor crash is non-blocking (stubbed PASS) so a
   # safety-net agent can never wedge the session.
   COHERENCE_OUTPUT="$ITER_DIR/coherence.md"
+  iter_budget_check "coherence-auditor"
   if [[ $CURRENT_ITER -gt 0 && -f "$BLUEPRINT_FILE" ]]; then
     _coh_dispatched=""
     _coh_stubbed=""
@@ -2419,6 +2447,7 @@ PYEOF
   fi
 
   # 4. Goal evaluator
+  iter_budget_check "goal-evaluator"
   echo "[run-goal] Step 3: goal-evaluator"
   EVAL_OUTPUT="$ITER_DIR/eval.md"
   # Pre-trim — evaluator spec asks for "last 5 entries"; 300 lines covers it.

@@ -104,28 +104,39 @@ EFFORT_OVERRIDES: dict[str, str] = {
 
 # Per-agent runtime caps (seconds), ~2.5-3x the typical durations measured from
 # goal-session telemetry (tape_to_profit: developer ~41m, reviewer ~21m,
-# browser-qa ~20m, evaluator ~17m, decomposer ~8m, coherence ~4m). One flat
-# 7200s cap previously let a hung 20-minute reviewer burn a full 2 hours before
-# the watchdog fired. Agents NOT listed here (the full-pipeline-only chain:
-# orchestrator, qa, ui-*, auditor, release-manager, ...) fall back to the flat
-# CHAIN_CLAUDE_MAX_RUNTIME_SECONDS / CHAIN_DISPATCH_INFLIGHT_TIMEOUT global —
-# zero behavior change for run-phase.sh.
+# browser-qa ~20m, evaluator ~17m, decomposer ~8m, coherence ~4m; desk session
+# maxima for the full-pipeline chain: orchestrator ~9.4m, qa ~18.2m,
+# ui-impact ~7.4m, ui-test-designer ~11.4m, ux-regression ~7.1m,
+# auditor ~17.7m, phase-closure ~4.8m). One flat 7200s cap previously let a
+# hung 20-minute reviewer burn a full 2 hours before the watchdog fired.
+# SPEED-12 filled the full-pipeline rows (each ≥2.5× its observed maximum);
+# any agent still absent falls back to the flat
+# CHAIN_CLAUDE_MAX_RUNTIME_SECONDS / CHAIN_DISPATCH_INFLIGHT_TIMEOUT global.
 #
 # Resolution precedence (implemented by the shell seam, lib/quota-retry.sh):
 #   CHAIN_TIMEOUT_<AGENT> env  >  agents/<name>/agent.yaml max_runtime_seconds
 #   >  this table  >  flat global. An EXPLICITLY exported flat global keeps
 #   today's meaning and disables the per-agent table entirely.
 AGENT_TIMEOUTS_SECONDS: dict[str, int] = {
-    "goal-decomposer":      1800,   # typical ~8m
-    "developer":            7200,   # typical ~41m; initial builds vary — keep 2h
-    "reviewer":             3600,   # typical ~21m (observed hang burned 7200s)
-    "browser-qa-agent":     4500,   # typical ~20m; grows with journey count
-    "coherence-auditor":    1200,   # typical ~4m
-    "goal-evaluator":       3600,   # typical ~17m
-    "goal-proposer":        3600,
-    "iteration-summarizer": 1800,
-    "readme-maintainer":    1800,
-    "demo-narrator":        1800,
+    "goal-decomposer":       1800,   # typical ~8m
+    "developer":             7200,   # typical ~41m; initial builds vary — keep 2h
+    "reviewer":              3600,   # typical ~21m (observed hang burned 7200s)
+    "browser-qa-agent":      4500,   # typical ~20m; grows with journey count
+    "coherence-auditor":     1200,   # typical ~4m
+    "goal-evaluator":        3600,   # typical ~17m
+    "goal-proposer":         3600,
+    "iteration-summarizer":  1800,
+    "readme-maintainer":     1800,
+    "demo-narrator":         1800,
+    # SPEED-12: full-pipeline chain (desk maxima in the comment above)
+    "orchestrator":          2700,   # max ~9.4m → ~4.8×
+    "qa":                    5400,   # max ~18.2m → ~4.9×
+    "ui-impact-analyst":     1800,   # max ~7.4m → ~4.1×
+    "ui-test-designer":      1800,   # max ~11.4m → ~2.6×
+    "ux-regression-reviewer": 1800,  # max ~7.1m → ~4.2×
+    "auditor":               3600,   # max ~17.7m → ~3.4×
+    "phase-closure-auditor": 1800,   # max ~4.8m → ~6.3×
+    "release-manager":       2700,   # no recent trace; procedural git/gh work
 }
 
 # Reads from the legacy `.claude/agents/<name>.md` (frontmatter) by default to
@@ -636,7 +647,11 @@ def _self_test() -> int:
         assert timeout_for("reviewer") == 3600, "reviewer cap from the builtin table"
         assert timeout_for("coherence-auditor") == 1200
         assert timeout_for("developer") == 7200
-        assert timeout_for("orchestrator") is None, "full-pipeline agents keep the flat global"
+        # SPEED-12 filled the full-pipeline rows (2.5x+ observed desk maxima);
+        # only agents absent from the table fall back to the flat global.
+        assert timeout_for("orchestrator") == 2700, "SPEED-12: orchestrator capped"
+        assert timeout_for("qa") == 5400, "SPEED-12: qa capped"
+        assert timeout_for("phase-closure-auditor") == 1800
         assert timeout_for("some-unknown-agent") is None
         neutral = d / "neutral-agents"
         (neutral / "reviewer").mkdir(parents=True)

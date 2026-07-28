@@ -35,6 +35,9 @@ set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/lib/common.sh"
+# SPEED-15: wall-clock budget clock — measure from the engine's iteration start
+# (exported CHAIN_ITER_START_EPOCH), not this child process's start.
+if declare -F iter_budget_init >/dev/null 2>&1; then iter_budget_init; fi
 source "$SCRIPT_DIR/lib/telemetry.sh"
 # Deterministic regression-replay lane — ONE implementation shared with the
 # FULL pipeline's browser-qa step (browser-qa-phase.sh). The tag keeps this
@@ -1096,6 +1099,7 @@ if [[ "${CHAIN_LEAN_PARALLEL_COHERENCE:-true}" == "true" && -n "$ITER_DIR" \
   fi
 fi
 
+if declare -F iter_budget_check >/dev/null 2>&1; then iter_budget_check "browser-qa"; fi
 # ── Step 3: Browser QA ────────────────────────────────────────────────────
 # Determine if frontend work is implied. Lean iterations always test journeys,
 # so we always try to start the frontend; if it fails we mark all SKIPPED and

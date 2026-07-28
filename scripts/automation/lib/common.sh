@@ -878,6 +878,47 @@ escalate_model_off() {
   return 0
 }
 
+# ── Wall-clock iteration budget (SPEED-15, warn-first) ────────────────────────
+# CHAIN_ITER_TIME_BUDGET_SECONDS (default 0 = off; suggested operator value
+# 5400) + CHAIN_ITER_BUDGET_MODE (warn|trim, default warn). Checks run at step
+# boundaries ONLY — never mid-agent. warn: the first exceeded check logs loudly
+# and emits one iter_budget telemetry event per process. trim (opt-in): callers
+# may ALSO consult iter_budget_exceeded to skip showcase-class steps; the trim
+# ladder never touches developer/reviewer/evaluator/gates/confirm. The start
+# epoch crosses the engine→executor process boundary via CHAIN_ITER_START_EPOCH.
+
+iter_budget_init() {  # $1 = iteration start epoch (falls back to the exported one, then now)
+  _ITER_BUDGET_T0="${1:-${CHAIN_ITER_START_EPOCH:-$(date +%s)}}"
+  [[ "$_ITER_BUDGET_T0" =~ ^[0-9]+$ ]] || _ITER_BUDGET_T0="$(date +%s)"
+  _ITER_BUDGET_WARNED=""
+}
+
+iter_budget_exceeded() {
+  local budget="${CHAIN_ITER_TIME_BUDGET_SECONDS:-0}"
+  [[ "$budget" =~ ^[0-9]+$ && "$budget" -gt 0 && -n "${_ITER_BUDGET_T0:-}" ]] || return 1
+  (( $(date +%s) - _ITER_BUDGET_T0 > budget ))
+}
+
+iter_budget_check() {  # $1 = step label. Always returns 0 (a signal, never a gate).
+  iter_budget_exceeded || return 0
+  local elapsed=$(( $(date +%s) - ${_ITER_BUDGET_T0:-$(date +%s)} ))
+  if [[ -z "${_ITER_BUDGET_WARNED:-}" ]]; then
+    _ITER_BUDGET_WARNED=1
+    echo "[iter-budget] This iteration has run ${elapsed}s — over the ${CHAIN_ITER_TIME_BUDGET_SECONDS:-0}s budget (checked at: ${1:-?}; mode: ${CHAIN_ITER_BUDGET_MODE:-warn})." >&2
+    if declare -F record_telemetry_event >/dev/null 2>&1; then
+      record_telemetry_event "iter_budget" "$(printf '{"budget":%d,"elapsed":%d,"mode":"%s","at_step":"%s"}' \
+        "${CHAIN_ITER_TIME_BUDGET_SECONDS:-0}" "$elapsed" "${CHAIN_ITER_BUDGET_MODE:-warn}" "${1:-?}")" || true
+    fi
+  fi
+  return 0
+}
+
+# trim-mode consult: true only when the operator opted into trim AND the budget
+# is exceeded. Callers use it to skip showcase-class steps with a loud log.
+iter_budget_trim_active() {
+  [[ "${CHAIN_ITER_BUDGET_MODE:-warn}" == "trim" ]] && iter_budget_exceeded
+}
+
 # ── Hardening cadence (SPEED-4) ───────────────────────────────────────────────
 # The sharpened depth rubric makes lean the default; the cadence guarantees a
 # periodic full hardening pass so audit coverage cannot silently vanish on a

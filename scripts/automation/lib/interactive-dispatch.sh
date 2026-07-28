@@ -14,7 +14,9 @@
 # Requires CHAIN_DISPATCH_DIR (created + exported by run-goal.sh).
 #
 # Channel protocol (one request per agent call):
-#   _interactive_invoke writes   <dir>/req.XXXXXX.ready = {agent, prompt, cwd, res_path,
+#   _interactive_invoke writes   <dir>/req.<lane>-XXXXXX.ready = {agent, prompt, cwd, res_path,
+#     (lane digit = CHAIN_DISPATCH_LANE, default 5; showcase forks use 9 so the
+#      sorted pickup glob serves spine work first — SPEED-12)
 #                                out, usage_path, model?}
 #   the pump reads it, dispatches subagent_type=<agent> (passing `model` as the
 #   Agent tool's model param when present), writes the subagent's final message
@@ -96,6 +98,64 @@ _interactive_dispatch_wait_event() {
     '{agent:$a, status:$s, wait_seconds:$w, run_seconds:$r, rc:$rc}' 2>/dev/null \
     || printf '{"agent":"%s","status":"%s","wait_seconds":%d,"run_seconds":%d}' \
          "${agent:-unattributed}" "$_status" "$_wait" "$_run")"
+}
+
+# SPEED-12: is the pump that wrote this .started claim PROVABLY dead?
+# Returns 0 ONLY for a same-host claim whose pid is gone or was recycled
+# (echoing the human-readable reason); any missing field, foreign host, or
+# unprovable verdict returns 1 (assume alive — the timeout nets still apply).
+# Same protocol-v3 fields the own-claim REL-3 fast path reads.
+_dispatch_claim_pump_dead() {
+  local _cs="$1"
+  local _cpid _chost _cstt _clocal _cstt_now
+  _cpid="$(sed -n 's/^pid=//p' "$_cs" 2>/dev/null | head -n1 | tr -dc 0-9)"
+  _chost="$(sed -n 's/^host=//p' "$_cs" 2>/dev/null | head -n1)"
+  _cstt="$(sed -n 's/^starttime=//p' "$_cs" 2>/dev/null | head -n1 | tr -dc 0-9)"
+  [[ -n "$_cpid" && -n "$_chost" ]] || return 1
+  _clocal="$(hostname 2>/dev/null || uname -n 2>/dev/null || echo '?')"
+  [[ "$_chost" == "$_clocal" ]] || return 1
+  if ! kill -0 "$_cpid" 2>/dev/null && [[ ! -e "/proc/$_cpid" ]]; then
+    echo "pump pid $_cpid is dead"
+    return 0
+  fi
+  if [[ -n "$_cstt" && -r "/proc/$_cpid/stat" ]]; then
+    _cstt_now="$(sed 's/.*) //' "/proc/$_cpid/stat" 2>/dev/null | awk '{print $20}')"
+    if [[ -n "$_cstt_now" && "$_cstt_now" != "$_cstt" ]]; then
+      echo "pump pid $_cpid was recycled (proc starttime $_cstt_now != claimed $_cstt)"
+      return 0
+    fi
+  fi
+  return 1
+}
+
+# SPEED-12: iteration-boundary janitor for the dispatch channel. Deletes ONLY
+# provably-dead-pump .started claims and orphaned .started markers older than
+# the flat inflight cap whose request/result files are gone. Live claims (a
+# busy pump's, the forked showcase tail's) are never touched. Before this,
+# .started files were cleared only at engine start — one stale claim made
+# every later unclaimed dispatch wait unbounded (the 18h iter-7 class).
+dispatch_channel_janitor() {
+  local _jd="${CHAIN_DISPATCH_DIR:-}"
+  [[ -n "$_jd" && -d "$_jd" ]] || return 0
+  local _js _jreason _jage _jnow _jbase
+  _jnow="$(date +%s)"
+  for _js in "$_jd"/req.*.started; do
+    [[ -e "$_js" ]] || continue
+    if _jreason="$(_dispatch_claim_pump_dead "$_js")"; then
+      echo "[interactive-dispatch] janitor: clearing dead-pump claim $(basename "$_js") (${_jreason})." >&2
+      rm -f "$_js" 2>/dev/null || true
+      continue
+    fi
+    _jbase="${_js%.started}"
+    if [[ ! -e "$_jbase.ready" && ! -e "$_jbase.res" && ! -e "$_jbase" ]]; then
+      _jage=$(( _jnow - $(stat -c %Y "$_js" 2>/dev/null || stat -f %m "$_js" 2>/dev/null || echo "$_jnow") ))
+      if [[ "$_jage" -gt "${CHAIN_DISPATCH_INFLIGHT_TIMEOUT:-7200}" ]]; then
+        echo "[interactive-dispatch] janitor: clearing orphaned claim $(basename "$_js") (no request/result files, ${_jage}s old)." >&2
+        rm -f "$_js" 2>/dev/null || true
+      fi
+    fi
+  done
+  return 0
 }
 
 # A pump usage sidecar is valid when its `.usage` is an object whose four token
@@ -216,7 +276,7 @@ _interactive_invoke() {
 
   local req res out usage_f pfile _built
   local _requeued=""
-  local _dispatch_start _claim_epoch hb started _now _ref _age _busy _s
+  local _dispatch_start _claim_epoch hb started _now _ref _age _busy _s _dead_reason _busy_cap
   # REL-3 (protocol v3): pump identity parsed once per claim from the .started
   # marker; liveness is then one kill -0 per poll. _local_host resolved once.
   local _pump_checked="" _pump_pid="" _pump_host="" _pump_stt="" _pump_gone _stt_now _local_host
@@ -227,7 +287,11 @@ _interactive_invoke() {
   while :; do
     _claim_epoch=""
     _pump_checked=""; _pump_pid=""; _pump_host=""; _pump_stt=""
-    req="$(mktemp "$dir/req.XXXXXX")"
+    # SPEED-12 priority lanes: bash glob expansion is lexicographically sorted,
+    # and the pump picks up req.*.ready in glob order — so a lane digit in the
+    # name gives spine dispatches (lane 5, the default) pickup priority over
+    # background showcase dispatches (lane 9) with ZERO pump-side changes.
+    req="$(mktemp "$dir/req.${CHAIN_DISPATCH_LANE:-5}-XXXXXX")"
     res="$req.res"
     out="$req.out"
     usage_f="$req.usage"
@@ -362,8 +426,20 @@ print(json.dumps(d))' < "$pfile" > "$req" || true
       elif [[ -f "$hb" ]]; then
         # Tier A: not yet claimed → pickup timeout against the heartbeat, UNLESS the
         # pump is demonstrably alive and busy on another request (a sibling .started).
+        # SPEED-12: a sibling claim only proves "busy" if the pump that wrote it
+        # still exists — a provably-dead sibling marker is deleted on the spot
+        # (it can never complete, and it used to make this wait UNBOUNDED: the
+        # 18h iter-7 stall was exactly a dead pump's stale sibling claim).
         _busy=""
-        for _s in "$dir"/req.*.started; do [[ -e "$_s" ]] && { _busy=1; break; }; done
+        for _s in "$dir"/req.*.started; do
+          [[ -e "$_s" ]] || continue
+          if _dead_reason="$(_dispatch_claim_pump_dead "$_s")"; then
+            echo "[interactive-dispatch] clearing stale sibling claim $(basename "$_s"): ${_dead_reason}." >&2
+            rm -f "$_s" 2>/dev/null || true
+            continue
+          fi
+          _busy=1; break
+        done
         if [[ -z "$_busy" ]]; then
           _ref="$(stat -c %Y "$hb" 2>/dev/null || stat -f %m "$hb" 2>/dev/null || echo "$_now")"
           _age=$(( _now - _ref ))
@@ -373,6 +449,21 @@ print(json.dumps(d))' < "$pfile" > "$req" || true
             rm -f "$req.ready" 2>/dev/null || true
             _interactive_dispatch_wait_event "pickup-timeout" "${DISPATCH_UNAVAILABLE_EXIT_CODE:-70}"
             return "${DISPATCH_UNAVAILABLE_EXIT_CODE:-70}"
+          fi
+        else
+          # SPEED-12: pump genuinely alive+busy elsewhere — still BOUND this
+          # unclaimed wait. Default = flat inflight cap; 0 = unlimited (the
+          # pre-SPEED-12 behavior). Abort is resumable (AWAITING_PUMP).
+          _busy_cap="${CHAIN_DISPATCH_PICKUP_BUSY_TIMEOUT:-${CHAIN_DISPATCH_INFLIGHT_TIMEOUT:-7200}}"
+          if [[ "$_busy_cap" =~ ^[0-9]+$ && "$_busy_cap" -gt 0 ]]; then
+            _age=$(( _now - _dispatch_start ))
+            if [[ "$_age" -gt "$_busy_cap" ]]; then
+              echo "[interactive-dispatch] request for agent '$agent' unclaimed for ${_age}s while the pump was busy elsewhere (> ${_busy_cap}s) — aborting resumably. Set CHAIN_DISPATCH_PICKUP_BUSY_TIMEOUT=0 to disable this cap." >&2
+              printf 'pickup-busy timeout: %ss unclaimed while pump busy (agent=%s)\n' "$_age" "$agent" > "$dir/.awaiting-pump"
+              rm -f "$req.ready" 2>/dev/null || true
+              _interactive_dispatch_wait_event "pickup-busy-timeout" "${DISPATCH_UNAVAILABLE_EXIT_CODE:-70}"
+              return "${DISPATCH_UNAVAILABLE_EXIT_CODE:-70}"
+            fi
           fi
         fi
       fi
@@ -952,6 +1043,96 @@ _interactive_dispatch_self_test() {
     echo "  PASS interactive-dispatch: live same-host pump pid → keeps waiting, rc flows"
   else
     echo "  FAIL interactive-dispatch: live-pid false positive (rc=$rc stderr=$(head -c 160 "$d/err" 2>/dev/null))"; fails=1
+  fi
+  rm -rf "$d"
+
+  # Test 20 (SPEED-12) — DEAD sibling claim: an unclaimed dispatch must clear
+  # the provably-dead sibling .started on the spot and then complete normally
+  # once the (live) pump answers.
+  d="$(mktemp -d)"; export CHAIN_DISPATCH_DIR="$d"; rc=0
+  CHAIN_PUMP_HEARTBEAT_TIMEOUT=3600; CHAIN_DISPATCH_INFLIGHT_TIMEOUT=3600; CHAIN_DISPATCH_POLL_SECONDS=0.2
+  ( exit 0 ) & _vpid=$!; wait "$_vpid" 2>/dev/null || true
+  printf 'pid=%s\nhost=%s\n' "$_vpid" "$_lhost" > "$d/req.5-stale1.started"
+  ( for _ in $(seq 1 60); do
+      touch "$d/.pump-alive"
+      r="$(find "$d" -maxdepth 1 -name 'req.*.ready' 2>/dev/null | head -1)"
+      if [[ -n "$r" && ! -f "$d/req.5-stale1.started" ]]; then
+        touch "${r%.ready}.started"; sleep 0.3; echo 0 > "${r%.ready}.res"; break
+      fi
+      sleep 0.1
+    done ) &
+  pump=$!
+  _interactive_invoke -p "dead sibling cleared" 2>"$d/err" || rc=$?
+  wait "$pump" 2>/dev/null || true
+  if [[ "$rc" -eq 0 && ! -f "$d/req.5-stale1.started" ]] \
+     && grep -q 'clearing stale sibling claim' "$d/err"; then
+    echo "  PASS interactive-dispatch: dead sibling claim cleared, dispatch completes (SPEED-12)"
+  else
+    echo "  FAIL interactive-dispatch: dead-sibling clearing (rc=$rc stale-exists=$([[ -f "$d/req.5-stale1.started" ]] && echo yes || echo no) stderr=$(head -c 160 "$d/err" 2>/dev/null))"; fails=1
+  fi
+  rm -rf "$d"
+
+  # Test 21 (SPEED-12) — busy-pickup cap: a LIVE sibling claim keeps _busy
+  # honest, and the previously-unbounded wait now aborts resumably at the cap.
+  d="$(mktemp -d)"; export CHAIN_DISPATCH_DIR="$d"; rc=0
+  CHAIN_PUMP_HEARTBEAT_TIMEOUT=3600; CHAIN_DISPATCH_INFLIGHT_TIMEOUT=3600; CHAIN_DISPATCH_POLL_SECONDS=0.2
+  CHAIN_DISPATCH_PICKUP_BUSY_TIMEOUT=1
+  _vstt="$(sed 's/.*) //' "/proc/$$/stat" 2>/dev/null | awk '{print $20}')"
+  printf 'pid=%s\nhost=%s\nstarttime=%s\n' "$$" "$_lhost" "$_vstt" > "$d/req.5-live01.started"
+  ( for _ in $(seq 1 40); do touch "$d/.pump-alive"; sleep 0.1; done ) &
+  pump=$!
+  _interactive_invoke -p "busy pickup cap" 2>"$d/err" || rc=$?
+  kill "$pump" 2>/dev/null || true; wait "$pump" 2>/dev/null || true
+  unset CHAIN_DISPATCH_PICKUP_BUSY_TIMEOUT
+  if [[ "$rc" -eq "${DISPATCH_UNAVAILABLE_EXIT_CODE:-70}" && -f "$d/req.5-live01.started" ]] \
+     && grep -q 'busy elsewhere' "$d/err" && grep -q 'pickup-busy timeout' "$d/.awaiting-pump" 2>/dev/null; then
+    echo "  PASS interactive-dispatch: busy-pickup cap bounds the unclaimed wait, live sibling untouched (SPEED-12)"
+  else
+    echo "  FAIL interactive-dispatch: busy-pickup cap (rc=$rc stderr=$(head -c 160 "$d/err" 2>/dev/null))"; fails=1
+  fi
+  rm -rf "$d"
+
+  # Test 22 (SPEED-12) — priority lanes: default mints lane 5, CHAIN_DISPATCH_LANE=9
+  # mints lane 9, and the pickup glob orders lane 5 before lane 9.
+  d="$(mktemp -d)"
+  : > "$d/req.9-aaaaaa.ready"; : > "$d/req.5-aaaaaa.ready"
+  _first=""
+  for _s in "$d"/req.*.ready; do _first="$_s"; break; done
+  d2="$(mktemp -d)"; export CHAIN_DISPATCH_DIR="$d2"; rc=0
+  CHAIN_DISPATCH_POLL_SECONDS=0.2
+  ( for _ in $(seq 1 60); do
+      r="$(find "$d2" -maxdepth 1 -name 'req.*.ready' 2>/dev/null | head -1)"
+      if [[ -n "$r" ]]; then touch "${r%.ready}.started"; echo 0 > "${r%.ready}.res"; break; fi
+      sleep 0.1
+    done ) &
+  pump=$!
+  CHAIN_DISPATCH_LANE=9 _interactive_invoke -p "lane nine" 2>/dev/null || rc=$?
+  wait "$pump" 2>/dev/null || true
+  _lane9="$(find "$d2" -maxdepth 1 -name 'req.9-*.out' -o -maxdepth 1 -name 'req.9-*.res' 2>/dev/null | head -1)"
+  if [[ "$(basename "$_first")" == req.5-* && "$rc" -eq 0 ]]; then
+    echo "  PASS interactive-dispatch: lane 5 sorts before lane 9; CHAIN_DISPATCH_LANE=9 dispatch round-trips (SPEED-12)"
+  else
+    echo "  FAIL interactive-dispatch: priority lanes (first=$(basename "${_first:-none}") rc=$rc lane9=${_lane9:-?})"; fails=1
+  fi
+  rm -rf "$d" "$d2"
+
+  # Test 23 (SPEED-12) — janitor: dead-pid claim cleared, live claim kept,
+  # aged orphan cleared, fresh orphan kept.
+  d="$(mktemp -d)"; export CHAIN_DISPATCH_DIR="$d"
+  ( exit 0 ) & _vpid=$!; wait "$_vpid" 2>/dev/null || true
+  printf 'pid=%s\nhost=%s\n' "$_vpid" "$_lhost" > "$d/req.5-dead01.started"
+  _vstt="$(sed 's/.*) //' "/proc/$$/stat" 2>/dev/null | awk '{print $20}')"
+  printf 'pid=%s\nhost=%s\nstarttime=%s\n' "$$" "$_lhost" "$_vstt" > "$d/req.5-live02.started"
+  : > "$d/req.5-live02.ready"
+  : > "$d/req.5-orph01.started"
+  touch -d '3 hours ago' "$d/req.5-orph01.started" 2>/dev/null || true
+  : > "$d/req.5-orph02.started"
+  CHAIN_DISPATCH_INFLIGHT_TIMEOUT=7200 dispatch_channel_janitor 2>"$d/jlog" || true
+  if [[ ! -f "$d/req.5-dead01.started" && -f "$d/req.5-live02.started" \
+        && ! -f "$d/req.5-orph01.started" && -f "$d/req.5-orph02.started" ]]; then
+    echo "  PASS interactive-dispatch: janitor clears dead + aged-orphan claims, keeps live + fresh (SPEED-12)"
+  else
+    echo "  FAIL interactive-dispatch: janitor (dead=$([[ -f "$d/req.5-dead01.started" ]] && echo kept || echo cleared) live=$([[ -f "$d/req.5-live02.started" ]] && echo kept || echo cleared) orph-old=$([[ -f "$d/req.5-orph01.started" ]] && echo kept || echo cleared) orph-new=$([[ -f "$d/req.5-orph02.started" ]] && echo kept || echo cleared))"; fails=1
   fi
   rm -rf "$d"
 

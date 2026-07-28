@@ -315,8 +315,11 @@ v=$(CHAIN_CURRENT_AGENT="reviewer" _agent_timeout_for "")
 [[ "$v" == "3600" ]] && assert "reviewer cap from builtin table (3600)" "pass" || assert "reviewer cap from builtin table (got '$v')" "fail"
 
 # No-entry agent: empty → caller keeps the flat global (run-phase.sh unchanged).
+# SPEED-12 filled the full-pipeline rows; only a truly-unknown agent falls back.
 v=$(CHAIN_CURRENT_AGENT="orchestrator" _agent_timeout_for "")
-[[ -z "$v" ]] && assert "full-pipeline-only agent keeps flat global (empty)" "pass" || assert "full-pipeline-only agent keeps flat global (got '$v')" "fail"
+[[ "$v" == "2700" ]] && assert "orchestrator capped by the SPEED-12 table (2700)" "pass" || assert "orchestrator capped by the SPEED-12 table (got '$v')" "fail"
+v=$(CHAIN_CURRENT_AGENT="some-unknown-agent" _agent_timeout_for "")
+[[ -z "$v" ]] && assert "unknown agent keeps flat global (empty)" "pass" || assert "unknown agent keeps flat global (got '$v')" "fail"
 
 # Env override wins over the table.
 v=$(CHAIN_CURRENT_AGENT="reviewer" CHAIN_TIMEOUT_REVIEWER=99 _agent_timeout_for "")

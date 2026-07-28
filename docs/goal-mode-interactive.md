@@ -178,6 +178,8 @@ programmatic path with an API key** (`run-goal.sh` without `--interactive`).
 |---|---|---|
 | `CHAIN_PUMP_HEARTBEAT_TIMEOUT` | `1800` | PICKUP window only: seconds a *not-yet-claimed* request waits for the pump to take it before concluding the pump died. An alive idle pump refreshes the heartbeat every poll, so this no longer needs to cover a long agent's runtime — a claimed agent is governed by the inflight cap below. (Also how long an untouched orphan engine waits before self-aborting.) |
 | `CHAIN_DISPATCH_INFLIGHT_TIMEOUT` | `7200` (= `CHAIN_CLAUDE_MAX_RUNTIME_SECONDS`) | Hard cap on a single **claimed**, in-flight subagent, measured from when the pump took the request (`dispatch/req.*.started`). This is what lets a legitimately long agent — e.g. the developer's INITIAL BUILD, routinely > 30 min — run without being mistaken for a dead pump. `0` = unlimited. |
+| `CHAIN_DISPATCH_PICKUP_BUSY_TIMEOUT` | `= CHAIN_DISPATCH_INFLIGHT_TIMEOUT` (`7200`) | SPEED-12: bound on an **unclaimed** request's wait while the pump is alive but busy on another request. Before this, that wait was unbounded — one stale sibling claim from a dead pump could block the engine for 18 h. Provably-dead sibling claims are also cleared on the spot, and an iteration-boundary janitor sweeps stale claims. `0` = unlimited (old behavior). |
+| `CHAIN_DISPATCH_LANE` | `5` | SPEED-12 priority lane digit in the request filename (`req.<lane>-XXXXXX`). The pump serves the sorted glob, so lower lanes are picked up first; the background showcase tail dispatches on lane `9` so next-iteration spine work never queues behind it. |
 | `CHAIN_DISPATCH_POLL_SECONDS` | `1` | Channel poll interval. |
 
 The pump awaits work with a **single foreground** `goal-await-dispatch.sh

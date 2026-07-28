@@ -161,7 +161,10 @@ grep -q 'pump is gone' "$ENGINE_LOG" 2>/dev/null && grep -q "$VPID" "$ENGINE_LOG
 grep -q 'pump dead' "$DISP/.awaiting-pump" 2>/dev/null \
   && assert ".awaiting-pump marker explains the pause" "pass" \
   || assert ".awaiting-pump marker explains the pause" "fail"
-[[ ! -e "$GLOCK" ]] \
+# wait_for, not an instant check: the engine releases the lock in its exit
+# path moments after engine.pid disappears — under machine load the gap is
+# visible and an instant check races (observed as an in-suite-only flake).
+wait_for 15 bash -c "[[ ! -e '$GLOCK' ]]" \
   && assert "REL-4 engine lock released by the fast pause" "pass" \
   || assert "REL-4 engine lock released by the fast pause" "fail"
 [[ ! -f "$SDIR/state/retro-input.md" ]] \

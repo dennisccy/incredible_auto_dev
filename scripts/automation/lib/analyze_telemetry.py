@@ -269,6 +269,7 @@ def _new_iter_record(iter_name: str, ts: float | None) -> dict[str, Any]:
         "review_verdicts": [], # [{verdict, attempt}]
         "knob_active": False,  # iter_config event seen (experiment running)
         "journey_deltas": {},
+        "budget_event": None,  # first iter_budget event (SPEED-15), if any
     }
 
 
@@ -325,6 +326,13 @@ def build_wall_report(paths: list[str]) -> dict[str, dict[str, Any]]:
                 cur["engine_steps"][step] = (
                     cur["engine_steps"].get(step, 0)
                     + int(event.get("duration_seconds") or 0))
+            elif kind == "iter_budget" and cur is not None:
+                if cur.get("budget_event") is None:
+                    cur["budget_event"] = {
+                        "budget": int(event.get("budget") or 0),
+                        "elapsed": int(event.get("elapsed") or 0),
+                        "mode": event.get("mode") or "warn",
+                        "at_step": event.get("at_step") or "?"}
             elif kind == "review_verdict" and cur is not None:
                 cur["review_verdicts"].append({
                     "verdict": event.get("verdict") or "?",
@@ -406,6 +414,9 @@ def render_wall_text(report: dict[str, dict[str, Any]],
                 out.append(f"      pump-wait              {_fmt_m(rec['pump_wait_seconds']):>8s}")
             if rec["quota_sleep_seconds"]:
                 out.append(f"      quota-pauses           {_fmt_m(rec['quota_sleep_seconds']):>8s}")
+            be = rec.get("budget_event")
+            if be:
+                out.append(f"      OVER BUDGET at {be['at_step']}: {be['elapsed']}s > {be['budget']}s (mode={be['mode']})")
             if wall is not None:
                 # SPEED-13: agent rows are active time (quota sleeps excluded),
                 # so the residual must exclude the quota-pause seconds too or
