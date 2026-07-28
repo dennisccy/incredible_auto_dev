@@ -79,6 +79,26 @@ record_telemetry_event() {
   fi
 }
 
+# ── engine-step wall-time attribution (RETRO-1, ops-hardening retro) ─────────
+# Wraps big NON-AGENT engine steps (the full/lean sub-pipeline dispatch, the
+# showcase-tail join) so the wall-time report can name what the former
+# "unattributed (glue)" residual — 200-625m per full iteration — actually was.
+# Single-slot by design: wrapped regions must not nest (the run-goal.sh call
+# sites are strictly sequential). A begin without a matching done is dropped.
+_engine_step_begin() {
+  _ENGINE_STEP_NAME="${1:?engine step name}"
+  _ENGINE_STEP_T0="$(date +%s)"
+}
+
+_engine_step_done() {
+  [[ -n "${_ENGINE_STEP_NAME:-}" ]] || return 0
+  local dur=$(( $(date +%s) - ${_ENGINE_STEP_T0:-$(date +%s)} ))
+  record_telemetry_event "engine_step" "$(jq -cn --arg s "$_ENGINE_STEP_NAME" --argjson d "$dur" \
+      '{step:$s, duration_seconds:$d}' 2>/dev/null \
+    || printf '{"step":"%s","duration_seconds":%d}' "$_ENGINE_STEP_NAME" "$dur")"
+  _ENGINE_STEP_NAME=""
+}
+
 # Convenience: record an agent invocation start.
 #
 # Call this as a BARE STATEMENT — never via command substitution $(...).

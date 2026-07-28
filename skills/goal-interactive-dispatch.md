@@ -146,6 +146,25 @@ one `goal-await-dispatch.sh` call together (multiple Agent calls in one message)
 then write all of their `.res` files. Request file names are unique, so two
 concurrent requests never collide.
 
+## Host-guard confinement (interactive pump)
+
+The engine's own self-wrap (run-goal.sh) confines only the HEADLESS engine tree.
+Interactive dispatches — every subagent, and every `pytest`/build/browser those
+subagents run through Bash — execute as descendants of THIS foreground CLI
+session, so they inherit whatever CPU/memory confinement this session was
+launched with, and nothing can retrofit it afterwards. When the project declares
+host caps (`project-extensions/host-guard/host-guard.env`), the session must be
+launched through the wrapper:
+
+    scripts/automation/host-guard-exec.sh claude
+
+With `HOST_GUARD_REQUIRE_PUMP_CONFINED=1`, the engine verifies the pump's cpuset
+(via the `pid=` line in `.pump-alive`) at each iteration boundary and pauses the
+session (`AWAITING_HOST_GUARD`, resumable) if the pump is wider than
+`HOST_GUARD_CPU_LIST`. If that pause fires, relaunch the CLI via the wrapper and
+`/goal-resume` — do not disable the flag to make the pause go away; the caps
+exist because unconfined goal-mode load has hard-reset the host.
+
 ## Usage sidecar (token telemetry — protocol v2, optional, best-effort)
 
 Headless dispatches record per-invocation token usage (`claude_usage` telemetry

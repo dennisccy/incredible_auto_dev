@@ -65,6 +65,10 @@
 #   AWAITING_GITHUB_AUTH - preflight found no GitHub push access; fix auth, then --resume
 #   AWAITING_DISK    - free disk under the hard floor even after automatic aggressive cleanup;
 #                      free space or run scripts/automation/tmp-doctor.sh --aggressive, then --resume
+#   AWAITING_HOST_GUARD - host-guard preflight/gate failed (hwmon sampler dead and unstartable,
+#                      CPU-affinity wrap absent, a launcher lost its HOST-GUARD cap block, or the
+#                      interactive pump session is unconfined); fix per the printed reason
+#                      (project-extensions/host-guard/README.md), then --resume
 #
 # Quota exhaustion is NOT a halt: claude_with_quota_retry transparently sleeps
 # until the quota resets and resumes.
@@ -82,6 +86,49 @@ source "$SCRIPT_DIR/lib/telemetry.sh"
 source "$SCRIPT_DIR/lib/goal-gates.sh"
 source "$SCRIPT_DIR/lib/engine-lock.sh"
 source "$SCRIPT_DIR/lib/plain-language.sh"
+
+# ── Host-guard self-wrap (hardware protection) ─────────────────────────────
+# Origin: a mini-PC host hard-reset instantly (no OOM, no thermal log, no
+# panic) under goal-mode's bursty all-core load — a power/VRM transient trip.
+# When the project declares host caps (project-extensions/host-guard/
+# host-guard.env), re-exec the ENTIRE engine tree under an SMT-aware
+# CPU-affinity mask (taskset — hard, inherited, instantaneous) plus, when a
+# user manager is reachable, a systemd user scope adding AllowedCPUs (cgroup
+# cpuset — inherited by every descendant, cannot be widened from inside) and
+# CPUQuota/MemoryHigh/TasksMax as averaging/aggregate backstops. Sits BEFORE
+# extract_cli_arg so "$@" is still the original argv. HOST_GUARD_WRAPPED
+# guards recursion — deliberately NOT CHAIN_-prefixed so the REL-2 ambient
+# snapshot above stays clean. Absent/disabled env file ⇒ no-op (the framework
+# stays project-neutral). Details: project-extensions/host-guard/README.md.
+_HOST_GUARD_ENV_FILE="$REPO_ROOT/project-extensions/host-guard/host-guard.env"
+if [[ -z "${HOST_GUARD_WRAPPED:-}" && -f "$_HOST_GUARD_ENV_FILE" ]] \
+   && command -v taskset >/dev/null 2>&1; then
+  # shellcheck disable=SC1090
+  source "$_HOST_GUARD_ENV_FILE"
+  if [[ "${HOST_GUARD_ENABLED:-0}" == "1" && -n "${HOST_GUARD_CPU_LIST:-}" ]]; then
+    export HOST_GUARD_WRAPPED=1
+    _HG_PROPS=( -p "CPUQuota=${HOST_GUARD_CPUQUOTA:-800%}"
+                -p "MemoryHigh=${HOST_GUARD_MEMORY_HIGH:-18G}"
+                -p "TasksMax=${HOST_GUARD_TASKS_MAX:-2048}" )
+    # --expand-environment=no: systemd ExecStart otherwise $-expands argv.
+    if systemd-run --user --scope --quiet --expand-environment=no -p "AllowedCPUs=$HOST_GUARD_CPU_LIST" true 2>/dev/null; then
+      # Full confinement: cpuset + quota backstops (AllowedCPUs probe passed).
+      exec systemd-run --user --scope --quiet --collect --expand-environment=no \
+        --unit "chain-goal-hostguard-$$" \
+        -p "AllowedCPUs=$HOST_GUARD_CPU_LIST" "${_HG_PROPS[@]}" \
+        taskset -c "$HOST_GUARD_CPU_LIST" "$SCRIPT_DIR/run-goal.sh" "$@"
+    elif systemd-run --user --scope --quiet --expand-environment=no -p CPUQuota=10% true 2>/dev/null; then
+      # cpuset controller not delegated: scope backstops + taskset mask only.
+      exec systemd-run --user --scope --quiet --collect --expand-environment=no \
+        --unit "chain-goal-hostguard-$$" \
+        "${_HG_PROPS[@]}" \
+        taskset -c "$HOST_GUARD_CPU_LIST" "$SCRIPT_DIR/run-goal.sh" "$@"
+    else
+      # No user manager at all (headless SSH etc.): affinity mask still applies.
+      exec taskset -c "$HOST_GUARD_CPU_LIST" "$SCRIPT_DIR/run-goal.sh" "$@"
+    fi
+  fi
+fi
 
 # Pull --cli (and --force-cli) out of the args BEFORE the existing parse loop,
 # so the loop below sees only its known flags.
@@ -792,6 +839,182 @@ PY
   exit 0
 }
 
+# ── Host-guard preflight + iteration gate (hardware protection) ────────────
+# Origin: a mini-PC host hard-reset repeatedly under goal-mode load with
+# NOTHING in the journal — instant power/VRM transient trips, invisible to
+# sysstat's 10-minute cadence. When the project declares host caps
+# (project-extensions/host-guard/host-guard.env), the engine must not run
+# unprotected: verify the affinity wrap (top of this script) took effect and
+# the 1 Hz hwmon forensics sampler is alive — auto-starting the sampler first
+# (self-heal, like the disk guard's sweep), pausing (AWAITING_HOST_GUARD,
+# resumable) only when self-heal fails. Absent or disabled host-guard.env ⇒
+# no-op (framework stays project-neutral).
+_host_guard_mask_width() { # "0-3,8-11" → 8; 0 when unparseable
+  local list="${1:-}" n=0 part a b
+  [[ -n "$list" ]] || { echo 0; return 0; }
+  local -a parts=()
+  IFS=',' read -ra parts <<< "$list"
+  for part in "${parts[@]}"; do
+    if [[ "$part" =~ ^[0-9]+-[0-9]+$ ]]; then
+      a="${part%-*}"; b="${part#*-}"
+      if (( b >= a )); then n=$(( n + b - a + 1 )); fi
+    elif [[ "$part" =~ ^[0-9]+$ ]]; then
+      n=$(( n + 1 ))
+    fi
+  done
+  echo "$n"
+}
+_host_guard_sampler_path() { # project-local copy wins; framework copy is the default
+  local proj="$REPO_ROOT/project-extensions/host-guard/hwmon-log.sh"
+  if [[ -f "$proj" ]]; then printf '%s' "$proj"; else printf '%s' "$SCRIPT_DIR/host-guard/hwmon-log.sh"; fi
+}
+_host_guard_latest_tctl() { # newest Tctl (°C) from the sampler csv; empty if missing/stale
+  local csv="$REPO_ROOT/logs/hwmon/hwmon.csv" mtime line t
+  [[ -f "$csv" ]] || return 0
+  mtime=$(stat -c %Y "$csv" 2>/dev/null || echo 0)
+  (( EPOCHSECONDS - mtime <= 15 )) || return 0
+  line=$(tail -n 1 "$csv" 2>/dev/null || true)
+  t="${line#*,}"; t="${t%%,*}"
+  [[ "$t" =~ ^[0-9]+$ ]] && printf '%s' "$t"
+  return 0
+}
+_host_guard_pause() { # $1 reason, $2 detected_at_step — pause AWAITING_HOST_GUARD (resumable) and exit
+  local reason="$1" step="${2:-preflight}"
+  echo "[run-goal] Host-guard check failed — pausing (AWAITING_HOST_GUARD)."
+  echo "[run-goal]   reason: $reason"
+  python3 - <<PY
+import json, datetime
+d = json.load(open("$SESSION_JSON"))
+d["status"] = "AWAITING_HOST_GUARD"
+d["updated_at"] = datetime.datetime.now(datetime.UTC).isoformat().replace('+00:00','Z')
+import os as _os, tempfile as _tf
+_fd, _tmp = _tf.mkstemp(dir=_os.path.dirname("$SESSION_JSON") or ".", suffix=".sjtmp")
+with _os.fdopen(_fd, "w") as _f:
+    json.dump(d, _f, indent=2)
+    _f.write("\n")
+_os.replace(_tmp, "$SESSION_JSON")
+PY
+  record_telemetry_event "halt" "$(printf '{"reason":"AWAITING_HOST_GUARD","detected_at_step":"%s"}' "$step")"
+  echo ""
+  echo "Fix the host-guard issue (project-extensions/host-guard/README.md), then resume:"
+  echo "  ./scripts/automation/run-goal.sh --resume --session-id $SESSION_ID"
+  explain_goal_status "AWAITING_HOST_GUARD" "$SESSION_ID" "$REPO_ROOT"
+  echo "════════════════════════════════════════════════════════════════════"
+  exit 0
+}
+preflight_host_guard() {
+  local hg_env="$REPO_ROOT/project-extensions/host-guard/host-guard.env"
+  [[ -f "$hg_env" ]] || return 0
+  # shellcheck disable=SC1090
+  source "$hg_env"
+  [[ "${HOST_GUARD_ENABLED:-0}" == "1" ]] || return 0
+  local sampler fail_reason=""
+  sampler="$(_host_guard_sampler_path)"
+
+  # 1. Forensics sampler alive + csv fresh (self-heal: try to start it first).
+  if [[ -f "$sampler" ]]; then
+    if ! HOST_GUARD_ROOT="$REPO_ROOT" bash "$sampler" status >/dev/null 2>&1; then
+      echo "[run-goal] host-guard: hwmon sampler not running — auto-starting."
+      HOST_GUARD_ROOT="$REPO_ROOT" bash "$sampler" start || true
+      sleep 2
+      HOST_GUARD_ROOT="$REPO_ROOT" bash "$sampler" status >/dev/null 2>&1 \
+        || fail_reason="hwmon sampler failed to start (try: bash $sampler start)"
+    fi
+  else
+    fail_reason="sampler script missing: $sampler"
+  fi
+
+  # 2. Affinity wrap took effect: REAL allowed CPUs ≤ declared mask width.
+  # Read Cpus_allowed_list, not `nproc` — nproc honors OMP_NUM_THREADS, so a
+  # BLAS thread-cap env var would fake a confined engine (false PASS).
+  if [[ -z "$fail_reason" ]]; then
+    local width allowed_list allowed_n
+    width=$(_host_guard_mask_width "${HOST_GUARD_CPU_LIST:-}")
+    allowed_list=$(awk -F'\t' '/^Cpus_allowed_list/{print $2}' /proc/self/status 2>/dev/null)
+    allowed_n=$(_host_guard_mask_width "$allowed_list")
+    if (( width > 0 && allowed_n > width )); then
+      fail_reason="engine not confined to HOST_GUARD_CPU_LIST=${HOST_GUARD_CPU_LIST:-} (Cpus_allowed_list=$allowed_list = $allowed_n CPUs > mask width $width — the taskset wrap did not take effect)"
+    fi
+  fi
+
+  # 3. Launcher cap blocks — project-declared list (HOST_GUARD_MARKER_FILES,
+  # space-separated repo-relative paths); enforced only once the project's
+  # launcher caps have landed (HOST_GUARD_REQUIRE_MARKERS=1).
+  if [[ -z "$fail_reason" && "${HOST_GUARD_REQUIRE_MARKERS:-0}" == "1" && -n "${HOST_GUARD_MARKER_FILES:-}" ]]; then
+    local lsc
+    for lsc in ${HOST_GUARD_MARKER_FILES}; do
+      if [[ -f "$REPO_ROOT/$lsc" ]] && ! grep -q "HOST-GUARD" "$REPO_ROOT/$lsc"; then
+        fail_reason="launcher $lsc lost its HOST-GUARD cap block (host-guard regression)"
+        break
+      fi
+    done
+  fi
+
+  [[ -n "$fail_reason" ]] || return 0
+  _host_guard_pause "$fail_reason" "preflight"
+}
+host_guard_iteration_gate() {
+  # Top-of-loop, never mid-iteration. (a) thermal cooldown: when the hwmon csv
+  # is fresh and Tctl ≥ HOST_GUARD_TCTL_PAUSE, wait until ≤ _RESUME (bounded by
+  # _MAX_WAIT — then proceed loudly; the gate is defense-in-depth, not a halt).
+  # (b) interactive pump confinement: the systemd/taskset self-wrap cannot
+  # confine agents dispatched INSIDE the foreground CLI session, so when
+  # HOST_GUARD_REQUIRE_PUMP_CONFINED=1 verify the pump process's own cpuset and
+  # pause (resumable) if it is wider than the declared mask.
+  local hg_env="$REPO_ROOT/project-extensions/host-guard/host-guard.env"
+  [[ -f "$hg_env" ]] || return 0
+  # shellcheck disable=SC1090
+  source "$hg_env"
+  [[ "${HOST_GUARD_ENABLED:-0}" == "1" ]] || return 0
+
+  local pause_c="${HOST_GUARD_TCTL_PAUSE:-90}" resume_c="${HOST_GUARD_TCTL_RESUME:-80}"
+  local poll="${HOST_GUARD_TCTL_POLL:-15}" max_wait="${HOST_GUARD_TCTL_MAX_WAIT:-1800}"
+  local waited=0 tctl
+  while :; do
+    tctl="$(_host_guard_latest_tctl)"
+    [[ "$tctl" =~ ^[0-9]+$ ]] || break   # no fresh telemetry → nothing to gate on
+    if (( waited == 0 )); then
+      if (( tctl < pause_c )); then break; fi
+      echo "[run-goal] host-guard: Tctl ${tctl}°C ≥ ${pause_c}°C — cooling down before the next iteration (resumes < ${resume_c}°C)."
+      record_telemetry_event "host_guard_cooldown" "$(printf '{"tctl_c":%s}' "$tctl")"
+    else
+      if (( tctl <= resume_c )); then
+        echo "[run-goal] host-guard: cooled to ${tctl}°C after ${waited}s — continuing."
+        break
+      fi
+      if (( waited >= max_wait )); then
+        echo "[run-goal] host-guard: still ${tctl}°C after ${waited}s (max ${max_wait}s) — continuing anyway; check cooling."
+        break
+      fi
+    fi
+    sleep "$poll"; waited=$(( waited + poll ))
+  done
+
+  if [[ "${HOST_GUARD_REQUIRE_PUMP_CONFINED:-0}" == "1" && "${AGENT_BACKEND:-}" == "interactive" ]]; then
+    local hb="${CHAIN_DISPATCH_DIR:-$GOAL_SESSION_DIR_LOCAL/dispatch}/.pump-alive"
+    local pump_pid="" hb_age width allowed_list allowed_n
+    if [[ -f "$hb" ]]; then
+      hb_age=$(( EPOCHSECONDS - $(stat -c %Y "$hb" 2>/dev/null || echo 0) ))
+      pump_pid=$(sed -n 's/^pid=\([0-9][0-9]*\)$/\1/p' "$hb" 2>/dev/null | head -n 1)
+      # Heartbeat present but no pid line (ident disabled): confinement cannot be
+      # verified — that must be loud, not a silent bypass.
+      if [[ -z "$pump_pid" && "$hb_age" -le "${HOST_GUARD_PUMP_HB_FRESH:-180}" ]]; then
+        _host_guard_pause "cannot verify pump confinement: $hb has no pid= line (heartbeat ident disabled?) — re-enable the pump ident or set HOST_GUARD_REQUIRE_PUMP_CONFINED=0" "iteration_gate"
+      fi
+    fi
+    if [[ -n "$pump_pid" && "$hb_age" -le "${HOST_GUARD_PUMP_HB_FRESH:-180}" && -r "/proc/$pump_pid/status" ]]; then
+      width=$(_host_guard_mask_width "${HOST_GUARD_CPU_LIST:-}")
+      allowed_list=$(awk -F'\t' '/^Cpus_allowed_list/{print $2}' "/proc/$pump_pid/status" 2>/dev/null)
+      allowed_n=$(_host_guard_mask_width "$allowed_list")
+      if (( width > 0 && allowed_n > width )); then
+        write_session_summary "AWAITING_HOST_GUARD" "$CURRENT_ITER"
+        _host_guard_pause "interactive pump (pid $pump_pid) is unconfined: Cpus_allowed_list=$allowed_list = $allowed_n CPUs > mask width $width — relaunch the pump CLI under the guard, e.g. scripts/automation/host-guard-exec.sh claude" "iteration_gate"
+      fi
+    fi
+  fi
+  return 0
+}
+
 # ── Preflight doctor (REL-2) ──────────────────────────────────────────────
 # Advisory BY CONSTRUCTION: the doctor observes and reports; it must never be
 # able to stop a session (a broken doctor gating the engine would invert its
@@ -1079,7 +1302,7 @@ if $( [[ "$AUTO_RELEASE" == "true" ]] && echo "True" || echo "False" ):
 d["push_per_iter"] = $( [[ "$PUSH_PER_ITER" == "true" ]] && echo "True" || echo "False" )
 d["push_branch"] = "$PUSH_BRANCH"
 d["agent_backend"] = "$AGENT_BACKEND"
-if "$RUN_MODE" == "resume" and d.get("status") in ("REGRESSION_HALT", "AWAITING_BLUEPRINT_APPROVAL", "AWAITING_PUMP", "AWAITING_INTENT_REVIEW", "AWAITING_GITHUB_AUTH", "AWAITING_DISK"):
+if "$RUN_MODE" == "resume" and d.get("status") in ("REGRESSION_HALT", "AWAITING_BLUEPRINT_APPROVAL", "AWAITING_PUMP", "AWAITING_INTENT_REVIEW", "AWAITING_GITHUB_AUTH", "AWAITING_DISK", "AWAITING_HOST_GUARD"):
   d["status"] = "in_progress"
 import os as _os, tempfile as _tf
 _fd, _tmp = _tf.mkstemp(dir=_os.path.dirname("$SESSION_JSON") or ".", suffix=".sjtmp")
@@ -1451,6 +1674,11 @@ chain_tmp_janitor
 # (AWAITING_DISK) only when the tmp root's filesystem is still critically low.
 preflight_disk_space
 
+# Host-guard preflight: forensics sampler + affinity confinement. Repeated
+# instant hardware resets under goal-mode load make unprotected engine runs
+# unacceptable on hosts that declare caps; no-op everywhere else.
+preflight_host_guard
+
 # Verify we can push to GitHub before the loop starts (once; fresh + resume).
 # Fails fast / pauses here rather than stalling on a credential prompt mid-run.
 preflight_github_access
@@ -1485,6 +1713,12 @@ while true; do
     explain_goal_status "AWAITING_DISK" "$SESSION_ID" "$REPO_ROOT"
     exit 0
   fi
+
+  # 1d. Host-guard gate — top of the loop, never mid-iteration: thermal
+  # cooldown (wait out heat-soak between iterations) + interactive pump
+  # confinement (the self-wrap cannot cover agents inside the foreground CLI).
+  # No-op unless the project declares host caps.
+  host_guard_iteration_gate
 
   # 1b. Blueprint approval gate (coherence). Pauses at the TOP of the loop —
   # never mid-iteration — so the blueprint is never re-drafted out from under the
@@ -1888,6 +2122,12 @@ Do NOT write code or implement anything. The iteration spec and any blueprint ed
 
   echo "[run-goal] Iter spec depth: $DEPTH"
   echo "[run-goal] Target journeys: ${TARGET_JOURNEYS:-(none parsed)}"
+  # Expose the parsed journey list to run-phase.sh / browser-qa-phase.sh so
+  # detect_frontend_in_plan (lib/common.sh) forces the browser lane whenever this
+  # iteration names journeys — even if the plan mis-states "Frontend Present: no"
+  # (the iter-8 CLOSURE-FAIL root cause). Exported unconditionally (empty = none)
+  # so a prior iteration's value never leaks forward.
+  export CHAIN_GOAL_TARGET_JOURNEYS="$TARGET_JOURNEYS"
   record_telemetry_event "iter_dispatch" "$(jq -cn --arg d "$DEPTH" --arg tj "$TARGET_JOURNEYS" '{depth:$d, target_journeys:$tj}' 2>/dev/null || printf '{"depth":"%s"}' "$DEPTH")"
 
   # 2c. Join the previous iteration's background showcase tail (if any) BEFORE
@@ -1895,7 +2135,9 @@ Do NOT write code or implement anything. The iteration spec and any blueprint ed
   # reviewer of THIS iteration see exactly the tree the sequential ordering
   # would have produced. Overlapping it with the decomposer above is where the
   # ~6-13 min saving comes from.
+  _engine_step_begin "showcase-join"
   _join_showcase_tail
+  _engine_step_done
 
   # Tmp hygiene boundary — the per-iteration cleanup step. The previous
   # iteration's background showcase tail has just been joined (its demo
@@ -1917,16 +2159,22 @@ Do NOT write code or implement anything. The iteration spec and any blueprint ed
     echo "[run-goal] Dispatching FULL pipeline via run-phase.sh ${_full_extra_args[*]} ..."
     if grep -q '\-\-no-finalize' "$SCRIPT_DIR/run-phase.sh"; then
       printf 'full' > "$ITER_DIR/depth-dispatched"   # SPEED-4: cadence streak input (depth that actually runs)
+      _engine_step_begin "full-pipeline"
       bash "$SCRIPT_DIR/run-phase.sh" "$ITER_NAME" "${_full_extra_args[@]}" || _exec_rc=$?
+      _engine_step_done
     else
       echo "[run-goal] run-phase.sh does not yet support --no-finalize. Falling back to lean for safety." >&2
       printf 'lean' > "$ITER_DIR/depth-dispatched"
+      _engine_step_begin "lean-pipeline"
       bash "$SCRIPT_DIR/goal-iter-lean.sh" "$ITER_NAME" || _exec_rc=$?
+      _engine_step_done
     fi
   else
     echo "[run-goal] Dispatching LEAN pipeline via goal-iter-lean.sh ..."
     printf 'lean' > "$ITER_DIR/depth-dispatched"
+    _engine_step_begin "lean-pipeline"
     bash "$SCRIPT_DIR/goal-iter-lean.sh" "$ITER_NAME" || _exec_rc=$?
+    _engine_step_done
   fi
 
   # Transport/dispatch-unavailable (exit 70) from the interactive backend: the

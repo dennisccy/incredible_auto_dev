@@ -29,6 +29,7 @@ AWAITING_INTENT_REVIEW
 AWAITING_PUMP
 AWAITING_GITHUB_AUTH
 AWAITING_DISK
+AWAITING_HOST_GUARD
 KEYS
   return 0
 }
@@ -106,6 +107,10 @@ explain_goal_status() {
     AWAITING_DISK)
       echo "  The chain paused because this computer is low on disk space — it never builds in that state."
       echo "  Free some space (the command above helps), then resume."
+      ;;
+    AWAITING_HOST_GUARD)
+      echo "  The chain paused because this computer's hardware protection is not in place — it never builds unprotected."
+      echo "  Follow the reason printed above (project-extensions/host-guard/README.md), then resume."
       ;;
   esac
   echo "  Read more: ${PLAIN_LANG_GUIDE}  (what each status and verdict means)"
