@@ -359,6 +359,41 @@ ensure_phase_ports() {
   fi
 }
 
+# Pin the QA browser's identity for this project (and lane). The Chrome MCP
+# server reads CHROME_WS_PROFILE/CHROME_WS_PORT from its environment; without
+# them it invents profile names (superpowers-chrome, -2, -3 …) as locks contend,
+# which is why several independent headed Chromes have run at once on this host.
+# A pinned identity makes the QA browser findable — by host-guard's confinement
+# pass, by the doctor, and by the reaper. Lane suffix keeps the concurrent qa and
+# browser-qa lanes off each other's profile lock.
+# Idempotent; never overrides an operator-supplied value.
+ensure_qa_browser_env() {
+  local suffix="${1:-}" project_root="$REPO_ROOT" base offset
+  [[ "$project_root" == */incredible_auto_dev ]] && project_root="${project_root%/incredible_auto_dev}"
+  base="$(basename "$project_root")"
+  offset=$(_project_port_offset)
+  [[ -z "${CHROME_WS_PROFILE:-}" ]] && export CHROME_WS_PROFILE="iad-qa-${base}${suffix:+-$suffix}"
+  if [[ -z "${CHROME_WS_PORT:-}" ]]; then
+    if [[ -n "$suffix" ]]; then
+      export CHROME_WS_PORT=$((11000 + offset))
+    else
+      export CHROME_WS_PORT=$((10000 + offset))
+    fi
+  fi
+  return 0
+}
+
+# Engine-mode QA runs the browser headless. The Chrome MCP picks headless purely
+# from the absence of DISPLAY/WAYLAND_DISPLAY, and a headed Chrome pays for GPU
+# compositing plus a full raster thread pool — the bursty all-core profile that
+# hard-resets this class of host. Screenshots are unaffected.
+# CHAIN_BQA_HEADED=1 restores a visible browser for debugging.
+strip_display_for_headless_qa() {
+  [[ "${CHAIN_BQA_HEADED:-0}" == "1" ]] && return 0
+  unset DISPLAY WAYLAND_DISPLAY
+  return 0
+}
+
 # ── Reviewer diff hygiene ─────────────────────────────────────────────────────
 # Pathspec excludes for the diffs REVIEWERS read: machine-generated lockfiles,
 # minified bundles, sourcemaps, binary/image assets, and harness artifact dirs

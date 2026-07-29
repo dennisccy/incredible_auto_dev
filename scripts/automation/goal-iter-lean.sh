@@ -806,6 +806,12 @@ fi
 _bqa_rc=0
 _bqa_dispatched="no"
 _bqa_infra_blocked="no"
+# Host-safety: pinned + headless + confined QA browser (see browser-qa-phase.sh).
+# Plain calls, never a subshell: run_browser_qa_llm's quota path can exit this
+# script, and a subshell would swallow that exit.
+ensure_qa_browser_env ""
+strip_display_for_headless_qa
+bqa_browser_confine
 # REL-14 preflight (CHAIN_BQA_PREFLIGHT, default off): when the lane is about
 # to dispatch against a browser-visible frontend, probe services first (+ one
 # ensure_services_running retry) instead of burning a ~20m LLM dispatch on dead

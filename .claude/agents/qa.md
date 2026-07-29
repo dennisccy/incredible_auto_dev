@@ -189,6 +189,13 @@ If `Frontend Present: yes`:
 3. Take screenshots. **Save them under `reports/qa/<phase>-evidence/` using `TC-<id>-<slug>.png` or `UT-<nn>-<slug>.png` naming — never save at the repo root.** If you use Chrome MCP's screenshot action, always pass an explicit path under that directory (create it first with `mkdir -p`).
 4. If NOT running after service auto-start attempt: write "SKIPPED — frontend not ready"
 
+**The browser identity is pinned — do not change it.** Profile and CDP port come from
+the environment (`CHROME_WS_PROFILE` / `CHROME_WS_PORT`) so the host-safety guard can
+confine the browser's CPU usage. Never call `set_profile`, never pass a profile or port
+to an action, and never switch the browser to headed mode. If Chrome will not start on
+the pinned profile, record SKIPPED with the exact error rather than retrying on another
+profile — on a capped host an unconfined browser can hard-reset the machine.
+
 **Do NOT mark FAIL just because browser checks were skipped (frontend not running).**
 Browser SKIPPED + tests passing = overall PASS is acceptable.
 

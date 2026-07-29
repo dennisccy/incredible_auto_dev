@@ -66,9 +66,11 @@
 #   AWAITING_DISK    - free disk under the hard floor even after automatic aggressive cleanup;
 #                      free space or run scripts/automation/tmp-doctor.sh --aggressive, then --resume
 #   AWAITING_HOST_GUARD - host-guard preflight/gate failed (hwmon sampler dead and unstartable,
-#                      CPU-affinity wrap absent, a launcher lost its HOST-GUARD cap block, or the
-#                      interactive pump session is unconfined); fix per the printed reason
-#                      (project-extensions/host-guard/README.md), then --resume
+#                      CPU-affinity wrap absent, a launcher lost its HOST-GUARD cap block, the
+#                      interactive pump session is unconfined, the machine-global CPU/memory
+#                      budget is exceeded by the concurrently running sessions, or CPU boost was
+#                      re-enabled); fix per the printed reason (docs/host-guard.md,
+#                      project-extensions/host-guard/README.md), then --resume
 #
 # Quota exhaustion is NOT a halt: claude_with_quota_retry transparently sleeps
 # until the quota resets and resumes.
@@ -86,6 +88,7 @@ source "$SCRIPT_DIR/lib/telemetry.sh"
 source "$SCRIPT_DIR/lib/goal-gates.sh"
 source "$SCRIPT_DIR/lib/engine-lock.sh"
 source "$SCRIPT_DIR/lib/plain-language.sh"
+source "$SCRIPT_DIR/lib/host-guard-registry.sh"
 
 # ── Host-guard self-wrap (hardware protection) ─────────────────────────────
 # Origin: a mini-PC host hard-reset instantly (no OOM, no thermal log, no
@@ -1005,6 +1008,38 @@ preflight_host_guard() {
     done
   fi
 
+  # 4. Machine-global aggregate budget + host-level assumptions. Checks 1-3 all
+  # verify THIS session in isolation; two sessions that each pass can still put
+  # the machine over budget (the 2026-07-29 reset: complementary masks, union =
+  # every core). The host budget file lives outside every repo — absent ⇒ this
+  # check only warns. lib/host-guard-registry.sh carries the mechanics.
+  if [[ -z "$fail_reason" ]]; then
+    hg_load_host_env
+    local hg_msg=""
+    if ! hg_msg="$(hg_boost_ok)"; then
+      fail_reason="$hg_msg"
+    elif [[ -n "${HOST_GUARD_GLOBAL_MEMORY_BUDGET:-}" ]] \
+         && ! _hg_mem_to_bytes "$HOST_GUARD_GLOBAL_MEMORY_BUDGET" >/dev/null; then
+      fail_reason="HOST_GUARD_GLOBAL_MEMORY_BUDGET='$HOST_GUARD_GLOBAL_MEMORY_BUDGET' in $(hg_host_env_file) is not a size like '22G' — fix the machine budget file"
+    else
+      # Register BEFORE verifying: two engines starting at once must each see
+      # the other, so the deterministic junior-loses order can pick exactly one.
+      local own_rec verdict
+      own_rec="$(hg_register engine "$$" "$REPO_ROOT" "$SESSION_ID" "${HOST_GUARD_CPU_LIST:-}" "${HOST_GUARD_MEMORY_HIGH:-18G}")"
+      hg_sweep
+      verdict="$(hg_aggregate_verdict "$own_rec")"
+      case "$verdict" in
+        PAUSE\|*)
+          hg_release
+          fail_reason="${verdict#PAUSE|}" ;;
+        WARN\|*)
+          echo "[run-goal] host-guard WARNING: ${verdict#WARN|}"
+          record_telemetry_event "host_guard_aggregate_warn" \
+            "$(python3 -c 'import json,sys; print(json.dumps({"detail": sys.argv[1]}))' "${verdict#WARN|}")" ;;
+      esac
+    fi
+  fi
+
   [[ -n "$fail_reason" ]] || return 0
   _host_guard_pause "$fail_reason" "preflight"
 }
@@ -1071,7 +1106,8 @@ host_guard_iteration_gate() {
         # HOST_GUARD_ADOPT=0 skips the self-heal and pauses immediately.
         if [[ "${HOST_GUARD_ADOPT:-1}" == "1" ]]; then
           echo "[run-goal] host-guard: pump (pid $target) unconfined (Cpus_allowed_list=$allowed_list) — auto-confining in place."
-          HOST_GUARD_ROOT="$REPO_ROOT" bash "$SCRIPT_DIR/host-guard-adopt.sh" --cli-root-of "$target" || true
+          HOST_GUARD_ROOT="$REPO_ROOT" HOST_GUARD_SESSION_ID="$SESSION_ID" \
+            bash "$SCRIPT_DIR/host-guard-adopt.sh" --cli-root-of "$target" || true
           allowed_list=$(awk -F'\t' '/^Cpus_allowed_list/{print $2}' "/proc/$target/status" 2>/dev/null)
           allowed_n=$(_host_guard_mask_width "$allowed_list")
         fi
@@ -1088,6 +1124,30 @@ host_guard_iteration_gate() {
       _host_guard_pause "cannot verify pump confinement: no usable pump pid ($hb has no pid= line and no CLI root was captured at engine launch) — re-enable the pump ident or set HOST_GUARD_REQUIRE_PUMP_CONFINED=0" "iteration_gate"
     fi
   fi
+
+  # (c) machine-global aggregate budget + boost assumption, re-checked every
+  # iteration: the other project's session may have started AFTER our preflight,
+  # and a host-level knob can regress mid-run. Registering here doubles as the
+  # heartbeat and self-heals a registry wiped by a cache sweep. Runs after (b)
+  # so an adopted pump is already registered when the union is computed.
+  hg_load_host_env
+  local hg_own_rec hg_verdict hg_msg=""
+  hg_own_rec="$(hg_register engine "$$" "$REPO_ROOT" "$SESSION_ID" "${HOST_GUARD_CPU_LIST:-}" "${HOST_GUARD_MEMORY_HIGH:-18G}")"
+  hg_sweep
+  if ! hg_msg="$(hg_boost_ok)"; then
+    write_session_summary "AWAITING_HOST_GUARD" "$CURRENT_ITER"
+    _host_guard_pause "$hg_msg" "iteration_gate"
+  fi
+  hg_verdict="$(hg_aggregate_verdict "$hg_own_rec")"
+  case "$hg_verdict" in
+    PAUSE\|*)
+      write_session_summary "AWAITING_HOST_GUARD" "$CURRENT_ITER"
+      _host_guard_pause "${hg_verdict#PAUSE|}" "iteration_gate" ;;
+    WARN\|*)
+      echo "[run-goal] host-guard WARNING: ${hg_verdict#WARN|}"
+      record_telemetry_event "host_guard_aggregate_warn" \
+        "$(python3 -c 'import json,sys; print(json.dumps({"detail": sys.argv[1]}))' "${hg_verdict#WARN|}")" ;;
+  esac
   return 0
 }
 
@@ -1711,6 +1771,9 @@ _goal_engine_on_exit() {
   _join_showcase_tail --kill 2>/dev/null || true
   rm -f "$ENGINE_PID_FILE" 2>/dev/null || true
   chain_tmp_cleanup
+  # Drop this engine's host-guard registry record so a concurrent project sees
+  # the freed budget immediately (the pid sweep would catch it anyway).
+  hg_release 2>/dev/null || true
   # REL-4: release LAST so the lock covers the whole cleanup window. Owner-
   # checked no-op when this process never acquired (e.g. a refused start).
   release_engine_lock

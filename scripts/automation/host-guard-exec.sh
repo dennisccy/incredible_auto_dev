@@ -46,6 +46,23 @@ if [[ "${HOST_GUARD_BLAS_THREADS:-}" =~ ^[0-9]+$ ]]; then
   export NUMEXPR_NUM_THREADS="$HOST_GUARD_BLAS_THREADS"
 fi
 
+# NOTE: no CHROME_WS_PROFILE pin here. The pump serves BOTH QA lanes (run-phase.sh
+# runs Branch-QA and Branch-UI concurrently), and an explicit profile disables the
+# Chrome-MCP's per-lane auto-disambiguation — the two lanes would end up sharing one
+# browser and stepping on each other's tabs. Pump browsers are made safe by affinity
+# instead: host-guard/browser-confine.sh confines everything under the profile root,
+# named or not. Engine-mode lanes pin per-lane identities themselves (lib/common.sh
+# ensure_qa_browser_env), where the export is actually honored.
+
+# Publish this wrapped pump into the machine-global registry (exec preserves
+# both the pid and its start time, so this record tracks the CLI tree's root).
+if [[ -f "$(dirname "${BASH_SOURCE[0]}")/lib/host-guard-registry.sh" ]]; then
+  # shellcheck disable=SC1091
+  source "$(dirname "${BASH_SOURCE[0]}")/lib/host-guard-registry.sh" 2>/dev/null \
+    && hg_register pumpexec "$$" "$ROOT" "${HOST_GUARD_SESSION_ID:-}" \
+         "$HOST_GUARD_CPU_LIST" "${HOST_GUARD_MEMORY_HIGH:-18G}" >/dev/null 2>&1 || true
+fi
+
 _PROPS=( -p "CPUQuota=${HOST_GUARD_CPUQUOTA:-800%}"
          -p "MemoryHigh=${HOST_GUARD_MEMORY_HIGH:-18G}"
          -p "TasksMax=${HOST_GUARD_TASKS_MAX:-2048}" )

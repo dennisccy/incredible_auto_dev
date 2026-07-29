@@ -6,6 +6,12 @@ This skill describes how to execute browser-based QA flows using Chrome MCP.
 
 Use the `mcp__plugin_superpowers-chrome_chrome__use_browser` tool for all browser interactions.
 
+The browser's profile and CDP port are pinned by the environment (`CHROME_WS_PROFILE`,
+`CHROME_WS_PORT`) so the host-safety guard can find the browser and cap the CPUs it
+runs on. Never call `set_profile`, never pass a profile name or port to an action, and
+never switch to a headed browser. If Chrome cannot start on the pinned profile, report
+the tests as SKIPPED with the exact error instead of retrying on a different profile.
+
 ## Basic Operations
 
 ### Navigate to a URL

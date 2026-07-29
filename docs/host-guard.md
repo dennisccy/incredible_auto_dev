@@ -28,10 +28,129 @@ disables everything.
 | `HOST_GUARD_REQUIRE_MARKERS` + `HOST_GUARD_MARKER_FILES` | require HOST-GUARD cap blocks in listed launcher scripts | project-specific |
 | `HOST_GUARD_TCTL_PAUSE` / `_RESUME` / `_MAX_WAIT` | thermal gate thresholds (°C, °C, s) | `90` / `80` / `1800` |
 | `HOST_GUARD_SAMPLER_INTERVAL` / `_MAX_BYTES` | forensics sampler cadence / csv ring size | `1` / `10485760` |
+| `HOST_GUARD_BROWSER_CONFINE` | `0` disables the QA-browser confinement pass | `1` (default) |
 
-Running two projects' goal modes on one host: give them **complementary masks**
-(e.g. `0-3,8-11` and `4-7,12-15` on an 8-core/16-thread part) so a burst can
-never light every core, and size `MEMORY_HIGH` so the sum fits in RAM.
+## Machine-global aggregate budget
+
+Everything in the table above bounds **one session**. That is not the same as
+bounding the machine, and the difference is not academic:
+
+> On 2026-07-29 at 14:02:45 the reference host hard-reset with two goal modes
+> running under *complementary* masks — `0-3,8-11` and `4-7,12-15`. Each session
+> passed every check it had. Their union was all 16 CPUs: every physical core
+> available to a single burst. The memory ceilings had the same shape, 14G + 14G
+> against 27.3G of RAM. **Complementary masks are not a safety property — they
+> are a guarantee that the machine can be fully lit.** (Earlier revisions of this
+> document recommended them. That advice was wrong and is retracted.)
+
+So a second file, owned by the machine rather than by any repo, declares what
+*all* guarded sessions may consume together:
+
+```bash
+# ~/.config/iad/host-guard-host.env   (never committed to any project)
+HOST_GUARD_GLOBAL_CPU_LIST="0-3,8-11"   # every session's mask must be a SUBSET
+HOST_GUARD_GLOBAL_MEMORY_BUDGET="22G"   # Σ over projects of max(MemoryHigh)
+HOST_GUARD_REQUIRE_BOOST_OFF=1          # /sys/.../cpufreq/boost must read 0
+HOST_GUARD_GLOBAL_ON_CONFLICT=pause     # only 'pause' is implemented
+```
+
+Every guarded context publishes a record (pid, start time, boot id, project,
+mask, memory ceiling) into a registry under
+`${CHAIN_TMP_ROOT:-~/.cache/iad}/host-guard/registry/`, so any session can see
+the whole machine. Preflight and every iteration boundary then check:
+
+1. CPU **boost** is off (when required) — see *Boost persistence* below;
+2. this session's mask ⊆ the global list — a violation always pauses, seniority
+   does not excuse a misconfigured session;
+3. the **union** of all live masks ⊆ the global list (checked explicitly, so a
+   hand-edited record or a session started before this feature still trips it);
+4. the per-project memory ceilings sum within the budget. Memory is summed as
+   *max per project*, because a project's engine scope and its adopted-pump
+   scope are separate cgroups carrying the same ceiling — a naive sum would
+   double-count every project.
+
+**Who yields.** Sessions register *before* they verify, so two engines starting
+at the same instant each see the other. Both then compute the same loser from a
+total order — `(epoch, start time, pid)` — and the junior one pauses
+`AWAITING_HOST_GUARD` while the senior logs a warning and continues. There is no
+lock, and no outcome where both pause or neither does.
+
+**Staleness is pid-based, never time-based.** A record dies when its pid is gone,
+when the pid was recycled (start time differs), or when the boot id no longer
+matches. Iteration gaps here are legitimately unbounded — a thermal cooldown can
+last 30 minutes — so an mtime TTL would evict live sessions.
+
+Absent budget file ⇒ enforcement off, exactly as before. The registry is still
+maintained, and once two *different* projects are guarded simultaneously the
+engine says so loudly rather than pretending the machine is bounded.
+
+A future `narrow` conflict mode (re-exec the junior session inside the remaining
+budget instead of pausing) is deliberately **not** implemented: an already-running
+pump tree cannot be narrowed safely mid-session.
+
+## Boost persistence
+
+The guard verifies its own premises. CPU boost was disabled on this class of host
+as a hardware mitigation, applied live — and silently reverted at the next reboot
+because the persistence rule was never installed. Nothing noticed for a day. With
+`HOST_GUARD_REQUIRE_BOOST_OFF=1` a re-enabled boost now pauses the engine.
+
+```bash
+echo 0 | sudo tee /sys/devices/system/cpu/cpufreq/boost
+printf 'w /sys/devices/system/cpu/cpufreq/boost - - - - 0\n' \
+  | sudo tee /etc/tmpfiles.d/cpufreq-boost.conf
+sudo systemd-tmpfiles --create /etc/tmpfiles.d/cpufreq-boost.conf
+cat /sys/devices/system/cpu/cpufreq/boost      # must print 0
+```
+
+`scripts/automation/doctor.sh --only cpu-boost` reports both the live knob and
+whether the rule that survives a reboot exists.
+
+## Browser QA confinement
+
+Confining process *trees* is not enough for browser QA. The Chrome MCP does not
+always spawn its browser: it **reconnects** to one recorded in
+`<profile>.meta.json` and **adopts** orphans it finds by scanning for its
+`--user-data-dir`. A browser born in an unconfined session therefore keeps its
+wide CPU mask forever. And because Chrome is spawned detached, it outlives its
+MCP server and is reparented to init — out of reach of any descendant walk.
+
+`host-guard/browser-confine.sh` closes that hole. It runs before every browser
+dispatch (`browser-qa-phase.sh`, `qa-phase.sh`, `goal-iter-lean.sh`,
+`ui-audit-phase.sh`) and on **both** exits of `host-guard-adopt.sh` — including
+the "already confined" early return, which is the common path and exactly where
+an escaped browser would otherwise go unnoticed. It:
+
+- re-tasksets any browser under the profile root that is outside the mask,
+  preferring re-confinement over killing so warm browsers survive;
+- kills only when taskset fails *and* the profile is this project's own; another
+  project's browser is confined-if-unconfined and otherwise left alone, never
+  killed;
+- confines Chrome-MCP servers too (never kills them — the live pump depends on
+  its server) so their *future* browsers are born inside the mask;
+- sweeps `.meta.json` / `.mcp.lock` files whose pid is gone, with a 30 s age
+  guard so a server mid-launch is not disturbed.
+
+Engine-mode QA additionally runs the browser **headless** (`DISPLAY` and
+`WAYLAND_DISPLAY` are unset before the dispatch, which is the only signal the MCP
+uses), dropping GPU compositing and the raster thread pool. Screenshots are
+unaffected. `CHAIN_BQA_HEADED=1` restores a visible browser for debugging;
+`CHAIN_BQA_REAP=1` additionally terminates this project's QA browsers when an
+engine-mode phase finishes (default is leave-warm — a cold start costs seconds
+and an idle browser inside the mask costs nothing).
+
+| Var | Meaning | Default |
+|---|---|---|
+| `CHROME_WS_PROFILE` / `CHROME_WS_PORT` | pinned QA browser identity, per project and lane (`iad-qa-<project>` on `10000+hash`, the qa lane on `11000+hash`) | set by `ensure_qa_browser_env` |
+| `CHAIN_BQA_HEADED` | `1` keeps a visible browser in engine mode | `0` |
+| `CHAIN_BQA_REAP` | `1` reaps this project's QA browsers at phase end (engine mode only) | `0` |
+| `HOST_GUARD_BROWSER_CONFINE` | `0` disables the pass entirely | `1` |
+
+Pump sessions deliberately get **no** profile pin. A Claude Code `env` setting
+overrides the inherited process environment, so a pinned value there would clobber
+the per-lane profile the phase scripts export and collapse the two concurrently
+running QA lanes (`run-phase.sh` Branch-QA and Branch-UI) onto one shared browser.
+Pump browsers are made safe by affinity instead, which needs no name.
 
 ## Enforcement layers (all in `scripts/automation/`)
 
@@ -57,13 +176,21 @@ never light every core, and size `MEMORY_HIGH` so the sum fits in RAM.
    inject into a running process). The fallback when adoption fails.
 4. **Preflight** (`preflight_host_guard`) — before the loop: forensics sampler
    alive (auto-started if not), affinity wrap took effect, launcher marker
-   blocks intact. Failure pauses the session `AWAITING_HOST_GUARD` (resumable).
+   blocks intact, and the machine-global budget + boost assumption hold.
+   Failure pauses the session `AWAITING_HOST_GUARD` (resumable).
 5. **Iteration gate** (`host_guard_iteration_gate`, top of loop) — thermal
-   cooldown between iterations (wait out heat-soak, bounded), and — when
-   `HOST_GUARD_REQUIRE_PUMP_CONFINED=1` — pump-cpuset verification (via the
-   `pid=` line in `.pump-alive`, or the CLI root captured at engine launch)
-   with automatic in-place re-confinement; pauses only when that fails.
-6. **Forensics sampler** (`host-guard/hwmon-log.sh`) — 1 Hz temps/power/
+   cooldown between iterations (wait out heat-soak, bounded); pump-cpuset
+   verification when `HOST_GUARD_REQUIRE_PUMP_CONFINED=1` (via the `pid=` line
+   in `.pump-alive`, or the CLI root captured at engine launch) with automatic
+   in-place re-confinement, pausing only when that fails; then a re-check of the
+   machine-global budget and boost, since the *other* project's session may have
+   started after this one's preflight.
+6. **Machine-global bound** (`lib/host-guard-registry.sh`) — the live-session
+   registry and the aggregate CPU/memory/boost checks described above. This is
+   the layer that sees more than one project at a time.
+7. **Browser confinement** (`host-guard/browser-confine.sh`) — QA browsers and
+   Chrome-MCP servers that escaped the process tree, see below.
+8. **Forensics sampler** (`host-guard/hwmon-log.sh`) — 1 Hz temps/power/
    pressure/memory to `<repo>/logs/hwmon/hwmon.csv`, fsync per line, so the
    final pre-reset second survives a hard reset. `{run|start|stop|status|watch}`;
    `status`/`start` recognize an externally-run sampler (e.g. a systemd user
@@ -84,6 +211,11 @@ load has hard-reset a host.
 Built after a GEEKOM A7 Max (Ryzen 9 7940HS) hard-reset five times in eight
 days (2026-07-20 → 2026-07-28) under goal-mode load, three of the resets
 captured at 1 Hz with benign temperatures and low package power — a
-millisecond-scale power transient. Incident forensics and the cap-widening
-verification ladder live in the originating project:
-`trendora/project-extensions/host-guard/README.md`.
+millisecond-scale power transient.
+
+A sixth reset on 2026-07-29 came *after* per-session confinement was in place,
+and produced the machine-global layer: two correctly-confined projects were
+still collectively unbounded, a QA browser could keep a pre-confinement CPU
+mask, and the boost mitigation had silently lapsed at a reboot. Incident
+forensics and the cap-widening verification ladder live in the originating
+project: `trendora/project-extensions/host-guard/README.md`.

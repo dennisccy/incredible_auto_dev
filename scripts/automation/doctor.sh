@@ -58,7 +58,8 @@ source "$SCRIPT_DIR/lib/engine-lock.sh"
 ROOT="${CHAIN_DOCTOR_REPO_ROOT:-$REPO_ROOT}"
 
 CHECKS=(python3 node playwright chrome-mcp gh-auth git-remote disk timeout jq
-        pump-heartbeat engine-lock tmp-health chrome-exclusive ambient-env)
+        pump-heartbeat engine-lock tmp-health chrome-exclusive mcp-affinity
+        host-guard cpu-boost ambient-env)
 
 # Run a command under GNU/uutils timeout when available (network probes must
 # degrade, never hang). $1 = seconds, rest = command.
@@ -356,20 +357,170 @@ PY
   fi
 }
 
+# ── Host-guard rows (machine-level assumptions, read-only) ──────────────────
+# The doctor OBSERVES: it reads the project host-guard.env with sed rather than
+# sourcing it (never import arbitrary env), and it never sweeps the registry —
+# that is the engine's job.
+_hg_env_val() { # $1 key → value from the project host-guard.env ("" when absent)
+  sed -n "s/^[[:space:]]*$1=//p" "$ROOT/project-extensions/host-guard/host-guard.env" 2>/dev/null \
+    | tail -n 1 | tr -d '"'"'"
+}
+_hg_expand() { # "0-3,8-11" → CPU ids, one per line
+  local part a b i
+  local -a parts=()
+  IFS=',' read -ra parts <<< "${1:-}"
+  { for part in "${parts[@]}"; do
+      if [[ "$part" =~ ^[0-9]+-[0-9]+$ ]]; then
+        a="${part%-*}"; b="${part#*-}"; (( b >= a )) && for (( i=a; i<=b; i++ )); do echo "$i"; done
+      elif [[ "$part" =~ ^[0-9]+$ ]]; then echo "$part"; fi
+    done; } | sort -n -u
+}
+_hg_in_mask() { # $1 Cpus_allowed_list ⊆ $2 mask ?
+  local c; local -A super=()
+  while read -r c; do [[ -n "$c" ]] && super["$c"]=1; done < <(_hg_expand "$2")
+  while read -r c; do [[ -n "$c" ]] || continue; [[ -n "${super[$c]:-}" ]] || return 1; done < <(_hg_expand "$1")
+  return 0
+}
+_hg_allowed() { awk -F'\t' '/^Cpus_allowed_list/{print $2}' "/proc/$1/status" 2>/dev/null; }
+_hg_cmdline() { tr '\0' ' ' < "/proc/$1/cmdline" 2>/dev/null; }
+_hg_qa_profile_root() { echo "${CHROME_PROFILE_ROOT:-${XDG_CACHE_HOME:-$HOME/.cache}/superpowers/browser-profiles}"; }
+
 # EVIDENCE (run D, bench-20260715-0924): foreign Chrome processes caused
 # Chrome MCP DevTools-port contention — journeys REFUTED 0/3 and a ~$16 run
-# was lost. WARN (not FAIL): the operator may know the windows are unrelated.
+# was lost. EVIDENCE (2026-07-29 reset): a framework QA Chrome that the MCP
+# reconnected to, rather than spawned, keeps whatever CPU mask it was born
+# with — an unconfined headed Chrome rasterizing on every core is exactly the
+# burst profile that hard-resets this class of host. So: desktop Chrome is
+# informational, an unconfined framework QA Chrome is a FAIL.
 check_chrome_exclusive() {
   command -v pgrep >/dev/null 2>&1 || { echo "WARN|pgrep unavailable — cannot scan for competing chrome processes"; return; }
-  local out n list
-  out="$(pgrep -l 'chrom|headless_shell' 2>/dev/null || true)"
-  if [[ -z "$out" ]]; then
+  local pids p cmd mask enabled proot
+  pids="$(pgrep 'chrom|headless_shell' 2>/dev/null || true)"
+  if [[ -z "$pids" ]]; then
     echo "PASS|no competing chrome/chromium processes"
     return
   fi
-  n="$(printf '%s\n' "$out" | wc -l | tr -dc 0-9)"
-  list="$(printf '%s\n' "$out" | awk 'NR<=6 {printf "%s(%s) ", $1, $2}')"
-  echo "WARN|$n chrome-family process(es): ${list}— DevTools-port contention lost run D (~\$16); close them before browser-QA-heavy sessions"
+  enabled="$(_hg_env_val HOST_GUARD_ENABLED)"; mask="$(_hg_env_val HOST_GUARD_CPU_LIST)"
+  proot="$(_hg_qa_profile_root)"
+  local n_desktop=0 n_qa=0 n_loose=0 loose=""
+  for p in $pids; do
+    cmd="$(_hg_cmdline "$p")"
+    if [[ "$cmd" == *"$proot"* ]]; then
+      n_qa=$(( n_qa + 1 ))
+      if [[ "$enabled" == "1" && -n "$mask" ]] && ! _hg_in_mask "$(_hg_allowed "$p")" "$mask"; then
+        n_loose=$(( n_loose + 1 )); loose+="$p($(_hg_allowed "$p")) "
+      fi
+    else
+      n_desktop=$(( n_desktop + 1 ))
+    fi
+  done
+  if [[ "$enabled" != "1" || -z "$mask" ]]; then
+    local total=$(( n_desktop + n_qa )) list
+    list="$(pgrep -l 'chrom|headless_shell' 2>/dev/null | awk 'NR<=6 {printf "%s(%s) ", $1, $2}')"
+    echo "WARN|$total chrome-family process(es) ($n_qa framework QA, $n_desktop other): ${list}— DevTools-port contention lost run D (~\$16); close them before browser-QA-heavy sessions"
+    return
+  fi
+  if (( n_loose > 0 )); then
+    echo "FAIL|$n_loose framework QA chrome process(es) OUTSIDE HOST_GUARD_CPU_LIST=$mask: ${loose}— an unconfined browser can hard-reset this host; run scripts/automation/host-guard/browser-confine.sh"
+    return
+  fi
+  echo "PASS|$n_qa framework QA chrome process(es) confined to $mask; $n_desktop other chrome process(es) (informational — QA ports are pinned)"
+}
+
+# The Chrome MCP server spawns browsers as its own children, so they inherit
+# ITS affinity. A server started before the pump was confined therefore keeps
+# minting unconfined browsers no matter how often the browsers get re-tasksetted.
+check_mcp_affinity() {
+  command -v pgrep >/dev/null 2>&1 || { echo "WARN|pgrep unavailable — cannot scan for MCP servers"; return; }
+  local p cmd mask enabled n=0 loose="" n_loose=0
+  enabled="$(_hg_env_val HOST_GUARD_ENABLED)"; mask="$(_hg_env_val HOST_GUARD_CPU_LIST)"
+  for p in $(pgrep -f 'mcp/dist/index.js' 2>/dev/null || true); do
+    cmd="$(_hg_cmdline "$p")"
+    [[ "$cmd" == *superpowers-chrome* ]] || continue
+    n=$(( n + 1 ))
+    if [[ "$enabled" == "1" && -n "$mask" ]] && ! _hg_in_mask "$(_hg_allowed "$p")" "$mask"; then
+      n_loose=$(( n_loose + 1 )); loose+="$p($(_hg_allowed "$p")) "
+    fi
+  done
+  (( n > 0 )) || { echo "PASS|no superpowers-chrome MCP server running"; return; }
+  if [[ "$enabled" != "1" || -z "$mask" ]]; then
+    echo "PASS|$n superpowers-chrome MCP server(s); this project declares no CPU mask to enforce"
+    return
+  fi
+  if (( n_loose > 0 )); then
+    echo "FAIL|$n_loose superpowers-chrome MCP server(s) outside HOST_GUARD_CPU_LIST=$mask: ${loose}— every Chrome they spawn inherits that wider mask; run scripts/automation/host-guard-adopt.sh --cli-root-of <pid>"
+    return
+  fi
+  echo "PASS|$n superpowers-chrome MCP server(s) confined to $mask"
+}
+
+# EVIDENCE (2026-07-29 14:02:45 reset): trendora "0-3,8-11" + tapeology
+# "4-7,12-15" — each session's own check green, union = every core. A per-scope
+# ceiling is not a machine budget; this row shows the machine view.
+check_host_guard() {
+  local enabled mask mem
+  enabled="$(_hg_env_val HOST_GUARD_ENABLED)"; mask="$(_hg_env_val HOST_GUARD_CPU_LIST)"
+  mem="$(_hg_env_val HOST_GUARD_MEMORY_HIGH)"
+  [[ "$enabled" == "1" ]] || { echo "PASS|this project declares no host-guard (project-extensions/host-guard/host-guard.env absent or disabled)"; return; }
+  local lib="$SCRIPT_DIR/lib/host-guard-registry.sh"
+  [[ -f "$lib" ]] || { echo "WARN|host-guard.env declares CPU mask $mask but lib/host-guard-registry.sh is missing — no machine-global bound"; return; }
+  # shellcheck disable=SC1090
+  ( source "$lib"
+    hg_load_host_env
+    local hostf n=0 r roots="" verdict
+    hostf="$(hg_host_env_file)"
+    while read -r r; do
+      [[ -n "$r" ]] || continue
+      n=$(( n + 1 ))
+      roots+="$(_hg_rec_field "$r" kind):$(basename "$(_hg_rec_field "$r" project_root)")[$(_hg_rec_field "$r" cpu_list)] "
+    done < <(hg_live_records)
+    if [[ -z "${HOST_GUARD_GLOBAL_CPU_LIST:-}" ]]; then
+      echo "WARN|mask=$mask mem=$mem, $n live guarded context(s): ${roots:-none} — but NO machine budget is configured ($hostf); concurrent projects are unbounded (docs/host-guard.md § Machine-global aggregate budget)"
+      return
+    fi
+    if ! _hg_mask_is_subset "$mask" "$HOST_GUARD_GLOBAL_CPU_LIST"; then
+      echo "FAIL|this project's mask $mask is NOT inside the machine budget HOST_GUARD_GLOBAL_CPU_LIST=$HOST_GUARD_GLOBAL_CPU_LIST ($hostf) — the engine will pause AWAITING_HOST_GUARD"
+      return
+    fi
+    verdict="$(hg_aggregate_verdict "")"
+    case "$verdict" in
+      OK) echo "PASS|mask=$mask mem=$mem inside machine budget ${HOST_GUARD_GLOBAL_CPU_LIST}/${HOST_GUARD_GLOBAL_MEMORY_BUDGET:-unset}; $n live guarded context(s): ${roots:-none}" ;;
+      *)  echo "WARN|${verdict#*|}" ;;
+    esac
+  )
+}
+
+# EVIDENCE: boost-off was applied live on 2026-07-28 as the hardware mitigation
+# and silently reverted at the next reboot — the tmpfiles.d rule that persists
+# it was never installed. A guard that does not verify its own premise is
+# decoration, so this row checks BOTH the live knob and its persistence.
+check_cpu_boost() {
+  local p rule v required=0 hostf
+  p="${HOST_GUARD_SYS_BOOST_PATH:-/sys/devices/system/cpu/cpufreq/boost}"
+  rule="${CHAIN_DOCTOR_BOOST_RULE:-/etc/tmpfiles.d/cpufreq-boost.conf}"
+  # Only a machine that ASKED for boost-off gets a FAIL. Elsewhere the row is
+  # informational — the framework must not judge hosts that never opted in.
+  hostf="${HOST_GUARD_HOST_ENV_FILE:-$HOME/.config/iad/host-guard-host.env}"
+  if [[ -f "$hostf" ]] && grep -qE '^[[:space:]]*HOST_GUARD_REQUIRE_BOOST_OFF[[:space:]]*=[[:space:]]*"?1' "$hostf" 2>/dev/null; then
+    required=1
+  fi
+  [[ -r "$p" ]] || { echo "PASS|no CPU boost knob at $p — this host exposes no boost control"; return; }
+  v="$(tr -dc '0-9' < "$p" 2>/dev/null)"
+  if [[ "$v" != "0" ]]; then
+    if (( required )); then
+      echo "FAIL|CPU boost is ON ($p=$v) but $hostf requires it off — goal mode will pause AWAITING_HOST_GUARD: echo 0 | sudo tee $p (persist: $rule, docs/host-guard.md § Boost persistence)"
+    else
+      echo "PASS|CPU boost is ON ($p=$v); this machine does not require it off (no HOST_GUARD_REQUIRE_BOOST_OFF=1 in $hostf)"
+    fi
+    return
+  fi
+  if [[ -f "$rule" ]]; then
+    echo "PASS|CPU boost off and persisted ($rule)"
+  elif (( required )); then
+    echo "WARN|CPU boost is off but NOT persisted — it will silently re-enable at the next reboot; install $rule (docs/host-guard.md § Boost persistence)"
+  else
+    echo "PASS|CPU boost is off ($p=0)"
+  fi
 }
 
 # EVIDENCE (§9 measurement discipline): benchmark/measurement runs record

@@ -4297,3 +4297,60 @@ Single source for the plain wording: the sentence table in
 `skills/plain-language.md` copy from it, never fork it.
 
 ### PLAIN-1 — DONE 2026-07-26, archived
+
+---
+
+## 20. P1 — Machine-level hardware safety (HOST-*, promoted 2026-07-29)
+
+Source: the 6th instant hard-reset of the reference host (GEEKOM A7 Max, Ryzen 9 7940HS,
+27.3G) on 2026-07-29 14:02:45, the FIRST one with per-session host-guard caps fully in
+place on both concurrent projects. Scoped by a Fable-5 planning session; user approval of
+that plan = EVO-1 promotion of this section (§18/§19 precedent). User-locked decisions:
+**shared mask `0-3,8-11`** for both projects (4 physical cores of guaranteed-dark
+headroom, accepting concurrent-throughput contention) over a wider overlapping scheme;
+boost regression ⇒ **pause** the engine, not warn; engine-mode QA browsers run
+**headless**.
+
+Hard rule for every HOST item: the framework stays project-neutral — absent
+`project-extensions/host-guard/host-guard.env` (or `HOST_GUARD_ENABLED=0`), and absent the
+machine budget file, every hook is a byte-for-byte no-op with at most a loud warning. The
+machine budget is machine-owned (`~/.config/iad/host-guard-host.env`) and is NEVER
+committed to a project repo.
+
+### HOST-1 — DONE 2026-07-29
+
+Machine-global aggregate bound + QA-browser confinement + host-assumption verification.
+
+- **Root cause:** every host-guard check bounded ONE session. trendora `0-3,8-11` and
+  tapeology `4-7,12-15` — *complementary masks, previously recommended by
+  `docs/host-guard.md`* — each passed in isolation while their union was all 16 CPUs;
+  `MemoryHigh` 14G + 14G exceeded 27.3G of RAM the same way. Two secondary holes: a QA
+  Chrome reconnected/adopted by the Chrome-MCP (or orphaned past its server, reparented to
+  init) kept a pre-confinement all-CPU mask and ran headed; and the boost-off hardware
+  mitigation silently lapsed at the 2026-07-29 reboot because its tmpfiles.d rule was
+  never installed, with nothing verifying it.
+- **Shipped:** `lib/host-guard-registry.sh` (mask SET math — width comparison cannot tell
+  `0-7` from `0-3,8-11`; live-session registry with pid/starttime/boot-id staleness;
+  register-before-verify + a total order so exactly one of two racers pauses; per-project
+  max memory grouping; boost check); preflight check 4 + iteration-gate check (c) +
+  `hg_release` in the exit trap; pump/pumpexec registration in `host-guard-adopt.sh` /
+  `host-guard-exec.sh`; `host-guard/browser-confine.sh` wired into all four browser
+  dispatch surfaces and BOTH exits of the adopt script; `ensure_qa_browser_env` /
+  `strip_display_for_headless_qa` in `lib/common.sh`; doctor rows `host-guard`,
+  `cpu-boost`, `mcp-affinity` + a rewritten `chrome-exclusive`.
+- **Evidence:** `tests/automation/test-host-guard.sh` 63/63 and
+  `test-host-guard-browser.sh` 61/61 (both registered in `run-evals.sh` §2c); full offline
+  eval suite green; `test-doctor.sh` 50/50 after its key-count and message updates.
+- **Deliberately NOT done:** a `narrow` conflict mode (a running pump tree cannot be
+  narrowed safely mid-session — documented as future work); a `CHROME_WS_PROFILE` pin in
+  `settings.local.json` or `host-guard-exec.sh` — measured: a Claude Code settings `env`
+  entry OVERRIDES the inherited process env, so a pin there would clobber the per-lane
+  profile the phase scripts export and collapse the two concurrently-running QA lanes
+  (`run-phase.sh` Branch-QA + Branch-UI) onto one shared browser. Pump browsers are made
+  safe by affinity instead, which needs no name.
+- **Failure-mode entry:** `.claude/anti-patterns/26-per-scope-caps-no-machine-aggregate.md`.
+- **Owner action outstanding:** re-apply and PERSIST boost-off (docs/host-guard.md
+  § Boost persistence). Until then the engine pauses `AWAITING_HOST_GUARD` by design.
+- **Verification still owed (G8-class):** subtree-pull both projects, a supervised
+  concurrent `/goal-step` per project verifying the live union stays inside `0-3,8-11`,
+  then the 7-day zero-unclean-shutdown soak (trendora README Stage E).

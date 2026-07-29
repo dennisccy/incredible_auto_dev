@@ -322,6 +322,15 @@ SERVICES_NOTE="Note: browser-qa-phase.sh manages backend (${BACKEND_HEALTH_URL},
 # before claude attempts the next call.
 export CHAIN_CLAUDE_PRE_RETRY_HOOK="ensure_services_running"
 
+# ── Host-safety: pin the QA browser, run it headless, re-confine escapees ────
+# The Chrome MCP reconnects to and adopts browsers it did not spawn, so a
+# browser born unconfined stays unconfined however well the engine tree is
+# capped — and an unconfined headed Chrome is the burst profile that hard-reset
+# this host on 2026-07-29. All three calls no-op without a host-guard project.
+ensure_qa_browser_env ""
+strip_display_for_headless_qa
+bqa_browser_confine
+
 # ── REL-14 preflight (CHAIN_BQA_PREFLIGHT, default off) ─────────────────────
 # Probe services once more (+ one ensure_services_running retry) before burning
 # the browser-qa dispatch against dead infra. On persistent failure: skip the
@@ -467,6 +476,15 @@ if [[ $_bqa_rc -ne 0 && $_bqa_rc -ne ${QUOTA_EXHAUSTED_EXIT_CODE:-75} ]]; then
       "browser-qa-phase.sh Claude CLI invocation exited with code $_bqa_rc without flushing the results file. This commonly indicates a transient Anthropic streaming error (e.g., 'Stream idle timeout - partial response received') after a long live run. Re-run \`./scripts/automation/browser-qa-phase.sh $PHASE\` to retry."
   fi
   exit "$_bqa_rc"
+fi
+
+# Opt-in browser reap (CHAIN_BQA_REAP=1). Default is leave-warm: reconnecting to
+# a live browser saves a cold start per dispatch, and an idle browser inside the
+# mask costs nothing. Never in interactive mode — the pump's MCP server is still
+# alive there and would just respawn what we killed.
+if [[ "${CHAIN_BQA_REAP:-0}" == "1" && "${CHAIN_AGENT_BACKEND:-}" != "interactive" \
+      && -f "$SCRIPT_DIR/host-guard/browser-confine.sh" ]]; then
+  HOST_GUARD_ROOT="$REPO_ROOT" bash "$SCRIPT_DIR/host-guard/browser-confine.sh" --reap || true
 fi
 
 echo "[browser-qa] Done. Report: $UI_TEST_RESULTS"

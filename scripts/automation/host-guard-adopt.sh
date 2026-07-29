@@ -65,6 +65,27 @@ _width() { # "0-3,8-11" → 8; 0 when unparseable
 _ppid() { awk '/^PPid:/{print $2}' "/proc/$1/status" 2>/dev/null || true; }
 _allowed_n() { _width "$(awk -F'\t' '/^Cpus_allowed_list/{print $2}' "/proc/$1/status" 2>/dev/null)"; }
 
+_SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# Publish this pump into the machine-global registry so a concurrent project's
+# engine can see its CPU/memory footprint when it computes the aggregate.
+# Best effort — a registry problem must never fail an otherwise-good adoption.
+_register_pump() {
+  # shellcheck disable=SC1091
+  source "$_SELF_DIR/lib/host-guard-registry.sh" 2>/dev/null || return 0
+  hg_register pump "$TARGET" "$ROOT" "${HOST_GUARD_SESSION_ID:-}" \
+    "$HOST_GUARD_CPU_LIST" "${HOST_GUARD_MEMORY_HIGH:-18G}" >/dev/null 2>&1 || true
+}
+
+# Re-confine QA browsers that escaped the process tree. The Chrome MCP reuses
+# and adopts browsers it did not spawn, and detached Chromes outlive their MCP
+# server (reparented to init) — neither is reachable by the descendant walk
+# below, so a taskset of the pump tree alone leaves them unconfined.
+_browser_pass() {
+  [[ -f "$_SELF_DIR/host-guard/browser-confine.sh" ]] || return 0
+  HOST_GUARD_ROOT="$ROOT" bash "$_SELF_DIR/host-guard/browser-confine.sh" || true
+}
+
 TARGET="$PID"
 if [[ "$MODE_ROOT" == "1" ]]; then
   _pat="${HOST_GUARD_CLI_PATTERN:-claude|codex}" _p="$PID" _best=""
@@ -86,6 +107,10 @@ if (( WIDTH == 0 )); then
 fi
 if (( $(_allowed_n "$TARGET") <= WIDTH )); then
   echo "[host-guard-adopt] pid $TARGET already confined ($(awk -F'\t' '/^Cpus_allowed_list/{print $2}' "/proc/$TARGET/status"))."
+  # An already-confined pump is the COMMON case, and it is exactly when an
+  # escaped browser goes unnoticed — sweep before returning, never after.
+  _register_pump
+  _browser_pass
   exit 0
 fi
 
@@ -115,6 +140,8 @@ done
 
 if (( $(_allowed_n "$TARGET") <= WIDTH )); then
   echo "[host-guard-adopt] confined pid $TARGET (and descendants) to CPUs $HOST_GUARD_CPU_LIST."
+  _register_pump
+  _browser_pass
   exit 0
 fi
 echo "[host-guard-adopt] FAILED to confine pid $TARGET (Cpus_allowed_list unchanged)." >&2

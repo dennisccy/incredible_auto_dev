@@ -128,6 +128,15 @@ fi
 # so it can reference ensure_services_running and the QA_* env vars set above.
 export CHAIN_CLAUDE_PRE_RETRY_HOOK="ensure_services_running"
 
+# ── Host-safety: pinned + headless + confined QA browser (see browser-qa-phase)
+# The "qa" lane suffix keeps this lane off the browser-qa lane's profile lock —
+# the two can run concurrently in the post-dev fanout.
+ensure_qa_browser_env "qa"
+strip_display_for_headless_qa
+if [[ -f "$SCRIPT_DIR/host-guard/browser-confine.sh" ]]; then
+  HOST_GUARD_ROOT="$REPO_ROOT" bash "$SCRIPT_DIR/host-guard/browser-confine.sh" || true
+fi
+
 # ── Run QA agent ──────────────────────────────────────────────────────────
 cd "$REPO_ROOT"
 record_agent_invocation_start qa

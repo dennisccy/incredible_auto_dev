@@ -160,6 +160,18 @@ bqa_services_probe() {
   return 0
 }
 
+# bqa_browser_confine — put escaped QA browsers back inside the host-guard mask
+# before dispatching. UNCONDITIONAL, unlike the REL-14 services preflight above:
+# a browser that escaped confinement is a hardware-safety problem, not a QA
+# convenience, so it must not depend on CHAIN_BQA_PREFLIGHT being opted in.
+# No-ops when the project declares no host-guard.
+bqa_browser_confine() {
+  local bc; bc="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../host-guard/browser-confine.sh"
+  [[ -f "$bc" ]] || return 0
+  HOST_GUARD_ROOT="${HOST_GUARD_ROOT:-$REPO_ROOT}" bash "$bc" || true
+  return 0
+}
+
 # bqa_preflight — probe → one re-check via ensure_services_running (idempotent:
 # it returns immediately when services already answer) → probe again. Mirrors
 # the REL-5 rc-6 retry shape above. Returns 0 = the dispatch may proceed;

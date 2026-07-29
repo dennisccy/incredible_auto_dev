@@ -316,7 +316,15 @@ def sync_settings_local(*, dry_run: bool = False) -> int:
     """Emit the project's MCP trust + allow into .claude/settings.local.json — the
     project-LOCAL settings file — so the shared, subtree-tracked .claude/settings.json
     is NEVER altered by a project overlay (and can never carry one project's servers
-    upstream). Existing local settings are preserved. No servers ⇒ left untouched."""
+    upstream). Existing local settings are preserved. No servers ⇒ left untouched.
+
+    Deliberately does NOT pin the QA browser identity (CHROME_WS_PROFILE/PORT) here.
+    A settings `env` entry OVERRIDES the inherited process environment (measured), so
+    a value written here would clobber the per-lane profile that qa-phase.sh and
+    browser-qa-phase.sh export — collapsing two concurrently-running QA lanes
+    (run-phase.sh Branch-QA + Branch-UI) onto one shared browser. Pump-mode browsers
+    are covered by affinity instead: host-guard/browser-confine.sh confines every
+    browser under the profile root, pinned or not."""
     servers = T.merged_mcp_servers()
     if not servers:
         return 0

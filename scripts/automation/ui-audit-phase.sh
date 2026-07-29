@@ -61,6 +61,14 @@ echo "[ui-audit] Frontend phase detected — running full UI evolution audit..."
 _FRONTEND_PORT="${CHAIN_FRONTEND_PORT:-3000}"
 FRONTEND_URL="${CHAIN_FRONTEND_URL:-http://localhost:${_FRONTEND_PORT}}"
 
+# Host-safety: pinned + headless + confined QA browser (see browser-qa-phase.sh).
+# Shares the "qa" lane identity — this step runs sequentially with qa-phase.sh.
+ensure_qa_browser_env "qa"
+strip_display_for_headless_qa
+if [[ -f "$SCRIPT_DIR/host-guard/browser-confine.sh" ]]; then
+  HOST_GUARD_ROOT="$REPO_ROOT" bash "$SCRIPT_DIR/host-guard/browser-confine.sh" || true
+fi
+
 cd "$REPO_ROOT"
 record_agent_invocation_start qa   # exports CHAIN_CURRENT_AGENT — interactive dispatch backend maps this call to a subagent
 _agent_t0="$CHAIN_AGENT_START_EPOCH"

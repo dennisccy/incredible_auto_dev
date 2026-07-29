@@ -176,9 +176,9 @@ echo ""
 
 rc=0; out=$(run_doctor -- --list 2>&1) || rc=$?
 n=$(echo "$out" | grep -c '^[a-z0-9-]*$' || true)
-{ [[ $rc -eq 0 && $n -eq 14 ]]; } \
-  && assert "--list prints the 14 check keys" "pass" \
-  || assert "--list prints the 14 check keys (rc=$rc n=$n)" "fail"
+{ [[ $rc -eq 0 && $n -eq 17 ]]; } \
+  && assert "--list prints the 17 check keys" "pass" \
+  || assert "--list prints the 17 check keys (rc=$rc n=$n)" "fail"
 echo "$out" | grep -qx "tmp-health" && echo "$out" | grep -qx "chrome-exclusive" \
   && assert "--list includes the evidence-born checks" "pass" \
   || assert "--list includes the evidence-born checks" "fail"

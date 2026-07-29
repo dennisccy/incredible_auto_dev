@@ -16,7 +16,10 @@ First read `.claude/skills/goal-interactive-dispatch.md` and follow it exactly.
    exists with `HOST_GUARD_ENABLED=1`): run
    `scripts/automation/host-guard-adopt.sh --cli-root-of $$` — it confines THIS
    already-running CLI session (and everything it will spawn) to the declared
-   caps, in place; instant and idempotent when already confined. No special
+   caps, in place; instant and idempotent when already confined. It also
+   re-confines any framework QA Chrome and Chrome-MCP server that escaped a
+   previous session (the MCP reuses browsers it did not spawn, and detached
+   browsers outlive it) — no extra step needed. No special
    launch command is required. Only if it prints `FAILED`, tell the user to
    relaunch via `scripts/automation/host-guard-exec.sh claude` (the from-birth
    wrapper) — the engine's iteration gate re-verifies each iteration and would
