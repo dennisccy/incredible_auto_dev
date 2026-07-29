@@ -175,6 +175,22 @@ signal that says "do this now").
     incl. a canary-dispatch unbound goal-line crash now pinned end-to-end by
     test-goal-parallel-bqa scenario L). G8 fresh-session certification + the
     next real session's telemetry still owed before any item flips to DONE.
+    *G8 fresh-session certification 2026-07-29 (non-implementer): steps 1-5
+    verified green (run-evals 147/0; self-tests goal-gates OK incl. the REP-5
+    confirm-attribution case, goal_gate.py OK incl. the DEFERRED-BUDGET block,
+    demo_runner 22/0, merge_ui_test_results 8/0; suites depth-arbiter 33,
+    depth-cadence 23, iter-budget 33, replay-lane 59, replay-lane-full 24,
+    goal-parallel-bqa 103 incl. scenario L, goal-context-slice 26,
+    golden-autoderive 22, testplan-skip 30, ui-combined 18 — all 0 FAIL;
+    defaults 3600/trim + CHAIN_SKIP_TESTPLAN_IF_PRESENT/CHAIN_DEPTH_ARBITER
+    default-true with the legacy allowlist intact; the five trim consult sites
+    shed only showcase/replay-breadth/test-plan/ux-regression — never the
+    spine; DEFERRED-BUDGET spelling identical in all five sources + mirrors;
+    4a1ce4f leaves the evaluator dispatch prompt and run-judgment-evals.sh
+    untouched; rung-3 traced end-to-end — iter-N/budget-breached written after
+    the verdict gate, read by iter-N+1 under PRIOR_VERDICT=CONTINUE, SPEED-4
+    re-promotion suppressed). Items remain IN-PROGRESS pending the real-session
+    telemetry (PRE iteration-shape-20260729).*
 
 ---
 
