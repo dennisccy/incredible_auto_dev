@@ -228,6 +228,17 @@ goal_gate_confirm_achieved() {
   digest="$(python3 "$_GOAL_GATES_DIR/goal_gate.py" digest "$history" 2>/dev/null || echo '(digest unavailable)')"
 
   local _rc=0
+  # REP-5: attribute this dispatch in the per-agent telemetry economics — its
+  # ~5 min per achieving iteration was previously an unattributed wall-clock
+  # gap. Guarded (declare -F): --self-test and standalone sourcing run without
+  # telemetry.sh. The telemetry label is goal-evaluator-confirm; the dispatch
+  # env below keeps CHAIN_CURRENT_AGENT=goal-evaluator because pump permission
+  # resolution knows the evaluator's tool grants, not the telemetry label.
+  local _confirm_start=""
+  if declare -F record_agent_invocation_start >/dev/null 2>&1; then
+    record_agent_invocation_start "goal-evaluator-confirm"   # bare call: $(...) would lose CHAIN_AGENT_START_EPOCH to a subshell
+    _confirm_start="${CHAIN_AGENT_START_EPOCH:-}"
+  fi
   # The dispatch's own stdout must NOT leak into the caller's command
   # substitution — route it to a log file.
   CHAIN_MODEL_OVERRIDE="${strong_model}" \
@@ -264,6 +275,10 @@ or
 followed by a '## Reasoning' section (max ~15 lines; cite what you checked).
 STOP after writing the file." \
     >> "$iter_dir/confirm-dispatch.log" 2>&1 || _rc=$?
+
+  if declare -F record_agent_invocation_end >/dev/null 2>&1; then
+    record_agent_invocation_end "goal-evaluator-confirm" "$_confirm_start" "$_rc"
+  fi
 
   if [[ $_rc -ne 0 ]]; then
     echo "[goal-gates] confirm dispatch failed (rc=$_rc) — fail-closed (demote)." >&2
@@ -390,12 +405,24 @@ _goal_gates_self_test() {
     return 0
   }
 
+  # REP-5: the confirm dispatch must fire the guarded attribution hooks. The
+  # stubs log to a file because the seam runs inside $(...) subshells.
+  local REP5_LOG="$d/rep5.log"
+  record_agent_invocation_start() { echo "start $1" >> "$REP5_LOG"; CHAIN_AGENT_START_EPOCH=12345; }
+  record_agent_invocation_end()   { echo "end $1 t0=$2 rc=$3" >> "$REP5_LOG"; }
+
   local v
 
   # 1. All green + confirm yes → GOAL_ACHIEVED survives.
   STUB_CONFIRM=yes
   v="$(goal_gate_filter_verdict GOAL_ACHIEVED "$d/iter-3" "$EVALF" "$HIST_PASS" "$COH" true "$RES" "$d/session" "$d/goal.md" 2>/dev/null)"
   [[ "$v" == "GOAL_ACHIEVED" ]] && echo "  PASS goal-gates: clean GOAL_ACHIEVED survives" || { echo "  FAIL goal-gates: clean survive (got '$v')"; fails=1; }
+  if grep -q '^start goal-evaluator-confirm$' "$REP5_LOG" 2>/dev/null \
+     && grep -q '^end goal-evaluator-confirm t0=12345 rc=0$' "$REP5_LOG" 2>/dev/null; then
+    echo "  PASS goal-gates: confirm dispatch attributed (REP-5 start+end events)"
+  else
+    echo "  FAIL goal-gates: confirm dispatch attribution (REP-5) — got: $(cat "$REP5_LOG" 2>/dev/null | tr '\n' ';')"; fails=1
+  fi
 
   # 2. A failing journey demotes despite the evaluator's verdict.
   v="$(goal_gate_filter_verdict GOAL_ACHIEVED "$d/iter-3" "$EVALF" "$HIST_FAIL" "$COH" true "$RES" "$d/session" "$d/goal.md" 2>/dev/null)"
@@ -530,7 +557,7 @@ _goal_gates_self_test() {
     && echo "  PASS goal-gates: goal-gates.sh source is free of secret-shaped literals" \
     || { echo "  FAIL goal-gates: goal-gates.sh contains a scanner-tripping literal"; fails=1; }
 
-  unset -f claude_with_quota_retry
+  unset -f claude_with_quota_retry record_agent_invocation_start record_agent_invocation_end
   rm -rf "$d"
   if [[ $fails -eq 0 ]]; then echo "goal-gates self-test: OK"; else echo "goal-gates self-test: FAILED"; fi
   return $fails

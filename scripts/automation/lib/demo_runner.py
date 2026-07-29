@@ -461,6 +461,79 @@ def _t_launch_chromium_retries() -> None:
     assert _DeadChromium.calls == 2
 
 
+def _derive_demo_fixture() -> dict:
+    # Matches the demo-narrator contract: every step carries a "journey" key,
+    # "" on shared orientation steps (the untagged prefix).
+    return {
+        "schema_version": 1,
+        "phase_id": "goal-x-iter-9",
+        "name": "demo",
+        "default_timeout_ms": 9000,
+        "steps": [
+            {"n": 1, "journey": "", "action": {"type": "goto", "url": "/"}, "narration": "open the app",
+             "expect": {"text": "Home"}},
+            {"n": 2, "journey": "J-07", "action": {"type": "click", "target": {"text": "Filters"}},
+             "narration": "open filters"},
+            {"n": 3, "journey": "J-07", "action": {"type": "expect"}, "expect": {"text": "Filter panel"},
+             "timeout_ms": 4000},
+            {"n": 4, "journey": "J-09", "action": {"type": "click", "target": {"text": "Export"}},
+             "expect": {"text": "Exported"}},
+        ],
+    }
+
+
+def _t_derive_happy() -> None:
+    golden, reason = derive_golden_steps(_derive_demo_fixture(), "J-07")
+    assert golden is not None, reason
+    assert validate_script(golden) == [], golden
+    # prefix (untagged step 1) + the 2 tagged steps, renumbered 1..3
+    assert [s["n"] for s in golden["steps"]] == [1, 2, 3], golden["steps"]
+    assert all(s["journey"] == "J-07" for s in golden["steps"])
+    assert golden["steps"][0]["action"]["type"] == "goto"
+    # demo-only fields are stripped
+    assert all("narration" not in s for s in golden["steps"])
+    assert golden["steps"][2]["timeout_ms"] == 4000
+    assert golden["journey"] == "J-07" and golden["default_timeout_ms"] == 9000
+
+
+def _t_derive_rejects_untagged_journey() -> None:
+    golden, reason = derive_golden_steps(_derive_demo_fixture(), "J-99")
+    assert golden is None and "no steps tagged" in reason, (golden, reason)
+
+
+def _t_derive_rejects_no_expect() -> None:
+    demo = _derive_demo_fixture()
+    for s in demo["steps"]:
+        if s.get("journey") == "J-07":
+            s.pop("expect", None)
+    golden, reason = derive_golden_steps(demo, "J-07")
+    assert golden is None and "expect" in reason, (golden, reason)
+
+
+def _t_derive_rejects_no_goto_open() -> None:
+    demo = _derive_demo_fixture()
+    demo["steps"] = demo["steps"][1:]   # drop the untagged goto prefix
+    golden, reason = derive_golden_steps(demo, "J-07")
+    assert golden is None and "goto" in reason, (golden, reason)
+
+
+def _t_derive_rejects_invalid_demo() -> None:
+    golden, reason = derive_golden_steps({"schema_version": 1, "steps": []}, "J-07")
+    assert golden is None and "invalid" in reason, (golden, reason)
+    golden, reason = derive_golden_steps({"schema_version": 1, "not_yet": True}, "J-07")
+    assert golden is None, (golden, reason)
+
+
+def _t_derive_prefix_without_journey_key() -> None:
+    # Legacy/hand-written demos may omit the journey key entirely on setup
+    # steps — the prefix scan must treat that the same as journey:"".
+    demo = _derive_demo_fixture()
+    del demo["steps"][0]["journey"]
+    golden, reason = derive_golden_steps(demo, "J-07")
+    assert golden is not None, reason
+    assert golden["steps"][0]["action"]["type"] == "goto"
+
+
 _SELF_TEST_CHECKS = [
     _t_normalize_url_relative,
     _t_normalize_url_rewrites_localhost,
@@ -478,6 +551,12 @@ _SELF_TEST_CHECKS = [
     _t_regression_verdict_matrix,
     _t_regression_results_md,
     _t_launch_chromium_retries,
+    _t_derive_happy,
+    _t_derive_rejects_untagged_journey,
+    _t_derive_rejects_no_expect,
+    _t_derive_rejects_no_goto_open,
+    _t_derive_rejects_invalid_demo,
+    _t_derive_prefix_without_journey_key,
 ]
 
 
@@ -746,6 +825,93 @@ def run_lint(opts) -> int:
             print(f"{jid} invalid: marked not_yet")
         else:
             print(f"{jid} ok")
+    return 0
+
+
+def derive_golden_steps(demo: object, journey: str) -> "tuple[dict | None, str]":
+    """SPEED-21: derive a candidate golden replay script for `journey` from an
+    already-recorded demo script (same runner schema — verify ignores the
+    demo-only fields). Copy + filter + renumber: the untagged PREFIX steps
+    (shared setup before the first journey-tagged step) plus every step tagged
+    with this journey; each kept step keeps only n/journey/action/expect/
+    timeout_ms. Fail-closed — returns (None, reason) unless the demo
+    validates, >=1 step is tagged for the journey, the derived sequence opens
+    with a goto, and >=1 TAGGED step carries an expect (a golden with no
+    assertions would pass vacuously). A returned script always passes
+    validate_script."""
+    errors = validate_script(demo)
+    if errors:
+        return None, "demo script invalid: " + "; ".join(errors)[:160]
+    assert isinstance(demo, dict)  # validate_script guarantees this
+    if demo.get("not_yet"):
+        return None, "demo marked not_yet (no executable steps)"
+    steps = demo.get("steps") or []
+    # The demo-narrator contract has EVERY step carry a "journey" key, with ""
+    # for shared orientation/setup steps — so "untagged" means a FALSY journey
+    # value (missing, "", null), not a missing key.
+    prefix: list = []
+    for s in steps:
+        if isinstance(s, dict) and not s.get("journey"):
+            prefix.append(s)
+        else:
+            break
+    tagged = [s for s in steps if isinstance(s, dict) and s.get("journey") == journey]
+    if not tagged:
+        return None, "no steps tagged for this journey"
+    if not any(isinstance(s.get("expect"), dict) for s in tagged):
+        return None, "no tagged step carries an expect (nothing to assert)"
+    out_steps: list = []
+    for i, s in enumerate(prefix + tagged, 1):
+        ns: dict = {"n": i, "journey": journey, "action": s.get("action")}
+        if isinstance(s.get("expect"), dict):
+            ns["expect"] = s["expect"]
+        if s.get("timeout_ms") is not None:
+            ns["timeout_ms"] = s["timeout_ms"]
+        out_steps.append(ns)
+    first_action = out_steps[0].get("action") or {}
+    if not isinstance(first_action, dict) or first_action.get("type") != "goto":
+        return None, "derived sequence does not open with a goto"
+    golden = {
+        "schema_version": 1,
+        "journey": journey,
+        "name": str(demo.get("name") or journey),
+        "default_timeout_ms": demo.get("default_timeout_ms", 8000),
+        "steps": out_steps,
+    }
+    errors = validate_script(golden)
+    if errors:
+        return None, "derived script failed validation: " + "; ".join(errors)[:160]
+    return golden, ""
+
+
+def run_derive(opts) -> int:
+    """SPEED-21 CLI: write candidate goldens (`<J-XX>.json.candidate` in
+    --scripts-dir) derived from the --json demo for each --journeys id.
+    Prints one parseable line per journey: `<J-XX> derived <path>` or
+    `<J-XX> rejected: <reason>`. ALWAYS exits 0 — a rejected candidate is
+    never a gate; the shell caller (replay_lane_autoderive_goldens) runs a
+    REAL verify pass on every candidate before installing it."""
+    journeys = [j.strip() for j in (opts.journeys or "").split(",") if j.strip()]
+    if not opts.json or not opts.scripts_dir or not journeys:
+        sys.stderr.write("[demo_runner] derive mode needs --json, --scripts-dir and --journeys; nothing derived.\n")
+        return 0
+    try:
+        with open(opts.json, encoding="utf-8") as fh:
+            demo = json.load(fh)
+    except Exception as exc:  # noqa: BLE001
+        for jid in journeys:
+            print(f"{jid} rejected: demo JSON unreadable: {str(exc)[:100]}")
+        return 0
+    outdir = Path(opts.scripts_dir)
+    outdir.mkdir(parents=True, exist_ok=True)
+    for jid in journeys:
+        golden, reason = derive_golden_steps(demo, jid)
+        if golden is None:
+            print(f"{jid} rejected: {reason}")
+            continue
+        cand = outdir / f"{jid}.json.candidate"
+        cand.write_text(json.dumps(golden, indent=1) + "\n", encoding="utf-8")
+        print(f"{jid} derived {cand}")
     return 0
 
 
@@ -1052,7 +1218,7 @@ def main(argv: list[str]) -> int:
     import argparse
     p = argparse.ArgumentParser(prog="demo_runner.py", description="Deterministic browser demo executor.")
     p.add_argument("--json", default=None, help="path to the executable demo-script JSON (record/live)")
-    p.add_argument("--mode", default="record", choices=["live", "record", "session-live", "verify", "lint"])
+    p.add_argument("--mode", default="record", choices=["live", "record", "session-live", "verify", "lint", "derive"])
     p.add_argument("--base-url", default="http://localhost:3000")
     p.add_argument("--out-dir", default=None, help="screenshot dir, e.g. reports/demo/<id>")
     p.add_argument("--results", default=None, help="demo-results.md output path")
@@ -1075,6 +1241,9 @@ def main(argv: list[str]) -> int:
 
     if opts.mode == "lint":
         return run_lint(opts)   # pure validation — needs no browser/playwright
+
+    if opts.mode == "derive":
+        return run_derive(opts)  # pure transform (SPEED-21) — no browser/playwright
 
     if not _playwright_available():
         sys.stderr.write(_PLAYWRIGHT_HELP + "\n")

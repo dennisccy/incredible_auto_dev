@@ -515,6 +515,51 @@ project_template_slice() {
   return 0
 }
 
+# ── Executor goal slice (TOKEN-10) ───────────────────────────────────────────
+# goal_slice_for_exec <iter-name> <targets-csv> <out-path>
+# Builds the token-lean goal view for EXECUTING agents (developer,
+# browser-qa) with the same builder the planning prompts already use
+# (goal_gate.py goal-slice): vision + anti-goals + the named target journeys +
+# every failing journey VERBATIM; stable passing journeys digested to one
+# line. Sets two globals (bare call — do NOT $(...)-capture, the mode would
+# die in the subshell):
+#   GOAL_SLICE_EXEC_PATH — the file the dispatch prompt should name
+#   GOAL_SLICE_EXEC_MODE — sliced | full-hatch | full-fallback
+#     sliced        — build succeeded; path = <out-path>
+#     full-hatch    — CHAIN_DEV_FULL_GOAL=true restores today's behavior
+#     full-fallback — builder failed/empty output: loud stderr WARNING +
+#                     goal_slice_fallback telemetry; path = docs/goal.md
+# Never blocks, never returns non-zero, and never leaves a stale out-path in
+# play: <out-path> is used only when THIS call wrote it non-empty (rc 0).
+goal_slice_for_exec() {
+  local _gs_iter="$1" _gs_targets="$2" _gs_out="$3"
+  local _gs_goal="$REPO_ROOT/docs/goal.md"
+  GOAL_SLICE_EXEC_PATH="$_gs_goal"
+  GOAL_SLICE_EXEC_MODE=""
+  if [[ "${CHAIN_DEV_FULL_GOAL:-false}" == "true" ]]; then
+    GOAL_SLICE_EXEC_MODE="full-hatch"
+    return 0
+  fi
+  local _gs_sid="${_gs_iter#goal-}"; _gs_sid="${_gs_sid%-iter-*}"
+  local _gs_hist="$REPO_ROOT/runs/goal-session-${_gs_sid}/state/journey-history.json"
+  local _gs_rc=0
+  rm -f "$_gs_out" 2>/dev/null || true
+  mkdir -p "$(dirname "$_gs_out")" 2>/dev/null || true
+  python3 "$REPO_ROOT/scripts/automation/lib/goal_gate.py" goal-slice "$_gs_goal" \
+    --history "$_gs_hist" --targets "$_gs_targets" --out "$_gs_out" 2>/dev/null || _gs_rc=$?
+  if [[ $_gs_rc -eq 0 && -s "$_gs_out" ]]; then
+    GOAL_SLICE_EXEC_MODE="sliced"
+    GOAL_SLICE_EXEC_PATH="$_gs_out"
+    return 0
+  fi
+  GOAL_SLICE_EXEC_MODE="full-fallback"
+  echo "[goal-slice] WARNING: executor goal-slice build failed (rc=$_gs_rc, out: $_gs_out) — dispatching with the FULL goal file instead ($_gs_goal). Journeys stay covered; only the token saving is lost this dispatch." >&2
+  if declare -F record_telemetry_event >/dev/null 2>&1; then
+    record_telemetry_event "goal_slice_fallback" "$(printf '{"iter_name":"%s","rc":%d}' "$_gs_iter" "$_gs_rc")" || true
+  fi
+  return 0
+}
+
 # Dispatch the coherence-auditor agent (goal mode). ONE shared implementation
 # for both call sites so the prompt cannot drift: the parallel fork inside
 # goal-iter-lean.sh (runs concurrently with browser-qa — the audit needs only
@@ -878,14 +923,23 @@ escalate_model_off() {
   return 0
 }
 
-# ── Wall-clock iteration budget (SPEED-15, warn-first) ────────────────────────
-# CHAIN_ITER_TIME_BUDGET_SECONDS (default 0 = off; suggested operator value
-# 5400) + CHAIN_ITER_BUDGET_MODE (warn|trim, default warn). Checks run at step
+# ── Wall-clock iteration budget (SPEED-15, armed by default) ──────────────────
+# CHAIN_ITER_TIME_BUDGET_SECONDS (default 3600; 0 = off) +
+# CHAIN_ITER_BUDGET_MODE (warn|trim, default trim). Checks run at step
 # boundaries ONLY — never mid-agent. warn: the first exceeded check logs loudly
-# and emits one iter_budget telemetry event per process. trim (opt-in): callers
-# may ALSO consult iter_budget_exceeded to skip showcase-class steps; the trim
-# ladder never touches developer/reviewer/evaluator/gates/confirm. The start
-# epoch crosses the engine→executor process boundary via CHAIN_ITER_START_EPOCH.
+# and emits one iter_budget telemetry event per process. trim (the default):
+# callers ALSO consult iter_budget_exceeded/iter_budget_trim_active to shed
+# optional breadth in rung order — rung 1 defers demo recording + README
+# refresh to the background tail, rung 2 narrows the browser regression sweep
+# to targets + replay-FAIL re-confirms (cut journeys get DEFERRED-BUDGET rows
+# that block GOAL_ACHIEVED), rung 3 skips full-pipeline test-plan generation
+# (when the spec carries TC- lines) and the ux-regression-reviewer. The trim
+# ladder NEVER touches developer/reviewer/decomposer/evaluator, the QA loop,
+# audit, closure, deterministic gates, or the two-key confirm. The start epoch
+# crosses the engine→executor process boundary via CHAIN_ITER_START_EPOCH.
+# A breach also forces the NEXT iteration lean via the budget-breached marker
+# (SPEED-20 rung 3). Rollback: CHAIN_ITER_TIME_BUDGET_SECONDS=0 disarms
+# everything; CHAIN_ITER_BUDGET_MODE=warn keeps warnings only.
 
 iter_budget_init() {  # $1 = iteration start epoch (falls back to the exported one, then now)
   _ITER_BUDGET_T0="${1:-${CHAIN_ITER_START_EPOCH:-$(date +%s)}}"
@@ -894,7 +948,7 @@ iter_budget_init() {  # $1 = iteration start epoch (falls back to the exported o
 }
 
 iter_budget_exceeded() {
-  local budget="${CHAIN_ITER_TIME_BUDGET_SECONDS:-0}"
+  local budget="${CHAIN_ITER_TIME_BUDGET_SECONDS:-3600}"
   [[ "$budget" =~ ^[0-9]+$ && "$budget" -gt 0 && -n "${_ITER_BUDGET_T0:-}" ]] || return 1
   (( $(date +%s) - _ITER_BUDGET_T0 > budget ))
 }
@@ -904,19 +958,27 @@ iter_budget_check() {  # $1 = step label. Always returns 0 (a signal, never a ga
   local elapsed=$(( $(date +%s) - ${_ITER_BUDGET_T0:-$(date +%s)} ))
   if [[ -z "${_ITER_BUDGET_WARNED:-}" ]]; then
     _ITER_BUDGET_WARNED=1
-    echo "[iter-budget] This iteration has run ${elapsed}s — over the ${CHAIN_ITER_TIME_BUDGET_SECONDS:-0}s budget (checked at: ${1:-?}; mode: ${CHAIN_ITER_BUDGET_MODE:-warn})." >&2
+    echo "[iter-budget] This iteration has run ${elapsed}s — over the ${CHAIN_ITER_TIME_BUDGET_SECONDS:-3600}s budget (checked at: ${1:-?}; mode: ${CHAIN_ITER_BUDGET_MODE:-trim})." >&2
     if declare -F record_telemetry_event >/dev/null 2>&1; then
       record_telemetry_event "iter_budget" "$(printf '{"budget":%d,"elapsed":%d,"mode":"%s","at_step":"%s"}' \
-        "${CHAIN_ITER_TIME_BUDGET_SECONDS:-0}" "$elapsed" "${CHAIN_ITER_BUDGET_MODE:-warn}" "${1:-?}")" || true
+        "${CHAIN_ITER_TIME_BUDGET_SECONDS:-3600}" "$elapsed" "${CHAIN_ITER_BUDGET_MODE:-trim}" "${1:-?}")" || true
     fi
   fi
   return 0
 }
 
-# trim-mode consult: true only when the operator opted into trim AND the budget
-# is exceeded. Callers use it to skip showcase-class steps with a loud log.
+# trim-mode consult: true only when trim mode is active (the default) AND the
+# budget is exceeded. Callers use it to shed optional breadth with a loud log.
 iter_budget_trim_active() {
-  [[ "${CHAIN_ITER_BUDGET_MODE:-warn}" == "trim" ]] && iter_budget_exceeded
+  [[ "${CHAIN_ITER_BUDGET_MODE:-trim}" == "trim" ]] && iter_budget_exceeded
+}
+
+# Rung telemetry: every trim rung that actually sheds work records which rung
+# fired so analyze_telemetry can show what a breached iteration gave up.
+iter_budget_trim_event() {  # $1 = rung label (e.g. showcase-defer, replay-narrow)
+  if declare -F record_telemetry_event >/dev/null 2>&1; then
+    record_telemetry_event "iter_budget_trim" "$(printf '{"rung":"%s"}' "${1:-?}")" || true
+  fi
 }
 
 # ── Hardening cadence (SPEED-4) ───────────────────────────────────────────────
@@ -958,6 +1020,117 @@ goal_cadence_forces_full() {
   local k="${CHAIN_HARDENING_CADENCE:-6}"
   [[ "$k" =~ ^[0-9]+$ ]] || k=6
   (( k > 0 && current_iter > k && streak >= k ))
+}
+
+# ── Depth arbiter helpers (SPEED-20) ─────────────────────────────────────────
+# run-goal.sh's deterministic depth arbiter validates a spec-requested full
+# pass against independent machine signals instead of trusting the spec's own
+# 'Full trigger:' line (anti-pattern 25: an LLM asked to self-certify its own
+# exception will always find one). These two helpers supply the signals the
+# spec cannot forge: the recent-full window and the spec-content test.
+
+# goal_full_ran_in_window <session_dir> <current_iter>
+# True iff any of the last W-1 iterations (iter-(N-1) .. iter-(N-W+1); floor
+# iter-1 — the iter-0 baseline is never counted) dispatched full, i.e. granting
+# full NOW would exceed one full per W-iteration window. W =
+# CHAIN_FULL_CADENCE_CAP (default 4); 0 or 1 disables the cap (never true).
+# Reads the same idempotent depth-dispatched files as goal_lean_streak, so
+# resume re-entry cannot change the answer.
+goal_full_ran_in_window() {
+  local session_dir="$1" current_iter="$2"
+  local w="${CHAIN_FULL_CADENCE_CAP:-4}"
+  [[ "$w" =~ ^[0-9]+$ ]] || w=4
+  (( w >= 2 )) || return 1
+  local i lo=$(( current_iter - w + 1 ))
+  (( lo < 1 )) && lo=1
+  for (( i = current_iter - 1; i >= lo; i-- )); do
+    [[ "$(cat "$session_dir/iter-$i/depth-dispatched" 2>/dev/null || true)" == "full" ]] && return 0
+  done
+  return 1
+}
+
+# goal_new_fullstack_journey <spec_path> <journey_history>
+# True iff the spec plans a genuinely NEW full-stack journey: ≥1 concrete
+# Backend bullet AND ≥1 concrete Frontend bullet under IN SCOPE, a non-"none"
+# Data-contract additions section, and ≥1 Target journey that journey-history
+# has never recorded as meaningfully implemented (absent, or status outside
+# passing/already_passing/partial/regressed). Fail-closed: a missing/unreadable
+# file, no parseable targets, or any unmet condition returns 1 — the arbiter
+# then demotes to lean.
+goal_new_fullstack_journey() {
+  local spec="$1" history="$2"
+  python3 - "$spec" "$history" <<'PYEOF'
+import json, re, sys
+
+try:
+    spec = open(sys.argv[1], encoding="utf-8", errors="replace").read()
+    hist = json.load(open(sys.argv[2]))
+except Exception:
+    sys.exit(1)
+
+# All content checks are anchored INSIDE the "## IN SCOPE" block — a Backend
+# heading under OUT OF SCOPE or BACKGROUND must not count (fail-closed: no
+# IN SCOPE block at all -> not a new full-stack journey).
+m = re.search(r"^##\s+IN SCOPE\s*$(.*?)(?=^##\s|\Z)", spec, re.S | re.M | re.I)
+scope = m.group(1) if m else ""
+if not scope.strip():
+    sys.exit(1)
+
+
+def section(text, header_re, level):
+    """Body of the first header matching header_re, up to the next header of
+    the same or higher level."""
+    pat = re.compile(
+        r"^#{%d}\s+%s.*?$(.*?)(?=^#{1,%d}\s|\Z)" % (level, header_re, level),
+        re.S | re.M | re.I,
+    )
+    m = pat.search(text)
+    return m.group(1) if m else ""
+
+
+_NONE_RE = re.compile(r'^["\'`*]*(none|n/?a|nothing)\b', re.I)
+
+
+def has_bullet(body):
+    """A CONCRETE bullet: not a template placeholder, not a none/N.A. filler
+    (an LLM writing '- none' must not satisfy the backend/frontend test)."""
+    for line in body.splitlines():
+        bm = re.match(r"\s*-\s+(?:\[.\]\s+)?(\S.*)$", line)
+        if not bm:
+            continue
+        txt = bm.group(1).strip()
+        if txt.startswith("<") or _NONE_RE.match(txt):
+            continue
+        return True
+    return False
+
+
+if not has_bullet(section(scope, r"Backend", 3)):
+    sys.exit(1)
+if not has_bullet(section(scope, r"Frontend", 3)):
+    sys.exit(1)
+
+contract = section(scope, r"Data-contract additions", 3)
+lines = []
+for l in contract.splitlines():
+    l = re.sub(r"^\s*-\s+(\[.\]\s+)?", "", l.strip())  # strip bullet/checkbox markers
+    if l and not l.startswith("<!--") and not l.startswith("<"):
+        lines.append(l)
+if not lines or _NONE_RE.match(lines[0]):
+    sys.exit(1)
+
+m = re.search(r"Target journeys:\**\s*(.*)$", spec, re.M)
+ids = re.findall(r"J-\d+", m.group(1)) if m else []
+if not ids:
+    sys.exit(1)
+journeys = hist.get("journeys") or {}
+IMPLEMENTED = ("passing", "already_passing", "partial", "regressed")
+for jid in ids:
+    j = journeys.get(jid)
+    if not isinstance(j, dict) or j.get("status") not in IMPLEMENTED:
+        sys.exit(0)   # brand-new (or never-implemented) target found
+sys.exit(1)
+PYEOF
 }
 
 # ── Idempotent service bootstrap (shared by qa-phase.sh and browser-qa-phase.sh) ──

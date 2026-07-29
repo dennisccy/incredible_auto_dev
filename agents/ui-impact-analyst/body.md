@@ -95,6 +95,31 @@ No UI surfaces affected.
 
 Then STOP.
 
+## Combined mode
+
+When your dispatch prompt says `COMBINED MODE (SPEED-24)`, you additionally do the
+ui-test-designer's job in the SAME session — your just-written surface map is that
+role's entire input, so a second dispatch would only buy a fresh context, not a
+second opinion. After writing the two impact reports above:
+
+1. Follow the skills `.claude/skills/manual-ui-test-plan-generator.md` and
+   `.claude/skills/what-to-click-writer.md` (your prompt lists them in combined
+   mode).
+2. For each surface in your surface map, create test cases (smoke, happy-path,
+   validation, error, regression, UX). Each test case must have exact steps with
+   specific URLs, button text, field names, and expected outcomes.
+3. Write the 5-minute operator verification guide (max 10 steps).
+4. Write the two additional reports at the exact paths your prompt names:
+   - `reports/phase-{N}-ui-test-plan.md` (use template: `templates/ui-test-plan.md`)
+   - `reports/phase-{N}-what-to-click.md` (use template: `templates/what-to-click.md`)
+
+Every step must be independently executable — no vague steps like "test the form"
+or "verify it works". The artifact names, templates, and quality bar are IDENTICAL
+to the standalone ui-test-designer's; the phase-closure gate checks all four
+artifacts either way. If you cannot complete the combined deliverables, still
+finish the two impact reports — the pipeline detects the gap and dispatches the
+separate designer as a fallback.
+
 ## Rules
 
 - Do NOT edit source files

@@ -3,6 +3,6 @@ description: Post-dev UI impact analyst. Reads the phase diff and handoffs, maps
   UI surfaces, identifies what changed for users vs what is backend-only. Produces user-visible-changes
   and ui-surface-map reports. Runs after dev+review passes.
 model_tier: standard
-version: 1.0.0
-last_updated: '2026-05-04'
+version: 1.1.0
+last_updated: '2026-07-29'
 body: body.md

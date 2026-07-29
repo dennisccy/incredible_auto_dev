@@ -155,6 +155,26 @@ signal that says "do this now").
     *G8 fresh-session certification 2026-07-29 (non-implementer): steps 1-5
     verified green; items remain IN-PROGRESS pending the real-session
     telemetry (PRE speed-package-20260728).*
+12. **SPEED-20…24 + TOKEN-10 + REP-5** — the iteration-shape package (promoted
+    2026-07-29 by direct user request: tapeology still spent 2h+ per iteration
+    from iter-14 on AFTER the speed package; telemetry attributed the floor to
+    the pipeline's SHAPE — the depth governor routed around via self-certified
+    `Full trigger:` lines, no enforced ceiling, and recurring taxes). Root-cause
+    killers: SPEED-20 deterministic depth arbiter (evaluator recommendation
+    binding) + SPEED-15 completion (budget armed 3600s/trim — both
+    gate-default changes sanctioned by the user task, incl. the TOKEN-3 flip);
+    plus TOKEN-10 executor goal slices, SPEED-21/22/23 golden-first regression,
+    SPEED-24 combined UI dispatch, REP-5 confirm attribution. Grades the PRE
+    speed-package-20260728 entry as POST (full-ratio arm FAILED — 5/6, the
+    governor bypass; productive-time arm PASSED −37%) and registers PRE
+    `iteration-shape-20260729`. Judgment spot-run GREEN 2026-07-29 (the
+    DEFERRED-BUDGET evaluator-contract wording touches evaluator inputs):
+    goal-evaluator 6/6 verdict classes on claude-opus-5 @ max, incl. case-01
+    GOAL_ACHIEVED and case-06 pending-infra CONTINUE. Adversarially reviewed
+    same session (6-lens workflow, 34 raw → 11 confirmed findings, all fixed —
+    incl. a canary-dispatch unbound goal-line crash now pinned end-to-end by
+    test-goal-parallel-bqa scenario L). G8 fresh-session certification + the
+    next real session's telemetry still owed before any item flips to DONE.
 
 ---
 
@@ -1162,6 +1182,12 @@ benchmark (or a real session's telemetry) before AND after (G8).
 - **Rollback:** `CHAIN_DEPTH_ALLOWLIST=false`; `CHAIN_HARDENING_CADENCE=4`.
 - **Stop-and-ask:** a demoted-full iteration producing an ESCALATE in the first
   real session — report before tuning anything.
+- **SUPERSEDED as the default (2026-07-29):** the desk session proved the
+  allowlist's `Full trigger:` arm is self-certifying — the decomposer wrote a
+  qualifying line into every spec and full ran 5-of-6 (anti-pattern 25).
+  SPEED-20's deterministic arbiter is now the default path; this allowlist
+  survives verbatim as the arbiter's PRIOR_DEPTH=full rung and as the
+  `CHAIN_DEPTH_ARBITER=false` escape hatch.
 
 ### SPEED-11 · Lean replay-fork default flip (off→replay)
 - **Priority:** P1 · **Effort:** S · **Risk:** LOW-MED · **Status:** IN-PROGRESS —
@@ -1236,22 +1262,39 @@ benchmark (or a real session's telemetry) before AND after (G8).
   its escape is the pre-existing `CHAIN_README_EVERY_ITER=true`).
 - **Stop-and-ask:** none.
 
-### SPEED-15 · Wall-clock iteration budget (warn-first)
-- **Priority:** P2 · **Effort:** M (slice a landed; slice b TODO) · **Risk:** LOW
-  (warn) / MED (trim) · **Status:** IN-PROGRESS — slice (a) implemented
-  2026-07-28: knobs `CHAIN_ITER_TIME_BUDGET_SECONDS` (default 0=off; suggest
-  5400) + `CHAIN_ITER_BUDGET_MODE` (warn|trim, default warn), step-boundary
-  checks (never mid-agent), one loud warn + `iter_budget` telemetry, trim ladder
-  for showcase-class steps only (defer demo+readme; summarizer kept; spine and
-  gates NEVER trimmed — grep-pinned by the test).
-- **Slice (b) TODO:** trim-mode browser-set narrowing — drop only the no-golden
-  regression re-drives with mandatory `DEFERRED-BUDGET` result rows + the
-  one-line evaluator contract ("a DEFERRED-BUDGET row keeps prior status;
-  schedule next iteration", pending_infra pattern). Requires one full warn-mode
-  session of telemetry FIRST (G8) — do not build trim-b before that exists.
-- **Verify:** `bash tests/automation/test-iter-budget.sh` (17 cases).
-- **Rollback:** default off — unset the env.
-- **Stop-and-ask:** before enabling trim as any default.
+### SPEED-15 · Wall-clock iteration budget (armed by default: 3600s / trim)
+- **Priority:** P0 (promoted from P2 by the desk 2h-floor evidence) ·
+  **Effort:** M · **Risk:** MED · **Status:** IN-PROGRESS — slice (a) implemented
+  2026-07-28 (warn-first); slice (b) + the default flip implemented 2026-07-29
+  (iteration-shape package); G8 certification pending.
+- **Change spec (landed 07-29):** **gate-default change, sanctioned by the
+  user's 2026-07-29 iteration-shape task (maintenance-protocol §1); Dennis
+  picked 3600s/trim explicitly.** Defaults `CHAIN_ITER_TIME_BUDGET_SECONDS`
+  0→3600 and `CHAIN_ITER_BUDGET_MODE` warn→trim — the slice-(b) precondition
+  ("one warn-mode session of telemetry first") is satisfied by the desk
+  session's iters 15-18 (118-151 min productive, zero quota pauses). Trim
+  ladder, in rung order, each with `iter_budget_trim{rung}` telemetry:
+  rung 1 defer demo+README to the tail (existed); rung 2 browser-set narrowing —
+  `replay_lane_deferred_budget_set` defers only the no-golden regression
+  journeys (targets + replay-FAIL re-confirms NEVER cut), post-merge
+  `DEFERRED-BUDGET` rows keep prior status per the evaluator contract
+  (goal-evaluator body + methodology A), and `goal_gate.py results` blocks
+  GOAL_ACHIEVED while any row is deferred; rung 3a skip test-plan generation
+  when the spec carries TC- lines or a fresh plan exists; rung 3b skip
+  ux-regression-reviewer with a SKIPPED (never FAIL) stub. `run-phase.sh` +
+  `browser-qa-phase.sh` join the engine clock via `CHAIN_ITER_START_EPOCH`
+  (standalone phase mode stays inert). Never-trim list grep-pinned:
+  developer, reviewer, decomposer, evaluator, QA loop, audit, closure,
+  deterministic gates, two-key confirm. A breach also forces the NEXT
+  iteration lean via the `budget-breached` marker (SPEED-20 rung 3).
+- **Verify:** `bash tests/automation/test-iter-budget.sh` (33 cases) ·
+  `test-replay-lane.sh` (rung-2 cases) · `test-testplan-skip.sh` (rung-3a) ·
+  `goal_gate.py self-test` (DEFERRED row blocks).
+- **Rollback:** `CHAIN_ITER_TIME_BUDGET_SECONDS=0` disarms everything;
+  `CHAIN_ITER_BUDGET_MODE=warn` keeps warnings only.
+- **Stop-and-ask:** a DEFERRED-BUDGET journey turning out to be a REAL
+  regression discovered late — bring the iteration, don't widen never-trim
+  silently.
 
 ### SPEED-16 · Browser-qa turn diet
 - **Priority:** P0 · **Effort:** S · **Risk:** LOW · **Status:** IN-PROGRESS —
@@ -1325,6 +1368,124 @@ benchmark (or a real session's telemetry) before AND after (G8).
 - **Verify:** auditor judgment goldens 4/4 (case-03 MUST still FAIL) · run-evals.
 - **Rollback:** revert body + version (single hunk).
 - **Stop-and-ask:** any auditor golden verdict-class flip ⇒ revert immediately.
+
+### SPEED-20 · Deterministic depth arbiter — evaluator recommendation binding by default
+- **Priority:** P0 · **Effort:** M · **Risk:** MED · **Status:** IN-PROGRESS —
+  implemented 2026-07-29 (iteration-shape package); G8 certification pending.
+- **Problem:** SPEED-10's allowlist trusted the spec's own `Full trigger:` line
+  and the decomposer learned to write a trivially-true one (trigger 2 "adds a
+  field to persisted record") into EVERY spec — desk iters 13-18 ran full 5 of
+  6 against a PRE-registered target of ≤1-in-6, twice overriding an explicit
+  evaluator `next_depth: evidence` recommendation (anti-pattern 25).
+- **Change spec (landed):** engine ladder (`CHAIN_DEPTH_ARBITER`, default on,
+  iter>0) replaces the allowlist for spec-requested fulls, precedence:
+  prior ESCALATE/REGRESSION → full; prior COHERENCE-FAIL → full; prev-iteration
+  `budget-breached` marker + CONTINUE → LEAN (SPEED-4 re-promotion suppressed
+  that pass); cadence-due → full; full ran inside the
+  `CHAIN_FULL_CADENCE_CAP` (default 4) window → LEAN (`full-cap`); evaluator
+  recommended lean/evidence → full ONLY on `Full trigger:` line AND
+  `goal_new_fullstack_journey` (backend+frontend bullets, real Data-contract
+  additions, ≥1 never-implemented target; fail-closed python) else LEAN
+  (`evaluator-requested-*`); evaluator recommended full → legacy allowlist.
+  Grants/demotions telemetered (`depth_full_granted`/`depth_demoted`).
+  Decomposer trigger 2 tightened to Data-model MIGRATION (purely additive is
+  explicitly NOT the trigger); binding-recommendation language in body,
+  self-check 4, and the engine prompt line. New helpers
+  `goal_full_ran_in_window` + `goal_new_fullstack_journey` in `lib/common.sh`.
+- **Verify:** `bash tests/automation/test-depth-arbiter.sh` (29 cases) ·
+  `test-depth-cadence.sh` still green · run-evals.
+- **Files:** `run-goal.sh`, `lib/common.sh`, `agents/goal-decomposer/*`, tests.
+- **Rollback:** `CHAIN_DEPTH_ARBITER=false` (legacy SPEED-10 allowlist verbatim);
+  `CHAIN_FULL_CADENCE_CAP=0` removes just the window cap.
+- **Stop-and-ask:** a demoted full producing an ESCALATE, or the full ratio
+  staying >1-in-4 over the next 6 real iterations (the PRE entry grades it).
+
+### SPEED-21 · Golden auto-derivation from the verified demo
+- **Priority:** P1 · **Effort:** M · **Risk:** LOW-MED · **Status:** IN-PROGRESS —
+  implemented 2026-07-29 (iteration-shape package); G8 certification pending.
+- **Problem:** goldens depend on the browser-qa agent's best-effort authoring —
+  desk J-06 rode the slow LLM lane for 8 straight iterations because its golden
+  never got written; goldens and demo scripts are the SAME runner format.
+- **Change spec (landed):** `demo_runner.py --mode derive` (pure transform,
+  fail-closed: demo must validate, ≥1 tagged step, derived sequence opens with
+  goto, ≥1 tagged expect; writes `<J>.json.candidate`, always rc 0) +
+  `replay_lane_autoderive_goldens` (gate `CHAIN_GOLDEN_AUTODERIVE`, default on;
+  want = PASS-without-golden ∪ PASS∩`goldens-regen-pending`, cap
+  `CHAIN_GOLDEN_AUTODERIVE_MAX`=3): each candidate gets a REAL verify pass in a
+  throwaway scripts-dir against the live frontend — rc 0 → atomic install +
+  `golden_autoderived`; rc 5 → discard (`golden_autoderive_rejected`); rc 6 →
+  discard the batch. Hooked in `demo-phase.sh` after a GREEN record run of a
+  goal iteration (services still up; both depths share the hook).
+- **Verify:** `python3 scripts/automation/lib/demo_runner.py self-test`
+  (`_t_derive_*`) · `bash tests/automation/test-golden-autoderive.sh` · run-evals.
+- **Rollback:** `CHAIN_GOLDEN_AUTODERIVE=false`.
+- **Stop-and-ask:** an auto-derived golden producing a verdict-class flip a
+  hand-written golden would not have (bring the JSON pair).
+
+### SPEED-22 · Mass-false-FAIL breaker — canary re-check before re-confirming the world
+- **Priority:** P1 · **Effort:** M · **Risk:** MED · **Status:** IN-PROGRESS —
+  implemented 2026-07-29 (iteration-shape package); G8 certification pending.
+- **Problem:** desk iter-14's replay lane false-FAILed 8/9 journeys (selector
+  drift after a UI change) and the LLM lane spent ~28 min re-confirming every
+  one individually.
+- **Change spec (landed):** in the shared lane, a >2-FAIL majority
+  (2·n_fail > n_ran; 8/9 triggers, 2/9 and 3/6 do not) arms the breaker
+  (`CHAIN_REPLAY_MASS_FAIL_BREAKER`, default on) — ONLY when
+  `REPLAY_LANE_CANARY_CAPABLE=1` (set by goal-iter-lean.sh; the full pipeline
+  is byte-identical). The lean lane dispatches the 2 lowest-ID FAILs as
+  canaries first: both green → `merge_ui_test_results.py void` rewrites every
+  listed FAIL row to SKIP + voided note, recomputes the headline, appends a
+  dated loud footer; voided journeys queue in `goldens-regen-pending`
+  (SPEED-21 re-derives them verified-green); `REPLAY_FAILED` cleared;
+  `replay_mass_fail_voided`. Any canary FAIL or unusable canary file →
+  conservative: today's re-confirm path for the remaining set +
+  `replay_mass_fail_confirmed`. The canary results file rides the merge as a
+  middle input either way; breaker state crosses the SPEED-2 fork via
+  `_bqa_state_save`.
+- **Verify:** `python3 scripts/automation/lib/merge_ui_test_results.py self-test`
+  (void cases) · `bash tests/automation/test-replay-lane.sh` (cases 14-16) ·
+  `test-goal-parallel-bqa.sh`.
+- **Rollback:** `CHAIN_REPLAY_MASS_FAIL_BREAKER=false`.
+- **Stop-and-ask:** a voided FAIL that was REAL (a canary passed while a
+  sibling journey had genuinely regressed) — bring the evidence, do not widen
+  the canary count silently.
+
+### SPEED-23 · Bounded golden-coverage nudge (one required golden per iteration)
+- **Priority:** P2 · **Effort:** S · **Risk:** LOW · **Status:** IN-PROGRESS —
+  implemented 2026-07-29 (iteration-shape package); G8 certification pending.
+- **Problem:** golden authoring is best-effort by design, so a journey can ride
+  the slow LLM lane indefinitely (J-06: 8 iterations) — nothing ever escalates
+  one specific golden to "required".
+- **Change spec (landed):** `replay_lane_golden_coverage` now persists the gap
+  list to `state/golden-gaps`; `replay_lane_golden_nudge_pick` (gate
+  `CHAIN_GOLDEN_NUDGE`, default on) picks ONE gap∩LLM-set journey per
+  iteration — min nudge-count rotation persisted in `state/golden-nudge.json` —
+  and both browser-qa prompts (lean + full) carry it as an explicit REQUIRED
+  DELIVERABLE line; `golden_nudge` telemetry.
+- **Verify:** `bash tests/automation/test-golden-autoderive.sh` (cases 7-9).
+- **Rollback:** `CHAIN_GOLDEN_NUDGE=false`.
+- **Stop-and-ask:** none (one journey per dispatch is the bound).
+
+### SPEED-24 · Combined UI dispatch — ui-impact + ui-test-design in one agent call
+- **Priority:** P1 · **Effort:** M · **Risk:** MED · **Status:** IN-PROGRESS —
+  implemented 2026-07-29 (iteration-shape package); G8 certification pending.
+- **Problem:** the designer's ONLY inputs are exactly the analyst's outputs —
+  a second sequential dispatch buys a fresh context (and ~13-17 min per full),
+  not a second opinion.
+- **Change spec (landed):** goal-mode full iterations only (gate
+  `CHAIN_UI_COMBINED`, default on): Branch-A dispatches ui-impact with
+  `CHAIN_UI_COMBINED_DISPATCH=1` — the analyst's new `## Combined mode` section
+  writes all FOUR artifacts (same names/templates/skills); the phase script's
+  failure stubs still cover only the two impact artifacts, so combined
+  under-delivery (plan or what-to-click missing/empty) falls back LOUDLY to the
+  separate ui-test-design dispatch (browser-qa hard-errors without a plan).
+  ui-test-designer agent untouched (phase mode + fallback); closure gate
+  unchanged (all four names still checked) = the quality net.
+- **Verify:** `bash tests/automation/test-ui-combined.sh` (18 cases: combined
+  skips designer / under-delivery fallback / knob-off / plain phase unchanged).
+- **Rollback:** `CHAIN_UI_COMBINED=false`.
+- **Stop-and-ask:** closure-gate FAILs on combined-authored plan/click quality
+  that the standalone designer did not produce ⇒ report before tuning prompts.
 
 ### TOKEN-1 · Per-agent project-template slicing
 - **Priority:** P1 · **Effort:** M · **Risk:** LOW · **Status:** DONE 2026-07-14 —
@@ -1461,34 +1622,41 @@ benchmark (or a real session's telemetry) before AND after (G8).
 - **Trigger:** decomposer cost is a top-3 line in per-agent telemetry.
 
 ### TOKEN-3 · Skip test-plan generation when the spec already lists tests
-- **Priority:** P1 · **Effort:** S · **Risk:** LOW · **Status:** IN-PROGRESS
-  (mechanics landed + sandbox-proven 2026-07-16; ships **default `false`** per G4 —
-  the default flip to `true` is the real finish line and awaits **one observed clean
-  full-mode phase with the skip active**, riding the same wait as TOKEN-8's live DoD:
-  the next natural full-depth iteration/phase) *(absorbed: README Token-Opt Tier-2)*
+- **Priority:** P1 · **Effort:** S · **Risk:** LOW · **Status:** IN-PROGRESS —
+  mechanics landed + sandbox-proven 2026-07-16; **default flipped `true`
+  2026-07-29** (iteration-shape package; gate-default change sanctioned by the
+  user's task per maintenance-protocol §1 — the pre-registered "one observed
+  clean full-mode phase" evidence is the desk session's clean full iterations
+  15-18). A SECOND arm landed with the flip: an existing generated plan that is
+  non-empty, has ≥3 `TC-` lines, and is NEWER than the spec also skips
+  (per-iteration filenames make cross-iteration staleness structurally
+  impossible); the log names which arm matched. G8 certification pending.
+  *(absorbed: README Token-Opt Tier-2)*
 - **Problem:** full-mode Step 2 generates a functional test plan even when the phase
   spec already contains explicit test scenarios — a wasted dispatch.
-- **Current state (post-mechanics):** `run-phase.sh` Step 2 gates the generator
-  dispatch behind `CHAIN_SKIP_TESTPLAN_IF_PRESENT` (default `false` = today's
-  always-generate behavior; `true` + heuristic match → dispatch skipped with ONE loud
-  log line naming the matched heuristic, checkpoint still advances to
-  `test_plan_generated`). Heuristic `_spec_lists_tests_reason()`: word-bounded
-  `## Test`-titled section (`## Tests`, `## Test Scenarios`, `## Test Plan` —
-  deliberately NOT the boilerplate `## TESTING REQUIREMENTS` heading, which
-  `templates/phase-spec.md` ships in every spec while its comment says the generator
-  is still expected to run) OR ≥3 `TC-` test-case lines (the decomposer TC- scenario
-  contract, REL-9 — a spec meeting that contract auto-earns the skip once the knob
-  flips).
+- **Current state (post-flip, 2026-07-29):** `run-phase.sh` Step 2 gates the
+  generator dispatch behind `CHAIN_SKIP_TESTPLAN_IF_PRESENT`, **default `true`**
+  (`false` = the rollback to always-generate; a match → dispatch skipped with ONE
+  loud log line naming the matched arm, checkpoint still advances to
+  `test_plan_generated`). Two arms: (1) heuristic `_spec_lists_tests_reason()` —
+  word-bounded `## Test`-titled section (`## Tests`, `## Test Scenarios`,
+  `## Test Plan` — deliberately NOT the boilerplate `## TESTING REQUIREMENTS`
+  heading, which `templates/phase-spec.md` ships in every spec while its comment
+  says the generator is still expected to run) OR ≥3 `TC-` test-case lines (the
+  decomposer TC- scenario contract, REL-9); (2) an existing generated plan that
+  is non-empty, has ≥3 `TC-` lines, and is NEWER than the spec.
 - **Change spec:** deterministic heuristic (spec contains a `## Test` section or ≥3
-  `TC-` lines) → skip generation and note the skip in the run log; NEVER skip silently.
-  Knob `CHAIN_SKIP_TESTPLAN_IF_PRESENT` default `true` after one observed clean phase.
+  `TC-` lines, or a fresh generated plan exists) → skip generation and note the skip
+  in the run log; NEVER skip silently. ✅ shipped, including the default flip.
 - **DoD:** sandbox phase with tests-in-spec skips with a logged reason; phase without
-  them generates as today; evals green. ✅ *Sandbox half met 2026-07-16:*
-  `tests/automation/test-testplan-skip.sh` (17 assertions; full stubbed run-phase.sh
-  pipeline runs: heading-skip + TC-skip with logged reasons and zero generator
-  dispatches on the canary, plain spec generates as today, knob-off default generates,
-  `## TESTING REQUIREMENTS` boilerplate does NOT suppress). *Default flip: pending the
-  observed clean phase above.*
+  them generates as today; evals green. ✅ *Sandbox half met 2026-07-16, extended
+  2026-07-29:* `tests/automation/test-testplan-skip.sh` (30 assertions; full stubbed
+  run-phase.sh pipeline runs: heading-skip + TC-skip with logged reasons and zero
+  generator dispatches on the canary, plain spec generates as today, knob unset
+  now SKIPS (the flip) while knob=false generates (the rollback), fresh-plan arm
+  skips while a stale plan generates, `## TESTING REQUIREMENTS` boilerplate does
+  NOT suppress). ✅ *Default flip landed 2026-07-29* (iteration-shape package;
+  evidence = the desk session's clean full iterations 15-18).
   *Coupling note (2026-07-16):* REL-9 landed — the decomposer template now
   CONTRACTS ≥1 TC- scenario line per DoD checkbox (≥3 in any real spec), so
   specs meeting the TC- heuristic become the norm rather than the exception;
@@ -1873,6 +2041,34 @@ benchmark (or a real session's telemetry) before AND after (G8).
 - **Rollback:** one-line tier revert per agent (TOKEN-2's watch-item pattern).
 - **Stop-and-ask:** haiku demo JSON failing lint more than occasionally, or ONE
   README AUTO-block corruption of hand-written prose ⇒ revert that agent.
+
+### TOKEN-10 · Executor context diet — developer + browser-qa get the goal slice
+- **Priority:** P1 · **Effort:** M · **Risk:** MED · **Status:** IN-PROGRESS —
+  implemented 2026-07-29 (iteration-shape package; PROMOTED from
+  CAND-DEV-CONTEXT sketch (a) with the desk evidence attached: developer wall
+  grew 31→77 min while feeding the full 97KB/1,150-line goal.md that the
+  proposer keeps extending); G8 certification pending.
+- **Change spec (landed):** `goal_slice_for_exec` in `lib/common.sh` wraps the
+  EXISTING `goal_gate.py goal-slice` builder (unmodified) for executing agents:
+  vision + anti-goals + target/failing journeys verbatim, stable passing
+  journeys digested; sets `GOAL_SLICE_EXEC_PATH`/`GOAL_SLICE_EXEC_MODE`
+  (sliced|full-hatch|full-fallback), loud WARNING + `goal_slice_fallback`
+  telemetry on any builder failure (never blocks, never stale — the out-path
+  is used only on a fresh rc-0 non-empty build). Lean developer slices over
+  targets; lean browser-qa over targets ∪ its LLM set (every journey the LLM
+  executes stays verbatim); full-depth developer via `dev-phase.sh`'s new
+  goal-context line; full browser-qa over targets ∪ `_llm_regr_set`. Agent
+  bodies defer to "the goal file named in your dispatch prompt".
+- **Honest effect:** slice is O(targets+failing) vs goal.md O(all journeys) —
+  ~55-70% of goal-context bytes cut now, and the growth term stops growing;
+  wall saving is mostly indirect (fewer tokens to re-read per turn).
+- **Verify:** `bash tests/automation/test-goal-context-slice.sh` (26 cases:
+  slice content verbatim/digested, hatch, loud fallback, full-pipeline wiring).
+- **Rollback:** `CHAIN_DEV_FULL_GOAL=true` restores the full goal file at every
+  executor site.
+- **Stop-and-ask:** a developer building against a digested journey it should
+  have read (the slice prompt names the full file as the escape) — bring the
+  iteration before widening the slice.
 
 ---
 
@@ -3101,6 +3297,23 @@ territory).
 - **Rollback:** revert three files + version.
 - **Stop-and-ask:** none.
 
+### REP-5 · Attribute the two-key CONFIRM_ACHIEVED dispatch
+- **Priority:** P2 · **Effort:** S · **Risk:** LOW · **Status:** IN-PROGRESS —
+  implemented 2026-07-29 (iteration-shape package); G8 certification pending.
+- **Problem:** the two-key confirm dispatch (`lib/goal-gates.sh`) ran outside
+  the per-agent telemetry — ~5 min per achieving iteration rendered as
+  unattributed glue (desk: the evaluator bucket carried an invisible second
+  dispatch).
+- **Change spec (landed):** the dispatch is wrapped in guarded (`declare -F`)
+  `record_agent_invocation_start/end` under the name `goal-evaluator-confirm`;
+  the dispatch env keeps `CHAIN_CURRENT_AGENT=goal-evaluator` (pump permission
+  resolution knows the evaluator's grants, not the telemetry label). Lands in
+  the open iteration bucket — no analyzer change. Self-test stubs assert both
+  events; `unset -f` at cleanup.
+- **Verify:** `bash scripts/automation/lib/goal-gates.sh --self-test`.
+- **Rollback:** revert (measurement only; no behavior change).
+- **Stop-and-ask:** none.
+
 ---
 
 ## 14. P1 — Documentation & guides
@@ -3439,7 +3652,11 @@ but appreciated.
   real-session telemetry gate that parked SPEED-3's flip applies (the benchmark
   fixture failed to price the overlap three times).
 
-### CAND-DEV-CONTEXT · Developer dispatch context slims as sessions grow (staged — do not start)
+### CAND-DEV-CONTEXT · Developer dispatch context slims as sessions grow (PROMOTED 2026-07-29)
+- *(Sketch (a) — sliced goal view for the executor dispatches — was PROMOTED to
+  **TOKEN-10** and implemented 2026-07-29 with the desk evidence attached.
+  Sketches (b) scoped file digest and (c) read-vs-build time split remain
+  staged here, unchanged.)*
 - *(Staged 2026-07-17 from tapeology `fast_wall` forensics: developer run time grew
   monotonically 31 → 77 min across 6 iterations — the #1 wall-clock sink in every
   single iteration, 6.5h total.)*

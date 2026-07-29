@@ -336,6 +336,12 @@ marker_field() {  # marker_field <iter-dir> <step> <field> — from a .steps mar
 grep -q 'CHAIN_LEAN_PARALLEL_BROWSER_QA:-replay' "$ENGINE_ROOT/scripts/automation/goal-iter-lean.sh" \
   && assert "A: default resolves to replay (SPEED-11 flip)" "pass" \
   || assert "A: default resolves to replay (SPEED-11 flip)" "fail"
+# SPEED-22: the breaker's outward state must survive the SPEED-2 fork — the
+# serializer ships the two new globals alongside REPLAY_FAILED.
+grep -q "REPLAY_MASS_FAIL=%q" "$ENGINE_ROOT/scripts/automation/goal-iter-lean.sh" \
+  && grep -q "REPLAY_CANARIES=%q" "$ENGINE_ROOT/scripts/automation/goal-iter-lean.sh" \
+  && assert "A: SPEED-22 breaker state fields ride _bqa_state_save across the fork" "pass" \
+  || assert "A: SPEED-22 breaker state fields ride _bqa_state_save across the fork" "fail"
 make_sandbox A
 new_capture A
 start_dummies
@@ -359,6 +365,11 @@ grep -q "Forking browser-qa service boot" "$WORK/lean-A.log" \
 # 2026-07-16: iter-1/review-packet.md added — the TOKEN-7 pre-baked review
 # packet is built on the sequential path too (before the fork spawn point),
 # so it belongs to the expected tree in every mode.
+# 2026-07-29: iter-1/goal-slice-exec.md + goal-slice-bqa.md added — the
+# TOKEN-10 executor goal slices are built on every path (this sandbox has no
+# journey-history, so the builder fail-safes to the full goal text, but the
+# slice FILES still land). state/golden-gaps added — SPEED-23 persists the
+# golden-coverage gap (J-02 passes via the LLM lane with no golden here).
 EXPECTED_TREE="./docs/goal.md
 ./docs/handoffs/${ITER}-dev.md
 ./docs/phases/${ITER}.md
@@ -369,8 +380,11 @@ EXPECTED_TREE="./docs/goal.md
 ./runs/goal-session-pbtest/iter-1/.steps/browser-qa.done
 ./runs/goal-session-pbtest/iter-1/.steps/developer.done
 ./runs/goal-session-pbtest/iter-1/.steps/review-1.done
+./runs/goal-session-pbtest/iter-1/goal-slice-bqa.md
+./runs/goal-session-pbtest/iter-1/goal-slice-exec.md
 ./runs/goal-session-pbtest/iter-1/review-packet.md
 ./runs/goal-session-pbtest/journey-scripts/J-01.json
+./runs/goal-session-pbtest/state/golden-gaps
 ./runs/goal-session-pbtest/telemetry.jsonl
 ./src/app.py"
 if [[ "$(artifact_tree)" == "$EXPECTED_TREE" ]]; then
@@ -844,6 +858,67 @@ grep -q '"event":"replay_lane_skipped_infra"' "$GOAL_SESSION_DIR/telemetry.jsonl
   && assert "K: replay_lane_skipped_infra telemetry event recorded" "pass" \
   || assert "K: replay_lane_skipped_infra telemetry event recorded" "fail"
 unset STUB_REPLAY_RC_SEQ STUB_REPLAY_COUNT_FILE
+
+# ══ Scenario L: SPEED-22 mass-false-FAIL breaker END-TO-END (sequential) ═════
+# 4 golden-backed required journeys ALL replay-FAIL (drift shape) → the
+# breaker arms, dispatches the 2 lowest-ID canaries FIRST (regression pin:
+# that canary prompt MUST name a goal file — it decides the void), the stub
+# canaries pass → every replay FAIL is VOIDED (SKIP rows + dated footer,
+# goldens queued for regen), the main dispatch shrinks to the target only,
+# and the canary PASS rows ride the merge as the middle input.
+make_sandbox L
+cat > "$SBX/docs/phases/$ITER.md" <<'EOF'
+# Iteration spec
+## Goal Mode Metadata
+- **Mode:** next
+- **Depth:** lean
+- **Target journeys:** J-02
+- **Required-still-passing journeys:** J-01, J-03, J-04, J-05
+## IN SCOPE
+- add an item (mass-fail breaker wiring test)
+EOF
+for j in J-01 J-03 J-04 J-05; do
+  echo '{"journey":"'"$j"'","steps":[]}' > "$GOAL_SESSION_DIR/journey-scripts/$j.json"
+done
+new_capture L
+start_dummies
+export CHAIN_LEAN_PARALLEL_BROWSER_QA=off
+export STUB_REPLAY_VERDICT=FAIL
+rc=0; run_lean "$WORK/lean-L.log" || rc=$?
+[[ "$rc" -eq 0 ]] && assert "L: mass-FAIL iteration completes (rc=0 — no unbound-variable crash)" "pass" \
+  || { assert "L: mass-FAIL iteration completes (rc=$rc)" "fail"; sed -n '1,60p' "$WORK/lean-L.log"; }
+grep -q "SPEED-22: dispatching canary re-confirms for J-01 J-03" "$WORK/lean-L.log" \
+  && assert "L: breaker armed with the 2 lowest-ID canaries" "pass" \
+  || assert "L: breaker armed with the 2 lowest-ID canaries" "fail"
+[[ "$(grep -cx 'browser-qa-agent' "$CANARY")" == "2" ]] \
+  && assert "L: exactly two browser-qa dispatches (canary + main)" "pass" \
+  || assert "L: exactly two browser-qa dispatches (got: $(grep -cx 'browser-qa-agent' "$CANARY"))" "fail"
+L_CANARY_PROMPT="$(grep -l 'test EXACTLY these journeys this run: J-01,J-03' "$PROMPTS_DIR"/prompt-*-browser-qa-agent.txt 2>/dev/null | head -1 || true)"
+[[ -n "$L_CANARY_PROMPT" ]] \
+  && assert "L: canary dispatch carries exactly the canary set" "pass" \
+  || assert "L: canary dispatch carries exactly the canary set" "fail"
+grep -qE '^Project goal.*: .+' "${L_CANARY_PROMPT:-/dev/null}" \
+  && assert "L: canary prompt NAMES a goal file (BQA_GOAL_LINE built before the probe)" "pass" \
+  || assert "L: canary prompt NAMES a goal file (BQA_GOAL_LINE built before the probe)" "fail"
+grep -q '_VOIDED (' "$REGRESSION_RESULTS" && ! grep -qF '| FAIL |' "$REGRESSION_RESULTS" \
+  && assert "L: raw replay artifact voided (SKIP rows + dated footer, no FAIL survives)" "pass" \
+  || assert "L: raw replay artifact voided (SKIP rows + dated footer, no FAIL survives)" "fail"
+L_MAIN_LINE="$(grep -h '^GOAL-MODE LEAN MODE — test EXACTLY these journeys this run:' "$PROMPTS_DIR"/prompt-*-browser-qa-agent.txt 2>/dev/null | grep -v 'J-01,J-03$' | head -1 || true)"
+[[ "$L_MAIN_LINE" == *"J-02"* && "$L_MAIN_LINE" != *"J-04"* ]] \
+  && assert "L: main dispatch shrank to the target only (no blanket re-confirms)" "pass" \
+  || assert "L: main dispatch shrank to the target only (got: $L_MAIN_LINE)" "fail"
+grep -E '^\| UT-J-01 ' "$UI_TEST_RESULTS" | grep -qF '| PASS |' \
+  && grep -E '^\| UT-J-04 ' "$UI_TEST_RESULTS" | grep -qF '| SKIP |' \
+  && grep -q '^\*\*Browser QA Verdict:\*\* PASS' "$UI_TEST_RESULTS" \
+  && assert "L: merged results — canary PASS overrides, voided journey stays SKIP, headline PASS" "pass" \
+  || assert "L: merged results — canary PASS overrides, voided journey stays SKIP, headline PASS" "fail"
+[[ "$(sort "$GOAL_SESSION_DIR/state/goldens-regen-pending" 2>/dev/null | tr '\n' ' ')" == "J-01 J-03 J-04 J-05 " ]] \
+  && assert "L: all voided journeys queued for golden regeneration" "pass" \
+  || assert "L: all voided journeys queued for golden regeneration (got '$(cat "$GOAL_SESSION_DIR/state/goldens-regen-pending" 2>/dev/null | tr '\n' ' ')')" "fail"
+grep -q '"event":"replay_mass_fail_voided"' "$GOAL_SESSION_DIR/telemetry.jsonl" \
+  && assert "L: replay_mass_fail_voided telemetry event recorded" "pass" \
+  || assert "L: replay_mass_fail_voided telemetry event recorded" "fail"
+unset STUB_REPLAY_VERDICT
 
 echo ""
 echo "=== Results: $PASS passed, $FAIL failed ==="

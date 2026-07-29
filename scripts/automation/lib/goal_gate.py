@@ -73,6 +73,10 @@ _VERDICT_RE = re.compile(r"^\*\*Verdict:\*\*\s*(\S+)", re.MULTILINE)
 # A table cell whose entire content is FAIL (avoids matching prose that
 # merely contains the word).
 _FAIL_CELL_RE = re.compile(r"\|\s*FAIL\s*\|")
+# SPEED-15 rung 2: a journey deferred for wall-clock budget was NOT verified
+# this iteration — it keeps its prior status for scoring, but it must block
+# GOAL_ACHIEVED exactly like a FAIL until a later iteration re-verifies it.
+_DEFERRED_CELL_RE = re.compile(r"\|\s*DEFERRED-BUDGET\s*\|")
 
 
 def _load_history(path: str) -> dict | None:
@@ -133,7 +137,7 @@ def cmd_results(path: str) -> int:
         text = Path(path).read_text(encoding="utf-8")
     except OSError:
         return 2
-    return 1 if _FAIL_CELL_RE.search(text) else 0
+    return 1 if (_FAIL_CELL_RE.search(text) or _DEFERRED_CELL_RE.search(text)) else 0
 
 
 def cmd_regressions(pre_path: str, post_path: str) -> int:
@@ -441,6 +445,14 @@ def _self_test() -> int:
         assert cmd_results(str(res_ok)) == 0
         assert cmd_results(str(res_bad)) == 1
         assert cmd_results(str(res_prose)) == 0, "FAIL must match a whole cell only"
+        # SPEED-15 rung 2: a DEFERRED-BUDGET row blocks achievement like a FAIL
+        # (the journey was not verified this iteration), even with every other
+        # row PASS.
+        res_def = d / "r4.md"; res_def.write_text(
+            "| T1 | n | ui | P1 | e | a | PASS | x.png |\n"
+            "| UT-J-06 | J-06 regression re-check | regression | P2 | e | not run | DEFERRED-BUDGET | deferred: over iteration wall-clock budget |\n",
+            encoding="utf-8")
+        assert cmd_results(str(res_def)) == 1, "DEFERRED-BUDGET must block GOAL_ACHIEVED"
 
         # regressions: J-01 passing→failing is caught; missing pre → 0
         post = d / "post.json"

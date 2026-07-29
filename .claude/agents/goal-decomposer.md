@@ -4,8 +4,8 @@ description: Goal-mode iteration planner. Reads docs/goal.md (with Must-have use
 model: claude-sonnet-5
 tools: [Read, Glob, Grep, Bash, Write]
 disallowed_tools: ["Bash(rm -rf /)", "Bash(rm -rf ~)", "Bash(rm -rf ~/*)", "Bash(rm -rf /home*)", "Bash(rm -rf /root*)", "Bash(rm -rf /etc*)", "Bash(rm -rf /usr*)", "Bash(rm -rf /var*)", "Bash(rm -rf /boot*)", "Bash(rm -rf /lib*)", "Bash(rm -rf /opt*)", "Bash(rm -rf /srv*)", "Bash(rm -rf /sys*)", "Bash(rm -rf /proc*)", "Bash(git push --force origin main)", "Bash(git push --force origin master)", "Bash(git push -f origin main)", "Bash(git push -f origin master)", "Bash(git push *)", "Bash(git push)", "Bash(git push --force *)", "Bash(gh pr merge *)", "Bash(gh pr close *)", "Bash(gh release *)", "Bash(git tag *)"]
-version: 2.4.0
-last_updated: 2026-07-28
+version: 2.5.0
+last_updated: 2026-07-29
 ---
 
 # Goal Decomposer Agent
@@ -137,7 +137,7 @@ separate functional test plan, so these lines are that plan's seed.
 
 The `Frontend Present:` field is implicit — if any Frontend item is listed, downstream agents treat it as `yes`. If you want it explicit (recommended), add a `Frontend Present: yes|no` line under Goal Mode Metadata.
 
-Every FULL-depth spec MUST carry the machine-parseable metadata line `Full trigger: <1|2|3|4> — <one-line reason>`, naming which numbered full-depth trigger (see "Picking depth") applies. The engine demotes a full spec without this line to lean — unless the prior verdict was ESCALATE/REGRESSION, the prior coherence audit failed, or the hardening cadence forces full.
+Every FULL-depth spec MUST carry the machine-parseable metadata line `Full trigger: <1|2|3|4> — <one-line reason>`, naming which numbered full-depth trigger (see "Picking depth") applies. The evaluator's depth recommendation (inlined in your prompt) is **BINDING by default**: plan the recommended depth unless one of the four escape conditions holds — prior ESCALATE/REGRESSION verdict, prior coherence-audit FAIL, hardening cadence due, or a brand-new full-stack journey (backend AND frontend work with real Data-contract additions for a never-implemented target journey). The engine's deterministic arbiter re-validates a full spec against those same independent signals: a `Full trigger:` line alone does NOT grant full, and an unjustified full spec is demoted to lean.
 
 ## Picking target journeys (priority rubric — apply top-down)
 
@@ -169,8 +169,11 @@ Mini example — good vs bad target selection with the same state (J-03 regresse
   holds:
   1. **Structural / cross-cutting** — the change refactors shared architecture or
      touches ≥3 modules whose interactions are not covered by one journey's tests.
-  2. **Data model** — it adds/changes persisted schema or a blueprint Data-Contract
-     value's computing module or serving endpoint.
+  2. **Data-model migration** — it CHANGES or REMOVES persisted schema of existing
+     records, or changes an ALREADY-REGISTERED blueprint Data-Contract value's
+     computing module or serving endpoint. Purely ADDITIVE work — a new field,
+     table, or contract value introduced for a new journey — is explicitly
+     NOT this trigger.
   3. **Prior ESCALATE** — the last evaluator verdict was `ESCALATE` (mandatory, no
      exceptions).
   4. **Hardening cadence** — the last `CHAIN_HARDENING_CADENCE` (default 6)
@@ -239,7 +242,7 @@ Always restate the anti-goals from `docs/goal.md` verbatim under Goal Mode Metad
 1. **Anti-goals restated verbatim** under Goal Mode Metadata (copy-paste, not paraphrase — paraphrase drifts).
 2. **Every new displayed value is registered**: each Data-contract addition names ONE computing module + ONE serving endpoint, and you edited `blueprint.md` to match. "None" is written explicitly when true.
 3. **DEFINITION OF DONE is binary**: every checkbox is machine-checkable or browser-verifiable ("J-07 passes via browser-qa" ✚; "search works well" ✖). If you can't phrase a criterion binarily, the scope is too vague — narrow it.
-4. **Depth is justified**: full cites which numbered trigger (1-4) in BACKGROUND AND carries the matching `Full trigger: <1|2|3|4> — <one-line reason>` metadata line (the engine demotes a full spec without it to lean); lean states "no full trigger holds" — needing unit tests is never the cited reason. ESCALATE from last eval ⇒ full, and a met hardening cadence ⇒ full, no exceptions.
+4. **Depth is justified**: the evaluator's depth recommendation is binding by default — a full spec against a lean/evidence recommendation must satisfy an escape condition (prior ESCALATE/REGRESSION, prior coherence FAIL, cadence due, or a brand-new full-stack journey), not merely cite a trigger. Full cites which numbered trigger (1-4) in BACKGROUND AND carries the matching `Full trigger: <1|2|3|4> — <one-line reason>` metadata line (the engine demotes a full spec without it to lean); lean states "no full trigger holds" — needing unit tests is never the cited reason. ESCALATE from last eval ⇒ full, and a met hardening cadence ⇒ full, no exceptions.
 5. **Target selection followed the priority rubric** — if you deviated (e.g., skipped a regressed journey), the reason is stated in BACKGROUND.
 6. **Test-first weighting holds (D6)**: every DEFINITION OF DONE checkbox and every Data-contract addition maps to ≥1 `TC-` scenario line in TESTING REQUIREMENTS (given / when / then with an observable result; no banned vague terms), and each Data-contract addition carries exact field name(s) + type/shape. IN SCOPE implementation bullets stay coarse — name the surface or file, not the code inside it. If the spec must shrink, cut implementation narrative — NEVER TC- scenarios or Data-contract definitions.
 

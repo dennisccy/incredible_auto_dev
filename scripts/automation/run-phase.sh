@@ -38,6 +38,12 @@ source "$SCRIPT_DIR/lib/telemetry.sh"
 source "$SCRIPT_DIR/lib/engine-lock.sh"
 source "$SCRIPT_DIR/lib/plain-language.sh"
 
+# SPEED-15: pick up the engine's iteration clock so the budget warn checks and
+# the trim ladder (rungs 3a/3b below) see the same wall-clock origin as
+# run-goal.sh. Standalone phase mode exports no epoch → the budget machinery
+# stays fully inert here, exactly as before.
+if [[ -n "${CHAIN_ITER_START_EPOCH:-}" ]]; then iter_budget_init; fi
+
 # Pull --cli (and --force-cli) out of the args BEFORE the existing parse loop,
 # so the loop below sees only its known flags. CHAIN_CLI defaults to claude.
 extract_cli_arg "$@" || exit $?
@@ -234,10 +240,35 @@ _boot_shared_services() {
 # single sequential function suitable for backgrounding. Each underlying script
 # runs as a child process; its exit code is captured. A non-zero exit aborts
 # the chain so the caller sees the first real failure.
+# SPEED-24: goal-mode full iterations COMBINE ui-impact + ui-test-design into
+# one dispatch (the designer's only inputs are exactly the analyst's outputs —
+# a second agent buys a fresh context, not a second opinion; the closure gate
+# still checks all four artifact names, so quality stays gated). Combined
+# under-delivery (plan or what-to-click missing/empty) falls back LOUDLY to
+# the separate designer dispatch — browser-qa hard-errors without a plan.
+# CHAIN_UI_COMBINED=false restores the two-dispatch chain; plain phases are
+# never combined.
 _branch_a_ui_chain() {
   local _rc=0
-  bash "$SCRIPT_DIR/ui-impact-phase.sh"      "$PHASE" || { _rc=$?; echo "[branch-A] ui-impact-phase.sh exit $_rc — aborting chain"; return "$_rc"; }
-  bash "$SCRIPT_DIR/ui-test-design-phase.sh" "$PHASE" || { _rc=$?; echo "[branch-A] ui-test-design-phase.sh exit $_rc — aborting chain"; return "$_rc"; }
+  local _combined="no"
+  if [[ "${CHAIN_UI_COMBINED:-true}" == "true" && "$PHASE" =~ ^goal-.+-iter-[0-9]+$ ]]; then
+    _combined="yes"
+  fi
+  if [[ "$_combined" == "yes" ]]; then
+    CHAIN_UI_COMBINED_DISPATCH=1 bash "$SCRIPT_DIR/ui-impact-phase.sh" "$PHASE" || { _rc=$?; echo "[branch-A] ui-impact-phase.sh (combined) exit $_rc — aborting chain"; return "$_rc"; }
+    if [[ -s "$UI_TEST_PLAN" && -s "$WHAT_TO_CLICK" ]]; then
+      echo "[branch-A] SPEED-24: combined dispatch delivered the UI test plan + what-to-click — skipping the separate ui-test-design dispatch."
+      if declare -F record_telemetry_event >/dev/null 2>&1; then
+        record_telemetry_event "step_skipped" "$(jq -cn --arg p "$PHASE" '{step:"ui-test-design", phase:$p, reason:"ui-combined"}' 2>/dev/null || printf '{"step":"ui-test-design","reason":"ui-combined"}')" || true
+      fi
+    else
+      echo "[branch-A] SPEED-24: combined dispatch UNDER-DELIVERED (ui-test-plan or what-to-click missing/empty) — falling back to the separate ui-test-design dispatch."
+      bash "$SCRIPT_DIR/ui-test-design-phase.sh" "$PHASE" || { _rc=$?; echo "[branch-A] ui-test-design-phase.sh exit $_rc — aborting chain"; return "$_rc"; }
+    fi
+  else
+    bash "$SCRIPT_DIR/ui-impact-phase.sh"      "$PHASE" || { _rc=$?; echo "[branch-A] ui-impact-phase.sh exit $_rc — aborting chain"; return "$_rc"; }
+    bash "$SCRIPT_DIR/ui-test-design-phase.sh" "$PHASE" || { _rc=$?; echo "[branch-A] ui-test-design-phase.sh exit $_rc — aborting chain"; return "$_rc"; }
+  fi
   bash "$SCRIPT_DIR/browser-qa-phase.sh"     "$PHASE" || { _rc=$?; echo "[branch-A] browser-qa-phase.sh exit $_rc — aborting chain"; return "$_rc"; }
   # Demo is showcase, non-gating — never abort the chain on its exit code.
   bash "$SCRIPT_DIR/demo-phase.sh"           "$PHASE" || echo "[branch-A] demo-phase.sh exit $? — continuing (showcase, non-gating)"
@@ -658,12 +689,47 @@ echo ""
 
 # ── Step 2/11: Generate functional test plan ────────────────────────────────
 if [[ "$SKIP_TEST_PLAN" == "false" ]]; then
+  # SPEED-15 trim rung 3a: over the wall-clock budget, save the generator
+  # dispatch whenever a usable test source already exists — the spec's own TC-
+  # lines / test section, or a still-fresh generated plan. QA itself is never
+  # trimmed; it just runs the tests that already exist.
+  _tp_budget_reason=""
+  if declare -F iter_budget_trim_active >/dev/null 2>&1 && iter_budget_trim_active; then
+    if ! _tp_budget_reason="$(_spec_lists_tests_reason "$SPEC")"; then
+      if [[ -s "$TEST_PLAN" && "$TEST_PLAN" -nt "$SPEC" ]]; then
+        _tp_budget_reason="existing test plan is fresh (newer than the spec)"
+      else
+        _tp_budget_reason=""
+      fi
+    fi
+  fi
+  # TOKEN-3 second arm: an existing generated plan that is non-empty, carries
+  # >=3 TC- lines, and is NEWER than the spec is still valid — per-iteration
+  # filenames make cross-iteration staleness structurally impossible, so
+  # "newer than the spec" is the only freshness that matters.
+  _tp_fresh_plan_reason=""
+  if [[ -s "$TEST_PLAN" && "$TEST_PLAN" -nt "$SPEC" ]] \
+     && [[ "$(grep -cE '(^|[^A-Za-z0-9_])TC-[0-9]' "$TEST_PLAN" 2>/dev/null || true)" -ge 3 ]]; then
+    _tp_fresh_plan_reason="existing test plan is fresh (newer than the spec, >=3 TC- lines)"
+  fi
   _tp_skip_reason=""
-  if [[ "${CHAIN_SKIP_TESTPLAN_IF_PRESENT:-false}" == "true" ]] \
-     && _tp_skip_reason="$(_spec_lists_tests_reason "$SPEC")"; then
-    # TOKEN-3: the spec carries its own test list — save the generator dispatch.
-    # NEVER silent: one loud line naming the matched heuristic.
-    log "Step 2/11 -- Test plan: SKIPPED (CHAIN_SKIP_TESTPLAN_IF_PRESENT=true; ${_tp_skip_reason}) -- no generator dispatch; QA runs the spec's own tests."
+  if [[ -n "$_tp_budget_reason" ]]; then
+    log "Step 2/11 -- Test plan: SKIPPED (iter-budget trim rung 3a: over wall-clock budget; ${_tp_budget_reason}) -- no generator dispatch; QA runs the existing tests."
+    if declare -F record_telemetry_event >/dev/null 2>&1; then
+      record_telemetry_event "step_skipped" "$(jq -cn --arg p "$PHASE" '{step:"test-plan", phase:$p, reason:"iter-budget-trim"}' 2>/dev/null || printf '{"step":"test-plan","reason":"iter-budget-trim"}')" || true
+    fi
+    declare -F iter_budget_trim_event >/dev/null 2>&1 && iter_budget_trim_event "testplan-skip"
+    update_status "$PHASE" "in_progress" "test_plan_generated"
+  elif [[ "${CHAIN_SKIP_TESTPLAN_IF_PRESENT:-true}" == "true" ]] \
+     && { _tp_skip_reason="$(_spec_lists_tests_reason "$SPEC")" \
+          || { [[ -n "$_tp_fresh_plan_reason" ]] && _tp_skip_reason="$_tp_fresh_plan_reason"; }; }; then
+    # TOKEN-3 (default ON since 2026-07-29 — the desk session was the one
+    # observed clean phase the flip pre-registration required): the spec
+    # carries its own test list, or a fresh generated plan already exists —
+    # save the generator dispatch. NEVER silent: one loud line naming the
+    # matched arm. CHAIN_SKIP_TESTPLAN_IF_PRESENT=false restores the
+    # always-generate behavior.
+    log "Step 2/11 -- Test plan: SKIPPED (CHAIN_SKIP_TESTPLAN_IF_PRESENT=${CHAIN_SKIP_TESTPLAN_IF_PRESENT:-true}; ${_tp_skip_reason}) -- no generator dispatch; QA runs the existing tests."
     update_status "$PHASE" "in_progress" "test_plan_generated"
   else
     log "Step 2/11 -- Generating functional test plan..."
@@ -744,6 +810,7 @@ echo ""
 # we let the existing retry loop handle the fix path.
 # When the gating conditions fail (backend-only phase, or resume after one of
 # these steps), this block is skipped and the sequential blocks below run.
+iter_budget_check "post-dev-fanout"
 if [[ "$FRONTEND_PRESENT" == "yes" \
    && "$SKIP_UI_IMPACT" == "false" \
    && "$SKIP_UI_TEST_DESIGN" == "false" \
@@ -878,6 +945,7 @@ echo ""
 kill_phase_servers
 
 # ── Step 7/11: QA loop ────────────────────────────────────────────────────────
+iter_budget_check "qa-loop"
 if [[ "$SKIP_QA" == "false" ]]; then
   log "Step 7/11 -- QA loop (max $MAX_RETRIES attempts)..."
   QA_ATTEMPT=0
@@ -933,8 +1001,28 @@ echo ""
 kill_phase_servers
 
 # ── Step 8/11: UX Regression Review ──────────────────────────────────────────
+iter_budget_check "ux-regression"
 if [[ "$SKIP_UX_REGRESSION" == "false" ]]; then
-  if [[ "$FRONTEND_PRESENT" == "yes" ]]; then
+  if declare -F iter_budget_trim_active >/dev/null 2>&1 && iter_budget_trim_active \
+     && [[ "$FRONTEND_PRESENT" == "yes" ]]; then
+    # SPEED-15 trim rung 3b: shed this non-blocking reviewer when over budget.
+    # The stub verdict is SKIPPED (never FAIL) — ux_regression_verdict_passes
+    # only blocks on FAIL, and the closure + main auditors still run.
+    log "Step 8/11 -- UX Regression: SKIPPED (iter-budget trim rung 3b: over wall-clock budget) -- non-blocking reviewer shed; closure + main auditors still run."
+    rm -f "$UX_REGRESSION"
+    {
+      echo "# UX Regression Review — ${PHASE}"
+      echo ""
+      echo "**Verdict:** UX-REGRESSION-SKIPPED"
+      echo ""
+      echo "_Skipped (SPEED-15 trim rung 3b, $(date -u +%Y-%m-%d)): this iteration exceeded its wall-clock budget, so this non-blocking reviewer was shed. The phase-closure auditor and the main auditor still ran._"
+    } > "$UX_REGRESSION" 2>/dev/null || true
+    if declare -F record_telemetry_event >/dev/null 2>&1; then
+      record_telemetry_event "step_skipped" "$(jq -cn --arg p "$PHASE" '{step:"ux-regression", phase:$p, reason:"iter-budget-trim"}' 2>/dev/null || printf '{"step":"ux-regression","reason":"iter-budget-trim"}')" || true
+    fi
+    declare -F iter_budget_trim_event >/dev/null 2>&1 && iter_budget_trim_event "ux-regression-skip"
+    update_status "$PHASE" "in_progress" "ux_regression_complete"
+  elif [[ "$FRONTEND_PRESENT" == "yes" ]]; then
     log "Step 8/11 -- UX Regression Review..."
     # Clear stale verdict so a script crash before write cannot be masked
     # by a previous run's PASS verdict.
@@ -966,6 +1054,7 @@ echo ""
 kill_phase_servers
 
 # ── Step 9/11: Post-phase audit loop ─────────────────────────────────────────
+iter_budget_check "audit"
 if [[ "$SKIP_AUDIT" == "false" ]]; then
   log "Step 9/11 -- Post-phase audit (max $MAX_AUDIT_RETRIES attempts)..."
   AUDIT_ATTEMPT=0

@@ -3,6 +3,6 @@ description: Implementation agent. Reads the execution plan from runs/<phase>/pl
   following TDD. Handles both backend and frontend work. On retry, reads existing review/QA reports and
   fixes only the listed issues. Writes dev handoff when complete.
 model_tier: standard
-version: 1.1.2
-last_updated: '2026-07-25'
+version: 1.2.0
+last_updated: '2026-07-29'
 body: body.md

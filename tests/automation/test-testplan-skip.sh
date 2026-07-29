@@ -11,18 +11,27 @@
 # whole remaining pipeline to completion. No API calls; a few seconds per case.
 #
 # Heuristic under test (docs/improvement-roadmap.md TOKEN-3):
-#   spec has a `## Test`-titled section OR >=3 `TC-` lines
-#   -> skip generation, log the reason loudly. Knob:
-#   CHAIN_SKIP_TESTPLAN_IF_PRESENT, ships default FALSE (flip awaits one
-#   observed clean full-mode phase with the skip active).
+#   spec has a `## Test`-titled section OR >=3 `TC-` lines OR a still-fresh
+#   generated plan (newer than the spec, >=3 TC- lines)
+#   -> skip generation, log the matched arm loudly. Knob:
+#   CHAIN_SKIP_TESTPLAN_IF_PRESENT, ships default TRUE since 2026-07-29 (the
+#   desk session was the pre-registered "one observed clean phase").
 #
 #   1. knob on + `## Test Scenarios` section  -> skip, reason names the section
 #   2. knob on + >=3 `TC-` lines              -> skip, reason names the count
 #   3. knob on + spec without tests           -> generates exactly as today
-#   4. knob unset (default false) + tests     -> generates (default-off ships)
+#   4. knob unset (default TRUE) + tests      -> skips (the TOKEN-3 flip);
+#      knob explicitly false + tests          -> generates (the rollback)
 #   5. knob on + template's boilerplate `## TESTING REQUIREMENTS` heading only
 #      -> generates (templates/phase-spec.md: "The test-plan-generator agent
 #      will create the test plan" — TESTING REQUIREMENTS is not a test list)
+#   6. SPEED-15 trim rung 3a: over the wall-clock budget (trim mode) with the
+#      TOKEN-3 knob OFF — a spec with TC- lines skips the generator with the
+#      rung-3a reason; a spec with NO test source still generates (the budget
+#      never trims the only test source).
+#   7. Fresh-plan second arm: no spec tests but an existing plan newer than
+#      the spec with >=3 TC- lines -> skip; a STALE plan (older than the
+#      spec) -> generates.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -106,9 +115,10 @@ chmod +x "$STUB_DIR/claude"
 
 unset GOAL_SESSION_DIR GOAL_SESSION_ID GOAL_ITER_INDEX CHAIN_SKIP_TESTPLAN_IF_PRESENT || true
 
-# run_phase <tag> <knob: true|false|unset>
+# run_phase <tag> <knob: true|false|unset> [EXTRA_ENV=val ...]
 run_phase() {
-  local tag="$1" knob="$2" rc=0
+  local tag="$1" knob="$2"; shift 2
+  local rc=0
   ( cd "$SBX" && env \
       PATH="$STUB_DIR:$PATH" \
       CANARY_FILE="$CANARY" \
@@ -116,6 +126,7 @@ run_phase() {
       CHAIN_TMP_ROOT="$WORK/tmproot" CHAIN_TMP_JANITOR=false CHAIN_TMP_DISK_GUARD=false \
       CHAIN_DISABLE_TRACE=true \
       ${knob:+CHAIN_SKIP_TESTPLAN_IF_PRESENT="$knob"} \
+      "$@" \
       bash scripts/automation/run-phase.sh "$PHASE" ) > "$WORK/run-$tag.log" 2>&1 || rc=$?
   return $rc
 }
@@ -193,7 +204,7 @@ grep -q 'Test plan: SKIPPED' "$WORK/run-c3.log" \
   && assert "3: no skip logged" "fail" \
   || assert "3: no skip logged" "pass"
 
-# ══ Case 4: knob UNSET (ships default false) + spec WITH tests → generates ════
+# ══ Case 4: knob UNSET (ships default TRUE) + spec WITH tests → skips ═════════
 make_sandbox c4
 spec_common_head
 cat >> "$SBX/docs/phases/${PHASE}.md" <<'EOF'
@@ -206,8 +217,27 @@ rc=0; run_phase c4 "" || rc=$?
 [[ $rc -eq 0 ]] && assert "4: phase run completes (rc=0)" "pass" \
   || { assert "4: phase run completes (rc=$rc)" "fail"; sed -n '1,40p' "$WORK/run-c4.log"; }
 grep -q '^generate-test-plan.sh ' "$WORK/canary-c4.log" \
-  && assert "4: knob off by default — generator still dispatched" "pass" \
-  || assert "4: knob off by default — generator still dispatched" "fail"
+  && assert "4: knob defaults ON (TOKEN-3 flip) — no generator dispatch" "fail" \
+  || assert "4: knob defaults ON (TOKEN-3 flip) — no generator dispatch" "pass"
+grep -q 'Test plan: SKIPPED' "$WORK/run-c4.log" \
+  && assert "4: default-on skip logged loudly" "pass" \
+  || assert "4: default-on skip logged loudly" "fail"
+
+# ══ Case 4b: knob explicitly FALSE + spec WITH tests → generates (rollback) ═══
+make_sandbox c4b
+spec_common_head
+cat >> "$SBX/docs/phases/${PHASE}.md" <<'EOF'
+## Test Scenarios
+- TC-1: a
+- TC-2: b
+- TC-3: c
+EOF
+rc=0; run_phase c4b false || rc=$?
+[[ $rc -eq 0 ]] && assert "4b: phase run completes (rc=0)" "pass" \
+  || { assert "4b: phase run completes (rc=$rc)" "fail"; sed -n '1,40p' "$WORK/run-c4b.log"; }
+grep -q '^generate-test-plan.sh ' "$WORK/canary-c4b.log" \
+  && assert "4b: knob=false rollback — generator dispatched as before" "pass" \
+  || assert "4b: knob=false rollback — generator dispatched as before" "fail"
 
 # ══ Case 5: knob on + only the template's `## TESTING REQUIREMENTS` heading ═══
 # templates/phase-spec.md ships this heading in EVERY spec and its comment says
@@ -225,6 +255,78 @@ rc=0; run_phase c5 true || rc=$?
 grep -q '^generate-test-plan.sh ' "$WORK/canary-c5.log" \
   && assert "5: boilerplate TESTING REQUIREMENTS heading does NOT suppress the generator" "pass" \
   || assert "5: boilerplate TESTING REQUIREMENTS heading does NOT suppress the generator" "fail"
+
+# ══ Case 7: fresh-plan arm — no spec tests, plan newer than spec → skip ═══════
+make_sandbox c7
+spec_common_head
+mkdir -p "$SBX/reports/qa"
+sleep 0.1   # ensure the plan mtime is strictly newer than the spec's
+cat > "$SBX/reports/qa/${PHASE}-test-plan.md" <<'EOF'
+# Test plan (pre-existing)
+- TC-1: given a, when b, then c
+- TC-2: given d, when e, then f
+- TC-3: given g, when h, then i
+EOF
+rc=0; run_phase c7 "" || rc=$?
+[[ $rc -eq 0 ]] && assert "7: phase run completes (rc=0)" "pass" \
+  || { assert "7: phase run completes (rc=$rc)" "fail"; sed -n '1,40p' "$WORK/run-c7.log"; }
+grep -q '^generate-test-plan.sh ' "$WORK/canary-c7.log" \
+  && assert "7: fresh existing plan — no generator dispatch" "fail" \
+  || assert "7: fresh existing plan — no generator dispatch" "pass"
+grep -q 'existing test plan is fresh' "$WORK/run-c7.log" \
+  && assert "7: logged reason names the fresh-plan arm" "pass" \
+  || assert "7: logged reason names the fresh-plan arm" "fail"
+
+# ══ Case 7b: STALE plan (older than the spec) → generates ═════════════════════
+make_sandbox c7b
+mkdir -p "$SBX/reports/qa"
+cat > "$SBX/reports/qa/${PHASE}-test-plan.md" <<'EOF'
+# Test plan (stale)
+- TC-1: given a, when b, then c
+- TC-2: given d, when e, then f
+- TC-3: given g, when h, then i
+EOF
+sleep 0.1
+spec_common_head   # spec written AFTER the plan → plan is stale
+rc=0; run_phase c7b "" || rc=$?
+[[ $rc -eq 0 ]] && assert "7b: phase run completes (rc=0)" "pass" \
+  || { assert "7b: phase run completes (rc=$rc)" "fail"; sed -n '1,40p' "$WORK/run-c7b.log"; }
+grep -q '^generate-test-plan.sh ' "$WORK/canary-c7b.log" \
+  && assert "7b: stale plan — generator dispatched (freshness arm refuses it)" "pass" \
+  || assert "7b: stale plan — generator dispatched (freshness arm refuses it)" "fail"
+
+# ══ Case 6: SPEED-15 rung 3a — over budget, knob OFF, spec with TC- lines ═════
+make_sandbox c6
+spec_common_head
+cat >> "$SBX/docs/phases/${PHASE}.md" <<'EOF'
+## DEFINITION OF DONE
+- TC-1: given a fresh DB, when POST /items, then 201 with the item body
+- TC-2: given an item, when GET /items/1, then 200 with the same body
+- TC-3: given bad input, when POST /items, then 422 with an error list
+EOF
+rc=0; run_phase c6 false \
+  CHAIN_ITER_START_EPOCH="$(( $(date +%s) - 99999 ))" \
+  CHAIN_ITER_TIME_BUDGET_SECONDS=60 CHAIN_ITER_BUDGET_MODE=trim || rc=$?
+[[ $rc -eq 0 ]] && assert "6: phase run completes (rc=0)" "pass" \
+  || { assert "6: phase run completes (rc=$rc)" "fail"; sed -n '1,40p' "$WORK/run-c6.log"; }
+grep -q '^generate-test-plan.sh ' "$WORK/canary-c6.log" \
+  && assert "6: NO generator dispatch when over budget with TC- lines (knob off)" "fail" \
+  || assert "6: NO generator dispatch when over budget with TC- lines (knob off)" "pass"
+grep -q 'iter-budget trim rung 3a' "$WORK/run-c6.log" \
+  && assert "6: skip logged with the rung-3a reason" "pass" \
+  || assert "6: skip logged with the rung-3a reason" "fail"
+
+# ══ Case 6b: over budget but NO test source in the spec → still generates ═════
+make_sandbox c6b
+spec_common_head
+rc=0; run_phase c6b false \
+  CHAIN_ITER_START_EPOCH="$(( $(date +%s) - 99999 ))" \
+  CHAIN_ITER_TIME_BUDGET_SECONDS=60 CHAIN_ITER_BUDGET_MODE=trim || rc=$?
+[[ $rc -eq 0 ]] && assert "6b: phase run completes (rc=0)" "pass" \
+  || { assert "6b: phase run completes (rc=$rc)" "fail"; sed -n '1,40p' "$WORK/run-c6b.log"; }
+grep -q '^generate-test-plan.sh ' "$WORK/canary-c6b.log" \
+  && assert "6b: generator STILL dispatched — budget never trims the only test source" "pass" \
+  || assert "6b: generator STILL dispatched — budget never trims the only test source" "fail"
 
 echo ""
 echo "=== Results: $PASS passed, $FAIL failed ==="

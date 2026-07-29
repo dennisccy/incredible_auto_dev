@@ -163,12 +163,19 @@ python3 scripts/automation/lib/analyze_telemetry.py runs/goal-session-<sid>/tele
 
 | Event | Written by | Payload highlights |
 |---|---|---|
-| `step_skipped` | `goal-iter-lean.sh`, `run-goal.sh` | `{step, iter_name, reason:"checkpoint"}` — a resume reused a completed step instead of re-running it |
+| `step_skipped` | `goal-iter-lean.sh`, `run-goal.sh`, `run-phase.sh` | `{step, iter_name|phase, reason}` — a step was skipped instead of dispatched. Reasons: `checkpoint` (resume reused a completed step), `zero-change` (SPEED-14), `iter-budget-trim` (SPEED-15 rungs 3a/3b: `test-plan`/`ux-regression`, payload key `phase`), `ui-combined` (SPEED-24: `ui-test-design` folded into the ui-impact dispatch, payload key `phase`) |
 | `dispatch_wait` | `lib/interactive-dispatch.sh` | `{agent, wait_seconds, run_seconds, status, rc}` — pickup-wait vs run split per interactive dispatch attempt (`ok` \| `pickup-timeout` \| `inflight-timeout` \| `inflight-timeout-requeued`) |
 | `review_verdict` | `goal-iter-lean.sh` | `{verdict, attempt, iter_name}` — reviewer outcome per attempt (feeds the tripwire) |
 | `iter_config` | `run-goal.sh` | `{key, value}` — an opt-in experiment knob (e.g. `CHAIN_AGENT_EFFORT`) was active this iteration |
-| `golden_coverage` | `goal-iter-lean.sh`, `browser-qa-phase.sh` (goal iterations) | `{passing, missing_goldens, iter_name}` — PASSing journeys still lacking a replay golden |
+| `golden_coverage` | `goal-iter-lean.sh`, `browser-qa-phase.sh` (goal iterations) | `{passing, missing_goldens, iter_name}` — PASSing journeys still lacking a replay golden (also persisted to `state/golden-gaps`, SPEED-23) |
 | `experiment_reverted` | `run-goal.sh` | `{key, value}` — the tripwire auto-reverted an experiment knob |
+| `depth_full_granted` / `depth_demoted` | `run-goal.sh` | `{reason, prior_verdict, prior_depth}` — the SPEED-20 deterministic depth arbiter granted a spec-requested full (`prior-verdict-*`, `prior-coherence-fail`, `cadence-due`, `new-fullstack-journey`) or demoted it to lean (`budget-breach`, `full-cap`, `evaluator-requested-*`, legacy `no-full-trigger`) |
+| `iter_budget` | `lib/common.sh` (any budget-aware script) | `{budget, elapsed, mode, at_step}` — first over-budget check of the process (SPEED-15; defaults 3600s/trim) |
+| `iter_budget_trim` | `run-goal.sh`, `goal-iter-lean.sh`, `run-phase.sh`, `browser-qa-phase.sh` | `{rung}` — a trim rung actually shed work (`showcase-defer`, `replay-narrow`, `testplan-skip`, `ux-regression-skip`) |
+| `goal_slice_fallback` | `lib/common.sh` (executor dispatch sites) | `{iter_name, rc}` — the TOKEN-10 executor goal-slice build failed; the dispatch fell back loudly to the full `docs/goal.md` |
+| `golden_autoderived` / `golden_autoderive_rejected` | `lib/replay-lane.sh` (via `demo-phase.sh`) | `{journey, iter_name}` — a SPEED-21 demo-derived golden candidate replayed green and was installed, or failed its verify pass and was discarded |
+| `golden_nudge` | `goal-iter-lean.sh`, `browser-qa-phase.sh` | `{journey, iter_name}` — SPEED-23 promoted this journey's golden to a REQUIRED deliverable this dispatch |
+| `replay_mass_fail_voided` / `replay_mass_fail_confirmed` | `lib/replay-lane.sh` / `goal-iter-lean.sh` | `{iter_name, journeys, canaries}` — SPEED-22 mass-false-FAIL breaker outcome: green canaries voided the replay FAILs (drift), or a canary failure kept the full re-confirm path |
 
 ### `missing_evidence` (REL-11 tripwire)
 Written when a dispatch returns — any exit code, including 0 — without its expected report artifact on disk: full-mode QA (`qa-phase.sh`), the lean browser-qa LLM lane (`goal-iter-lean.sh`; quota pauses excluded), and the retro-analyst (`run-goal.sh`). The telemetry counterpart of the loud `[missing-evidence]` stderr banner (`lib/common.sh` `warn_missing_evidence`). Non-blocking — a tripwire, never a gate.

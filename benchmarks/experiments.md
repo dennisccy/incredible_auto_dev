@@ -944,3 +944,73 @@ Entry format contract (grep-able; pinned by
 - hypothesis: the SPEED-9..19 + REP-4 + TOKEN-9 package cuts typical goal-mode iteration wall time under 60 min without journey-quality regressions. Baseline (desk, 15 iters): ~153 agent-min/iter; verification = 54% of agent minutes; full depth 4 of last 6 iters; browser-qa >100 turns/invocation; 3 of last 5 iterations were evidence-only waste (~6h); zero quota-pause events recorded (attribution bug).
 - metrics + prediction (manual grading): median wall for lean/evidence/zero-change iterations < 60m; evidence-class gaps resolved in < 45m via the evidence micro-path (no developer dispatch); full-depth ratio <= 1 in 6; browser-qa <= 60 turns/invocation; demo-narrator+readme token cost ~1/3 of sonnet baseline; NO journey regressions or golden verdict-class flips attributable to the package; summaries name concrete files/screens (grep for 'Product changes:' rows).
 - note: pre-registered manually (G8) — the package is engine+contract work, not a run-benchmark.sh invocation; grade against the next session's telemetry with analyze_telemetry.py --wall.
+
+## POST speed-package-20260728 · 2026-07-29T12:30:00Z
+- graded against: LIVE tapeology desk session iters 15-18 (the first iterations
+  running the full package — vendored sync to main 48a3b97 on Jul 29 00:22,
+  engine restart 01:04; iters 0-14 ran OLD code and are excluded), telemetry +
+  trace analysis performed 2026-07-29 during the iteration-shape investigation.
+- arm-by-arm:
+  · median lean/evidence/zero-change wall < 60m — **UNTESTED**: no lean or
+    evidence iteration ran in the window; every iteration 15-18 dispatched
+    FULL (see next arm — the same defect).
+  · full-depth ratio <= 1 in 6 — **FAILED (5 of 6 full)**: the decomposer wrote
+    a qualifying `Full trigger: 2 — adds a field to persisted record` line
+    into EVERY spec (trivially true for every proposer-promoted journey) and
+    the SPEED-10 allowlist trusted it; the evaluator's `next_depth: evidence`
+    recommendation (iters 16, 17) was overridden both times. Root cause of
+    the surviving 2h+ floor; promoted to anti-pattern 25 and fixed by
+    SPEED-20 (iteration-shape package).
+  · browser-qa <= 60 turns/invocation — **FAILED**: 104-132 turns observed
+    (J-06-class no-golden journeys keep riding the LLM lane; golden-first
+    regression SPEED-21/22/23 targets this).
+  · demo-narrator+readme cost ~1/3 sonnet baseline — **PASSED (better)**:
+    demo-narrator 26m → ~90s per iteration after the haiku routing.
+  · no journey regressions / golden verdict-class flips — **PASSED**: 13/14
+    journeys passing after iter-18, 1 partial (J-14, new scope); zero
+    package-attributable regressions; iter-14's 8/9 replay false-FAIL was
+    selector drift (pre-package code), not a golden flip.
+  · summaries name concrete files/screens — **PASSED** (Product changes: rows
+    present in the post-sync summaries).
+  · (headline, unregistered but the package's stated goal) full-depth
+    productive time 210m → 133m (−37%); steady-state iterations 15-18 =
+    118-151 min of near-continuous first-try LLM work across 16-18 SEQUENTIAL
+    dispatches, zero quota pauses (0s across 174 dispatches — SPEED-13's
+    attribution fix held), zero retry loops. The remaining floor is the
+    pipeline's SHAPE, not failures — which is what the iteration-shape
+    package (PRE below) attacks.
+- verdict: package effective where it aimed (−37% productive time, showcase
+  costs collapsed, honesty fixes held) but the <60m target was structurally
+  unreachable while the depth governor could be self-certified around —
+  full-ratio arm decisively failed. Follow-up package pre-registered below.
+
+## PRE iteration-shape-20260729 · 2026-07-29T12:45:00Z
+- framework-sha: 48a3b97 + the iteration-shape package (SPEED-20..24, TOKEN-10,
+  REP-5, SPEED-15 armed 3600/trim, TOKEN-3 flip) landing on branch
+  speed-iteration-shape this session; dirty during authoring.
+- fixture: the next 6 REAL goal-session iterations running this package
+  (tapeology desk session after the operator's next vendored sync, or any
+  adopter session), graded with `analyze_telemetry.py --wall`.
+- hypothesis: with the depth governor deterministic (arbiter), the budget
+  armed with teeth (3600s/trim + next-iter lean ratchet), executor context
+  sliced, and the regression sweep golden-first, the typical iteration
+  becomes lean/evidence by construction and lands under an hour.
+- metrics + prediction (manual grading, G8):
+  · median iteration wall < 60 min over the next 6 real-session iterations;
+  · full-depth ratio <= 1 in 4 (arbiter window cap W=4), with every full
+    carrying a `depth_full_granted` reason that is NOT `new-fullstack-journey`
+    unless journey-history confirms the journey was genuinely new;
+  · developer mean wall < 25 min (TOKEN-10 slice; desk baseline 31→77m);
+  · >= 2 goldens auto-derived and installed (`golden_autoderived` events) OR
+    zero eligible PASS-without-golden journeys existed;
+  · zero journey regressions and zero golden verdict-class flips attributable
+    to the package; any DEFERRED-BUDGET row is re-verified within 2 iterations;
+  · no GOAL_ACHIEVED certified while a DEFERRED-BUDGET row exists (mechanical,
+    goal_gate).
+- note: pre-registered manually (G8) — engine+contract work, not a
+  run-benchmark.sh invocation. Rollback ladder if the prediction fails:
+  CHAIN_DEPTH_ARBITER=false / CHAIN_ITER_TIME_BUDGET_SECONDS=0 /
+  CHAIN_ITER_BUDGET_MODE=warn / CHAIN_DEV_FULL_GOAL=true /
+  CHAIN_GOLDEN_AUTODERIVE=false / CHAIN_REPLAY_MASS_FAIL_BREAKER=false /
+  CHAIN_UI_COMBINED=false / CHAIN_SKIP_TESTPLAN_IF_PRESENT=false — each knob
+  reverts exactly one item.

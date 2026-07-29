@@ -41,6 +41,11 @@
 #      (invocation-count-proven, zero service re-checks); a non-6 failure
 #      (rc=3) keeps the old no-retry generic fallback; SKIPPED-INFRA journeys
 #      still feed replay_lane_llm_regression_set (whole REQUIRED set).
+#  13. SPEED-15 rung 2: replay_lane_deferred_budget_set defers R_LLM only when
+#      trim is active AND replay engaged; the narrowed LLM set keeps replay-FAIL
+#      re-confirms; replay_lane_write_deferred_rows appends DEFERRED-BUDGET rows
+#      the achievement gate (real goal_gate.py) treats as blocking; empty
+#      deferred set → both are no-ops.
 #
 # No API calls; runs in a couple of seconds.
 #
@@ -118,6 +123,7 @@ if mode == "verify":
         with open(cf, "w") as f:
             f.write(str(attempt))
     verdict = os.environ.get("STUB_REPLAY_VERDICT", "PASS")
+    fail_set = os.environ.get("STUB_REPLAY_FAIL_SET", "").split()
     rc = os.environ.get("STUB_REPLAY_RC", "")
     seq = os.environ.get("STUB_REPLAY_RC_SEQ", "").split()
     if seq:
@@ -135,14 +141,21 @@ if mode == "verify":
                     "| Test ID | Name | Type | Priority | Expected | Actual | Verdict | Evidence |\n"
                     "|---|---|---|---|---|---|---|---|\n" + rows + "\n")
     if results and rc != "6":
+        def v_for(j):
+            if fail_set:
+                return "FAIL" if j in fail_set else "PASS"
+            return verdict
         rows = "\n".join(
-            f"| UT-{j} | replay {j} | regression | P1 | replays clean | stub {verdict.lower()} | {verdict} | none |"
+            f"| UT-{j} | replay {j} | regression | P1 | replays clean | stub {v_for(j).lower()} | {v_for(j)} | none |"
             for j in journeys)
+        any_fail = any(v_for(j) == "FAIL" for j in journeys)
         with open(results, "w") as f:
-            f.write("**Browser QA Verdict:** " + ("PASS" if verdict == "PASS" else "FAIL") + "\n\n"
+            f.write("**Browser QA Verdict:** " + ("FAIL" if any_fail else "PASS") + "\n\n"
                     "## Results Table\n"
                     "| Test ID | Name | Type | Priority | Expected | Actual | Verdict | Evidence |\n"
                     "|---|---|---|---|---|---|---|---|\n" + rows + "\n")
+        if not rc:
+            sys.exit(5 if any_fail else 0)
     if rc:
         sys.exit(int(rc))
     sys.exit(5 if verdict == "FAIL" else 0)
@@ -175,6 +188,9 @@ run_partition() {  # $1 = REQUIRED_JOURNEYS value
       "${R_REPLAY:-}" "${R_LLM:-}" "${_use_replay:-}" "${REPLAY_FAILED:-}"
     if [[ -n "${REPLAY_SKIPPED_INFRA:-}" ]]; then
       printf 'skipinfra=<%s>\n' "$REPLAY_SKIPPED_INFRA"
+    fi
+    if [[ -n "${REPLAY_MASS_FAIL:-}" ]]; then
+      printf 'massfail=<%s>|canaries=<%s>\n' "$REPLAY_MASS_FAIL" "${REPLAY_CANARIES:-}"
     fi
   )
 }
@@ -479,6 +495,270 @@ out="$( (
 ) )"
 [[ "$out" == "J-01 J-02 " ]] && assert "12e: SKIPPED-INFRA → whole REQUIRED set feeds the LLM lane" pass \
   || { assert "12e: SKIPPED-INFRA → whole REQUIRED set feeds the LLM lane" fail; echo "    got: <$out>"; }
+
+# ── 14. SPEED-22 mass-false-FAIL detection (lean-armed only) ─────────────────
+# 14a. 3 of 4 replay journeys FAIL (majority, >2) with the canary capability
+# armed → breaker arms, canaries = 2 lowest-ID FAILs.
+reset_goldens
+golden "J-01"; golden "J-02"; golden "J-03"; golden "J-04"
+out="$(REPLAY_LANE_CANARY_CAPABLE=1 STUB_REPLAY_FAIL_SET="J-02 J-03 J-04" \
+       run_partition "J-01 J-02 J-03 J-04 ")"
+echo "$out" | grep -q 'massfail=<yes>|canaries=<J-02 J-03 >' \
+  && assert "14a: 3/4 majority FAIL arms the breaker with the 2 lowest-ID canaries" pass \
+  || { assert "14a: 3/4 majority FAIL arms the breaker with the 2 lowest-ID canaries" fail; echo "    got: $out"; }
+
+# 14b. Same failure shape WITHOUT the capability flag (full pipeline) → no arm.
+reset_goldens
+golden "J-01"; golden "J-02"; golden "J-03"; golden "J-04"
+out="$(STUB_REPLAY_FAIL_SET="J-02 J-03 J-04" run_partition "J-01 J-02 J-03 J-04 ")"
+echo "$out" | grep -q 'massfail=' \
+  && { assert "14b: full pipeline (no capability flag) never arms the breaker" fail; echo "    got: $out"; } \
+  || assert "14b: full pipeline (no capability flag) never arms the breaker" pass
+
+# 14c. Boundary: 2 FAILs (not >2) and a 3/6 non-majority never arm.
+reset_goldens
+golden "J-01"; golden "J-02"; golden "J-03"; golden "J-04"
+out="$(REPLAY_LANE_CANARY_CAPABLE=1 STUB_REPLAY_FAIL_SET="J-03 J-04" \
+       run_partition "J-01 J-02 J-03 J-04 ")"
+echo "$out" | grep -q 'massfail=' \
+  && { assert "14c: 2 FAILs (not >2) do not arm" fail; echo "    got: $out"; } \
+  || assert "14c: 2 FAILs (not >2) do not arm" pass
+reset_goldens
+golden "J-01"; golden "J-02"; golden "J-03"; golden "J-04"; golden "J-05"; golden "J-06"
+out="$(REPLAY_LANE_CANARY_CAPABLE=1 STUB_REPLAY_FAIL_SET="J-04 J-05 J-06" \
+       run_partition "J-01 J-02 J-03 J-04 J-05 J-06 ")"
+echo "$out" | grep -q 'massfail=' \
+  && { assert "14c: 3/6 (exactly half) does not arm" fail; echo "    got: $out"; } \
+  || assert "14c: 3/6 (exactly half) does not arm" pass
+
+# 14d. Knob off → no arm even at 3/4.
+reset_goldens
+golden "J-01"; golden "J-02"; golden "J-03"; golden "J-04"
+out="$(REPLAY_LANE_CANARY_CAPABLE=1 CHAIN_REPLAY_MASS_FAIL_BREAKER=false \
+       STUB_REPLAY_FAIL_SET="J-02 J-03 J-04" run_partition "J-01 J-02 J-03 J-04 ")"
+echo "$out" | grep -q 'massfail=' \
+  && { assert "14d: CHAIN_REPLAY_MASS_FAIL_BREAKER=false disables detection" fail; echo "    got: $out"; } \
+  || assert "14d: CHAIN_REPLAY_MASS_FAIL_BREAKER=false disables detection" pass
+
+# ── 15. SPEED-22 canary verdict + void ───────────────────────────────────────
+seed_mass_fail_files() {
+  REG="$SBX/reports/phase-$ITER-regression-replay-results.md"
+  CAN="$SBX/reports/phase-$ITER-ui-test-results.canary.md"
+  cat > "$REG" <<'EOF'
+**Browser QA Verdict:** FAIL
+
+## Results Table
+| Test ID | Name | Type | Priority | Expected | Actual | Verdict | Evidence |
+|---|---|---|---|---|---|---|---|
+| UT-J-02 | browse | regression | P1 | e | step 2 failed | FAIL | none |
+| UT-J-03 | export | regression | P1 | e | step 1 failed | FAIL | none |
+| UT-J-04 | filter | regression | P1 | e | step 4 failed | FAIL | none |
+EOF
+  cat > "$CAN" <<'EOF'
+**Browser QA Verdict:** PASS
+
+## Results Table
+| Test ID | Name | Type | Priority | Expected | Actual | Verdict | Evidence |
+|---|---|---|---|---|---|---|---|
+| UT-J-02 | browse | regression | P1 | e | re-checked green | PASS | none |
+| UT-J-03 | export | regression | P1 | e | re-checked green | PASS | none |
+EOF
+}
+
+reset_goldens
+seed_mass_fail_files
+out="$( (
+  set -euo pipefail
+  source "$LIB"
+  REPO_ROOT="$SBX"
+  replay_lane_paths "$ITER"
+  if replay_lane_canaries_all_pass "$CANARY_RESULTS" "J-02 J-03 "; then echo ALLPASS; else echo NOTPASS; fi
+  REPLAY_FAILED="J-02 J-03 J-04 "
+  REPLAY_CANARIES="J-02 J-03 "
+  replay_lane_void_mass_fail "$ITER" >/dev/null 2>&1
+  printf 'failed_after=<%s>\n' "${REPLAY_FAILED:-}"
+) )"
+echo "$out" | grep -q 'ALLPASS' \
+  && assert "15: canaries_all_pass sees both green canary rows" pass \
+  || { assert "15: canaries_all_pass sees both green canary rows" fail; echo "    got: $out"; }
+echo "$out" | grep -q 'failed_after=<>' \
+  && assert "15: void clears REPLAY_FAILED (no further re-confirms)" pass \
+  || { assert "15: void clears REPLAY_FAILED" fail; echo "    got: $out"; }
+REG="$SBX/reports/phase-$ITER-regression-replay-results.md"
+[[ "$(grep -c '| SKIP |' "$REG")" == "3" ]] && ! grep -qF '| FAIL |' "$REG" \
+  && assert "15: void rewrote every FAIL row to SKIP" pass \
+  || assert "15: void rewrote every FAIL row to SKIP" fail
+grep -q '_VOIDED (' "$REG" && grep -q 'voided: suspected selector' "$REG" \
+  && assert "15: dated loud footer + voided note present" pass \
+  || assert "15: dated loud footer + voided note present" fail
+grep -q '^\*\*Browser QA Verdict:\*\* SKIPPED' "$REG" \
+  && assert "15: raw-artifact headline recomputed from surviving rows" pass \
+  || { assert "15: raw-artifact headline recomputed from surviving rows" fail; head -1 "$REG" | sed 's/^/        /'; }
+[[ "$(cat "$SBX/runs/goal-session-rltest/state/goldens-regen-pending" 2>/dev/null | tr '\n' ' ')" == "J-02 J-03 J-04 " ]] \
+  && assert "15: voided journeys queued for golden regeneration" pass \
+  || assert "15: voided journeys queued for golden regeneration (got '$(cat "$SBX/runs/goal-session-rltest/state/goldens-regen-pending" 2>/dev/null | tr '\n' ' ')')" fail
+
+# Conservative negatives: a FAIL canary row / a missing file never clear.
+seed_mass_fail_files
+sed -i 's/| UT-J-03 | export | regression | P1 | e | re-checked green | PASS |/| UT-J-03 | export | regression | P1 | e | really broken | FAIL |/' "$CAN"
+out="$( (
+  set -euo pipefail
+  source "$LIB"
+  REPO_ROOT="$SBX"
+  replay_lane_paths "$ITER"
+  if replay_lane_canaries_all_pass "$CANARY_RESULTS" "J-02 J-03 "; then echo ALLPASS; else echo NOTPASS; fi
+) )"
+[[ "$out" == "NOTPASS" ]] \
+  && assert "15: a genuinely failing canary blocks the void (conservative)" pass \
+  || assert "15: a genuinely failing canary blocks the void (conservative)" fail
+out="$( (
+  set -euo pipefail
+  source "$LIB"
+  REPO_ROOT="$SBX"
+  replay_lane_paths "$ITER"
+  rm -f "$CANARY_RESULTS"
+  if replay_lane_canaries_all_pass "$CANARY_RESULTS" "J-02 "; then echo ALLPASS; else echo NOTPASS; fi
+) )"
+[[ "$out" == "NOTPASS" ]] \
+  && assert "15: a missing canary file blocks the void (conservative)" pass \
+  || assert "15: a missing canary file blocks the void (conservative)" fail
+
+# ── 16. SPEED-22 canary file rides the merge as a middle input ───────────────
+reset_goldens
+seed_mass_fail_files
+LLM="$SBX/reports/phase-$ITER-ui-test-results.llm.md"
+MERGED="$SBX/reports/phase-$ITER-ui-test-results.md"
+printf '%s\n' '**Browser QA Verdict:** PASS
+
+## Results Table
+| Test ID | Name | Type | Priority | Expected | Actual | Verdict | Evidence |
+|---|---|---|---|---|---|---|---|
+| UT-J-20 | target | smoke | P1 | e | ok | PASS | none |' > "$LLM"
+rm -f "$MERGED"
+(
+  set -euo pipefail
+  source "$LIB"
+  REPO_ROOT="$SBX"
+  replay_lane_paths "$ITER"
+  _use_replay=yes
+  replay_lane_merge_results "$MERGED" "$LLM"
+)
+grep -E '^\| UT-J-02 ' "$MERGED" | grep -qF '| PASS |' \
+  && grep -E '^\| UT-J-03 ' "$MERGED" | grep -qF '| PASS |' \
+  && assert "16: canary PASS rows override the replay FAILs in the merge (middle input)" pass \
+  || assert "16: canary PASS rows override the replay FAILs in the merge (middle input)" fail
+grep -E '^\| UT-J-04 ' "$MERGED" | grep -qF '| FAIL |' \
+  && assert "16: an un-canaried FAIL still survives the merge (LLM lane must re-confirm it)" pass \
+  || assert "16: an un-canaried FAIL still survives the merge" fail
+
+# ── 13. SPEED-15 rung 2: budget-deferred regression narrowing ────────────────
+# 13a. trim active + replay engaged + no-golden journeys → deferred set = R_LLM.
+out="$( (
+  set -euo pipefail
+  source "$LIB"
+  iter_budget_trim_active() { return 0; }   # stub: budget math is test-iter-budget's job
+  _use_replay=yes R_LLM="J-04 J-02 " REPLAY_FAILED="J-05 " REQUIRED_JOURNEYS="J-02 J-04 J-05 "
+  replay_lane_deferred_budget_set
+) )"
+[[ "$out" == "J-02 J-04 " ]] && assert "13a: trim+replay → deferred set is exactly R_LLM (sorted)" pass \
+  || { assert "13a: trim+replay → deferred set is exactly R_LLM (sorted)" fail; echo "    got: <$out>"; }
+
+# 13b. trim inactive → empty deferred set.
+out="$( (
+  set -euo pipefail
+  source "$LIB"
+  iter_budget_trim_active() { return 1; }
+  _use_replay=yes R_LLM="J-02 " REPLAY_FAILED="" REQUIRED_JOURNEYS="J-02 "
+  replay_lane_deferred_budget_set
+) )"
+[[ -z "${out// /}" ]] && assert "13b: trim inactive → nothing deferred" pass \
+  || { assert "13b: trim inactive → nothing deferred" fail; echo "    got: <$out>"; }
+
+# 13c. replay off → nothing deferred even when trim is active (the whole
+# REQUIRED set must keep its LLM verifier).
+out="$( (
+  set -euo pipefail
+  source "$LIB"
+  iter_budget_trim_active() { return 0; }
+  _use_replay=no R_LLM="J-02 " REPLAY_FAILED="" REQUIRED_JOURNEYS="J-02 "
+  replay_lane_deferred_budget_set
+) )"
+[[ -z "${out// /}" ]] && assert "13c: replay off → nothing deferred (whole set keeps a verifier)" pass \
+  || { assert "13c: replay off → nothing deferred" fail; echo "    got: <$out>"; }
+
+# 13c2. Target-overlap exclusion: a journey that is BOTH a target and a
+# no-golden required journey is dispatched anyway — it must never be deferred
+# (a DEFERRED-BUDGET row beside its real PASS row would contradict the record).
+out="$( (
+  set -euo pipefail
+  source "$LIB"
+  iter_budget_trim_active() { return 0; }
+  _use_replay=yes R_LLM="J-02 J-04 " REPLAY_FAILED="" REQUIRED_JOURNEYS="J-02 J-04 "
+  replay_lane_deferred_budget_set "J-04 J-09 "
+) )"
+[[ "$out" == "J-02 " ]] && assert "13c2: target-overlapping journey excluded from deferral" pass \
+  || { assert "13c2: target-overlapping journey excluded from deferral" fail; echo "    got: <$out>"; }
+
+# 13d. Armed deferred set narrows the LLM set to the replay-FAIL re-confirms.
+out="$( (
+  set -euo pipefail
+  source "$LIB"
+  _use_replay=yes REPLAY_FAILED="J-05 " R_LLM="J-02 J-04 " REQUIRED_JOURNEYS="J-02 J-04 J-05 "
+  REPLAY_DEFERRED_BUDGET="J-02 J-04 "
+  replay_lane_llm_regression_set
+) )"
+[[ "$out" == "J-05 " ]] && assert "13d: narrowed LLM set keeps ONLY replay-FAIL re-confirms" pass \
+  || { assert "13d: narrowed LLM set keeps ONLY replay-FAIL re-confirms" fail; echo "    got: <$out>"; }
+
+# 13e. Deferred rows: appended to the merged file, DEFERRED-BUDGET verdict cell,
+# and the REAL achievement gate treats the file as blocking.
+MERGED13="$SBX/reports/phase-$ITER-ui-test-results.md"
+cat > "$MERGED13" <<'EOF'
+**Browser QA Verdict:** PASS
+
+## Results Table
+| Test ID | Name | Type | Priority | Expected | Actual | Verdict | Evidence |
+|---|---|---|---|---|---|---|---|
+| UT-J-01 | target | smoke | P1 | e | ok | PASS | none |
+EOF
+(
+  set -euo pipefail
+  source "$LIB"
+  REPO_ROOT="$SBX"
+  replay_lane_paths "$ITER"
+  REPLAY_DEFERRED_BUDGET="J-02 J-04 "
+  replay_lane_write_deferred_rows "$MERGED13" >/dev/null
+)
+[[ "$(grep -c 'DEFERRED-BUDGET' "$MERGED13")" -ge 2 ]] \
+  && grep -q '^| UT-J-02 ' "$MERGED13" && grep -q '^| UT-J-04 ' "$MERGED13" \
+  && assert "13e: DEFERRED-BUDGET rows appended for each deferred journey" pass \
+  || assert "13e: DEFERRED-BUDGET rows appended for each deferred journey" fail
+if python3 "$ENGINE_ROOT/scripts/automation/lib/goal_gate.py" results "$MERGED13" >/dev/null 2>&1; then
+  assert "13e: real achievement gate BLOCKS on the deferred rows (rc 1)" fail
+else
+  assert "13e: real achievement gate BLOCKS on the deferred rows (rc 1)" pass
+fi
+grep -q '^\*\*Browser QA Verdict:\*\* PASS' "$MERGED13" \
+  && assert "13e: headline verdict enum untouched (stays PASS/FAIL/SKIPPED)" pass \
+  || assert "13e: headline verdict enum untouched (stays PASS/FAIL/SKIPPED)" fail
+
+# 13f. Empty deferred set → writer is a byte-level no-op.
+cat > "$MERGED13" <<'EOF'
+**Browser QA Verdict:** PASS
+| UT-J-01 | target | smoke | P1 | e | ok | PASS | none |
+EOF
+_before13="$(cat "$MERGED13")"
+(
+  set -euo pipefail
+  source "$LIB"
+  REPO_ROOT="$SBX"
+  replay_lane_paths "$ITER"
+  REPLAY_DEFERRED_BUDGET=""
+  replay_lane_write_deferred_rows "$MERGED13" >/dev/null
+)
+[[ "$(cat "$MERGED13")" == "$_before13" ]] \
+  && assert "13f: empty deferred set → writer no-op" pass \
+  || assert "13f: empty deferred set → writer no-op" fail
 
 echo ""
 echo "RESULT: $PASS passed, $FAIL failed"

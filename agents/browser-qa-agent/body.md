@@ -127,7 +127,7 @@ The script MUST be valid for the runner (`scripts/automation/lib/demo_runner.py`
 {
   "schema_version": 1,
   "journey": "J-07",
-  "name": "<journey name from goal.md>",
+  "name": "<journey name from the goal file named in your dispatch prompt>",
   "default_timeout_ms": 8000,
   "steps": [
     {"n": 1, "journey": "J-07", "action": {"type": "goto", "url": "/login"}, "expect": {"text": "Sign in"}},

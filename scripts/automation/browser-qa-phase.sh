@@ -20,6 +20,11 @@ source "$SCRIPT_DIR/lib/replay-lane.sh"
 # shellcheck disable=SC2034  # consumed by lib/replay-lane.sh's log helpers
 REPLAY_LANE_TAG="browser-qa"
 
+# SPEED-15: pick up the engine's iteration clock so the trim ladder (rung 2
+# below) can consult the shared budget. Standalone phase mode has no epoch
+# exported → the budget machinery stays inert here, exactly as before.
+if [[ -n "${CHAIN_ITER_START_EPOCH:-}" ]]; then iter_budget_init; fi
+
 PHASE="${1:-}"
 require_phase_arg "$PHASE"
 require_claude
@@ -258,7 +263,37 @@ if [[ "$PHASE" =~ ^goal-(.+)-iter-[0-9]+$ ]]; then
   if [[ "$_use_replay" == "yes" ]]; then
     _llm_out="$LLM_RESULTS"
   fi
+  # SPEED-15 rung 2: capture the deferred set ONCE (the budget clock keeps
+  # ticking — a later recompute could disagree with what was dispatched);
+  # replay_lane_llm_regression_set narrows itself when it is non-empty, and
+  # the post-merge writer below appends the DEFERRED-BUDGET rows. Targets are
+  # excluded from deferral — they are dispatched regardless.
+  _bqa_targets="$(replay_lane_spec_journeys 'Target journeys:' "$SPEC")"
+  REPLAY_DEFERRED_BUDGET="$(replay_lane_deferred_budget_set "$_bqa_targets")"
+  if [[ -n "${REPLAY_DEFERRED_BUDGET// /}" ]]; then
+    echo "[browser-qa] iter-budget trim (rung 2): deferring no-golden regression journey(s) this iteration: ${REPLAY_DEFERRED_BUDGET% }— targets + replay-FAIL re-confirms are never deferred."
+    declare -F iter_budget_trim_event >/dev/null 2>&1 && iter_budget_trim_event "replay-narrow"
+  fi
   _llm_regr_set="$(replay_lane_llm_regression_set)"
+  # TOKEN-10: journey definitions for the regression lane come from a sliced
+  # goal view — targets ∪ this run's LLM regression set stay verbatim; only
+  # replay-covered/stable journeys are digested. Bare call: sets
+  # GOAL_SLICE_EXEC_PATH + GOAL_SLICE_EXEC_MODE (hatch/fallback → full file).
+  goal_slice_for_exec "$PHASE" \
+    "$(echo "$_bqa_targets $_llm_regr_set" | tr ' ' '\n' | grep -E '^J-[0-9]+$' | sort -u | tr '\n' ',' | sed 's/,$//')" \
+    "$REPO_ROOT/runs/$PHASE/goal-slice-bqa.md"
+  _bqa_goal_ref="$GOAL_SLICE_EXEC_PATH"
+  _bqa_goal_note=""
+  [[ "$GOAL_SLICE_EXEC_MODE" == "sliced" ]] && _bqa_goal_note=" (a token-lean goal slice — every journey listed here appears verbatim; read the full docs/goal.md ONLY if a definition you need is missing)"
+  # SPEED-23: same rotating golden nudge as the lean lane — one gap journey in
+  # this run's LLM set gets its golden promoted to a REQUIRED deliverable.
+  _bqa_nudge="$(replay_lane_golden_nudge_pick "$_llm_regr_set" || true)"
+  if [[ -n "$_bqa_nudge" ]]; then
+    echo "[browser-qa] SPEED-23 golden nudge: $_bqa_nudge MUST get a golden replay script this dispatch (rotating pick from state/golden-gaps; CHAIN_GOLDEN_NUDGE=false disables)."
+    if declare -F record_telemetry_event >/dev/null 2>&1; then
+      record_telemetry_event "golden_nudge" "$(jq -cn --arg j "$_bqa_nudge" --arg n "$PHASE" '{journey:$j, iter_name:$n}' 2>/dev/null || printf '{"journey":"%s"}' "$_bqa_nudge")" || true
+    fi
+  fi
   _goal_lanes_note="
 
 GOAL-MODE REGRESSION LANES (goal-session iteration — IN ADDITION to the test plan):
@@ -266,7 +301,7 @@ $(if [[ "$_use_replay" == "yes" && -n "${R_REPLAY// /}" ]]; then
   echo "- Deterministic replay has ALREADY re-verified these Required-still-passing journeys from stored golden scripts: ${R_REPLAY% }. Do NOT re-test them and do NOT emit rows for them — their rows merge into the results automatically after your run. (If a test-plan case you execute anyway covers one, that is fine; your row supersedes the replay's.)"
 fi)
 $(if [[ -n "${_llm_regr_set// /}" ]]; then
-  echo "- ALSO execute these regression journeys this run: ${_llm_regr_set% }. For each: read its numbered steps + Acceptance line from the \"Must-have user journeys\" section of docs/goal.md, execute it like a test case, and add a results-table row using the journey ID as the Test ID (e.g. UT-J-01)."
+  echo "- ALSO execute these regression journeys this run: ${_llm_regr_set% }. For each: read its numbered steps + Acceptance line from the \"Must-have user journeys\" section of ${_bqa_goal_ref}${_bqa_goal_note}, execute it like a test case, and add a results-table row using the journey ID as the Test ID (e.g. UT-J-01)."
 fi)
 $(if [[ -n "${REPLAY_FAILED// /}" ]]; then
   echo "- The replay lane flagged possible regression(s) on: ${REPLAY_FAILED% } (already included in the list above). Re-confirm each by executing the journey yourself; if it passes, the replay FAIL was a stale golden script — repair that journey's golden so the next iteration replays clean."
@@ -277,7 +312,8 @@ PASS, ALSO write a self-contained deterministic replay script to
 $JOURNEY_SCRIPTS_DIR/<J-XX>.json (overwrite if present), IMMEDIATELY after that
 journey passes — follow the 'Golden replay script' section of your agent
 instructions for the exact JSON shape. Best-effort: if you cannot produce one for
-a journey, skip it (that journey just falls back to the LLM lane next time)."
+a journey, skip it (that journey just falls back to the LLM lane next time).
+$(if [[ -n "${_bqa_nudge:-}" ]]; then echo "REQUIRED DELIVERABLE (golden-coverage nudge): journey $_bqa_nudge keeps passing but still has NO golden replay script, so it rides this slow LLM lane every iteration. After verifying it this run you MUST write $JOURNEY_SCRIPTS_DIR/$_bqa_nudge.json before finishing — for THIS one journey the golden is NOT best-effort."; fi)"
 fi
 
 SERVICES_NOTE="Note: browser-qa-phase.sh manages backend (${BACKEND_HEALTH_URL}, log: ${QA_BACKEND_LOG}) and frontend (${FRONTEND_URL}, log: ${QA_FRONTEND_LOG}). Services are restarted automatically if they die during quota-retry sleeps."
@@ -390,6 +426,7 @@ if [[ "$GOAL_REPLAY_ACTIVE" == "yes" ]]; then
   fi
   if [[ "$_use_replay" == "yes" ]]; then
     replay_lane_merge_results "$UI_TEST_RESULTS" "$_llm_out"
+    replay_lane_write_deferred_rows "$UI_TEST_RESULTS"
   fi
   replay_lane_golden_coverage "$UI_TEST_RESULTS" "$PHASE"
 fi

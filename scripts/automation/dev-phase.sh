@@ -66,6 +66,25 @@ fi
 
 echo "[dev-phase] Mode: $MODE_LABEL"
 
+# TOKEN-10 context diet: goal-mode full iterations hand the developer a sliced
+# goal view (vision + anti-goals + target/failing journeys verbatim; stable
+# passing journeys digested) — the agent body otherwise sends it to the whole
+# goal.md, which grows with every proposer-promoted journey. Plain phases keep
+# a plain goal line when docs/goal.md exists, else no line (as before).
+GOAL_CONTEXT_LINE=""
+if [[ "$PHASE" =~ ^goal-(.+)-iter-[0-9]+$ ]]; then
+  _dev_targets="$(grep -iE 'Target journeys:' "$SPEC" 2>/dev/null | head -1 | grep -oE 'J-[0-9]+' | sort -u | tr '\n' ',' | sed 's/,$//' || true)"
+  goal_slice_for_exec "$PHASE" "$_dev_targets" "$REPO_ROOT/runs/$PHASE/goal-slice-exec.md"
+  if [[ "$GOAL_SLICE_EXEC_MODE" == "sliced" ]]; then
+    GOAL_CONTEXT_LINE="Project goal (SLICED — vision, anti-goals, and this iteration's target + failing journeys verbatim; stable passing journeys digested to one line): $GOAL_SLICE_EXEC_PATH  <-- read Must-have user journeys and Anti-goals here
+Full goal file: docs/goal.md — Read it ONLY if a digested journey becomes relevant to your work."
+  else
+    GOAL_CONTEXT_LINE="Project goal: docs/goal.md  <-- read Must-have user journeys and Anti-goals"
+  fi
+elif [[ -f "$REPO_ROOT/docs/goal.md" ]]; then
+  GOAL_CONTEXT_LINE="Project goal: docs/goal.md  <-- read Must-have user journeys and Anti-goals"
+fi
+
 # ── Cleanup: kill any server processes started by the dev agent ──────────
 # The dev agent may start uvicorn/next dev for verification.  These are
 # long-running servers that block the agent from exiting if not cleaned up.
@@ -92,6 +111,7 @@ claude_with_quota_retry -p "You are the developer agent for phased development.
 
 Phase: $PHASE
 Phase spec: $SPEC
+$GOAL_CONTEXT_LINE
 Project template: .claude/project-template.md  <-- read this for stack info, test commands, architecture rules
 Agent instructions: .claude/agents/developer.md  <-- read this first
 (CLAUDE.md is already in your system prompt — do not Read it again.)

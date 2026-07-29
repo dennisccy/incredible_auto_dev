@@ -99,6 +99,16 @@ The `allow` list should be customized per project (e.g., add `Bash(alembic *)` f
 | `CHAIN_TRACE_DIR` | (auto-set by entry scripts) | Directory where each successful claude invocation appends a record to `trace.jsonl` and copies its stdout to `<NNNN>-<agent>.log`. Phase mode auto-sets to `runs/<phase>/trace/`; goal mode auto-sets to `runs/goal-session-<sid>/trace/`. Inspect with `python3 scripts/automation/lib/replay_trace.py list <dir>`. |
 | `CHAIN_DISABLE_TRACE` | `false` | When `true`, the entry scripts skip auto-setting `CHAIN_TRACE_DIR` so no trace records are written. |
 | `CHAIN_DISABLE_PERMISSION_ISOLATION` | `false` | When `true`, skip the per-agent permission overlay applied by `lib/quota-retry.sh`. The overlay reads `lib/agent_permissions.py` and passes `--disallowedTools` to claude based on `CHAIN_CURRENT_AGENT` — by default, only `release-manager` can `git push`, `gh pr merge`, `gh release`, `git tag`, etc. |
+| `CHAIN_DEPTH_ARBITER` | `true` | SPEED-20 deterministic depth arbiter (evaluator depth recommendation binding by default; `false` restores the legacy SPEED-10 allowlist) |
+| `CHAIN_FULL_CADENCE_CAP` | `4` | Arbiter window cap: at most one full per W iterations (`0`/`1` disables the cap) |
+| `CHAIN_ITER_TIME_BUDGET_SECONDS` | `3600` | SPEED-15 wall-clock iteration budget (`0` disarms everything) |
+| `CHAIN_ITER_BUDGET_MODE` | `trim` | `warn` logs only; `trim` (default) sheds optional breadth in rung order — spine/gates never trimmed |
+| `CHAIN_DEV_FULL_GOAL` | `false` | TOKEN-10 hatch: `true` feeds executors the full `docs/goal.md` instead of the goal slice |
+| `CHAIN_GOLDEN_AUTODERIVE` / `CHAIN_GOLDEN_AUTODERIVE_MAX` | `true` / `3` | SPEED-21: derive + verify + install golden candidates from the verified demo (cap per iteration) |
+| `CHAIN_GOLDEN_NUDGE` | `true` | SPEED-23: one gap journey per iteration gets its golden promoted to a REQUIRED deliverable |
+| `CHAIN_REPLAY_MASS_FAIL_BREAKER` | `true` | SPEED-22: majority replay-FAIL runs re-check 2 canaries before re-confirming the whole set (lean executor only) |
+| `CHAIN_UI_COMBINED` | `true` | SPEED-24: goal-mode fulls combine ui-impact + ui-test-design into one dispatch (under-delivery falls back) |
+| `CHAIN_SKIP_TESTPLAN_IF_PRESENT` | `true` | TOKEN-3 (flipped 2026-07-29): skip test-plan generation when the spec lists its own tests or a fresh plan exists |
 | `GOAL_SESSION_DIR` | (set by run-goal.sh) | Goal-mode session directory; consumed by `lib/telemetry.sh` for JSONL writes. No-op when unset (phase mode is unaffected). |
 | `GOAL_SESSION_ID` | (set by run-goal.sh) | Session id; included in every telemetry event |
 | `GOAL_ITER_INDEX` | (set by run-goal.sh) | Current iteration index; included in every telemetry event |

@@ -3,8 +3,8 @@ name: developer
 description: Implementation agent. Reads the execution plan from runs/<phase>/plan.md, implements changes following TDD. Handles both backend and frontend work. On retry, reads existing review/QA reports and fixes only the listed issues. Writes dev handoff when complete.
 model: claude-sonnet-5
 disallowed_tools: ["Bash(rm -rf /)", "Bash(rm -rf ~)", "Bash(rm -rf ~/*)", "Bash(rm -rf /home*)", "Bash(rm -rf /root*)", "Bash(rm -rf /etc*)", "Bash(rm -rf /usr*)", "Bash(rm -rf /var*)", "Bash(rm -rf /boot*)", "Bash(rm -rf /lib*)", "Bash(rm -rf /opt*)", "Bash(rm -rf /srv*)", "Bash(rm -rf /sys*)", "Bash(rm -rf /proc*)", "Bash(git push --force origin main)", "Bash(git push --force origin master)", "Bash(git push -f origin main)", "Bash(git push -f origin master)", "Bash(git push *)", "Bash(git push)", "Bash(git push --force *)", "Bash(gh pr merge *)", "Bash(gh pr close *)", "Bash(gh release *)", "Bash(git tag *)"]
-version: 1.1.2
-last_updated: 2026-07-25
+version: 1.2.0
+last_updated: 2026-07-29
 ---
 
 # Developer Agent
@@ -15,7 +15,7 @@ You implement phase changes following the execution plan.
 
 CLAUDE.md is auto-loaded into your system prompt — do not Read it again.
 
-1. `docs/goal.md` — understand the project's overall goal before implementing
+1. The project-goal file named in your dispatch prompt — in goal mode this is a token-lean goal slice (vision, anti-goals, and this iteration's target/failing journeys verbatim; stable passing journeys digested to one line). Read the full `docs/goal.md` ONLY when the prompt names no goal file (and it exists) or a digested journey becomes relevant to your work.
 2. `.claude/project-template.md` — stack configuration, test commands, architecture principles
 3. `docs/architecture/*.md` — existing project architecture (if present; created by update-docs.sh after the first finalized phase — absence is normal early on, skip silently)
 4. `runs/<phase>/plan.md` — execution plan (what to build)

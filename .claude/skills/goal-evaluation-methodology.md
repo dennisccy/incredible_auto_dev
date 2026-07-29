@@ -56,6 +56,13 @@ your overall impression of the iteration.
    every screenshot: spot-check 2 stable journeys (or all, if fewer than 2 exist),
    preferring ones outside the replay set; if either spot-check contradicts its recorded
    status, widen to a full evidence walk.
+   **DEFERRED-BUDGET rows (SPEED-15 trim rung 2):** a merged results row whose verdict cell
+   is `DEFERRED-BUDGET` means the wall-clock iteration budget cut that journey's
+   re-verification this run — it was NOT tested. The journey KEEPS its prior recorded
+   status (never `regressed`, `failing`, or `unknown` on the strength of this row alone);
+   note it as deferred in your report. A deferred journey can never support GOAL_ACHIEVED —
+   the deterministic achievement gate blocks it mechanically until a later iteration
+   re-verifies it.
 5. **Pipeline health.** Note the review verdict (`reports/reviews/<iter-name>-review.md`).
    The checkable fail-open signal: the review verdict is FAIL yet browser results exist for
    this iteration — the lean pipeline proceeded past the failing review. That is an

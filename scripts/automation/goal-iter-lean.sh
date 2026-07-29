@@ -203,6 +203,10 @@ trap 'cleanup_iter_servers; chain_tmp_cleanup' EXIT
 # benchmark iter-0s died on exactly that parse before the guard existed).
 TARGET_JOURNEYS="$(replay_lane_spec_journeys 'Target journeys:' "$SPEC")"
 REQUIRED_JOURNEYS="$(replay_lane_spec_journeys 'Required-still-passing' "$SPEC")"
+# SPEED-22: only the lean executor has a canary dispatch slot, so only it may
+# arm the mass-false-FAIL breaker inside the shared replay lane (the full
+# pipeline stays byte-identical). Exported so the SPEED-2/3 forks inherit it.
+export REPLAY_LANE_CANARY_CAPABLE=1
 # REL-14 make-up: journeys whose browser evidence was infra-blocked last
 # iteration ride the Required set as verify-only work (run-goal.sh exports the
 # set; empty/unset = today's behavior). Unioned BEFORE _bq_sig so checkpoint
@@ -212,6 +216,23 @@ if [[ -n "${CHAIN_BQA_MAKEUP_JOURNEYS:-}" ]]; then
   REQUIRED_JOURNEYS="$(echo "$REQUIRED_JOURNEYS $CHAIN_BQA_MAKEUP_JOURNEYS" | tr ' ' '\n' | grep -E '^J-[0-9]+$' | sort -u | tr '\n' ' ' || true)"
 fi
 _bq_sig="${TARGET_JOURNEYS}|${REQUIRED_JOURNEYS}"
+
+# TOKEN-10 context diet: the developer dispatch gets a sliced goal view
+# (vision + anti-goals + this iteration's target and failing journeys
+# VERBATIM; stable passing journeys digested to one line) instead of the whole
+# goal.md — the goal file grows with every proposer-promoted journey (desk
+# session: 97KB, developer wall 31→77 min). Bare call: sets
+# GOAL_SLICE_EXEC_PATH + GOAL_SLICE_EXEC_MODE (hatch CHAIN_DEV_FULL_GOAL=true
+# restores the full file; any builder failure falls back loudly).
+goal_slice_for_exec "$ITER_NAME" \
+  "$(echo "$TARGET_JOURNEYS" | tr ' ' ',' | sed 's/^,*//;s/,*$//')" \
+  "${ITER_DIR:-$REPO_ROOT/runs/$ITER_NAME}/goal-slice-exec.md"
+if [[ "$GOAL_SLICE_EXEC_MODE" == "sliced" ]]; then
+  DEV_GOAL_CONTEXT="Project goal (SLICED — vision, anti-goals, and this iteration's target + failing journeys verbatim; stable passing journeys digested to one line): $GOAL_SLICE_EXEC_PATH  <-- read Must-have user journeys and Anti-goals here
+Full goal file: $GOAL_FILE — Read it ONLY if a digested journey becomes relevant to your work."
+else
+  DEV_GOAL_CONTEXT="Project goal: $GOAL_FILE  <-- read Must-have user journeys and Anti-goals"
+fi
 
 # Lane path derivations (EVIDENCE_DIR, JOURNEY_SCRIPTS_DIR, REGRESSION_RESULTS,
 # LLM_RESULTS, DEMO_RUNNER, MERGE_RESULTS) are replay_lane_paths in
@@ -343,6 +364,8 @@ _bqa_state_save() {
     printf 'R_LLM=%q\n'                "${R_LLM:-}"
     printf 'REPLAY_FAILED=%q\n'        "${REPLAY_FAILED:-}"
     printf 'REPLAY_SKIPPED_INFRA=%q\n' "${REPLAY_SKIPPED_INFRA:-}"
+    printf 'REPLAY_MASS_FAIL=%q\n'     "${REPLAY_MASS_FAIL:-}"
+    printf 'REPLAY_CANARIES=%q\n'      "${REPLAY_CANARIES:-}"
     printf 'export QA_BACKEND_HEALTH_URL=%q\n'       "${QA_BACKEND_HEALTH_URL:-}"
     printf 'export QA_BACKEND_START_CMD=%q\n'        "${QA_BACKEND_START_CMD:-}"
     printf 'export QA_BACKEND_LOG=%q\n'              "${QA_BACKEND_LOG:-}"
@@ -410,7 +433,7 @@ _bqa_fork_reap() {
   # ports so the sequential rerun boots on the fixed tree.
   _bqa_kill_port_servers
   replay_lane_paths "$ITER_NAME"
-  rm -f "$_BQA_STATE_FILE" "$_BQA_RC_FILE" "${REGRESSION_RESULTS:-}" 2>/dev/null || true
+  rm -f "$_BQA_STATE_FILE" "$_BQA_RC_FILE" "${REGRESSION_RESULTS:-}" "${CANARY_RESULTS:-}" 2>/dev/null || true
   echo "[goal-iter-lean] Forked replay lane is dead and its lane files are discarded — safe to invalidate."
   return 0
 }
@@ -487,7 +510,7 @@ _bqa_full_fork_reap() {
   _bqa_kill_port_servers
   replay_lane_paths "$ITER_NAME"
   rm -f "$_BQA_FULL_RC_FILE" "$_BQA_FULL_PID_FILE" \
-        "${REGRESSION_RESULTS:-}" "${LLM_RESULTS:-}" "${UI_TEST_RESULTS:-}" 2>/dev/null || true
+        "${REGRESSION_RESULTS:-}" "${LLM_RESULTS:-}" "${UI_TEST_RESULTS:-}" "${CANARY_RESULTS:-}" 2>/dev/null || true
   record_telemetry_event "parallel_bqa_wasted_dispatch" "$(jq -cn --arg n "$ITER_NAME" \
       '{mode:"full", iter_name:$n,
         wasted:"one full browser-qa dispatch (LLM lane included) ran against the pre-fix tree and was discarded on the attempt-1 review FAIL",
@@ -644,14 +667,14 @@ run_browser_qa_llm() {
 
 Iteration: $ITER_NAME
 Iter spec: $SPEC
-Project goal: $GOAL_FILE  <-- read \"Must-have user journeys\" section for journey definitions
+$BQA_GOAL_LINE
 Agent instructions: .claude/agents/browser-qa-agent.md  <-- read this first
 (CLAUDE.md is already in your system prompt — do not Read it again.)
 Skill: .claude/skills/browser-workflow-executor.md  <-- read for Chrome MCP technique
 
 GOAL-MODE LEAN MODE — test EXACTLY these journeys this run: ${_journeys:-(none)}
 $( [[ -n "${_exclude// /}" ]] && echo "Do NOT test these — a deterministic replay verifies them separately: $_exclude" )
-  1. For each journey ID above, read its numbered steps + Acceptance line from the project goal's \"Must-have user journeys\" section.
+  1. For each journey ID above, read its numbered steps + Acceptance line from the \"Must-have user journeys\" section of the goal file named above.
   2. Execute the steps with Chrome MCP; use the journey ID as the test case ID (e.g. UT-J-01).
 
 Frontend URL: $FRONTEND_URL
@@ -665,7 +688,7 @@ else
 fi)
 
 For each journey:
-  - Execute the numbered steps exactly as written in goal.md
+  - Execute the numbered steps exactly as written in the goal file named above
   - Verify the Acceptance condition
   - Take a screenshot of the end state, save to reports/qa/${ITER_NAME}-evidence/
   - Record PASS / FAIL / SKIP with a short failure description if FAIL
@@ -677,6 +700,7 @@ re-verify it without a browser-driving model. Follow the 'Golden replay script'
 section of your agent instructions for the exact JSON shape. Best-effort: if you
 cannot produce one for a journey, skip it (that journey just falls back to the LLM
 next time).
+$( [[ -n "${NUDGE_JOURNEY:-}" ]] && echo "REQUIRED DELIVERABLE (golden-coverage nudge): journey $NUDGE_JOURNEY keeps passing but still has NO golden replay script, so it rides this slow LLM lane every iteration. After verifying it this run you MUST write $JOURNEY_SCRIPTS_DIR/$NUDGE_JOURNEY.json before finishing — for THIS one journey the golden is NOT best-effort." )
 
 Write your results to: $_out
 Use template: templates/ui-test-results.md
@@ -698,9 +722,61 @@ Then STOP." || _rc=$?
 # (Golden partition + lane 1 — the deterministic replay — live inside
 # run_browser_qa_boot_and_replay above: they already ran, inline or forked.)
 
-# Lane 2 — LLM browser-qa-agent.
+# TOKEN-10: build the browser-qa goal line over a given journey set — every
+# journey a dispatch executes must stay VERBATIM in the slice it reads.
+# Callable more than once per run: the SPEED-22 canary probe needs a goal line
+# BEFORE the final LLM set exists, and the main dispatch rebuilds over the
+# final union (the canary dispatch is synchronous, so it has fully consumed
+# the earlier slice file before the rebuild overwrites it). Bare call: sets
+# BQA_GOAL_LINE (+ GOAL_SLICE_EXEC_PATH/MODE via goal_slice_for_exec).
+_build_bqa_goal_line() {  # $1 = space-separated journeys to keep verbatim
+  goal_slice_for_exec "$ITER_NAME" \
+    "$(echo "$1" | tr ' ' '\n' | grep -E '^J-[0-9]+$' | sort -u | tr '\n' ',' | sed 's/,$//')" \
+    "${ITER_DIR:-$REPO_ROOT/runs/$ITER_NAME}/goal-slice-bqa.md"
+  if [[ "$GOAL_SLICE_EXEC_MODE" == "sliced" ]]; then
+    BQA_GOAL_LINE="Project goal (SLICED — every journey you are asked to test below is verbatim; stable passing journeys digested to one line): $GOAL_SLICE_EXEC_PATH  <-- read \"Must-have user journeys\" section for journey definitions
+Full goal file: $GOAL_FILE — Read it ONLY if a journey definition you need is missing from the sliced file."
+  else
+    BQA_GOAL_LINE="Project goal: $GOAL_FILE  <-- read \"Must-have user journeys\" section for journey definitions"
+  fi
+}
+
+# SPEED-22 canary probe — runs BEFORE the LLM set is computed, because a void
+# empties REPLAY_FAILED and thereby shrinks the main dispatch. A majority-FAIL
+# replay run is re-checked with the 2 lowest-ID FAILs first: both green →
+# every replay FAIL is voided as drift (rows rewritten SKIP + loud footer,
+# goldens queued for regeneration, prior statuses kept); any canary FAIL (or
+# an unusable canary file — conservative) → today's full re-confirm path for
+# the REMAINING set (the canaries' own fresh verdicts ride the merge as a
+# middle input either way).
+if [[ "${REPLAY_MASS_FAIL:-}" == "yes" && -n "${REPLAY_CANARIES// /}" ]]; then
+  echo "[goal-iter-lean] SPEED-22: dispatching canary re-confirms for ${REPLAY_CANARIES% }(instead of immediately re-confirming all of: ${REPLAY_FAILED% })."
+  _build_bqa_goal_line "$TARGET_JOURNEYS $REPLAY_CANARIES"   # the canary prompt needs its own goal line — the main one is built later
+  _canary_rc=0
+  run_browser_qa_llm "$(echo "$REPLAY_CANARIES" | tr ' ' ',' | sed 's/^,*//;s/,*$//')" "$CANARY_RESULTS" "" || _canary_rc=$?
+  if [[ "$_canary_rc" -eq 0 ]] && replay_lane_canaries_all_pass "$CANARY_RESULTS" "$REPLAY_CANARIES"; then
+    replay_lane_void_mass_fail "$ITER_NAME" || true
+  else
+    echo "[goal-iter-lean] SPEED-22: canary re-check did NOT clear the mass FAIL (rc=$_canary_rc) — keeping the full re-confirm path for the remaining set."
+    record_telemetry_event "replay_mass_fail_confirmed" "$(jq -cn --arg n "$ITER_NAME" --arg c "${REPLAY_CANARIES% }" --arg j "${REPLAY_FAILED% }" '{iter_name:$n, canaries:$c, journeys:$j}' 2>/dev/null || printf '{"iter_name":"%s"}' "$ITER_NAME")"
+    # The canaries were just freshly re-tested — drop them from the main
+    # re-confirm set; their verdicts enter the merge via the canary file.
+    REPLAY_FAILED="$(echo "$REPLAY_FAILED" | tr ' ' '\n' | grep -E '^J-[0-9]+$' | grep -vxF -f <(echo "$REPLAY_CANARIES" | tr ' ' '\n' | grep -E '^J-[0-9]+$') | tr '\n' ' ' || true)"
+  fi
+fi
+
+# Lane 2 — LLM browser-qa-agent. The regression portion comes from the shared
+# helper; SPEED-15 rung 2 narrows it when over budget in trim mode. The
+# deferred set is captured ONCE here (the budget clock keeps ticking — a later
+# recompute could disagree with what was dispatched) and reused by the
+# post-merge deferred-row writer below.
+REPLAY_DEFERRED_BUDGET="$(replay_lane_deferred_budget_set "$TARGET_JOURNEYS")"
+if [[ -n "${REPLAY_DEFERRED_BUDGET// /}" ]]; then
+  echo "[goal-iter-lean] iter-budget trim (rung 2): deferring no-golden regression journey(s) this iteration: ${REPLAY_DEFERRED_BUDGET% }— targets + replay-FAIL re-confirms are never deferred."
+  declare -F iter_budget_trim_event >/dev/null 2>&1 && iter_budget_trim_event "replay-narrow"
+fi
 if [[ "$_use_replay" == "yes" ]]; then
-  _llm_set="$TARGET_JOURNEYS $R_LLM $REPLAY_FAILED"   # targets + no-golden regression + replay re-confirms
+  _llm_set="$TARGET_JOURNEYS $(replay_lane_llm_regression_set)"   # targets + (no-golden regression + replay re-confirms, minus rung-2 deferrals)
   _llm_out="$LLM_RESULTS"
 else
   _llm_set="$TARGET_JOURNEYS $REQUIRED_JOURNEYS"       # replay off → LLM covers everything (prior behaviour)
@@ -708,6 +784,24 @@ else
 fi
 LLM_JOURNEYS="$(echo "$_llm_set" | tr ' ' '\n' | grep -E '^J-[0-9]+$' | sort -u | tr '\n' ' ' || true)"   # same pipefail guard as replay_lane_spec_journeys: an all-replay iteration has an empty LLM set
 _llm_csv="$(echo "$LLM_JOURNEYS" | tr ' ' ',' | sed 's/^,*//;s/,*$//')"
+
+# TOKEN-10: the browser-qa dispatch also gets a sliced goal view. Slice
+# targets = TARGET_JOURNEYS ∪ the LLM set, so EVERY journey this dispatch
+# executes keeps its full step definitions verbatim — only journeys the
+# deterministic replay lane covers (or that are outside this run entirely)
+# are digested. Bare call: sets BQA_GOAL_LINE (rebuilds the slice file even if
+# the canary probe built an earlier, narrower one — that dispatch is done).
+_build_bqa_goal_line "$TARGET_JOURNEYS $LLM_JOURNEYS"
+
+# SPEED-23: promote ONE persisted golden-coverage gap riding this LLM set from
+# best-effort golden authoring to a REQUIRED deliverable (rotating pick — see
+# replay_lane_golden_nudge_pick). Ends the J-06-class tax where a journey rides
+# the slow LLM lane for many iterations because its golden never gets written.
+NUDGE_JOURNEY="$(replay_lane_golden_nudge_pick "$LLM_JOURNEYS" || true)"
+if [[ -n "$NUDGE_JOURNEY" ]]; then
+  echo "[goal-iter-lean] SPEED-23 golden nudge: $NUDGE_JOURNEY MUST get a golden replay script this dispatch (rotating pick from state/golden-gaps; CHAIN_GOLDEN_NUDGE=false disables)."
+  record_telemetry_event "golden_nudge" "$(jq -cn --arg j "$NUDGE_JOURNEY" --arg n "$ITER_NAME" '{journey:$j, iter_name:$n}' 2>/dev/null || printf '{"journey":"%s"}' "$NUDGE_JOURNEY")"
+fi
 
 _bqa_rc=0
 _bqa_dispatched="no"
@@ -753,6 +847,7 @@ fi
 # so no stale FAIL survives the iteration on disk.
 if [[ "$_use_replay" == "yes" ]]; then
   replay_lane_merge_results "$UI_TEST_RESULTS" "$_llm_out"
+  replay_lane_write_deferred_rows "$UI_TEST_RESULTS"
 fi
 
 # REL-14 post-scan (same knob): a dispatch that returned but left no results
@@ -806,7 +901,7 @@ run_developer() {
 
 Iteration: $ITER_NAME
 Iter spec: $SPEC
-Project goal: $GOAL_FILE  <-- read Must-have user journeys and Anti-goals
+$DEV_GOAL_CONTEXT
 Project template: .claude/project-template.md
 Agent instructions: .claude/agents/developer.md  <-- read this first
 (CLAUDE.md is already in your system prompt — do not Read it again.)

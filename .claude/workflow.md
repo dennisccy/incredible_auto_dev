@@ -15,7 +15,7 @@ Plan → Test Plan → Dev+Review loop → QA loop → Audit loop → Finalize
 | Stage | Script | Agent | Output |
 |-------|--------|-------|--------|
 | 1. Plan | `run-phase.sh` (internal) | orchestrator | `runs/<phase>/plan.md` (reads `docs/goal.md` + prior handoffs + `docs/architecture/` if present — created by update-docs.sh after the first finalized phase) |
-| 2. Test Plan | `generate-test-plan.sh` | qa (mode: generate) | `reports/qa/<phase>-test-plan.md` — dispatch skipped (loudly logged) when the spec already lists its own tests (`## Test`-titled section or ≥3 `TC-` lines) and `CHAIN_SKIP_TESTPLAN_IF_PRESENT=true` (default `false`; TOKEN-3) |
+| 2. Test Plan | `generate-test-plan.sh` | qa (mode: generate) | `reports/qa/<phase>-test-plan.md` — dispatch skipped (loudly logged) when the spec already lists its own tests (`## Test`-titled section or ≥3 `TC-` lines) or a fresh generated plan exists (newer than the spec, ≥3 `TC-` lines), gated by `CHAIN_SKIP_TESTPLAN_IF_PRESENT` (default `true` since 2026-07-29; TOKEN-3), or when the SPEED-15 iteration budget is exceeded in trim mode and a test source already exists (rung 3a) |
 | 3. Dev + Review | `dev-phase.sh` + `review-phase.sh` | developer, reviewer | `docs/handoffs/<phase>-dev.md`, `reports/phase-{N}-implementation-summary.md` |
 | 4. UI Impact Analysis | `ui-impact-phase.sh` | ui-impact-analyst | `reports/phase-{N}-user-visible-changes.md`, `reports/phase-{N}-ui-surface-map.md` |
 | 5. UI Test Design | `ui-test-design-phase.sh` | ui-test-designer | `reports/phase-{N}-ui-test-plan.md`, `reports/phase-{N}-what-to-click.md` |

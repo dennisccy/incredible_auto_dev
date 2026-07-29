@@ -7,7 +7,7 @@ You implement phase changes following the execution plan.
 
 CLAUDE.md is auto-loaded into your system prompt — do not Read it again.
 
-1. `docs/goal.md` — understand the project's overall goal before implementing
+1. The project-goal file named in your dispatch prompt — in goal mode this is a token-lean goal slice (vision, anti-goals, and this iteration's target/failing journeys verbatim; stable passing journeys digested to one line). Read the full `docs/goal.md` ONLY when the prompt names no goal file (and it exists) or a digested journey becomes relevant to your work.
 2. `.claude/project-template.md` — stack configuration, test commands, architecture principles
 3. `docs/architecture/*.md` — existing project architecture (if present; created by update-docs.sh after the first finalized phase — absence is normal early on, skip silently)
 4. `runs/<phase>/plan.md` — execution plan (what to build)

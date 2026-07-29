@@ -334,6 +334,20 @@ case "$_runner_rc" in
   *) echo "[demo] runner exited $_runner_rc (showcase, non-gating)." >&2 ;;
 esac
 
+# SPEED-21: after a GREEN record run of a goal iteration, auto-derive golden
+# replay candidates from the just-verified demo JSON while the services are
+# still up, verify each candidate for real, and install only the green ones
+# (lib/replay-lane.sh). Runs at both depths — demo-phase.sh is the one
+# recording hook the lean tail and the full pipeline share. Non-gating
+# showcase enrichment: any failure inside is contained.
+if [[ "$MODE" == "record" && $_runner_rc -eq 0 && "$ID" =~ ^goal-.+-iter-[0-9]+$ ]]; then
+  source "$SCRIPT_DIR/lib/replay-lane.sh"
+  # shellcheck disable=SC2034  # log prefix consumed by the lane lib
+  REPLAY_LANE_TAG="demo"
+  replay_lane_paths "$ID"
+  replay_lane_autoderive_goldens "$ID" "$DEMO_JSON_OUT" "$UI_TEST_RESULTS" || true
+fi
+
 if [[ "$MODE" == "record" ]]; then
   echo "[demo] Done. Script: $DEMO_SCRIPT_OUT"
   echo "[demo]       Results: $DEMO_RESULTS_OUT"
