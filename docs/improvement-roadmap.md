@@ -4498,9 +4498,15 @@ reset). The framework's job is now surface / preserve / recover / cap — HOST-2
   engine takes the existing resumable `AWAITING_HOST_GUARD` pause via the extracted
   `_hg_arbitrate` (same total order as every other breach class); the senior warns. Checked
   BEFORE the no-budget early return so a machine can configure only the cap. Absent or
-  invalid ⇒ unlimited ⇒ today's behaviour (§20 no-op rule). Set to **1** on this host until
-  the hardware soaks clean; it shrinks the exposure window, which is the only honest
-  software lever left. `HOST_GUARD_GLOBAL_ON_CONFLICT` deleted from env + docs.
+  invalid ⇒ unlimited ⇒ today's behaviour (§20 no-op rule).
+- **Released same-day (2026-07-30, owner decision):** set to 1 on this host, then unset a
+  few hours later along with boost-off and the CPU mask. The honest reading is that all
+  three bought *exposure time*, never prevention — the fault fired at load 1.53 as readily
+  as under two concurrent sessions, and BIOS 1.26 turned out to be the latest, so the
+  remediation moved to C-state limiting and then memtest/RMA. The knob remains the way to
+  isolate a soak week to one project. Attribution is preserved regardless: every engine
+  start records the live mitigation set as a `host_state` ledger event (HOST-4), so the
+  next postmortem names the combination that was running. `HOST_GUARD_GLOBAL_ON_CONFLICT` deleted from env + docs.
 - **DoD/Verify:** `test-host-guard.sh` §A15 — junior PAUSE naming the knob, senior WARN,
   cap=2 OK, absent/junk/0 OK, pump records don't count as engines.
 

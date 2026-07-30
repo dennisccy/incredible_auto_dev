@@ -57,11 +57,16 @@ HOST_GUARD_MAX_ENGINES=1                # concurrent goal engines (absent = unli
 `HOST_GUARD_MAX_ENGINES` caps how many goal-mode engines may run at once across
 the whole machine. Over the cap, the **junior** engine takes the ordinary
 resumable `AWAITING_HOST_GUARD` pause and continues when the senior finishes;
-the senior only warns. It exists for one situation: a host whose resets turn out
-to be **hardware** (see § After a hardware reset). Nothing a guard can do
-prevents those, so the honest mitigation is fewer simultaneous engines — a
-narrower CPU mask would only be theatre. Remove the line to go back to unlimited
-once the hardware has soaked clean.
+the senior only warns. Absent ⇒ unlimited.
+
+It exists for one situation: a host whose resets turn out to be **hardware**
+(see § After a hardware reset). Nothing a guard can do prevents those, so a
+narrower CPU mask is theatre — but be clear-eyed that this knob is not a fix
+either. It buys **exposure time, not prevention**: fewer hours under load means
+fewer chances to trip, and nothing more. On the incident host the fault fired at
+load 1.53 as readily as under two concurrent sessions, so the cap was released
+within hours in favour of the real remediation. Its durable use is narrower and
+better: pinning a soak week to a single project so one variable moves at a time.
 
 Every guarded context publishes a record (pid, start time, boot id, project,
 mask, memory ceiling) into a registry under
