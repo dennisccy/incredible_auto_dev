@@ -57,6 +57,17 @@ source "$SCRIPT_DIR/lib/common.sh"
 source "$SCRIPT_DIR/lib/engine-lock.sh"
 ROOT="${CHAIN_DOCTOR_REPO_ROOT:-$REPO_ROOT}"
 
+# Running the doctor under sudo is always a mistake, and a quiet one. sudo
+# resets HOME, so every check reads ROOT's world instead of yours: no machine
+# budget file, an empty host-guard registry, the wrong plugin cache — and the
+# table comes back looking healthy about a machine that is not the one you run
+# sessions on. With `sudo -E` it is worse: the postmortem write lands in YOUR
+# cache owned by root, and every later user-run forensics call fails on it.
+# Warn rather than refuse — the doctor is advisory by construction.
+if [[ "${EUID:-$(id -u)}" -eq 0 && -z "${CHAIN_DOCTOR_ALLOW_ROOT:-}" ]]; then
+  echo "[doctor] WARNING: running as root (HOME=$HOME). This table describes root's environment, not yours — host-guard, tmp-health and the reset-reason rows will all be wrong. Re-run it as your own user: bash scripts/automation/doctor.sh" >&2
+fi
+
 CHECKS=(python3 node playwright chrome-mcp gh-auth git-remote disk timeout jq
         pump-heartbeat engine-lock tmp-health chrome-exclusive mcp-affinity
         host-guard cpu-boost reset-reason ras-logging ambient-env)
