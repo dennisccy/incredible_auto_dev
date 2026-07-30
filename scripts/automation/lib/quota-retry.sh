@@ -269,6 +269,17 @@ _agent_timeout_for() {
 _INTERACTIVE_DISPATCH_LIB="$(dirname "${BASH_SOURCE[0]}")/interactive-dispatch.sh"
 [[ -f "$_INTERACTIVE_DISPATCH_LIB" ]] && source "$_INTERACTIVE_DISPATCH_LIB"
 
+# Machine-wide durable event ledger (host-guard). Sourced here because
+# agent_with_quota_retry below is the SINGLE dispatch chokepoint for all three
+# backends — the engine AND every run-phase child — so bracketing it is what
+# lets a postmortem say which agent each repo was running at the moment the
+# machine died. Pure library, re-source guarded; a no-op stub keeps vendored
+# copies that lack the lib working unchanged.
+_HOST_GUARD_REGISTRY_LIB="$(dirname "${BASH_SOURCE[0]}")/host-guard-registry.sh"
+# shellcheck source=host-guard-registry.sh
+[[ -f "$_HOST_GUARD_REGISTRY_LIB" ]] && source "$_HOST_GUARD_REGISTRY_LIB"
+declare -f hg_event >/dev/null 2>&1 || hg_event() { :; }
+
 # Append a trace record to $CHAIN_TRACE_DIR/trace.jsonl and copy stdout into
 # $CHAIN_TRACE_DIR/<NNNN>-<agent>.log. No-op if CHAIN_TRACE_DIR is unset, the
 # directory does not exist, or is not writable. Always best-effort: failures
@@ -1228,6 +1239,8 @@ agent_with_quota_retry() {
   # CHAIN_AGENT_BACKEND overrides the CLI for dispatch only (assets/personas
   # still come from CHAIN_CLI). Defaults to the CLI, so absence = today's behaviour.
   local backend="${CHAIN_AGENT_BACKEND:-$cli}"
+  local _hg_t0=$EPOCHSECONDS _hg_rc=0
+  hg_event dispatch_start "$(printf '{"backend":"%s"}' "$backend")"
   case "$backend" in
     interactive) _interactive_invoke "$@" ;;
     claude)      _claude_invoke "$@" ;;
@@ -1237,6 +1250,10 @@ agent_with_quota_retry() {
       return 2
       ;;
   esac
+  _hg_rc=$?
+  hg_event dispatch_end \
+    "$(printf '{"backend":"%s","rc":%s,"dur_s":%s}' "$backend" "$_hg_rc" "$(( EPOCHSECONDS - _hg_t0 ))")"
+  return $_hg_rc
 }
 
 # Back-compat alias. Existing scripts call this name; behaviour now depends on

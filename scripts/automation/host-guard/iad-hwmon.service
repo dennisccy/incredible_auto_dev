@@ -1,0 +1,29 @@
+[Unit]
+# Machine-global 1 Hz hardware sampler for host-guard crash forensics.
+#
+# WHY A MACHINE UNIT: the sampler used to be started per repo by each engine's
+# preflight. That produced two half-histories and an asymmetry that cost real
+# evidence — after the 2026-07-30 hardware reset only one project's sampler came
+# back, so the other repo's csv stayed frozen and its post-reset behaviour was
+# unrecorded. The hardware is one machine; one sampler covers it, restarts
+# itself after every reset, and writes outside every repo.
+#
+# INSTALL (no root — this is a --user unit; see docs/host-guard.md):
+#   cp scripts/automation/host-guard/iad-hwmon.service ~/.config/systemd/user/
+#   systemctl --user daemon-reload && systemctl --user enable --now iad-hwmon.service
+#   loginctl show-user "$USER" --property=Linger   # must be Linger=yes
+# Edit ExecStart if your framework clone is not at ~/Git/incredible_auto_dev.
+Description=iad host-guard hwmon sampler (1 Hz, machine-global crash forensics)
+
+[Service]
+Type=simple
+Environment=HOST_GUARD_HWMON_DIR=%h/.cache/iad/host-guard/hwmon
+ExecStart=/usr/bin/bash %h/Git/incredible_auto_dev/scripts/automation/host-guard/hwmon-log.sh run
+Restart=always
+RestartSec=5
+# Never let the forensics sampler become the thing that hurts the host.
+Nice=10
+IOSchedulingClass=idle
+
+[Install]
+WantedBy=default.target

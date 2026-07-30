@@ -136,11 +136,19 @@ run_doctor() {
     if [[ "$a" == "--" ]]; then in_args=true; continue; fi
     $in_args && args+=("$a") || envs+=("$a")
   done
+  # The healthy fixture must stay healthy on ANY host — including one that has
+  # actually had a hardware reset. An empty kernel-log fixture pins reset-reason
+  # (and therefore ras-logging, which keys off reset history) to the clean case;
+  # the postmortem dir is redirected so the row's sanctioned write cannot escape
+  # into the real cache.
   env "PATH=$SHIMS:$FARM" "HOME=$FHOME" \
       "CHAIN_DOCTOR_REPO_ROOT=$FREPO" "CHAIN_TMP_ROOT=$FTMP" \
       "PLAYWRIGHT_BROWSERS_PATH=$TMP_DIR/browsers" "PYTHONPATH=$PYDIR" \
+      "HOST_GUARD_RESET_KLOG_FILE=$TMP_DIR/klog-clean" \
+      "HOST_GUARD_POSTMORTEM_DIR=$TMP_DIR/postmortems" \
       "CHAIN_DOCTOR_AMBIENT=" "${envs[@]}" bash "$DOCTOR" "${args[@]}"
 }
+printf 'Jul 30 17:14:29 host kernel: Linux version 7.0.0-28-generic\n' > "$TMP_DIR/klog-clean"
 
 echo ""
 echo "=== doctor.sh: healthy fixture ==="
@@ -176,9 +184,9 @@ echo ""
 
 rc=0; out=$(run_doctor -- --list 2>&1) || rc=$?
 n=$(echo "$out" | grep -c '^[a-z0-9-]*$' || true)
-{ [[ $rc -eq 0 && $n -eq 17 ]]; } \
-  && assert "--list prints the 17 check keys" "pass" \
-  || assert "--list prints the 17 check keys (rc=$rc n=$n)" "fail"
+{ [[ $rc -eq 0 && $n -eq 19 ]]; } \
+  && assert "--list prints the 19 check keys" "pass" \
+  || assert "--list prints the 19 check keys (rc=$rc n=$n)" "fail"
 echo "$out" | grep -qx "tmp-health" && echo "$out" | grep -qx "chrome-exclusive" \
   && assert "--list includes the evidence-born checks" "pass" \
   || assert "--list includes the evidence-born checks" "fail"
@@ -203,6 +211,8 @@ echo ""
 rc=0; out=$(env "PATH=$SHIMS_NOJQ:$FARM" "HOME=$FHOME" \
     "CHAIN_DOCTOR_REPO_ROOT=$FREPO" "CHAIN_TMP_ROOT=$FTMP" \
     "PLAYWRIGHT_BROWSERS_PATH=$TMP_DIR/browsers" "PYTHONPATH=$PYDIR" \
+    "HOST_GUARD_RESET_KLOG_FILE=$TMP_DIR/klog-clean" \
+    "HOST_GUARD_POSTMORTEM_DIR=$TMP_DIR/postmortems" \
     "CHAIN_DOCTOR_AMBIENT=" bash "$DOCTOR" 2>&1) || rc=$?
 [[ $rc -eq 0 ]] && assert "missing jq: non-strict run still exits 0 (advisory)" "pass" \
                 || assert "missing jq: non-strict run still exits 0 (got $rc)" "fail"
@@ -219,6 +229,8 @@ echo "$out" | grep -Eq '\[doctor\] summary: pass=[0-9]+ warn=0 fail=1 skip=0' \
 rc=0; env "PATH=$SHIMS_NOJQ:$FARM" "HOME=$FHOME" \
     "CHAIN_DOCTOR_REPO_ROOT=$FREPO" "CHAIN_TMP_ROOT=$FTMP" \
     "PLAYWRIGHT_BROWSERS_PATH=$TMP_DIR/browsers" "PYTHONPATH=$PYDIR" \
+    "HOST_GUARD_RESET_KLOG_FILE=$TMP_DIR/klog-clean" \
+    "HOST_GUARD_POSTMORTEM_DIR=$TMP_DIR/postmortems" \
     "CHAIN_DOCTOR_AMBIENT=" bash "$DOCTOR" --strict-doctor >/dev/null 2>&1 || rc=$?
 [[ $rc -eq 1 ]] && assert "missing jq: --strict-doctor exits 1" "pass" \
                 || assert "missing jq: --strict-doctor exits 1 (got $rc)" "fail"
@@ -244,6 +256,8 @@ chmod 755 "$ROTMP"
 rc=0; out=$(env "PATH=$SHIMS_CHROME:$FARM" "HOME=$FHOME" \
     "CHAIN_DOCTOR_REPO_ROOT=$FREPO" "CHAIN_TMP_ROOT=$FTMP" \
     "PLAYWRIGHT_BROWSERS_PATH=$TMP_DIR/browsers" "PYTHONPATH=$PYDIR" \
+    "HOST_GUARD_RESET_KLOG_FILE=$TMP_DIR/klog-clean" \
+    "HOST_GUARD_POSTMORTEM_DIR=$TMP_DIR/postmortems" \
     "CHAIN_DOCTOR_AMBIENT=" bash "$DOCTOR" --only chrome-exclusive 2>&1) || rc=$?
 echo "$out" | grep -Eq 'WARN +chrome-exclusive +.*4242' \
   && assert "chrome-exclusive WARNs naming competing PIDs" "pass" \

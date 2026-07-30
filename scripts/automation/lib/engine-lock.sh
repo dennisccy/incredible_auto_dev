@@ -101,6 +101,19 @@ engine_lock_classify() {
     return 0
   fi
 
+  # Recorded in a previous boot ⇒ the holder cannot possibly be alive, whatever
+  # /proc says now. Checked AFTER the cross-host branch (boot ids are only
+  # comparable on the same host) and BEFORE the pid probe, because a machine
+  # reset is exactly the case where the pid probe can be fooled. Locks written
+  # before this field existed carry no boot_id and fall through unchanged.
+  local lock_boot cur_boot
+  lock_boot="$(_engine_lock_meta "$dir" boot_id)"
+  cur_boot="$(cat /proc/sys/kernel/random/boot_id 2>/dev/null)"
+  if [[ -n "$lock_boot" && -n "$cur_boot" && "$lock_boot" != "$cur_boot" ]]; then
+    echo "STALE|$pid|${host:-$myhost}|${age:-?}|recorded in a previous boot (machine reset or reboot) — the holder cannot be alive"
+    return 0
+  fi
+
   if kill -0 "$pid" 2>/dev/null; then
     # Same-host pid is alive — but pids get recycled across crashes/reboots.
     # If /proc says the live process is something else entirely, the holder
@@ -131,6 +144,10 @@ acquire_engine_lock() {
         _engine_lock_host      > "$dir/host"
         date +%s               > "$dir/epoch"
         basename -- "$0" 2>/dev/null > "$dir/cmd"
+        # Boot id: pids are recycled across a reboot, so after a machine reset a
+        # leftover lock can name a pid that is alive and even runs a matching
+        # command. The boot id is the only field that cannot survive the reset.
+        cat /proc/sys/kernel/random/boot_id 2>/dev/null > "$dir/boot_id"
       } 2>/dev/null || true
       _ENGINE_LOCK_HELD="$dir"
       return 0

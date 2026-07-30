@@ -114,6 +114,38 @@ _hg_proc_starttime() {
   sed 's/.*) //' "/proc/$pid/stat" 2>/dev/null | awk '{print $20}'
 }
 
+# hg_pid_matches <pid> <starttime> — rc 0 iff that pid is alive AND is still the
+# SAME process. After a machine reset the box comes back with the same pid space,
+# so a pidfile left by the dead boot can point at an innocent live process.
+# `kill -0` alone cannot tell them apart; the start time can.
+hg_pid_matches() {
+  local pid="${1:-}" stt="${2:-}"
+  [[ "$pid" =~ ^[0-9]+$ && -n "$stt" ]] || return 1
+  kill -0 "$pid" 2>/dev/null || return 1
+  [[ "$(_hg_proc_starttime "$pid")" == "$stt" ]]
+}
+
+# hg_boot_epoch — unix time this boot started (/proc/stat btime).
+# HOST_GUARD_BTIME_OVERRIDE is the test seam: no test can reboot a machine.
+hg_boot_epoch() {
+  if [[ -n "${HOST_GUARD_BTIME_OVERRIDE:-}" ]]; then
+    echo "$HOST_GUARD_BTIME_OVERRIDE"; return 0
+  fi
+  awk '/^btime /{print $2; exit}' /proc/stat 2>/dev/null || echo 0
+}
+
+# hg_file_predates_boot <path> — rc 0 iff the file was last written BEFORE this
+# boot began, i.e. it is a leftover from a machine that went down without
+# cleaning up. rc 1 when the file is missing, unreadable, or current.
+hg_file_predates_boot() {
+  local f="${1:-}" mt bt
+  [[ -f "$f" ]] || return 1
+  mt="$(stat -c %Y "$f" 2>/dev/null)" || return 1
+  bt="$(hg_boot_epoch)"
+  [[ "$mt" =~ ^[0-9]+$ && "$bt" =~ ^[0-9]+$ ]] || return 1
+  (( mt < bt ))
+}
+
 # ── Registry ──────────────────────────────────────────────────────────────────
 
 hg_registry_dir() {
@@ -202,6 +234,79 @@ hg_release() { # drop THIS process's engine record (best effort)
   return 0
 }
 
+# ── Durable machine-wide event ledger ─────────────────────────────────────────
+# WHY: after the 2026-07-30 hardware reset nothing on disk could answer the one
+# question forensics needs — "what was the machine doing, across BOTH repos, in
+# the final seconds?". The aggregate verdict is silent when it passes,
+# telemetry.jsonl is per-session and never fsync'd, and engine.log only exists in
+# interactive mode. This ledger is one fsync'd line per chain event for the whole
+# machine, so the postmortem can reconstruct a cross-repo timeline.
+#
+# DURABILITY: `sync <file>` after each append — the same idiom that made the
+# hwmon sampler the only artifact to survive the power-cut with its last second
+# intact. Event rate is a few per minute, so the cost is irrelevant.
+#
+# CONCURRENCY: single-line O_APPEND writes from concurrent engines do not
+# interleave on a local filesystem (lines stay far below the atomic-write bound;
+# oversized payloads are dropped rather than truncated, so a reader never meets
+# half a JSON object). Same local-fs assumption the registry already makes.
+
+hg_events_file() {
+  echo "${HOST_GUARD_EVENTS_FILE:-${CHAIN_TMP_ROOT:-$HOME/.cache/iad}/host-guard/events.jsonl}"
+}
+
+_hg_json_esc() { # minimal JSON string escaping for the fields we control
+  local s="${1:-}"
+  s="${s//\\/\\\\}"; s="${s//\"/\\\"}"; s="${s//$'\n'/ }"; s="${s//$'\t'/ }"
+  printf '%s' "$s"
+}
+
+# hg_event <type> [json-object] — best effort, ALWAYS returns 0.
+# The optional second argument is a JSON OBJECT whose body is spliced into the
+# event (e.g. '{"iter":3}'). Never let a ledger problem touch the engine.
+hg_event() {
+  local type="${1:-}" payload="${2:-}"
+  [[ -n "$type" ]] || return 0
+  # NO-OP RULE (roadmap §20): no machine budget file and no project host-guard
+  # ⇒ this function writes nothing at all, on any host.
+  [[ -f "$(hg_host_env_file)" || "${HOST_GUARD_ENABLED:-0}" == "1" ]] || return 0
+
+  local f dir extra="" iso size max
+  f="$(hg_events_file)"; dir="$(dirname "$f")"
+  mkdir -p "$dir" 2>/dev/null || return 0
+
+  if [[ "$payload" == \{*\} ]]; then
+    extra="${payload#\{}"; extra="${extra%\}}"
+    extra="${extra//$'\n'/ }"
+    if (( ${#extra} > 900 )); then
+      extra=',"payload_dropped":true'      # never emit half an object
+    elif [[ -n "$extra" ]]; then
+      extra=",$extra"
+    fi
+  fi
+
+  printf -v iso '%(%Y-%m-%dT%H:%M:%S)T' -1
+  printf '{"ts":%s,"iso":"%s","boot":"%s","host":"%s","pid":%s,"event":"%s","project":"%s","sid":"%s","agent":"%s"%s}\n' \
+    "$EPOCHSECONDS" "$iso" "$(_hg_boot_id)" \
+    "$(_hg_json_esc "${HOSTNAME:-unknown}")" "$$" "$(_hg_json_esc "$type")" \
+    "$(_hg_json_esc "${REPO_ROOT:-$PWD}")" "$(_hg_json_esc "${GOAL_SESSION_ID:-${SESSION_ID:-}}")" \
+    "$(_hg_json_esc "${CHAIN_CURRENT_AGENT:-}")" "$extra" >> "$f" 2>/dev/null || return 0
+  # fsync so the final pre-reset lines survive an instant power-cut reset
+  sync "$f" 2>/dev/null || sync 2>/dev/null || true
+
+  max="${HOST_GUARD_EVENTS_MAX_BYTES:-5242880}"
+  size="$(stat -c %s "$f" 2>/dev/null || echo 0)"
+  if [[ "$size" =~ ^[0-9]+$ && "$max" =~ ^[0-9]+$ ]] && (( size > max )); then
+    if command -v flock >/dev/null 2>&1; then
+      # A racing rotator doing the same mv is harmless; skip rather than wait.
+      ( flock -n 9 && mv -f "$f" "$f.1" ) 9>"$dir/.events.lock" 2>/dev/null || true
+    else
+      mv -f "$f" "$f.1" 2>/dev/null || true
+    fi
+  fi
+  return 0
+}
+
 # hg_self_is_junior_to <own_rec> <other_rec> — rc 0 when SELF loses.
 # Total order over (epoch, starttime, pid): both sides compute the same answer
 # from the same files, so a conflict never ends in both-pause or neither-pause.
@@ -240,6 +345,33 @@ hg_boost_ok() {
   return 0
 }
 
+# ── Arbitration ───────────────────────────────────────────────────────────────
+# _hg_arbitrate <own_rec> <detail> <live_rec>... → "PAUSE|<msg>" | "WARN|<msg>"
+# Someone has to yield. Compare against every OTHER live engine record: if we are
+# junior to all of them we pause; otherwise we warn and keep running while the
+# junior session pauses itself on its own next check. Extracted so every breach
+# class (mask, memory, engine count) yields by the same deterministic rule.
+_hg_arbitrate() {
+  local own_rec="${1:-}" detail="${2:-}"; shift 2 2>/dev/null || true
+  local other kind junior=0 senior_desc=""
+  for other in "$@"; do
+    [[ "$other" == "$own_rec" ]] && continue
+    kind="$(_hg_rec_field "$other" kind)"
+    [[ "$kind" == "engine" ]] || continue
+    if hg_self_is_junior_to "$own_rec" "$other"; then
+      junior=1
+      senior_desc="session '$(_hg_rec_field "$other" session_id)' in $(_hg_rec_field "$other" project_root) (pid $(_hg_rec_field "$other" pid))"
+      break
+    fi
+  done
+  if (( junior )); then
+    echo "PAUSE|$detail. The older session holds the budget: $senior_desc. Stop or narrow that session, or widen the budget in $(hg_host_env_file), then resume."
+  else
+    echo "WARN|$detail. This session started first, so it keeps running; the newer session is expected to pause itself."
+  fi
+  return 0
+}
+
 # ── Aggregate verdict ─────────────────────────────────────────────────────────
 # hg_aggregate_verdict <own_rec> → "OK" | "WARN|<msg>" | "PAUSE|<msg>"
 #
@@ -272,6 +404,26 @@ hg_aggregate_verdict() {
       fi
     fi
   done
+
+  # (0) Concurrent-engine cap, checked BEFORE the budget early-return so it works
+  # on a machine that configures only the cap. This is the honest mitigation for
+  # a host whose resets are HARDWARE (2026-07-30: an uncorrected data fabric sync
+  # flood with every mask/memory check green — see docs/host-guard.md § After a
+  # hardware reset): fewer simultaneous engines shrinks the exposure window, a
+  # narrower mask does not. Absent or invalid ⇒ unlimited ⇒ today's behaviour.
+  local cap="${HOST_GUARD_MAX_ENGINES:-}"
+  if [[ "$cap" =~ ^[0-9]+$ ]] && (( cap >= 1 )); then
+    local n_eng=0 er
+    for er in "${live[@]}"; do
+      [[ "$(_hg_rec_field "$er" kind)" == "engine" ]] && n_eng=$(( n_eng + 1 ))
+    done
+    if (( n_eng > cap )); then
+      _hg_arbitrate "$own_rec" \
+        "$n_eng goal-mode engines are live but this machine allows HOST_GUARD_MAX_ENGINES=$cap ($(hg_host_env_file)) — it is recovering from hardware-asserted resets, so concurrent engines are capped until the hardware soaks clean" \
+        "${live[@]}"
+      return 0
+    fi
+  fi
 
   # No machine budget configured: enforcement is off, but say so loudly once
   # two different projects are guarded at the same time — that is exactly the
@@ -318,25 +470,6 @@ hg_aggregate_verdict() {
 
   [[ -n "$detail" ]] || { echo "OK"; return 0; }
 
-  # Someone has to yield. Compare against every OTHER live engine record: if we
-  # are junior to all of them we pause; otherwise we warn and keep going while
-  # the junior session pauses itself on its own next check.
-  local other kind junior=0 senior_desc=""
-  for other in "${live[@]}"; do
-    [[ "$other" == "$own_rec" ]] && continue
-    kind="$(_hg_rec_field "$other" kind)"
-    [[ "$kind" == "engine" ]] || continue
-    if hg_self_is_junior_to "$own_rec" "$other"; then
-      junior=1
-      senior_desc="session '$(_hg_rec_field "$other" session_id)' in $(_hg_rec_field "$other" project_root) (pid $(_hg_rec_field "$other" pid))"
-      break
-    fi
-  done
-
-  if (( junior )); then
-    echo "PAUSE|$detail. The older session holds the budget: $senior_desc. Stop or narrow that session, or widen the budget in $(hg_host_env_file), then resume."
-  else
-    echo "WARN|$detail. This session started first, so it keeps running; the newer session is expected to pause itself."
-  fi
+  _hg_arbitrate "$own_rec" "$detail" "${live[@]}"
   return 0
 }

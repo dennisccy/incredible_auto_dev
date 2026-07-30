@@ -4349,8 +4349,185 @@ Machine-global aggregate bound + QA-browser confinement + host-assumption verifi
   (`run-phase.sh` Branch-QA + Branch-UI) onto one shared browser. Pump browsers are made
   safe by affinity instead, which needs no name.
 - **Failure-mode entry:** `.claude/anti-patterns/26-per-scope-caps-no-machine-aggregate.md`.
-- **Owner action outstanding:** re-apply and PERSIST boost-off (docs/host-guard.md
-  § Boost persistence). Until then the engine pauses `AWAITING_HOST_GUARD` by design.
-- **Verification still owed (G8-class):** subtree-pull both projects, a supervised
-  concurrent `/goal-step` per project verifying the live union stays inside `0-3,8-11`,
-  then the 7-day zero-unclean-shutdown soak (trendora README Stage E).
+- **Owner action outstanding:** ~~re-apply and PERSIST boost-off~~ — **DONE 2026-07-29
+  19:40**: `/etc/tmpfiles.d/cpufreq-boost.conf` installed and the knob reads 0 (verified
+  on-disk 2026-07-30).
+- **Verification still owed (G8-class):** ~~subtree-pull both projects~~ — **DONE
+  2026-07-29** (tapeology `8c737c1` 19:45, trendora `e402ce9b` 19:58; all 13 files
+  byte-identical). ~~7-day zero-unclean-shutdown soak~~ — **REFUTED, see addendum.**
+
+**ADDENDUM 2026-07-30 — the soak failed and the root cause is HARDWARE.**
+
+Reset #7 at **2026-07-30 17:14:08** happened with everything above deployed, armed and
+green: both projects inside `0-3,8-11`, `10G+10G` under the 22G budget, boost off and
+persisted, QA browsers and MCP servers confined, both engines registered in the
+machine-global registry, `AWAITING_HOST_GUARD` count 0. At T-1s the 1 Hz sampler recorded
+65 °C, 26 W, load 6.54 on 8 threads, 11.5 GB free, memory PSI 0.00. Machine back up 21 s
+later.
+
+The cause was never visible to any software check. The CPU prints it on every boot:
+
+```
+x86/amd: Previous system reset reason [0x08000800]: an uncorrected error
+         caused a data fabric sync flood event
+```
+
+Present on **7 of the last 10 boots**; one of those resets fired at load 1.53 / 22 W, which
+falsifies the load hypothesis outright. This is an uncorrectable SoC/Infinity-Fabric error
+— DDR5/fabric marginality on non-ECC SO-DIMMs, BIOS 1.26 dated 09/2025 — and the hardware
+asserts reset with the kernel never notified. **No CPU mask, memory ceiling, or browser
+confinement can prevent this class.** HOST-1's mitigations were correct as far as they go
+(the mask union and memory sum WERE real defects) but they were never sufficient, and
+tightening them further is theatre.
+
+Recorded as `.claude/anti-patterns/27-software-guards-without-reset-reason.md`: read the
+platform's own postmortem registers BEFORE iterating on software guards. Remediation is
+firmware/hardware and belongs to the operator (docs/host-guard.md § After a hardware
+reset). The framework's job is now surface / preserve / recover / cap — HOST-2..HOST-9.
+
+- **Honesty note:** `HOST_GUARD_GLOBAL_ON_CONFLICT` shipped in 8a7a400 as a documented
+  knob that NO code ever read. It was deleted rather than implemented — pause is the only
+  sane semantic and is already hardwired.
+- **New acceptance test** (replaces the refuted soak): 7 consecutive days with
+  `doctor.sh --only reset-reason` reporting CLEAN on every boot.
+
+### HOST-2 — IN-PROGRESS 2026-07-30 · P1 · M · LOW
+
+- **Problem:** seven resets were debugged as software load problems while the kernel
+  printed the cause on every boot. Nothing read it, and nothing preserved the evidence:
+  the engine preflight's `hg_sweep` deletes exactly the registry records that say which
+  projects and sessions were running when the machine died.
+- **Current state:** `scripts/automation/host-guard/reset-forensics.sh` (new);
+  `doctor.sh` row `reset-reason`; `run-goal.sh:1026` `_host_guard_reset_forensics` called
+  at the TOP of `preflight_host_guard`, before the sweep at `:1088`.
+- **Change spec:** read the current boot's `Previous system reset reason` line
+  (journalctl → `/var/log/kern.log` → UNKNOWN; never dmesg, `dmesg_restrict` is on).
+  Classify fault vs planned reboot (`software wrote 0x6 to reset control register 0xCF9`
+  is a normal reboot and must NOT raise an alarm). On a fault, write one idempotent bundle
+  per dead boot to `~/.cache/iad/host-guard/postmortems/<boot-id>.md`: verbatim line, fault
+  streak over the last 10 boots, every registry record from the dead boot, the final
+  PRE-BOOT second of each sampler's telemetry (boot-relative — a sampler that restarted
+  would otherwise present live idle data as the time of death), session telemetry/engine.log
+  /session.json tails, ledger tail, journal tail.
+- **DoD:** `check` classifies fault/reboot/clean/unreadable; "unreadable" is never
+  reported as clean; bundle idempotent; no-op on hosts with no reset-reason line.
+- **Verify:** `bash tests/automation/test-reset-forensics.sh` (52/52);
+  `bash scripts/automation/host-guard/reset-forensics.sh ensure-postmortem` on this host
+  reproduces the 07-30 bundle with both dead engines and tapeology's 17:14:08 final sample.
+- **Files:** `scripts/automation/host-guard/reset-forensics.sh`, `doctor.sh`,
+  `run-goal.sh`, `tests/automation/test-reset-forensics.sh`.
+- **Rollback:** delete the script, the doctor row, and the single preflight call.
+
+### HOST-3 — IN-PROGRESS 2026-07-30 · P1 · S · LOW
+
+- **Problem:** the remediation for a hardware fault needs root, which the chain does not
+  have and must not take; and the next postmortem will be just as thin unless the host's
+  own recording is improved first (journald lost the final 3m42s of the 07-30 reset; no
+  rasdaemon, so the fabric error itself was never recorded).
+- **Change spec:** `docs/host-guard.md` § After a hardware reset — copy-paste one-liners
+  the OWNER runs (journald `SyncIntervalSec=15s`, rasdaemon, pstore peek, BIOS version vs
+  GEEKOM support, memtest86+, optional C-state limiting), plus the one-change-per-soak-week
+  discipline. Doctor row `ras-logging` verifies read-only what it can and stays PASS on
+  hosts with no reset history.
+- **DoD/Verify:** row WARNs only with reset history; `test-reset-forensics.sh` § C.
+- **Files:** `docs/host-guard.md`, `doctor.sh`, `tests/automation/test-doctor.sh`.
+
+### HOST-4 — IN-PROGRESS 2026-07-30 · P1 · M · LOW
+
+- **Problem:** after the reset nothing could answer "what were BOTH repos doing in the
+  final seconds?". The aggregate verdict was silent when it passed, `telemetry.jsonl` is
+  per-session and never fsync'd, and `engine.log` exists only in interactive mode.
+- **Change spec:** `hg_event` in `lib/host-guard-registry.sh` → one fsync'd JSON line per
+  chain event into `~/.cache/iad/host-guard/events.jsonl` (machine-wide, `.project`/`.boot`
+  fields for filtering, 5 MiB ring). Seven call sites: engine start/stop, iteration start,
+  dispatch start/end (`agent_with_quota_retry` — the single chokepoint for all three
+  backends, so every agent in every repo is bracketed), the HEALTHY `aggregate_ok` verdict,
+  and pause. Oversized payloads are DROPPED, never truncated.
+- **DoD/Verify:** `test-host-guard.sh` §A (92/92) — valid JSON, no-op rule, rotation,
+  20 concurrent appenders → 20 valid lines.
+- **Files:** `lib/host-guard-registry.sh`, `lib/quota-retry.sh`, `run-goal.sh`.
+
+### HOST-5 — IN-PROGRESS 2026-07-30 · P1 · S · LOW-MED
+
+- **Problem:** the sampler was started per repo by each engine's preflight, so the machine
+  had two half-histories and an asymmetry that cost evidence — after the 07-30 reset only
+  trendora's sampler restarted; tapeology's stayed dead.
+- **Change spec:** `host-guard/iad-hwmon.service` (new, `--user`, `Restart=always`,
+  writes `~/.cache/iad/host-guard/hwmon/hwmon.csv`); `HOST_GUARD_HWMON_DIR` seam;
+  `status`/`start` recognize a fresh machine-global csv and never double-run (so the
+  per-repo preflight fallback simply stops firing); ring → 2 generations (~8 days);
+  append-only new column `cpu_mhz`. No `ac_online` — `/sys/class/power_supply` is empty on
+  this host, the column would be permanently blank.
+- **DoD/Verify:** 15-field v2 header; global-sampler detection; `.1`+`.2` rotation.
+- **Files:** `host-guard/hwmon-log.sh`, `host-guard/iad-hwmon.service`, `run-goal.sh`
+  (`_host_guard_latest_tctl` reads the machine csv first so the thermal gate survives).
+
+### HOST-6 — IN-PROGRESS 2026-07-30 · P1 · S · LOW
+
+- **Problem:** a machine reset reuses the pid space, so locks and heartbeats left by the
+  dead boot can name a pid that is alive NOW — and `engine_lock_classify`'s cmdline check
+  can even confirm it, wedging a session that is not actually held.
+- **Change spec:** record `boot_id` in `acquire_engine_lock` metadata and classify a
+  foreign boot id as STALE (covers `.engine.lock` AND `runs/.phase.lock` AND the doctor row
+  in one edit); `hg_pid_matches <pid> <starttime>`; the iteration gate discards a
+  `.pump-alive` whose recorded start time no longer matches.
+- **Deliberately NOT done:** `trace/.lock` is a kernel flock — it dies with its holder and
+  a leftover file can never block. `engine.pid` already self-heals on resume
+  (`run-goal.sh:257-269`); its honesty half is HOST-7.
+- **DoD/Verify:** `test-engine-lock.sh` §A1b (44/44) — foreign boot id + live pid → STALE;
+  locks without the field keep old behaviour.
+
+### HOST-7 — IN-PROGRESS 2026-07-30 · P1 · S · LOW
+
+- **Problem:** both sessions killed by the reset still read `in_progress` with no halt
+  marker. A session that silently reappears mid-iteration teaches the operator that
+  iterations vanish at random, when the truth is one hardware event with a postmortem
+  on disk.
+- **Change spec:** `hg_boot_epoch`/`hg_file_predates_boot` (`HOST_GUARD_BTIME_OVERRIDE`
+  test seam); `run-goal.sh` resume prints the reset banner + postmortem pointer and emits a
+  one-time `halt {"reason":"machine_reset"}` (env-prefixed with the session dir —
+  `telemetry_enabled` silently returns false before `GOAL_SESSION_DIR` is exported, so
+  without the prefix the event would never be written); `commands/goal-status.md` step 5
+  reports when/what/why with the hwmon, ledger and postmortem pointers.
+- **Files:** `lib/host-guard-registry.sh`, `run-goal.sh`, `commands/goal-status.md` (+
+  `.claude/commands/` mirror via `sync-cli-assets.py`).
+
+### HOST-8 — IN-PROGRESS 2026-07-30 · P1 · S · LOW
+
+- **Change spec:** `HOST_GUARD_MAX_ENGINES` in the machine env — over the cap, the junior
+  engine takes the existing resumable `AWAITING_HOST_GUARD` pause via the extracted
+  `_hg_arbitrate` (same total order as every other breach class); the senior warns. Checked
+  BEFORE the no-budget early return so a machine can configure only the cap. Absent or
+  invalid ⇒ unlimited ⇒ today's behaviour (§20 no-op rule). Set to **1** on this host until
+  the hardware soaks clean; it shrinks the exposure window, which is the only honest
+  software lever left. `HOST_GUARD_GLOBAL_ON_CONFLICT` deleted from env + docs.
+- **DoD/Verify:** `test-host-guard.sh` §A15 — junior PAUSE naming the knob, senior WARN,
+  cap=2 OK, absent/junk/0 OK, pump records don't count as engines.
+
+### HOST-9 — IN-PROGRESS 2026-07-30 · P1 · S · LOW (docs only)
+
+HOST-1 addendum above; anti-pattern 27; `docs/host-guard.md` root-cause rewrite + runbook;
+these items. **Stop-and-ask:** none (docs).
+
+### Known gaps — deliberately NOT fixed in this package (TODO)
+
+Each is real but none is on the path of a hardware-caused reset; fixing them alongside the
+forensics work would have blurred what this package is for.
+
+- **Demo-runner browsers escape every guard.** `lib/demo_runner.py:918-930` launches a
+  Playwright Chromium with no `--user-data-dir` under the superpowers profile root, so
+  `browser-confine.sh` Pass A/D cannot see it and `doctor.sh` classifies it as harmless
+  desktop Chrome. It inherits the engine's mask when spawned by a confined engine, but NOT
+  when `demo.sh --live` runs standalone.
+- **Registry dir is per-session overridable.** `hg_registry_dir` honours
+  `HOST_GUARD_REGISTRY_DIR`/`CHAIN_TMP_ROOT`; a project that sets either gets a PRIVATE
+  registry and silently drops out of the machine view — with no warning, because an empty
+  registry reads as "one live session, all fine". A machine-global facility should not be
+  addressable by a per-project variable.
+- **Registry heartbeat only refreshes at iteration boundaries.** `hg_register` runs at
+  preflight and each gate, so a record's mtime can be hours stale while live (07-30:
+  tapeology's engine record was last touched 81 minutes before the reset). Correspondingly
+  a project that starts mid-iteration is invisible until the current iteration ends.
+- **Trendora carries two un-upstreamed framework patches** worth reverse-porting:
+  `lib/common.sh` (force the browser lane when `CHAIN_GOAL_TARGET_JOURNEYS` is set) and
+  `lib/replay-lane.sh` (rc=7 backend-unreachable handling).

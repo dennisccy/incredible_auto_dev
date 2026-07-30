@@ -59,7 +59,7 @@ ROOT="${CHAIN_DOCTOR_REPO_ROOT:-$REPO_ROOT}"
 
 CHECKS=(python3 node playwright chrome-mcp gh-auth git-remote disk timeout jq
         pump-heartbeat engine-lock tmp-health chrome-exclusive mcp-affinity
-        host-guard cpu-boost ambient-env)
+        host-guard cpu-boost reset-reason ras-logging ambient-env)
 
 # Run a command under GNU/uutils timeout when available (network probes must
 # degrade, never hang). $1 = seconds, rest = command.
@@ -483,8 +483,15 @@ check_host_guard() {
       return
     fi
     verdict="$(hg_aggregate_verdict "")"
+    local n_eng=0 cap
+    while read -r r; do
+      [[ -n "$r" ]] || continue
+      [[ "$(_hg_rec_field "$r" kind)" == "engine" ]] && n_eng=$(( n_eng + 1 ))
+    done < <(hg_live_records)
+    cap="${HOST_GUARD_MAX_ENGINES:-}"
+    [[ "$cap" =~ ^[0-9]+$ ]] || cap="unlimited"
     case "$verdict" in
-      OK) echo "PASS|mask=$mask mem=$mem inside machine budget ${HOST_GUARD_GLOBAL_CPU_LIST}/${HOST_GUARD_GLOBAL_MEMORY_BUDGET:-unset}; $n live guarded context(s): ${roots:-none}" ;;
+      OK) echo "PASS|mask=$mask mem=$mem inside machine budget ${HOST_GUARD_GLOBAL_CPU_LIST}/${HOST_GUARD_GLOBAL_MEMORY_BUDGET:-unset}; engines=$n_eng/$cap; $n live guarded context(s): ${roots:-none}" ;;
       *)  echo "WARN|${verdict#*|}" ;;
     esac
   )
@@ -521,6 +528,82 @@ check_cpu_boost() {
   else
     echo "PASS|CPU boost is off ($p=0)"
   fi
+}
+
+# EVIDENCE (2026-07-30 17:14:08, reset #7): the machine hard-reset with EVERY
+# host-guard mitigation in force — masks inside the machine budget, 10G+10G under
+# a 22G budget, boost off and persisted, QA browsers confined — at 65 °C, 26 W,
+# 11.5 GB free, memory PSI 0.00. The cause was never visible to any of those
+# checks; it was printed by the CPU itself on the next boot:
+#   x86/amd: Previous system reset reason [0x08000800]: an uncorrected error
+#            caused a data fabric sync flood event
+# Seven of the last ten boots carried a fault-class line. This row surfaces the
+# hardware's own verdict, which no software-side check can infer.
+#
+# FAIL (not WARN) when the last boot died: a host that resets under load is the
+# single most destructive environment fact there is — it destroys whole
+# iterations. The doctor still never gates (exit 0 by construction), so FAIL here
+# costs nothing but attention, which is exactly what it should cost.
+#
+# This row is the doctor's SECOND sanctioned write (after the tmp-health probe):
+# ensure-postmortem freezes the evidence bundle. It is idempotent, lives in the
+# cache root, never touches a repo — and "the operator ran doctor right after a
+# crash" is precisely when the bundle must be created, because the next engine
+# preflight sweeps the registry records that say who was running.
+check_reset_reason() {
+  local script="$SCRIPT_DIR/host-guard/reset-forensics.sh" verdict pm path
+  [[ -f "$script" ]] || { echo "PASS|reset-forensics.sh not present — no reset-reason reader on this install"; return; }
+  verdict="$(_bounded 20 bash "$script" check 2>/dev/null)"
+  case "$verdict" in
+    RESET\|*)
+      local hex cause streak prev
+      IFS='|' read -r _ hex cause streak prev <<< "$verdict"
+      : "$prev"
+      pm="$(_bounded 30 bash "$script" ensure-postmortem 2>/dev/null)"
+      path="${pm#POSTMORTEM|}"; path="${path%|*}"
+      [[ "$pm" == POSTMORTEM\|* ]] || path="(bundle unavailable: ${pm})"
+      echo "FAIL|the previous boot ended in a HARDWARE-asserted reset: $cause ($hex); $streak recent boots. No CPU mask or memory ceiling can prevent this — postmortem: $path (docs/host-guard.md § After a hardware reset)"
+      ;;
+    CLEAN\|*)  echo "PASS|${verdict#CLEAN|}" ;;
+    UNKNOWN\|*) echo "WARN|${verdict#UNKNOWN|}" ;;
+    *)         echo "WARN|reset-forensics.sh returned an unparseable verdict: ${verdict:-<empty>}" ;;
+  esac
+}
+
+# Two host-level recording facilities that only matter once a machine HAS had a
+# hardware reset, and that the chain cannot install for itself (both need root):
+#   - journald's default SyncIntervalSec is 5 minutes, so the 2026-07-30 reset
+#     erased the final 3m42s of journal; only the 1 Hz fsync'd hwmon csv survived.
+#   - rasdaemon records the memory/fabric error itself (address, DIMM), which is
+#     what turns "sync flood" into an actionable RMA or BIOS bug report.
+# WARN, never FAIL: these improve the NEXT postmortem, they do not make the host
+# unsafe. And on a machine with no reset history the row stays PASS — a framework
+# must not nag hosts that never had the incident.
+check_ras_logging() {
+  local script="$SCRIPT_DIR/host-guard/reset-forensics.sh" hist=0 jdir ras missing=""
+  if [[ -f "$script" ]] && [[ "$(_bounded 20 bash "$script" check 2>/dev/null)" == RESET\|* ]]; then
+    hist=1
+  fi
+  jdir="${CHAIN_DOCTOR_JOURNALD_DIR:-/etc/systemd/journald.conf.d}"
+  if ! grep -rqs 'SyncIntervalSec' "$jdir" 2>/dev/null; then
+    missing+="journald SyncIntervalSec drop-in ($jdir); "
+  fi
+  # `systemctl is-active` PRINTS its verdict and exits non-zero for anything but
+  # "active", so a `|| echo` fallback would append a second line and smuggle a
+  # newline into this row (the wrapper reads only the last line and would call
+  # the whole check crashed). First line only, always.
+  ras="${CHAIN_DOCTOR_RAS_STATE:-$(systemctl is-active rasdaemon 2>/dev/null | head -n 1)}"
+  [[ -n "$ras" ]] || ras="unknown"
+  [[ "$ras" == "active" ]] || missing+="rasdaemon (is-active=$ras); "
+  if [[ -z "$missing" ]]; then
+    echo "PASS|crash recording hardened: journald sync drop-in present and rasdaemon active"
+    return
+  fi
+  if (( hist == 0 )); then
+    echo "PASS|no hardware-reset history on this host — journald/rasdaemon hardening is optional (missing: ${missing%; })"
+    return
+  fi
+  echo "WARN|this host HAS hardware-reset history but the next postmortem will be poorer: ${missing%; }— see docs/host-guard.md § After a hardware reset (both need one sudo command)"
 }
 
 # EVIDENCE (§9 measurement discipline): benchmark/measurement runs record

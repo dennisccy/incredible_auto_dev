@@ -98,6 +98,35 @@ else
     assert "A1 acquire creates lock with pid/host/epoch metadata (never appeared)" "fail"
   fi
 
+  # A1b: the boot id is what survives a machine reset. A reset reuses the pid
+  # space, so a lock left by the boot that died can name a pid that is alive
+  # NOW and even runs a matching command — the pid probe would call that FRESH
+  # and refuse to start, wedging the session until someone deletes it by hand.
+  [[ -s "$L1/boot_id" ]] \
+    && assert "A1b acquire records the boot id" "pass" \
+    || assert "A1b acquire records the boot id" "fail"
+  LB="$WORK/a1b.lock"
+  mkdir -p "$LB"
+  echo "$$" > "$LB/pid"; cat /proc/sys/kernel/random/boot_id > "$LB/boot_id"
+  bash -c 'source "'"$LIB"'"; printf "%s" "$(_engine_lock_host)"' > "$LB/host"
+  date +%s > "$LB/epoch"; basename -- "$0" > "$LB/cmd"
+  V="$(bash -c 'source "'"$LIB"'"; engine_lock_classify "$1"' _ "$LB")"
+  [[ "$V" == FRESH* ]] \
+    && assert "A1b current-boot lock with a live pid is FRESH" "pass" \
+    || assert "A1b current-boot lock with a live pid is FRESH (got: $V)" "fail"
+  echo "dead-beef-from-the-boot-that-died" > "$LB/boot_id"
+  V="$(bash -c 'source "'"$LIB"'"; engine_lock_classify "$1"' _ "$LB")"
+  if [[ "$V" == STALE* && "$V" == *"previous boot"* ]]; then
+    assert "A1b lock from a previous boot is STALE even with a live pid" "pass"
+  else
+    assert "A1b lock from a previous boot is STALE even with a live pid (got: $V)" "fail"
+  fi
+  rm -f "$LB/boot_id"
+  V="$(bash -c 'source "'"$LIB"'"; engine_lock_classify "$1"' _ "$LB")"
+  [[ "$V" == FRESH* ]] \
+    && assert "A1b pre-upgrade lock without a boot id keeps old behaviour" "pass" \
+    || assert "A1b pre-upgrade lock without a boot id keeps old behaviour (got: $V)" "fail"
+
   # A2: a second process must refuse fast with the distinct code + message.
   rc=0; err="$WORK/a2.err"
   bash -c 'source "'"$LIB"'"; acquire_engine_lock "$1" "unit second"' _ "$L1" 2>"$err" || rc=$?

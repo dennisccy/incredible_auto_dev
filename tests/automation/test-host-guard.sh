@@ -221,6 +221,119 @@ CHAIN_TMP_ROOT="$WORK/tmproot" HOST_GUARD_REGISTRY_DIR="$WORK/tmproot/host-guard
     ls \"\$HOST_GUARD_REGISTRY_DIR\"/*.rec >/dev/null 2>&1
   " && assert "registry survives the chain-tmp janitor" pass || assert "registry survives the chain-tmp janitor" fail
 
+# 12. Pid identity across a reboot (HOST-6). A machine reset reuses the pid
+# space, so `kill -0` alone will happily confirm a pid recorded by the boot that
+# died — the start time is what tells the two apart.
+setsid sleep 300 & VP=$!; _SPAWNED_PGIDS+=("$VP")
+wait_for 5 test -d "/proc/$VP"
+_VP_STT="$(_hg_proc_starttime "$VP")"
+hg_pid_matches "$VP" "$_VP_STT" && assert "pid_matches: live pid with its own starttime" pass || assert "pid_matches: live pid with its own starttime" fail
+hg_pid_matches "$VP" "1" && assert "pid_matches: recycled pid rejected" fail || assert "pid_matches: recycled pid rejected" pass
+hg_pid_matches "$VP" "" && assert "pid_matches: missing starttime rejected" fail || assert "pid_matches: missing starttime rejected" pass
+kill -KILL "$VP" 2>/dev/null; wait "$VP" 2>/dev/null
+wait_for 5 bash -c "! kill -0 $VP 2>/dev/null"
+hg_pid_matches "$VP" "$_VP_STT" && assert "pid_matches: dead pid rejected" fail || assert "pid_matches: dead pid rejected" pass
+
+# 13. Boot-relative file age (HOST-7): "was this written before the machine came
+# up?" is how a resume tells a crash from a normal stop. No test can reboot a
+# host, so the boot epoch has an override seam.
+: > "$WORK/agefile"
+HOST_GUARD_BTIME_OVERRIDE=1 hg_file_predates_boot "$WORK/agefile" \
+  && assert "predates_boot: current file is not stale" fail || assert "predates_boot: current file is not stale" pass
+HOST_GUARD_BTIME_OVERRIDE=9999999999 hg_file_predates_boot "$WORK/agefile" \
+  && assert "predates_boot: file older than boot detected" pass || assert "predates_boot: file older than boot detected" fail
+HOST_GUARD_BTIME_OVERRIDE=9999999999 hg_file_predates_boot "$WORK/nope" \
+  && assert "predates_boot: missing file is not stale" fail || assert "predates_boot: missing file is not stale" pass
+
+# 14. Durable event ledger (HOST-4). The ledger is the only cross-repo record of
+# what the machine was doing; it must be valid JSON, must respect the no-op rule,
+# and concurrent engines must not shred each other's lines.
+EVENTS="$WORK/events.jsonl"
+( export HOST_GUARD_EVENTS_FILE="$EVENTS" HOST_GUARD_HOST_ENV_FILE="$WORK/absent.env" HOST_GUARD_ENABLED=0
+  source "$LIB"; hg_event noop_check '{"x":1}' )
+[[ -f "$EVENTS" ]] && assert "event: no-op rule (no host env, not enabled) writes nothing" fail || assert "event: no-op rule (no host env, not enabled) writes nothing" pass
+
+printf 'HOST_GUARD_GLOBAL_CPU_LIST="0-3"\n' > "$WORK/host-guard-host.env"
+HOST_GUARD_EVENTS_FILE="$EVENTS" REPO_ROOT=/fake/projA GOAL_SESSION_ID=sessA \
+  CHAIN_CURRENT_AGENT=developer hg_event iter_start '{"iter":7}'
+assert_eq "event: one line written" "1" "$(wc -l < "$EVENTS" | tr -dc 0-9)"
+if command -v jq >/dev/null 2>&1; then
+  jq -e . "$EVENTS" >/dev/null 2>&1 && assert "event: valid JSON" pass || assert "event: valid JSON" fail
+  assert_eq "event: carries project"  "/fake/projA" "$(jq -r '.project' "$EVENTS")"
+  assert_eq "event: carries session"  "sessA"       "$(jq -r '.sid' "$EVENTS")"
+  assert_eq "event: carries agent"    "developer"   "$(jq -r '.agent' "$EVENTS")"
+  assert_eq "event: carries type"     "iter_start"  "$(jq -r '.event' "$EVENTS")"
+  assert_eq "event: splices payload"  "7"           "$(jq -r '.iter' "$EVENTS")"
+  assert_eq "event: carries boot id"  "$(_hg_boot_id)" "$(jq -r '.boot' "$EVENTS")"
+else
+  grep -q '"event":"iter_start"' "$EVENTS" && assert "event: carries type (no jq)" pass || assert "event: carries type (no jq)" fail
+fi
+
+# An oversized payload must be DROPPED, never truncated: half a JSON object in
+# the ledger would break every reader for every later line.
+: > "$EVENTS"
+HOST_GUARD_EVENTS_FILE="$EVENTS" hg_event big "{\"blob\":\"$(head -c 1200 /dev/zero | tr '\0' 'x')\"}"
+if command -v jq >/dev/null 2>&1; then
+  jq -e . "$EVENTS" >/dev/null 2>&1 && assert "event: oversized payload still valid JSON" pass || assert "event: oversized payload still valid JSON" fail
+fi
+grep -q 'payload_dropped' "$EVENTS" && assert "event: oversized payload dropped, not truncated" pass || assert "event: oversized payload dropped, not truncated" fail
+
+: > "$EVENTS"
+# Wait on THESE pids only: a bare `wait` would also block on the long-lived
+# `sleep 300` victim processes the registration tests keep alive, stalling the
+# suite for minutes.
+_APPENDERS=()
+for _i in $(seq 1 20); do
+  ( HOST_GUARD_EVENTS_FILE="$EVENTS" hg_event "concurrent$_i" '{"n":1}' ) &
+  _APPENDERS+=("$!")
+done
+wait "${_APPENDERS[@]}"
+assert_eq "event: 20 concurrent appenders → 20 lines" "20" "$(wc -l < "$EVENTS" | tr -dc 0-9)"
+if command -v jq >/dev/null 2>&1; then
+  assert_eq "event: every concurrent line is valid JSON" "20" "$(jq -c . "$EVENTS" 2>/dev/null | wc -l | tr -dc 0-9)"
+fi
+
+HOST_GUARD_EVENTS_FILE="$EVENTS" HOST_GUARD_EVENTS_MAX_BYTES=200 hg_event rotate_me '{"n":1}'
+[[ -f "$EVENTS.1" ]] && assert "event: ring rotation at max bytes" pass || assert "event: ring rotation at max bytes" fail
+
+# 15. Concurrent-engine cap (HOST-8). On a host whose resets are HARDWARE, the
+# honest mitigation is fewer engines, not a narrower mask.
+CAPREG="$WORK/capreg"; mkdir -p "$CAPREG"
+setsid sleep 300 & C1=$!; _SPAWNED_PGIDS+=("$C1")
+setsid sleep 300 & C2=$!; _SPAWNED_PGIDS+=("$C2")
+wait_for 5 test -d "/proc/$C1"; wait_for 5 test -d "/proc/$C2"
+CAP_SENIOR="$(HOST_GUARD_REGISTRY_DIR="$CAPREG" hg_register engine "$C1" /fake/capA sA "0-3" 4G)"
+sleep 1
+CAP_JUNIOR="$(HOST_GUARD_REGISTRY_DIR="$CAPREG" hg_register engine "$C2" /fake/capB sB "0-3" 4G)"
+_cap_verdict() { # $1 own_rec, $2 cap
+  HOST_GUARD_REGISTRY_DIR="$CAPREG" HOST_GUARD_GLOBAL_CPU_LIST="0-3" \
+    HOST_GUARD_MAX_ENGINES="$2" hg_aggregate_verdict "$1"
+}
+case "$(_cap_verdict "$CAP_JUNIOR" 1)" in
+  PAUSE\|*) assert "cap: junior engine pauses over HOST_GUARD_MAX_ENGINES=1" pass ;;
+  *)        assert "cap: junior engine pauses over HOST_GUARD_MAX_ENGINES=1" fail ;;
+esac
+_cap_verdict "$CAP_JUNIOR" 1 | grep -q 'HOST_GUARD_MAX_ENGINES=1' \
+  && assert "cap: pause message names the knob" pass || assert "cap: pause message names the knob" fail
+case "$(_cap_verdict "$CAP_SENIOR" 1)" in
+  WARN\|*) assert "cap: senior engine warns and keeps running" pass ;;
+  *)       assert "cap: senior engine warns and keeps running" fail ;;
+esac
+assert_eq "cap: cap=2 with 2 engines is OK"    "OK" "$(_cap_verdict "$CAP_JUNIOR" 2)"
+# The case that matters most on a capped host: ONE engine under cap=1 must run.
+# An off-by-one here (>= instead of >) would pause every single session forever.
+SOLOREG="$WORK/soloreg"; mkdir -p "$SOLOREG"
+CAP_SOLO="$(HOST_GUARD_REGISTRY_DIR="$SOLOREG" hg_register engine "$C1" /fake/solo s1 "0-3" 4G)"
+assert_eq "cap: the ONLY engine runs under cap=1" "OK" \
+  "$(HOST_GUARD_REGISTRY_DIR="$SOLOREG" HOST_GUARD_GLOBAL_CPU_LIST="0-3" \
+     HOST_GUARD_MAX_ENGINES=1 hg_aggregate_verdict "$CAP_SOLO")"
+assert_eq "cap: absent cap = unlimited"        "OK" "$(_cap_verdict "$CAP_JUNIOR" '')"
+assert_eq "cap: junk cap ignored"              "OK" "$(_cap_verdict "$CAP_JUNIOR" 'abc')"
+assert_eq "cap: cap=0 ignored (never lock out)" "OK" "$(_cap_verdict "$CAP_JUNIOR" 0)"
+# A pump is not an engine: only engines count toward the cap.
+HOST_GUARD_REGISTRY_DIR="$CAPREG" hg_register pump "$C1" /fake/capA sA "0-3" 4G >/dev/null
+assert_eq "cap: pump records do not count as engines" "OK" "$(_cap_verdict "$CAP_JUNIOR" 2)"
+
 echo ""
 echo "── B. run-goal.sh wiring (real engine, stub claude) ────────────────────"
 

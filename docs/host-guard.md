@@ -51,8 +51,17 @@ So a second file, owned by the machine rather than by any repo, declares what
 HOST_GUARD_GLOBAL_CPU_LIST="0-3,8-11"   # every session's mask must be a SUBSET
 HOST_GUARD_GLOBAL_MEMORY_BUDGET="22G"   # Σ over projects of max(MemoryHigh)
 HOST_GUARD_REQUIRE_BOOST_OFF=1          # /sys/.../cpufreq/boost must read 0
-HOST_GUARD_GLOBAL_ON_CONFLICT=pause     # only 'pause' is implemented
+HOST_GUARD_MAX_ENGINES=1                # concurrent goal engines (absent = unlimited)
 ```
+
+`HOST_GUARD_MAX_ENGINES` caps how many goal-mode engines may run at once across
+the whole machine. Over the cap, the **junior** engine takes the ordinary
+resumable `AWAITING_HOST_GUARD` pause and continues when the senior finishes;
+the senior only warns. It exists for one situation: a host whose resets turn out
+to be **hardware** (see § After a hardware reset). Nothing a guard can do
+prevents those, so the honest mitigation is fewer simultaneous engines — a
+narrower CPU mask would only be theatre. Remove the line to go back to unlimited
+once the hardware has soaked clean.
 
 Every guarded context publishes a record (pid, start time, boot id, project,
 mask, memory ceiling) into a registry under
@@ -105,6 +114,115 @@ cat /sys/devices/system/cpu/cpufreq/boost      # must print 0
 
 `scripts/automation/doctor.sh --only cpu-boost` reports both the live knob and
 whether the rule that survives a reboot exists.
+
+## After a hardware reset — root-cause runbook
+
+**Read this before tightening anything.** On 2026-07-30 17:14:08 this host reset
+with every host-guard mitigation in force: both projects inside `0-3,8-11`,
+10G+10G against a 22G budget, boost off and persisted, QA browsers confined,
+both engines registered in the machine-global registry, every check green. At
+T-1s the 1 Hz sampler recorded 65 °C, 26 W, load 6.54, 11.5 GB free, memory PSI
+0.00. The cause was never visible to any software check — the CPU printed it on
+the next boot:
+
+```
+x86/amd: Previous system reset reason [0x08000800]: an uncorrected error
+         caused a data fabric sync flood event
+```
+
+A data fabric sync flood is an **uncorrectable SoC/Infinity-Fabric error**. The
+hardware asserts reset immediately; the kernel is never notified, so there is no
+panic, no OOM, no thermal event and no log — which is exactly why six earlier
+resets were misread as load problems. Seven of the last ten boots carried a
+fault-class line, and one of them fired at load 1.53 and 22 W: this is hardware
+**marginality**, not a load limit. Concurrency only changes how often it trips.
+
+The chain's job is therefore to surface, preserve, recover and cap — never to
+pretend it can prevent this:
+
+```bash
+scripts/automation/host-guard/reset-forensics.sh check       # what the platform says
+scripts/automation/host-guard/reset-forensics.sh report      # the newest postmortem
+scripts/automation/doctor.sh --only reset-reason             # same verdict as a row
+```
+
+Every engine preflight writes one idempotent bundle per dead boot into
+`~/.cache/iad/host-guard/postmortems/<boot-id>.md`: the verbatim reset line, the
+fault streak, the registry records naming which projects and sessions were
+running, the final pre-reset second of hardware telemetry from every sampler,
+those sessions' telemetry/engine-log tails, and the machine-wide event ledger.
+Run it **before** resuming a session — the preflight registry sweep is what
+erases the "who was running" evidence.
+
+### Fixing it (all need root; run them yourself, one change per soak week)
+
+```bash
+# 1. journald syncs every 5 min by default — the 07-30 reset erased the final
+#    3m42s of journal. 15 s keeps the tail.
+sudo mkdir -p /etc/systemd/journald.conf.d \
+  && printf '[Journal]\nSyncIntervalSec=15s\n' | sudo tee /etc/systemd/journald.conf.d/99-iad-sync.conf \
+  && sudo systemctl restart systemd-journald
+
+# 2. rasdaemon records the memory/fabric error itself (address, DIMM) — this is
+#    what turns "sync flood" into an actionable RMA or firmware bug report.
+sudo apt-get install -y rasdaemon && sudo systemctl enable --now rasdaemon
+
+# 3. One-time: firmware crash records the kernel could not write.
+sudo sh -c 'ls -la /sys/fs/pstore/ && head -c 4000 /sys/fs/pstore/* 2>/dev/null'
+
+# 4. BIOS/AGESA age is the single most common fix for this signature.
+sudo dmidecode -s bios-version && sudo dmidecode -s bios-release-date
+
+# 5. The definitive DRAM check — run a full pass overnight.
+sudo apt-get install -y memtest86+ && sudo update-grub
+```
+
+Then, in this order, one per week so causality stays readable: **update the
+BIOS**; set memory to **baseline JEDEC** instead of the EXPO/XMP profile; if
+memtest reports errors, reseat/swap the SO-DIMM and RMA. A commonly reported
+workaround for this signature is limiting deep C-states (it costs idle power and
+reverts on reboot):
+
+```bash
+for f in /sys/devices/system/cpu/cpu*/cpuidle/state[2-9]/disable; do echo 1 | sudo tee "$f" >/dev/null; done
+```
+
+`doctor.sh --only ras-logging` verifies what it can read without root (the
+journald drop-in and the rasdaemon unit) and stays silent on hosts that have no
+reset history.
+
+**Acceptance:** seven consecutive days with `reset-reason` reporting CLEAN on
+every boot. That replaces the "7-day zero-unclean-shutdown soak" HOST-1 claimed,
+which reset #7 refuted.
+
+## Machine-global hardware sampler
+
+One 1 Hz sampler covers the machine — it is the only artifact that survives a
+power-cut with its last second intact, because it fsyncs every line.
+
+```bash
+cp scripts/automation/host-guard/iad-hwmon.service ~/.config/systemd/user/
+systemctl --user daemon-reload && systemctl --user enable --now iad-hwmon.service
+loginctl show-user "$USER" --property=Linger      # must print Linger=yes
+tail -2 ~/.cache/iad/host-guard/hwmon/hwmon.csv
+```
+
+No root is needed (it is a `--user` unit). It writes
+`~/.cache/iad/host-guard/hwmon/hwmon.csv`, restarts itself after every reset,
+and keeps two rotated generations (~8 days). Per-repo samplers remain as a
+fallback: an engine preflight only starts one when no machine-global sampler is
+fresh, so migrating a project is just retiring its old unit. If a project still
+runs its own `hwmon-log.service`, disable it after enabling this one.
+
+## Machine-wide event ledger
+
+`~/.cache/iad/host-guard/events.jsonl` — one fsync'd JSON line per chain event
+for the WHOLE machine (engine start/stop, iteration start, every agent dispatch
+and its exit code, each healthy aggregate verdict, every pause). It exists
+because after a reset nothing could answer "what were both repos doing in the
+final seconds?": the aggregate verdict was silent when it passed,
+`telemetry.jsonl` is per-session and never fsync'd, and `engine.log` only exists
+in interactive mode. Filter by `.project` for one repo, `.boot` for one boot.
 
 ## Browser QA confinement
 
@@ -191,10 +309,19 @@ Pump browsers are made safe by affinity instead, which needs no name.
 7. **Browser confinement** (`host-guard/browser-confine.sh`) — QA browsers and
    Chrome-MCP servers that escaped the process tree, see below.
 8. **Forensics sampler** (`host-guard/hwmon-log.sh`) — 1 Hz temps/power/
-   pressure/memory to `<repo>/logs/hwmon/hwmon.csv`, fsync per line, so the
-   final pre-reset second survives a hard reset. `{run|start|stop|status|watch}`;
-   `status`/`start` recognize an externally-run sampler (e.g. a systemd user
-   unit running `run`) by csv freshness and never double-run.
+   pressure/memory/clock, fsync per line, so the final pre-reset second survives
+   a hard reset. Writes `~/.cache/iad/host-guard/hwmon/hwmon.csv` under the
+   machine-global unit, else `<repo>/logs/hwmon/hwmon.csv`.
+   `{run|start|stop|status|watch}`; `status`/`start` recognize an externally-run
+   sampler — including the machine-global one — by csv freshness and never
+   double-run.
+9. **Reset-reason forensics** (`host-guard/reset-forensics.sh`) — reads the
+   platform's own reset register each boot and freezes a postmortem bundle when
+   the last boot died. `{check|ensure-postmortem|report}`; doctor row
+   `reset-reason`. The only layer that can explain a reset no software caused.
+10. **Machine event ledger** (`hg_event`, `lib/host-guard-registry.sh`) — one
+   fsync'd line per chain event for the whole machine, including the healthy
+   aggregate verdict that used to be silent.
 
 ## When `AWAITING_HOST_GUARD` fires
 
@@ -219,3 +346,19 @@ still collectively unbounded, a QA browser could keep a pre-confinement CPU
 mask, and the boost mitigation had silently lapsed at a reboot. Incident
 forensics and the cap-widening verification ladder live in the originating
 project: `trendora/project-extensions/host-guard/README.md`.
+
+A **seventh** reset on 2026-07-30 17:14:08 ended that line of reasoning. It
+happened with the machine-global layer deployed to both projects, armed, and
+green on every check. The answer had been in the kernel log the whole time —
+`Previous system reset reason [0x08000800]: an uncorrected error caused a data
+fabric sync flood event`, present on seven of the last ten boots, once at load
+1.53. The root cause is **hardware** (DDR5/Infinity-Fabric marginality on
+non-ECC SO-DIMMs, BIOS 1.26 dated 09/2025), and no CPU mask, memory ceiling or
+browser confinement can prevent it.
+
+Three generations of guard were built to stop something the CPU was already
+naming on every boot. That is the lesson recorded as anti-pattern 27: **read the
+platform's own postmortem registers before iterating on software mitigations.**
+Since then these layers surface the hardware's verdict, preserve the evidence,
+recover honestly, and cap concurrency — see § After a hardware reset for the
+remediation that actually applies.

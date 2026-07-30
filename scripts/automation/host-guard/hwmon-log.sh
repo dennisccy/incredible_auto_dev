@@ -40,11 +40,24 @@ ENV_FILE="$REPO_ROOT/project-extensions/host-guard/host-guard.env"
 
 INTERVAL="${HOST_GUARD_SAMPLER_INTERVAL:-1}"
 MAX_BYTES="${HOST_GUARD_SAMPLER_MAX_BYTES:-10485760}"
-LOG_DIR="$REPO_ROOT/logs/hwmon"
+# HOST_GUARD_HWMON_DIR lets the machine-global systemd user unit
+# (iad-hwmon.service) put the csv in the cache root instead of one repo's logs/.
+# Unset ⇒ per-repo placement, exactly as before.
+LOG_DIR="${HOST_GUARD_HWMON_DIR:-$REPO_ROOT/logs/hwmon}"
 CSV="$LOG_DIR/hwmon.csv"
 PIDFILE="$LOG_DIR/hwmon.pid"
 DAEMON_LOG="$LOG_DIR/hwmon.log"
-HEADER="epoch,tctl_c,gpu_edge_c,ppt_w,ppt_avg_w,nvme_c,dimm0_c,dimm1_c,acpitz_c,load1,mem_avail_mb,swap_free_mb,psi_cpu_avg10,psi_mem_avg10"
+# Where the machine-global sampler writes. One 1 Hz sampler is enough for the
+# whole machine; a per-repo engine must not start a second writer when it is
+# already running (that is how two repos ended up with two half-histories).
+GLOBAL_CSV="${HOST_GUARD_HWMON_GLOBAL_DIR:-${CHAIN_TMP_ROOT:-$HOME/.cache/iad}/host-guard/hwmon}/hwmon.csv"
+# Schema is APPEND-ONLY: new columns go at the END so every existing reader
+# (field 1 = epoch, field 2 = tctl) keeps working against old and new files.
+# cpu_mhz was added after the 2026-07-30 sync-flood reset — clock behaviour is
+# the cheapest signal correlated with fabric/VRM transients that the previous
+# schema could not see. (No ac_online column: /sys/class/power_supply is empty
+# on this class of mini-PC, so it would be a permanently blank field.)
+HEADER="epoch,tctl_c,gpu_edge_c,ppt_w,ppt_avg_w,nvme_c,dimm0_c,dimm1_c,acpitz_c,load1,mem_avail_mb,swap_free_mb,psi_cpu_avg10,psi_mem_avg10,cpu_mhz"
 
 # ── Sensor resolution (by hwmon name, once at startup) ─────────────────────
 TCTL="" GPU_TEMP="" PPT_NOW="" PPT_AVG="" NVME_T="" DIMM0="" DIMM1="" ACPITZ=""
@@ -89,6 +102,18 @@ _psi_avg10() { # $1 /proc/pressure/{cpu,memory} → the "some avg10" value
   printf '%s' "${line%% *}"
   return 0
 }
+_cpu_mhz() { # mean current core clock in MHz ("" when cpufreq is unavailable)
+  local sum=0 n=0 v f
+  for f in /sys/devices/system/cpu/cpu[0-9]*/cpufreq/scaling_cur_freq; do
+    [[ -r "$f" ]] || continue
+    IFS= read -r v < "$f" 2>/dev/null || continue
+    [[ "$v" =~ ^[0-9]+$ ]] || continue
+    sum=$(( sum + v )); n=$(( n + 1 ))
+  done
+  (( n > 0 )) || return 0
+  printf '%s' $(( sum / n / 1000 ))
+  return 0
+}
 MEM_AVAIL_MB="" SWAP_FREE_MB=""
 _mem_fields() {
   MEM_AVAIL_MB="" SWAP_FREE_MB=""
@@ -107,7 +132,7 @@ cmd_run() {
   mkdir -p "$LOG_DIR"
   resolve_sensors
   [[ -f "$CSV" ]] || printf '%s\n' "$HEADER" > "$CSV"
-  local ts tctl gpu ppt pavg nvt d0 d1 az load1 rest psic psim size
+  local ts tctl gpu ppt pavg nvt d0 d1 az load1 rest psic psim size mhz
   while :; do
     ts=$EPOCHSECONDS
     tctl=$(_read_scaled "$TCTL" 1000)
@@ -122,14 +147,19 @@ cmd_run() {
     _mem_fields
     psic=$(_psi_avg10 /proc/pressure/cpu)
     psim=$(_psi_avg10 /proc/pressure/memory)
-    printf '%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s\n' \
+    mhz=$(_cpu_mhz)
+    printf '%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s\n' \
       "$ts" "$tctl" "$gpu" "$ppt" "$pavg" "$nvt" "$d0" "$d1" "$az" \
-      "$load1" "$MEM_AVAIL_MB" "$SWAP_FREE_MB" "$psic" "$psim" >> "$CSV"
+      "$load1" "$MEM_AVAIL_MB" "$SWAP_FREE_MB" "$psic" "$psim" "$mhz" >> "$CSV"
     # fsync the csv so the last pre-crash line survives an instant reset
     # (uutils-compatible file-arg form; plain `sync` as fallback).
     sync "$CSV" 2>/dev/null || sync 2>/dev/null || true
     size=$(stat -c %s "$CSV" 2>/dev/null || echo 0)
     if [[ "$size" =~ ^[0-9]+$ ]] && (( size > MAX_BYTES )); then
+      # Two generations, not one: at 1 Hz a 10 MiB file is ~4 days, and the
+      # incident history that matters spans more than one reset. tapeology's
+      # ring was 99.3% full when the machine went down.
+      if [[ -f "$CSV.1" ]]; then mv -f "$CSV.1" "$CSV.2"; fi
       mv -f "$CSV" "$CSV.1"
       printf '%s\n' "$HEADER" > "$CSV"
     fi
@@ -137,12 +167,17 @@ cmd_run() {
   done
 }
 
-_csv_fresh() { # true iff the csv was written within the last INTERVAL+5 s
-  local mtime
-  [[ -f "$CSV" ]] || return 1
-  mtime=$(stat -c %Y "$CSV" 2>/dev/null || echo 0)
+_file_fresh() { # true iff $1 was written within the last INTERVAL+5 s
+  local f="${1:-}" mtime
+  [[ -f "$f" ]] || return 1
+  mtime=$(stat -c %Y "$f" 2>/dev/null || echo 0)
   (( EPOCHSECONDS - mtime <= INTERVAL + 5 ))
 }
+_csv_fresh() { _file_fresh "$CSV"; }
+# A live machine-global sampler covers this repo too — the hardware it samples
+# is the same hardware. Distinct file only; when this process IS the global
+# sampler the two paths are identical and this is never consulted.
+_global_fresh() { [[ "$GLOBAL_CSV" != "$CSV" ]] && _file_fresh "$GLOBAL_CSV"; }
 
 cmd_start() {
   mkdir -p "$LOG_DIR"
@@ -156,6 +191,10 @@ cmd_start() {
   # is still a sampler — never start a second writer on the same csv.
   if _csv_fresh; then
     echo "hwmon-log: already running (external sampler, csv fresh)"
+    return 0
+  fi
+  if _global_fresh; then
+    echo "hwmon-log: already running (machine-global sampler → $GLOBAL_CSV)"
     return 0
   fi
   nohup env HOST_GUARD_ROOT="$REPO_ROOT" bash "$HERE/hwmon-log.sh" run >> "$DAEMON_LOG" 2>&1 &
@@ -200,6 +239,11 @@ cmd_status() {
   if _csv_fresh; then
     IFS= read -r last < <(tail -n 1 "$CSV" 2>/dev/null) || last=""
     echo "hwmon-log: running (external sampler), csv fresh: $last"
+    return 0
+  fi
+  if _global_fresh; then
+    IFS= read -r last < <(tail -n 1 "$GLOBAL_CSV" 2>/dev/null) || last=""
+    echo "hwmon-log: running (machine-global sampler), csv fresh: $last"
     return 0
   fi
   echo "hwmon-log: not running"

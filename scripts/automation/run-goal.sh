@@ -256,6 +256,25 @@ fi
 # check guards against a stale pidfile whose PID was reused by another process.
 if [[ "$RESUME" == "true" && -f "$ENGINE_PID_FILE" ]]; then
   _prev_pid="$(cat "$ENGINE_PID_FILE" 2>/dev/null || echo "")"
+  # A pid file older than this boot means the previous engine never got to clean
+  # up: the machine went down under it. Say so plainly — a session that silently
+  # reappears mid-iteration teaches the operator that iterations vanish at
+  # random, when the truth is one hardware event with a postmortem on disk.
+  if hg_file_predates_boot "$ENGINE_PID_FILE" \
+     && python3 -c "import json,sys; sys.exit(0 if json.load(open('$SESSION_JSON')).get('status')=='in_progress' else 1)" 2>/dev/null; then
+    _pm_dir="${HOST_GUARD_POSTMORTEM_DIR:-${CHAIN_TMP_ROOT:-$HOME/.cache/iad}/host-guard/postmortems}"
+    echo "[run-goal] Resume: the previous engine (pid $_prev_pid) was killed by a machine reset — its pid file predates this boot and the session was still in_progress." >&2
+    if [[ -f "$_pm_dir/latest.md" ]]; then
+      echo "[run-goal]   what the hardware said: $_pm_dir/latest.md" >&2
+    fi
+    # GOAL_SESSION_DIR is only exported much later (the loop), and
+    # telemetry_enabled silently returns false without it — so the event has to
+    # carry its own session context or it would never be written at all.
+    GOAL_SESSION_DIR="$GOAL_SESSION_DIR_LOCAL" GOAL_SESSION_ID="$SESSION_ID" \
+      record_telemetry_event "halt" '{"reason":"machine_reset","detected_at_step":"resume"}'
+    GOAL_SESSION_ID="$SESSION_ID" \
+      hg_event engine_killed_by_reset "$(printf '{"prev_pid":"%s"}' "$_prev_pid")"
+  fi
   if [[ -n "$_prev_pid" ]] && kill -0 "$_prev_pid" 2>/dev/null \
      && grep -qa "run-goal" "/proc/$_prev_pid/cmdline" 2>/dev/null; then
     echo "[run-goal] Resume: a prior engine (pid $_prev_pid) is still running — stopping it cleanly first." >&2
@@ -926,14 +945,48 @@ _host_guard_sampler_path() { # project-local copy wins; framework copy is the de
   local proj="$REPO_ROOT/project-extensions/host-guard/hwmon-log.sh"
   if [[ -f "$proj" ]]; then printf '%s' "$proj"; else printf '%s' "$SCRIPT_DIR/host-guard/hwmon-log.sh"; fi
 }
-_host_guard_latest_tctl() { # newest Tctl (°C) from the sampler csv; empty if missing/stale
-  local csv="$REPO_ROOT/logs/hwmon/hwmon.csv" mtime line t
-  [[ -f "$csv" ]] || return 0
-  mtime=$(stat -c %Y "$csv" 2>/dev/null || echo 0)
-  (( EPOCHSECONDS - mtime <= 15 )) || return 0
-  line=$(tail -n 1 "$csv" 2>/dev/null || true)
-  t="${line#*,}"; t="${t%%,*}"
-  [[ "$t" =~ ^[0-9]+$ ]] && printf '%s' "$t"
+_host_guard_latest_tctl() { # newest Tctl (°C) from a FRESH sampler csv; empty if none
+  # The machine-global sampler (systemd user unit iad-hwmon.service) wins when it
+  # is running; the per-repo csv remains the fallback so a project that has not
+  # migrated keeps its thermal gate. Whichever csv is fresh is the truth.
+  local csv mtime line t
+  for csv in "${HOST_GUARD_HWMON_GLOBAL_DIR:-${CHAIN_TMP_ROOT:-$HOME/.cache/iad}/host-guard/hwmon}/hwmon.csv" \
+             "$REPO_ROOT/logs/hwmon/hwmon.csv"; do
+    [[ -f "$csv" ]] || continue
+    mtime=$(stat -c %Y "$csv" 2>/dev/null || echo 0)
+    (( EPOCHSECONDS - mtime <= 15 )) || continue
+    line=$(tail -n 1 "$csv" 2>/dev/null || true)
+    t="${line#*,}"; t="${t%%,*}"
+    if [[ "$t" =~ ^[0-9]+$ ]]; then printf '%s' "$t"; return 0; fi
+  done
+  return 0
+}
+# Read the platform's OWN postmortem register and freeze the evidence. Runs
+# before every other host-guard check because check 4's hg_sweep deletes the
+# registry records of the dead boot — the only on-disk record of which projects
+# and sessions were running when the machine went down. Never gates: a
+# hardware-asserted reset is not this session's fault and no rerun can avoid it.
+_host_guard_reset_forensics() {
+  local script="$SCRIPT_DIR/host-guard/reset-forensics.sh" out path state chk
+  local tag hex cause streak prev
+  [[ -f "$script" ]] || return 0
+  out="$(bash "$script" ensure-postmortem 2>/dev/null)" || return 0
+  case "$out" in
+    POSTMORTEM\|*) ;;
+    *) return 0 ;;          # CLEAN / NONE / UNKNOWN — say nothing, write nothing
+  esac
+  path="${out#POSTMORTEM|}"; path="${path%|*}"; state="${out##*|}"
+  chk="$(bash "$script" check 2>/dev/null)" || chk=""
+  IFS='|' read -r tag hex cause streak prev <<< "$chk"
+  : "$tag" "$prev"
+  echo "[run-goal] host-guard: the PREVIOUS boot ended in a HARDWARE-asserted reset — ${cause:-unknown} (${hex:-?}), ${streak:-?} of the recent boots."
+  echo "[run-goal] host-guard: this is a hardware fault, not a chain failure; no CPU mask or memory ceiling can prevent it."
+  echo "[run-goal] host-guard: postmortem → $path"
+  echo "[run-goal] host-guard: remediation → docs/host-guard.md § After a hardware reset — root-cause runbook"
+  record_telemetry_event "host_guard_reset_detected" \
+    "$(printf '{"cause":"%s","code":"%s","streak":"%s","postmortem":"%s","bundle":"%s"}' \
+       "$cause" "$hex" "$streak" "$path" "$state")"
+  hg_event reset_detected "$(printf '{"code":"%s","streak":"%s"}' "$hex" "$streak")"
   return 0
 }
 _host_guard_pause() { # $1 reason, $2 detected_at_step — pause AWAITING_HOST_GUARD (resumable) and exit
@@ -953,6 +1006,7 @@ with _os.fdopen(_fd, "w") as _f:
 _os.replace(_tmp, "$SESSION_JSON")
 PY
   record_telemetry_event "halt" "$(printf '{"reason":"AWAITING_HOST_GUARD","detected_at_step":"%s"}' "$step")"
+  hg_event engine_pause "$(printf '{"reason":"AWAITING_HOST_GUARD","step":"%s"}' "$step")"
   echo ""
   echo "Fix the host-guard issue (project-extensions/host-guard/README.md), then resume:"
   echo "  ./scripts/automation/run-goal.sh --resume --session-id $SESSION_ID"
@@ -966,6 +1020,11 @@ preflight_host_guard() {
   # shellcheck disable=SC1090
   source "$hg_env"
   [[ "${HOST_GUARD_ENABLED:-0}" == "1" ]] || return 0
+
+  # 0. Did the LAST boot die? Capture the postmortem BEFORE check 4 sweeps the
+  # registry records that name who was running. Idempotent: one bundle per boot.
+  _host_guard_reset_forensics
+
   local sampler fail_reason=""
   sampler="$(_host_guard_sampler_path)"
 
@@ -1082,10 +1141,19 @@ host_guard_iteration_gate() {
 
   if [[ "${HOST_GUARD_REQUIRE_PUMP_CONFINED:-0}" == "1" && "${AGENT_BACKEND:-}" == "interactive" ]]; then
     local hb="${CHAIN_DISPATCH_DIR:-$GOAL_SESSION_DIR_LOCAL/dispatch}/.pump-alive"
-    local pump_pid="" hb_age=999999 target="" width allowed_list allowed_n
+    local pump_pid="" hb_age=999999 target="" width allowed_list allowed_n hb_stt=""
     if [[ -f "$hb" ]]; then
       hb_age=$(( EPOCHSECONDS - $(stat -c %Y "$hb" 2>/dev/null || echo 0) ))
       pump_pid=$(sed -n 's/^pid=\([0-9][0-9]*\)$/\1/p' "$hb" 2>/dev/null | head -n 1)
+      # Pid-recycling defense across a machine reset: the heartbeat records the
+      # pump's start time, so a pid that now belongs to some other process — the
+      # normal case after a reboot reuses the pid space — is discarded instead of
+      # being verified, adopted, or (worse) tasksetted.
+      hb_stt=$(sed -n 's/^starttime=\([0-9][0-9]*\)$/\1/p' "$hb" 2>/dev/null | head -n 1)
+      if [[ -n "$pump_pid" && -n "$hb_stt" ]] && ! hg_pid_matches "$pump_pid" "$hb_stt"; then
+        echo "[run-goal] host-guard: .pump-alive names pid $pump_pid, but that process is gone or was recycled (a machine reset reuses pids) — ignoring the stale heartbeat."
+        pump_pid=""
+      fi
     fi
     # Verification handle: the CLI session root captured at engine launch wins
     # (it outlives short-lived heartbeat writers); else the live heartbeat pid.
@@ -1147,6 +1215,12 @@ host_guard_iteration_gate() {
       echo "[run-goal] host-guard WARNING: ${hg_verdict#WARN|}"
       record_telemetry_event "host_guard_aggregate_warn" \
         "$(python3 -c 'import json,sys; print(json.dumps({"detail": sys.argv[1]}))' "${hg_verdict#WARN|}")" ;;
+    OK)
+      # The healthy path used to be entirely silent, so after a reset nothing on
+      # disk said what the guard believed at the time — how many sessions were
+      # live, or that it had checked at all. One durable line per gate fixes it.
+      hg_event aggregate_ok \
+        "$(printf '{"live":%s,"iter":%s}' "$(hg_live_records | wc -l | tr -d ' ')" "${CURRENT_ITER:-0}")" ;;
   esac
   return 0
 }
@@ -1773,6 +1847,7 @@ _goal_engine_on_exit() {
   chain_tmp_cleanup
   # Drop this engine's host-guard registry record so a concurrent project sees
   # the freed budget immediately (the pid sweep would catch it anyway).
+  hg_event engine_stop "$(printf '{"iter":%s}' "${CURRENT_ITER:-0}")" 2>/dev/null || true
   hg_release 2>/dev/null || true
   # REL-4: release LAST so the lock covers the whole cleanup window. Owner-
   # checked no-op when this process never acquired (e.g. a refused start).
@@ -1799,6 +1874,8 @@ trap on_abort INT TERM
 # refuses fast with exit $ENGINE_LOCK_REFUSED_EXIT; a dead one is replaced
 # loudly (lib/engine-lock.sh; docs/TROUBLESHOOTING.md "lock held").
 acquire_engine_lock "$GOAL_SESSION_DIR_LOCAL/.engine.lock" "engine for goal session '$SESSION_ID'" || exit $?
+# Machine-wide durable ledger (survives a power-cut reset; see hg_event).
+hg_event engine_start "$(printf '{"resume":"%s","backend":"%s"}' "${RESUME:-false}" "${AGENT_BACKEND:-}")"
 
 # Advisory preflight doctor (REL-2): one PASS/WARN/FAIL table of environment
 # truth into the engine log BEFORE anything mutates state (tmp init/janitor
@@ -2025,6 +2102,7 @@ PY
   PRIOR_DEPTH=$(python3 -c "import json; print(json.load(open('$SESSION_JSON')).get('next_depth') or 'lean')")
 
   record_telemetry_event "iter_start" "$(jq -cn --arg n "$ITER_NAME" --arg pv "$PRIOR_VERDICT" --arg pd "$PRIOR_DEPTH" --arg ss "$(cat "$ITER_DIR/snapshot-sha" 2>/dev/null || echo "")" '{iter_name:$n, prior_verdict:$pv, prior_depth:$pd, snapshot_sha:$ss}' 2>/dev/null || printf '{"iter_name":"%s"}' "$ITER_NAME")"
+  hg_event iter_start "$(printf '{"iter":%s,"name":"%s","depth":"%s"}' "${CURRENT_ITER:-0}" "$ITER_NAME" "$PRIOR_DEPTH")"
   # SPEED-15: wall-clock budget clock starts here; exported so the lean/full
   # executor child processes measure from the same origin.
   export CHAIN_ITER_START_EPOCH="$(date +%s)"
