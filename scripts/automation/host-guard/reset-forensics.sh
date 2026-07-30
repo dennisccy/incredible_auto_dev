@@ -339,6 +339,21 @@ _render() {
     printf 'No event ledger at `%s` yet (written by hg_event once a guarded engine runs).\n\n' "$EVENTS_FILE"
   fi
 
+  printf '## 6b. Host mitigations — which experiment was running?\n\n'
+  printf 'Read NOW (the boot after the reset), so PERSISTED settings are accurate and a\n'
+  printf 'runtime-only change has already reverted. For what was truly in force during the\n'
+  printf 'run, use the `host_state` event in §6 — the engine records it at start.\n\n'
+  if declare -f hg_host_mitigations >/dev/null 2>&1; then
+    printf '```json\n%s\n```\n\n' "$(hg_host_mitigations)"
+  fi
+  local hostenv
+  hostenv="${HOST_GUARD_HOST_ENV_FILE:-$HOME/.config/iad/host-guard-host.env}"
+  if [[ -f "$hostenv" ]]; then
+    printf 'Machine budget (`%s`):\n\n```\n' "$hostenv"
+    grep -vE '^\s*#|^\s*$' "$hostenv" 2>/dev/null
+    printf '```\n\n'
+  fi
+
   printf '## 7. Journal tail of the dead boot\n\n'
   printf 'NOTE: journald syncs every 5 minutes by default, so the last minutes before a\n'
   printf 'hard reset are usually MISSING here — trust §4 for the time of death.\n\n```\n'

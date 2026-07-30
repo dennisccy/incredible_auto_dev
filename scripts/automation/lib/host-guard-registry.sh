@@ -255,6 +255,39 @@ hg_events_file() {
   echo "${HOST_GUARD_EVENTS_FILE:-${CHAIN_TMP_ROOT:-$HOME/.cache/iad}/host-guard/events.jsonl}"
 }
 
+# hg_host_mitigations — the host knobs a reset investigation actually turns on,
+# as a JSON fragment. Emitted into the ledger at engine start so a postmortem can
+# say WHICH mitigation was in force during the run. Without this the "one change
+# per soak week" discipline is unfalsifiable after the fact: the postmortem is
+# written on the NEXT boot, by which time a runtime-only change (a C-state
+# disable, a boost toggle) has already reverted and reads as though it was never
+# applied. Cheap: five small sysfs reads, once per engine.
+hg_host_mitigations() {
+  local boost cstates drv gov cmdline s name
+  boost="$(tr -dc '0-9' < "${HOST_GUARD_SYS_BOOST_PATH:-/sys/devices/system/cpu/cpufreq/boost}" 2>/dev/null)"
+  for s in /sys/devices/system/cpu/cpu0/cpuidle/state[0-9]*; do
+    [[ -r "$s/name" && -r "$s/disable" ]] || continue
+    IFS= read -r name < "$s/name" 2>/dev/null || continue
+    cstates+="${cstates:+,}$name:$(tr -dc '0-9' < "$s/disable" 2>/dev/null)"
+  done
+  IFS= read -r drv < /sys/devices/system/cpu/cpuidle/current_driver 2>/dev/null || drv=""
+  IFS= read -r gov < /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor 2>/dev/null || gov=""
+  IFS= read -r cmdline < /proc/cmdline 2>/dev/null || cmdline=""
+  # Read the cap from the FILE, not the environment: the engine emits this at
+  # start, before preflight sources the machine budget, so the env var is still
+  # unset and would misreport a capped host as uncapped. Read-only sed, never a
+  # source — same rule the doctor follows for env it does not own.
+  local cap="${HOST_GUARD_MAX_ENGINES:-}"
+  if [[ -z "$cap" ]]; then
+    cap="$(sed -n 's/^[[:space:]]*HOST_GUARD_MAX_ENGINES[[:space:]]*=[[:space:]]*//p' \
+           "$(hg_host_env_file)" 2>/dev/null | tail -n 1)"
+    cap="${cap//\"/}"; cap="${cap//\'/}"
+  fi
+  printf '{"boost":"%s","cstate_disabled":"%s","idle_driver":"%s","governor":"%s","max_engines":"%s","cmdline":"%s"}' \
+    "${boost:-?}" "${cstates:-?}" "$(_hg_json_esc "$drv")" "$(_hg_json_esc "$gov")" \
+    "${cap:-unset}" "$(_hg_json_esc "${cmdline:0:200}")"
+}
+
 _hg_json_esc() { # minimal JSON string escaping for the fields we control
   local s="${1:-}"
   s="${s//\\/\\\\}"; s="${s//\"/\\\"}"; s="${s//$'\n'/ }"; s="${s//$'\t'/ }"

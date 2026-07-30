@@ -421,7 +421,15 @@ else
   assert "engine: pause message names the senior session" fail
   assert "engine: pause message names the memory budget" fail
 fi
-[[ -d "$SBX/runs/goal-session-hg1/.engine.lock" ]] && assert "engine: lock released on host-guard pause" fail || assert "engine: lock released on host-guard pause" pass
+# The paused STATUS is written before the process exits; the lock is released in
+# the EXIT trap that follows. Polling for it is the honest assertion — checking
+# the instant the status flips races the trap, and the race widens with every
+# fsync on the cleanup path (the durable event ledger added two).
+if wait_for 20 bash -c "! [[ -d '$SBX/runs/goal-session-hg1/.engine.lock' ]]"; then
+  assert "engine: lock released on host-guard pause" pass
+else
+  assert "engine: lock released on host-guard pause" fail
+fi
 ls "$ENG_REG"/engine-*.rec 2>/dev/null | grep -qv "engine-$SENIOR-" && assert "engine: junior's own record released on pause" fail || assert "engine: junior's own record released on pause" pass
 
 # B2. With the budget raised the same session proceeds (WARN path, not PAUSE).

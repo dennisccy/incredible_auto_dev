@@ -1876,6 +1876,10 @@ trap on_abort INT TERM
 acquire_engine_lock "$GOAL_SESSION_DIR_LOCAL/.engine.lock" "engine for goal session '$SESSION_ID'" || exit $?
 # Machine-wide durable ledger (survives a power-cut reset; see hg_event).
 hg_event engine_start "$(printf '{"resume":"%s","backend":"%s"}' "${RESUME:-false}" "${AGENT_BACKEND:-}")"
+# Which host mitigations were actually in force for THIS run — the postmortem is
+# written on the next boot, when a runtime-only knob has already reverted, so a
+# soak week is only attributable if the state is recorded while the run happens.
+hg_event host_state "$(hg_host_mitigations)"
 
 # Advisory preflight doctor (REL-2): one PASS/WARN/FAIL table of environment
 # truth into the engine log BEFORE anything mutates state (tmp init/janitor
