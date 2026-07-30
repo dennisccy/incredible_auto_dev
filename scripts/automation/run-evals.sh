@@ -22,6 +22,15 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$REPO_ROOT"
 
+# Keep the suite out of the MACHINE's forensic state. Several tests drive real
+# dispatch paths, and hg_event writes to a machine-global ledger by design — so
+# an unredirected eval run buries the record of what the machine was actually
+# doing under hundreds of synthetic events (measured: 398 in one run). The
+# postmortem reader is only as useful as that ledger is honest.
+export HOST_GUARD_EVENTS_FILE="${TMPDIR:-/tmp}/iad-evals-events.$$.jsonl"
+export HOST_GUARD_POSTMORTEM_DIR="${TMPDIR:-/tmp}/iad-evals-postmortems.$$"
+trap 'rm -rf "$HOST_GUARD_EVENTS_FILE" "$HOST_GUARD_EVENTS_FILE.1" "$HOST_GUARD_POSTMORTEM_DIR" 2>/dev/null || true' EXIT
+
 VERBOSE=false
 [[ "${1:-}" == "--verbose" ]] && VERBOSE=true
 
