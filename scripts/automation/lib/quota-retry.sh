@@ -1239,6 +1239,13 @@ agent_with_quota_retry() {
   # CHAIN_AGENT_BACKEND overrides the CLI for dispatch only (assets/personas
   # still come from CHAIN_CLI). Defaults to the CLI, so absence = today's behaviour.
   local backend="${CHAIN_AGENT_BACKEND:-$cli}"
+  # Dispatch-boundary thermal defer — opt-in (HOST_GUARD_TCTL_DISPATCH_GATE=1),
+  # defined and export -f'd by the goal engine (run-goal.sh). Outside an engine
+  # tree the function does not exist → no-op. Before dispatch_start so deferral
+  # never counts as agent wall time.
+  if declare -F host_guard_thermal_defer >/dev/null 2>&1; then
+    host_guard_thermal_defer || true
+  fi
   local _hg_t0=$EPOCHSECONDS _hg_rc=0
   hg_event dispatch_start "$(printf '{"backend":"%s"}' "$backend")"
   case "$backend" in

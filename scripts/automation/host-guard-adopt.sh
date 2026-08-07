@@ -24,7 +24,8 @@
 #       (default 'claude|codex') and confine THAT tree; falls back to <pid>
 #       itself when no ancestor matches.
 #
-# Idempotent: exits 0 immediately when the target is already confined.
+# Idempotent: re-running a fully-confined target just refreshes its scope
+# ceilings in place (set-property) and re-sweeps escaped browsers.
 # Absent/disabled host-guard.env ⇒ no-op (framework stays project-neutral).
 # Limitation: BLAS/OMP thread-cap env vars cannot be injected into a running
 # process — only wrapper-launched (host-guard-exec.sh) sessions get those.
@@ -64,6 +65,9 @@ _width() { # "0-3,8-11" → 8; 0 when unparseable
 }
 _ppid() { awk '/^PPid:/{print $2}' "/proc/$1/status" 2>/dev/null || true; }
 _allowed_n() { _width "$(awk -F'\t' '/^Cpus_allowed_list/{print $2}' "/proc/$1/status" 2>/dev/null)"; }
+_hg_scope_unit() { # chain-*-hostguard scope unit already holding $1, if any
+  sed -n 's#.*/\(chain-\(pump\|goal\)-hostguard-[^/]*\.scope\).*#\1#p' "/proc/$1/cgroup" 2>/dev/null | head -n 1
+}
 
 _SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
@@ -105,8 +109,19 @@ if (( WIDTH == 0 )); then
   echo "[host-guard-adopt] unparseable HOST_GUARD_CPU_LIST='$HOST_GUARD_CPU_LIST'" >&2
   exit 1
 fi
-if (( $(_allowed_n "$TARGET") <= WIDTH )); then
-  echo "[host-guard-adopt] pid $TARGET already confined ($(awk -F'\t' '/^Cpus_allowed_list/{print $2}' "/proc/$TARGET/status"))."
+ALLOWED_N="$(_allowed_n "$TARGET")"
+SCOPE_UNIT="$(_hg_scope_unit "$TARGET")"
+if (( ALLOWED_N <= WIDTH )) && [[ -n "$SCOPE_UNIT" ]]; then
+  # Confined = mask narrow enough AND ceilings carried by a hostguard scope.
+  # The old width-only check is vacuous at a full-machine mask (16 ≤ 16 is
+  # always true), which left MemoryHigh/TasksMax unapplied on the pump from the
+  # 2026-07-30 mask release until 2026-08-07. Refresh the ceilings so env-file
+  # edits converge on the live scope on every adopt.
+  systemctl --user set-property "$SCOPE_UNIT" \
+    "CPUQuota=${HOST_GUARD_CPUQUOTA:-800%}" \
+    "MemoryHigh=${HOST_GUARD_MEMORY_HIGH:-18G}" \
+    "TasksMax=${HOST_GUARD_TASKS_MAX:-2048}" 2>/dev/null || true
+  echo "[host-guard-adopt] pid $TARGET already confined ($(awk -F'\t' '/^Cpus_allowed_list/{print $2}' "/proc/$TARGET/status") in $SCOPE_UNIT) — ceilings refreshed."
   # An already-confined pump is the COMMON case, and it is exactly when an
   # escaped browser goes unnoticed — sweep before returning, never after.
   _register_pump
@@ -115,10 +130,20 @@ if (( $(_allowed_n "$TARGET") <= WIDTH )); then
 fi
 
 # 1) Scope adoption — aggregate memory/task/quota ceilings for the whole tree.
-UNIT="chain-pump-hostguard-$TARGET.scope"
-if busctl call --user org.freedesktop.systemd1 /org/freedesktop/systemd1 \
+if [[ -n "$SCOPE_UNIT" ]]; then
+  # Already inside a hostguard scope (mask just too wide): refresh the existing
+  # unit's ceilings instead of racing StartTransientUnit against it.
+  UNIT="$SCOPE_UNIT"
+  systemctl --user set-property "$UNIT" \
+    "CPUQuota=${HOST_GUARD_CPUQUOTA:-800%}" \
+    "MemoryHigh=${HOST_GUARD_MEMORY_HIGH:-18G}" \
+    "TasksMax=${HOST_GUARD_TASKS_MAX:-2048}" 2>/dev/null || true
+  systemctl --user set-property "$UNIT" "AllowedCPUs=$HOST_GUARD_CPU_LIST" 2>/dev/null || true
+  echo "[host-guard-adopt] pid $TARGET already in $UNIT — ceilings refreshed."
+elif busctl call --user org.freedesktop.systemd1 /org/freedesktop/systemd1 \
      org.freedesktop.systemd1.Manager StartTransientUnit 'ssa(sv)a(sa(sv))' \
-     "$UNIT" fail 1 PIDs au 1 "$TARGET" 0 >/dev/null 2>&1; then
+     "chain-pump-hostguard-$TARGET.scope" fail 1 PIDs au 1 "$TARGET" 0 >/dev/null 2>&1; then
+  UNIT="chain-pump-hostguard-$TARGET.scope"
   systemctl --user set-property "$UNIT" \
     "CPUQuota=${HOST_GUARD_CPUQUOTA:-800%}" \
     "MemoryHigh=${HOST_GUARD_MEMORY_HIGH:-18G}" \
@@ -131,12 +156,15 @@ else
 fi
 
 # 2) Hard CPU mask NOW — target + every existing descendant; future children
-# inherit. -a covers all threads of each process.
+# inherit. -a covers all threads of each process. At a full-width mask the
+# taskset is a per-process no-op, so skip the whole tree recursion.
 _descendants() { local c; for c in $(pgrep -P "$1" 2>/dev/null); do echo "$c"; _descendants "$c"; done; }
-taskset -a -c -p "$HOST_GUARD_CPU_LIST" "$TARGET" >/dev/null 2>&1 || true
-for _c in $(_descendants "$TARGET"); do
-  taskset -a -c -p "$HOST_GUARD_CPU_LIST" "$_c" >/dev/null 2>&1 || true
-done
+if (( ALLOWED_N > WIDTH )); then
+  taskset -a -c -p "$HOST_GUARD_CPU_LIST" "$TARGET" >/dev/null 2>&1 || true
+  for _c in $(_descendants "$TARGET"); do
+    taskset -a -c -p "$HOST_GUARD_CPU_LIST" "$_c" >/dev/null 2>&1 || true
+  done
+fi
 
 if (( $(_allowed_n "$TARGET") <= WIDTH )); then
   echo "[host-guard-adopt] confined pid $TARGET (and descendants) to CPUs $HOST_GUARD_CPU_LIST."

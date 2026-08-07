@@ -9,7 +9,7 @@
 # Usage:
 #   ./scripts/automation/run-goal.sh [--session-id <id>] [--max-iter N]
 #                                    [--stall-window N] [--resume] [--reset]
-#                                    [--auto-release]
+#                                    [--headless] [--auto-release]
 #                                    [--acknowledge-regression]
 #                                    [--require-blueprint-approval]
 #                                    [--intent-checkpoint] [--intent-checkpoint-at N]
@@ -21,6 +21,12 @@
 #   --max-iter N                 Optional hard cap on iterations (default: unlimited; 0 = no cap)
 #   --stall-window N             Halt if last N iterations show no journey progress (default: 3)
 #   --resume                     Resume an existing session
+#   --headless                   With --resume: force headless dispatch for THIS run instead of
+#                                adopting the session's persisted interactive backend. One-run
+#                                override — session.json keeps its agent_backend, so the next
+#                                plain --resume is interactive again. For unattended/auto-resume
+#                                contexts where no pump session exists; headless agents run as
+#                                `claude -p` (Agent SDK billing — docs/goal-mode-interactive.md).
 #   --reset                      Discard the named session and start fresh
 #   --auto-release               On GOAL_ACHIEVED, run release-manager once for the whole session
 #   --acknowledge-regression     Continue past a prior REGRESSION_HALT
@@ -176,6 +182,9 @@ AUTO_APPROVE_BLUEPRINT=true
 # `claude -p`, so the work bills to the interactive plan allowance. Pinned
 # per-session (like --cli). Off by default (headless / Agent SDK path).
 INTERACTIVE=false
+# --headless: one-run resume override — skip adopting the session's persisted
+# interactive backend (unattended/auto-resume runs have no pump session).
+FORCE_HEADLESS=false
 # Per-iter push is ON by default for new sessions. Pass --no-push-per-iter to
 # opt out. On resume, the persisted session.json value wins unless overridden
 # by an explicit CLI flag (--push-per-iter or --no-push-per-iter).
@@ -207,6 +216,7 @@ while [[ $# -gt 0 ]]; do
     --auto-approve-blueprint)  AUTO_APPROVE_BLUEPRINT=true; shift ;;   # now the default; kept for back-compat
     --require-blueprint-approval) AUTO_APPROVE_BLUEPRINT=false; shift ;;
     --interactive)             INTERACTIVE=true; shift ;;
+    --headless)                FORCE_HEADLESS=true; shift ;;
     --intent-checkpoint)       INTENT_CHECKPOINT=true; shift ;;
     --intent-checkpoint-at)    INTENT_CHECKPOINT_AT="$2"; shift 2 ;;
     --push-per-iter)           PUSH_PER_ITER=true;  PUSH_FLAG_USER="yes"; shift ;;
@@ -291,10 +301,18 @@ fi
 # ── Resolve the agent dispatch backend (interactive vs headless) ───────────
 # Pinned per-session like --cli: on resume, adopt the persisted backend unless
 # --interactive is re-asserted on the command line.
+if [[ "$FORCE_HEADLESS" == "true" && "$INTERACTIVE" == "true" ]]; then
+  echo "Error: --headless and --interactive are mutually exclusive." >&2
+  exit 2
+fi
 if [[ "$RESUME" == "true" && -f "$SESSION_JSON" && "$INTERACTIVE" != "true" ]]; then
   PERSISTED_BACKEND=$(python3 -c "import json;print(json.load(open('$SESSION_JSON')).get('agent_backend',''))" 2>/dev/null || echo "")
   if [[ "$PERSISTED_BACKEND" == "interactive" ]]; then
-    INTERACTIVE=true
+    if [[ "$FORCE_HEADLESS" == "true" ]]; then
+      echo "[run-goal] --headless: not adopting the session's persisted interactive backend for this run (one-run override; session.json unchanged)."
+    else
+      INTERACTIVE=true
+    fi
   fi
 fi
 if [[ "$INTERACTIVE" == "true" ]]; then
@@ -961,6 +979,47 @@ _host_guard_latest_tctl() { # newest Tctl (°C) from a FRESH sampler csv; empty 
   done
   return 0
 }
+# Dispatch-boundary thermal defer — opt-in via HOST_GUARD_TCTL_DISPATCH_GATE=1.
+# The iteration gate cools BETWEEN iterations only; a full iteration dispatches
+# many agents and can hold Tctl in the high 80s for hours (the 2026-08-07 15:18
+# compositor crash rode 84-89 °C for its final minutes, below the boundary
+# gate's threshold). This defers the NEXT dispatch while Tctl ≥ PAUSE — it
+# never interrupts a running agent and proceeds loudly after DISPATCH_MAX_WAIT.
+# agent_with_quota_retry (lib/quota-retry.sh) calls it via declare -F, and the
+# export -f below is what makes it visible there: dispatch happens in child
+# step scripts, not in this shell. Outside an engine tree the function does not
+# exist and the hook is a no-op.
+host_guard_thermal_defer() {
+  local hg_env="$REPO_ROOT/project-extensions/host-guard/host-guard.env"
+  [[ -f "$hg_env" ]] || return 0
+  # shellcheck disable=SC1090
+  source "$hg_env"
+  [[ "${HOST_GUARD_ENABLED:-0}" == "1" && "${HOST_GUARD_TCTL_DISPATCH_GATE:-0}" == "1" ]] || return 0
+  local pause_c="${HOST_GUARD_TCTL_PAUSE:-90}" resume_c="${HOST_GUARD_TCTL_RESUME:-80}"
+  local poll="${HOST_GUARD_TCTL_POLL:-15}" max_wait="${HOST_GUARD_TCTL_DISPATCH_MAX_WAIT:-600}"
+  local waited=0 tctl
+  while :; do
+    tctl="$(_host_guard_latest_tctl)"
+    [[ "$tctl" =~ ^[0-9]+$ ]] || break   # no fresh telemetry → nothing to gate on
+    if (( waited == 0 )); then
+      if (( tctl < pause_c )); then break; fi
+      echo "[run-goal] host-guard: Tctl ${tctl}°C ≥ ${pause_c}°C — deferring next dispatch (resumes ≤ ${resume_c}°C, max ${max_wait}s)."
+      hg_event thermal_defer "$(printf '{"tctl_c":%s}' "$tctl")" 2>/dev/null || true
+    else
+      if (( tctl <= resume_c )); then
+        echo "[run-goal] host-guard: cooled to ${tctl}°C after ${waited}s — dispatching."
+        break
+      fi
+      if (( waited >= max_wait )); then
+        echo "[run-goal] host-guard: still ${tctl}°C after ${waited}s (max ${max_wait}s) — dispatching anyway; check cooling."
+        break
+      fi
+    fi
+    sleep "$poll"; waited=$(( waited + poll ))
+  done
+  return 0
+}
+export -f host_guard_thermal_defer _host_guard_latest_tctl
 # Read the platform's OWN postmortem register and freeze the evidence. Runs
 # before every other host-guard check because check 4's hg_sweep deletes the
 # registry records of the dead boot — the only on-disk record of which projects

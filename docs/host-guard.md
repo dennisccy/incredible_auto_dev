@@ -192,6 +192,13 @@ reverts on reboot):
 for f in /sys/devices/system/cpu/cpu*/cpuidle/state[2-9]/disable; do echo 1 | sudo tee "$f" >/dev/null; done
 ```
 
+2026-08-07, this host: that loop is now PERSISTENT via the root unit
+`/etc/systemd/system/iad-cstate-limit.service` (re-applied at boot and on
+resume from sleep). The volatile form above kept evaporating on the ~daily
+fault resets, so it never actually soaked — `host_state` events in the machine
+ledger recorded `cstate_disabled` all zeros through five more resets (Aug 4–7).
+Soak journal: `~/.cache/iad/host-guard/soak-log.md`.
+
 `doctor.sh --only ras-logging` verifies what it can read without root (the
 journald drop-in and the rasdaemon unit) and stays silent on hosts that have no
 reset history.

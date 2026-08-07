@@ -46,6 +46,18 @@ if [[ "${HOST_GUARD_BLAS_THREADS:-}" =~ ^[0-9]+$ ]]; then
   export NUMEXPR_NUM_THREADS="$HOST_GUARD_BLAS_THREADS"
 fi
 
+# Opt-in headless pump QA (HOST_GUARD_PUMP_HEADLESS_QA=1): strip the session's
+# display env so pump-dispatched browser QA launches Chrome HEADLESS (the
+# Chrome MCP picks headless purely from absent DISPLAY/WAYLAND_DISPLAY —
+# lib/common.sh strip_display_for_headless_qa; engine-mode lanes already do
+# this). Added after the 2026-08-07 gnome-shell SIGSEGV: the headed pump QA
+# Chrome was a standing compositor-stress source, and the session teardown
+# killed the pump. CHAIN_BQA_HEADED=1 remains the headed debugging escape.
+if [[ "${HOST_GUARD_PUMP_HEADLESS_QA:-0}" == "1" ]]; then
+  unset DISPLAY WAYLAND_DISPLAY
+  echo "[host-guard-exec] HOST_GUARD_PUMP_HEADLESS_QA=1 — DISPLAY/WAYLAND_DISPLAY stripped (QA browsers go headless)." >&2
+fi
+
 # NOTE: no CHROME_WS_PROFILE pin here. The pump serves BOTH QA lanes (run-phase.sh
 # runs Branch-QA and Branch-UI concurrently), and an explicit profile disables the
 # Chrome-MCP's per-lane auto-disambiguation — the two lanes would end up sharing one
