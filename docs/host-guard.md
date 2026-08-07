@@ -198,6 +198,11 @@ resume from sleep). The volatile form above kept evaporating on the ~daily
 fault resets, so it never actually soaked — `host_state` events in the machine
 ledger recorded `cstate_disabled` all zeros through five more resets (Aug 4–7).
 Soak journal: `~/.cache/iad/host-guard/soak-log.md`.
+Enabled + verified 2026-08-07 21:02:21 BST — the install earlier that day was
+`cp`-only and sat disabled through fault reset #3 at 17:46 (near-idle). Verify
+activation by `journalctl -t iad-cstate-limit -b 0` + sysfs `state[23]/disable`
+= 1 on all CPUs, never by unit-file presence or `is-active` (oneshot without
+`RemainAfterExit` reads `inactive (dead)` after success).
 
 `doctor.sh --only ras-logging` verifies what it can read without root (the
 journald drop-in and the rasdaemon unit) and stays silent on hosts that have no

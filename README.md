@@ -466,10 +466,16 @@ All pending framework improvements — including the former "Token Optimization 
 
 ## Host incident 2026-08-07 — status + pending fix plan (GEEKOM A7 Max)
 
-> **Status: investigation COMPLETE, fix NOT YET EXECUTED.** Written 2026-08-07 (~16:00 BST) for a
-> future session to pick up. Owner has chosen the sequencing/topology (see Decisions) but has not
-> yet green-lit execution — re-confirm before running anything, especially the [sudo] steps.
-> Full plan file: `~/.claude/plans/when-running-trendora-goal-drifting-floyd.md`.
+> **Status: fix EXECUTED — C-state soak ACTIVE since 2026-08-07 21:02:21 BST.** Phase 2 framework
+> code was committed 17:27 (`be57376` + vendored syncs). The Phase 1 unit was installed 17:26 but
+> left **un-enabled** (`sudo cp` only — the implementing session was killed by fault reset #3 at
+> 17:46, which fired **near-idle** in exactly that gap); enabled + verified 21:02:21 (journal tag
+> `iad-cstate-limit`, sysfs `state[23]/disable` 32×1, `is-enabled`) — that timestamp starts the
+> 7-day soak. Pump runs display-less under tmux user scope `goal-pump-tmux`; auto-resume unit
+> installed but **disarmed** (API-billing question stands). Daily journal:
+> `~/.cache/iad/host-guard/soak-log.md`. Plan files:
+> `~/.claude/plans/when-running-trendora-goal-drifting-floyd.md` (diagnosis + fix design),
+> `~/.claude/plans/just-after-implementing-the-majestic-sun.md` (execution + reset #3 forensics).
 
 ### What happened (evidence-verified)
 
@@ -484,7 +490,8 @@ froze and dropped to the GDM login screen. Investigation found **two distinct fa
    Ruled out with hwmon/PSI data: memory pressure, oomd, CPU saturation, thermal trip (Tctl 84–89 °C,
    gate 90). Contributing stress: pump-dispatched **browser-QA Chrome runs headed in the session**
    (inherits `WAYLAND_DISPLAY`), spamming Wayland frame errors for hours.
-2. **Recurring hardware hard-resets (separate; incl. 02:13 and 11:12 the same day):** 6 of the last
+2. **Recurring hardware hard-resets (separate; 02:13, 11:12, then a 3rd at 17:46 that fired
+   NEAR-IDLE — 20–39 W, engine stopped, C-state unit installed-but-disabled; see Status):** 6 of the last
    10 boots began from kernel reset-reason `0x08000800 — an uncorrected error caused a data fabric
    sync flood event`. Settled 2026-07-30 (reset #7 fired with every software mitigation in force at
    26–37 W / 65–74 °C): **hardware marginality**, not load. Boost-off/split-masks/engine-cap were
