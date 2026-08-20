@@ -167,7 +167,7 @@ python3 scripts/automation/lib/analyze_telemetry.py runs/goal-session-<sid>/tele
 |---|---|---|
 | `step_skipped` | `goal-iter-lean.sh`, `run-goal.sh`, `run-phase.sh` | `{step, iter_name|phase, reason}` — a step was skipped instead of dispatched. Reasons: `checkpoint` (resume reused a completed step), `zero-change` (SPEED-14), `iter-budget-trim` (SPEED-15 rungs 3a/3b: `test-plan`/`ux-regression`, payload key `phase`), `ui-combined` (SPEED-24: `ui-test-design` folded into the ui-impact dispatch, payload key `phase`) |
 | `dispatch_wait` | `lib/interactive-dispatch.sh` | `{agent, wait_seconds, run_seconds, status, rc}` — pickup-wait vs run split per interactive dispatch attempt (`ok` \| `pickup-timeout` \| `inflight-timeout` \| `inflight-timeout-requeued`) |
-| `review_verdict` | `goal-iter-lean.sh` | `{verdict, attempt, iter_name}` — reviewer outcome per attempt (feeds the tripwire) |
+| `review_verdict` | `goal-iter-lean.sh` | `{verdict, attempt, iter_name}` — reviewer outcome per attempt (feeds the tripwire). `verdict` is `PASS` \| `PASS_WITH_NOTES` \| `FAIL`, or `""` when the dispatched reviewer returned without a parseable `**Verdict:**` line (quota pauses and resume-skipped reviews emit no event) |
 | `iter_config` | `run-goal.sh` | `{key, value}` — an opt-in experiment knob was active this iteration. One event per active knob: `CHAIN_AGENT_EFFORT` carries the effort map; `CHAIN_OUTPUT_STYLES` (STYLE-1) carries the whole arm string (`CHAIN_OUTPUT_STYLES=… CHAIN_AGENT_OUTPUT_STYLE=… CHAIN_OUTPUT_STYLE_OVERRIDE=…`, sanitized). Any `iter_config` event marks the iteration knob-active for the tripwire window |
 | `golden_coverage` | `goal-iter-lean.sh`, `browser-qa-phase.sh` (goal iterations) | `{passing, missing_goldens, iter_name}` — PASSing journeys still lacking a replay golden (also persisted to `state/golden-gaps`, SPEED-23) |
 | `experiment_reverted` | `run-goal.sh` | `{key, value}` — the tripwire auto-reverted an experiment knob |
@@ -218,9 +218,11 @@ any `CHAIN_OUTPUT_STYLE*` knob is set, and auto-reverts every active knob on
 TRIP (one `experiment_reverted` event per key):
 
 - **Quality dimension** — any `REGRESSION` verdict, any journey regression, an
-  unparseable review verdict (`review_verdict` with an empty `verdict`, i.e. the
-  reviewer wrote no parseable verdict line), or first-attempt review `FAIL`s in
-  ≥2 iterations of the window.
+  unparseable review verdict, or first-attempt review `FAIL`s in ≥2 iterations of
+  the window. "Unparseable" is a `review_verdict` event with an empty `verdict`:
+  `goal-iter-lean.sh` writes one when the reviewer was dispatched and came back
+  without a parseable `**Verdict:**` line (quota pauses excluded, and a
+  resume-skipped review emits no event at all).
 - **Cost dimension** (ground rule D5: an earlier "be terser" change *increased*
   turns and roughly doubled output tokens) — per agent, the median of
   `usage.output_tokens` and of `num_turns` over the styled `claude_usage` rows

@@ -1100,6 +1100,14 @@ else
   _pause_if_transport "$_rev_rc" "reviewer"
   if _review_parses; then
     record_telemetry_event "review_verdict" "$(jq -cn --arg v "$(_review_verdict)" --argjson a 1 --arg n "$ITER_NAME" '{verdict:$v, attempt:$a, iter_name:$n}' 2>/dev/null || printf '{"verdict":"%s","attempt":1}' "$(_review_verdict)")"
+  elif [[ "$_rev_rc" -ne "${QUOTA_EXHAUSTED_EXIT_CODE:-75}" ]]; then
+    # STYLE-1: the reviewer was dispatched and came back WITHOUT a parseable
+    # `**Verdict:**` line. Record that as an EMPTY verdict instead of staying
+    # silent — silence is indistinguishable from "no review ran", and the
+    # --tripwire rule that treats an unparseable verdict as quality movement
+    # can only see the gap if an event exists. Quota pauses are excluded (the
+    # same rule the missing_evidence emitters use): nothing was reviewed.
+    record_telemetry_event "review_verdict" "$(jq -cn --arg v "" --argjson a 1 --arg n "$ITER_NAME" '{verdict:$v, attempt:$a, iter_name:$n}' 2>/dev/null || printf '{"verdict":"","attempt":1}')"
   fi
   if [[ "$_rev_rc" -eq 0 ]] && _review_parses; then
     step_mark_done review-1 --dir "$ITER_DIR" --verdict "$(_review_verdict)" "$REVIEW_REPORT"
@@ -1147,6 +1155,10 @@ Review report path: $REVIEW_REPORT
     _pause_if_transport "$_rev_rc" "reviewer (fix-mode)"
     if _review_parses; then
       record_telemetry_event "review_verdict" "$(jq -cn --arg v "$(_review_verdict)" --argjson a 2 --arg n "$ITER_NAME" '{verdict:$v, attempt:$a, iter_name:$n}' 2>/dev/null || printf '{"verdict":"%s","attempt":2}' "$(_review_verdict)")"
+    elif [[ "$_rev_rc" -ne "${QUOTA_EXHAUSTED_EXIT_CODE:-75}" ]]; then
+      # STYLE-1: see the attempt-1 site above — an unparseable review is
+      # recorded as an empty verdict so the tripwire can see it.
+      record_telemetry_event "review_verdict" "$(jq -cn --arg v "" --argjson a 2 --arg n "$ITER_NAME" '{verdict:$v, attempt:$a, iter_name:$n}' 2>/dev/null || printf '{"verdict":"","attempt":2}')"
     fi
     if [[ "$_rev_rc" -eq 0 ]] && _review_parses; then
       step_mark_done review-2 --dir "$ITER_DIR" --verdict "$(_review_verdict)" "$REVIEW_REPORT"

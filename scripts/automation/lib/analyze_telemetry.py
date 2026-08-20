@@ -350,10 +350,12 @@ def build_wall_report(paths: list[str]) -> dict[str, dict[str, Any]]:
                     "output_tokens": int(usage.get("output_tokens") or 0),
                     "num_turns": int(event.get("num_turns") or 0)})
             elif kind == "review_verdict" and cur is not None:
-                # An absent/empty verdict is DATA, not a formatting gap: it means
-                # goal-iter-lean's _review_verdict() found no parseable verdict
-                # line. Keep it as "" so the tripwire can see it (it used to be
-                # coerced to "?" and silently swallowed).
+                # An empty verdict is DATA, not a formatting gap. goal-iter-lean
+                # emits review_verdict with verdict:"" when the reviewer was
+                # dispatched and returned WITHOUT a parseable `**Verdict:**` line
+                # (quota pauses excluded); resume-skipped reviews emit nothing at
+                # all. Keep the "" so evaluate_tripwire can see the gap — it used
+                # to be coerced to "?" and silently swallowed.
                 _rv = event.get("verdict")
                 cur["review_verdicts"].append({
                     "verdict": "" if _rv is None else str(_rv),
