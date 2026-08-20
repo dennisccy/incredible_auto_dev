@@ -157,10 +157,13 @@ A goal-mode resume that passes a different `--cli` than the persisted value erro
 - **Claude is the default.** `CHAIN_CLI` defaults to `claude` if unset and no `--cli` flag is passed. Existing Claude-only callers see no behaviour change.
 - **`claude_with_quota_retry` is now an alias.** All step scripts continue to call it; behaviour now depends on `$CHAIN_CLI`.
 - **Codex's Claude-equivalent flags are translated.** The framework calls everything as `-p <prompt>`; `_codex_invoke` strips the `-p` and passes the prompt positionally to `codex exec`.
-- **Per-call env contracts (Claude-only).** `claude_with_quota_retry` reads two env vars before invoking the Claude CLI:
+- **Per-call env contracts (Claude-only).** `claude_with_quota_retry` reads these env vars before invoking the Claude CLI:
   - `CHAIN_CURRENT_AGENT=<name>` — set by each step-wrapper script (`dev-phase.sh`, `qa-phase.sh`, the inline orchestrator/iteration-summarizer/delivered blocks in `run-phase.sh` and `run-goal.sh`, etc.). Drives both the per-agent permission overlay (`agent_permissions.py disallowed/budget`) and the per-agent `--effort` resolution (`agent_permissions.py effort`).
   - `CHAIN_DISABLE_EFFORT_OVERRIDE=true` — restore `--effort max` for every agent regardless of the override map. Useful when troubleshooting whether the effort drop is degrading a structured agent's output.
-  Codex callers do not see these vars; the `--effort` flag is Claude-specific.
+  - `CHAIN_OUTPUT_STYLES=true` — arms the wave-1 table in `lib/agent_permissions.py` (`OUTPUT_STYLE_OVERRIDES`), sending a Claude Code output style with the invocation; default off, goal-mode only.
+  - `CHAIN_AGENT_OUTPUT_STYLE=<agent>=<Style>[,...]` — per-agent output-style experiment map, same grammar as `CHAIN_AGENT_EFFORT`; judges refused.
+  - `CHAIN_OUTPUT_STYLE_OVERRIDE=<Style>` — debug override, every agent including judges (loud NOTICE); wins over all other resolution; works outside goal mode too.
+  Codex callers do not see these vars; the `--effort` and `--settings` flags are Claude-specific.
 
 ---
 

@@ -55,7 +55,7 @@ agents:
 
 After editing, run `python3 scripts/automation/sync-cli-assets.py --cli claude` and commit the regenerated `.claude/agents/*.md`.
 
-All agent invocations (phase mode and goal mode) go through `lib/quota-retry.sh::claude_with_quota_retry`, which passes `--effort max` and handles quota exhaustion by sleeping until reset and resuming. This is automatic — no per-agent flag is needed.
+All agent invocations (phase mode and goal mode) go through `lib/quota-retry.sh::claude_with_quota_retry`, which passes `--effort max` (plus `--settings '{"outputStyle":"<name>"}'` when the wave-1 output-style table resolves one, opt-in via `CHAIN_OUTPUT_STYLES=true`) and handles quota exhaustion by sleeping until reset and resuming. This is automatic — no per-agent flag is needed.
 
 ## config/install-security-policy.json
 
@@ -95,10 +95,13 @@ The `allow` list should be customized per project (e.g., add `Bash(alembic *)` f
 | `CHAIN_DISABLE_AUTO_WAIT` | `false` | Fail immediately on quota exhaustion |
 | `CHAIN_INSTALL_GATE_BYPASS` | (unset) | Bypass install security gate |
 | `CHAIN_CLAUDE_DISABLE_CACHE_HYGIENE` | `false` | When `true`, drop the `--exclude-dynamic-system-prompt-sections` flag from claude invocations. Default keeps it on (improves prompt-cache reuse across sessions). |
-| `CHAIN_TELEMETRY_TOKENS` | `false` | When `true`, route claude calls through `lib/claude_stream_renderer.py` to capture token usage and `total_cost_usd` into `claude_usage` telemetry events. See `docs/goal-mode-telemetry.md`. |
+| `CHAIN_TELEMETRY_TOKENS` | `true` | When `true` (the default for headless runs), route claude calls through `lib/claude_stream_renderer.py` to capture token usage and `total_cost_usd` into `claude_usage` telemetry events. See `docs/goal-mode-telemetry.md`. |
 | `CHAIN_TRACE_DIR` | (auto-set by entry scripts) | Directory where each successful claude invocation appends a record to `trace.jsonl` and copies its stdout to `<NNNN>-<agent>.log`. Phase mode auto-sets to `runs/<phase>/trace/`; goal mode auto-sets to `runs/goal-session-<sid>/trace/`. Inspect with `python3 scripts/automation/lib/replay_trace.py list <dir>`. |
 | `CHAIN_DISABLE_TRACE` | `false` | When `true`, the entry scripts skip auto-setting `CHAIN_TRACE_DIR` so no trace records are written. |
 | `CHAIN_DISABLE_PERMISSION_ISOLATION` | `false` | When `true`, skip the per-agent permission overlay applied by `lib/quota-retry.sh`. The overlay reads `lib/agent_permissions.py` and passes `--disallowedTools` to claude based on `CHAIN_CURRENT_AGENT` — by default, only `release-manager` can `git push`, `gh pr merge`, `gh release`, `git tag`, etc. |
+| `CHAIN_OUTPUT_STYLES` | `false` | STYLE-1 experiment: `true` arms the wave-1 table in `lib/agent_permissions.py` (`OUTPUT_STYLE_OVERRIDES`) — per-agent Claude Code output style on headless dispatches (`Concise` on developer/qa/browser-qa-agent/orchestrator/ui-impact-analyst/ux-regression-reviewer). Judges refused by construction; goal mode only. |
+| `CHAIN_AGENT_OUTPUT_STYLE` | (unset) | Per-agent output-style experiment map, e.g. `developer=Concise,qa=Concise` — same grammar as `CHAIN_AGENT_EFFORT`; judges refused. |
+| `CHAIN_OUTPUT_STYLE_OVERRIDE` | (unset) | Debug: forces one style on every agent including judges (loud NOTICE); wins over all other resolution; works outside goal mode too. |
 | `CHAIN_DEPTH_ARBITER` | `true` | SPEED-20 deterministic depth arbiter (evaluator depth recommendation binding by default; `false` restores the legacy SPEED-10 allowlist) |
 | `CHAIN_FULL_CADENCE_CAP` | `4` | Arbiter window cap: at most one full per W iterations (`0`/`1` disables the cap) |
 | `CHAIN_ITER_TIME_BUDGET_SECONDS` | `3600` | SPEED-15 wall-clock iteration budget (`0` disarms everything) |

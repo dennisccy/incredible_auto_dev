@@ -88,7 +88,7 @@ do not resurrect them without new evidence):
 - **D5** Do not cap thinking/effort to cut cost — on ANY agent, not only judges (D4).
   Superpowers 6 measured the failure mode: capping thinking increased turn count and
   ~doubled output tokens (cost went UP, not down). Judges are hardcoded-refused
-  (`JUDGE_AGENTS`, `scripts/automation/lib/agent_permissions.py:262-264`); for
+  (`JUDGE_AGENTS`, `scripts/automation/lib/agent_permissions.py:296-298`); for
   non-judges the `CHAIN_AGENT_EFFORT` knob stays opt-in and must carry a COST tripwire
   (REL-8) — the current quality-only tripwire (`lib/analyze_telemetry.py:441-466`)
   cannot see this failure mode.
@@ -3778,6 +3778,144 @@ but appreciated.
   `goal_gate.py goal-slice` unchanged (G3) and a decision on where mockups live.
 - **Verify idea:** run-evals + one fixture goal-iteration dry parse with a Reference
   line present and absent.
+
+### CAND-STYLE · Per-agent Claude Code output style (landed default-off; experiment pending)
+- **Priority:** P2 · **Effort:** M · **Risk:** LOW-MED · **Status:** IMPLEMENTED
+  2026-08-20 behind `CHAIN_OUTPUT_STYLES` (default off, G4).
+- **Problem:** long, machine-consumed pipeline steps (developer, qa,
+  browser-qa-agent, orchestrator, ui-impact-analyst, ux-regression-reviewer) pay
+  sonnet-priced tokens narrating a transcript no human reads. Claude Code's built-in
+  `Concise` output style is a zero-app-code lever for exactly this, but applying it
+  needed: name validation (the CLI silently ignores an unknown style and falls back
+  to default), a headless invocation seam, an interactive-backend emulation path
+  (Agent-tool subagents never receive a native style at all), proof that the
+  effective style actually matched what was requested, and — per **D5**'s precedent,
+  where an output cap increased turn count and ~doubled output tokens — a dedicated
+  cost tripwire, because "should save tokens" cannot ship unmeasured.
+- **Current state:** the Step 0 probe (2026-08-20, CLI 2.1.237) confirmed
+  `init.output_style="Concise"` survives `--exclude-dynamic-system-prompt-sections`,
+  and that inline `--settings` MERGES with project/user settings rather than
+  replacing them (hooks still fired); `available_output_styles` is absent from this
+  CLI version's `init` event. The assignment lives in a python table, not
+  `agents/<name>/agent.yaml`: vendored deployments (trendora, tapeology) symlink
+  `.claude/`, `config/`, `scripts/` but not `agents/`, and Claude Code ignores an
+  `output_style` frontmatter key for subagents regardless — a yaml-based assignment
+  would be invisible in one case and inert in the other.
+- **Change spec (landed):** resolver `output_style_for` in
+  `scripts/automation/lib/agent_permissions.py` beside `EFFORT_OVERRIDES`, same
+  precedence shape as `CHAIN_AGENT_EFFORT` (`CHAIN_OUTPUT_STYLE_OVERRIDE` global
+  debug > `CHAIN_AGENT_OUTPUT_STYLE` per-agent map > `OUTPUT_STYLE_OVERRIDES` table
+  gated by `CHAIN_OUTPUT_STYLES=true` > nothing); CLI subcommands `output-style`,
+  `output-style-text`, `output-styles-configured`, `output-style-check` (commit
+  `d2b9a19`). Headless seam: `_claude_invoke` appends `--settings
+  '{"outputStyle":"<name>"}'` when a style resolves; `_codex_invoke` drops the flag;
+  `run-judgment-evals.sh` carries the same parity lines (commit `da939e5`). The
+  interactive backend has no native style channel for Agent-tool subagents, so
+  `_interactive_invoke` appends an emulation block to the prompt instead — trace
+  records `<name>(emulated)` (commit `adaf89b`). Proof per dispatch: the renderer
+  stamps the EFFECTIVE `output_style` from the stream-json `init` event into the
+  usage sidecar, landing it in both `trace.jsonl` and the `claude_usage` telemetry
+  event; telemetry also carries `output_style_requested`; a requested-vs-effective
+  mismatch (case-insensitive, `""` ≡ `"default"`) fires `WARNING: output style
+  requested=<x> effective=<y>` plus an `output_style_mismatch` telemetry event —
+  this also catches an ambient `outputStyle` pin leaking in from the operator's own
+  settings (commit `da939e5`). Engine wiring: boot preflight `output-style-check`
+  (exit 2 on any invalid configured name); `session.json` gets an `output_styles`
+  reporting stamp; `iter_config {key:"CHAIN_OUTPUT_STYLES"}` fires per knob-active
+  iteration; the tripwire revert block was generalized to one `experiment_reverted`
+  event per active knob key (commits `6295302`, `1027695`). `analyze_telemetry.py
+  --tripwire` gained a cost dimension — styled vs. unstyled `claude_usage` rows for
+  the same agent in-session, tripping when the styled median of `output_tokens` or
+  `num_turns` exceeds 1.5x the baseline median (≥3 rows each side), reason prefix
+  `cost:` — plus an unparseable `review_verdict` trip reason and three new
+  `missing_evidence` emitters (developer handoff, ui-impact, ux-regression) so every
+  wave-1 artifact carries a deterministic "went missing" signal. `doctor.sh` gained
+  an `output-styles` row (20 checks total; commits `8d78ee7`, `15d10cc`). Wave 1
+  assigns `Concise` to developer, qa, browser-qa-agent, orchestrator,
+  ui-impact-analyst, ux-regression-reviewer; judges (`JUDGE_AGENTS`) are refused by
+  a hardcoded guard (D4), `Learning` is refused outright (asks the human to write
+  code), and the whole mechanism is inert outside goal mode (`GOAL_SESSION_DIR`
+  unset).
+- **DoD (experiment):** pre-register predictions in `benchmarks/experiments.md`
+  (developer `output_tokens` −20..30%, `num_turns` flat ±10%, attempt-1 review FAIL
+  rate unchanged, `cache_creation_input_tokens` ≤ +25K per wave-1 dispatch, zero
+  `output_style_mismatch`); run ≥3 knob-off iterations on one real session, then
+  `CHAIN_OUTPUT_STYLES=true` for ≥3 more on the same session (G9 confirm — this
+  spends real tokens); flip the default to `true` in a SEPARATE change (G4) only if
+  developer+qa median output tokens drop ≥15% with every tripwire quiet and no
+  artifact-schema issues; if artifacts thinned but tokens still dropped, ship arm 2
+  instead; otherwise record the result here and leave the knob dormant.
+- **Verify:** `./scripts/automation/run-evals.sh` · `bash
+  tests/automation/test-output-style.sh` · `bash scripts/automation/doctor.sh --only
+  output-styles` · the G8 read-out (`T=runs/goal-session-<sid>/telemetry.jsonl`):
+
+  ```bash
+  jq -r 'select(.event=="claude_usage" and (.agent|IN("developer","qa","browser-qa-agent","orchestrator","ui-impact-analyst","ux-regression-reviewer"))) | [(.iter|tostring), .agent, (.output_style_requested // "none"), (.output_style // "?"), (.usage.output_tokens|tostring), (.num_turns|tostring), (.duration_ms|tostring), (.usage.cache_creation_input_tokens|tostring)] | @tsv' "$T" | column -t
+  jq -s 'map(select(.event=="claude_usage" and .agent=="developer")) | group_by(.output_style_requested // "none") | map({arm:(.[0].output_style_requested // "none"), n:length, out_med:(map(.usage.output_tokens)|sort|.[length/2|floor]), turns_med:(map(.num_turns)|sort|.[length/2|floor]), ms_avg:(map(.duration_ms)|add/length)})' "$T"
+  python3 scripts/automation/lib/analyze_telemetry.py --wall "$T"
+  python3 scripts/automation/lib/analyze_telemetry.py --tripwire --window 3 "$T"; echo "tripwire rc=$?"   # 0 = quiet
+  jq -c 'select(.event|IN("output_style_mismatch","missing_evidence","experiment_reverted"))' "$T"       # must be empty
+  jq -r 'select(.event=="review_verdict") | [.iter,.attempt,.verdict]|@tsv' "$T"                          # attempt-1 FAIL rate vs baseline
+  for f in reports/reviews/*-review.md reports/qa/*-qa.md runs/goal-session-<sid>/iter-*/eval.md; do python3 scripts/automation/lib/artifact_schemas.py validate "$f" >/dev/null 2>&1 || echo "SCHEMA-ISSUE $f"; done
+  ```
+- **Rollback:** `unset CHAIN_OUTPUT_STYLES CHAIN_AGENT_OUTPUT_STYLE
+  CHAIN_OUTPUT_STYLE_OVERRIDE` reverts any live session to unstyled immediately; to
+  remove the mechanism itself, revert the STYLE-1 commits or empty
+  `OUTPUT_STYLE_OVERRIDES`.
+- **Stop-and-ask:** any `output_style_mismatch` event in the first knob-on
+  iteration; wave-1 artifacts failing `artifact_schemas` validation, a
+  `missing_evidence` row appearing, or the attempt-1 review FAIL rate rising under
+  `Concise`; anyone styling a judge outside a debug `CHAIN_OUTPUT_STYLE_OVERRIDE`
+  run, or flipping the default in the same change that touches the knob (G4).
+- **Follow-ups:**
+  - Flip `CHAIN_OUTPUT_STYLES`'s default only in a separate change, after G8
+    evidence.
+  - Arm 2 custom style `pipeline-terse` (pre-drafted, NOT shipped — ships as its
+    own CAND item): use only if wave-1 measurement shows Concise leaking into
+    artifacts (schema failures, thinner handoffs) while the token win is real.
+
+    1. Neutral source `output-styles/pipeline-terse.md`:
+
+       ```markdown
+       ---
+       name: pipeline-terse
+       description: Pipeline agents — minimal transcript, artifacts exactly per agent instructions
+       keep-coding-instructions: true
+       ---
+       You are running unattended inside an automated pipeline. No human reads your transcript; machines read the files you write.
+
+       - Transcript: no preamble, no narration between tool calls, no recap. Your final message is one line naming the artifact(s) you wrote and the verdict line, nothing else.
+       - Artifacts: every file, section, table, and verdict line your agent instructions require is written in full — this style never shortens a file.
+       - Errors, failing test output, and security findings keep their full content.
+       - Never stop to ask a question: make the documented assumption, record it in the artifact, continue.
+       ```
+    2. `adapters/claude/sync.py`: mirror `output-styles/` → `.claude/output-styles/`
+       (same `mirror_directory` helper as skills/commands; add to `sync_all` counts
+       and the docstring); `--check` covers it (G2). Vendored deployments see it
+       through the `.claude` symlink.
+    3. Assignment: `OUTPUT_STYLE_OVERRIDES[...] = "pipeline-terse"` for the
+       affected agents; the resolver already accepts project custom styles by
+       stem/name, and `output_style_text` already serves the file body as the
+       interactive emulation text.
+    4. Caveat (fact 8): no per-turn reminder for custom styles. Measure both
+       arms with the same recipe.
+  - The renderer emits `output_style`/`available_output_styles` as `null` when
+    unknown, and the trace's `+ $usage` spread can null-override an already-known
+    requested value — omit the keys instead of nulling them.
+  - `_codex_invoke` never resets `_CHAIN_TRACE_OUTPUT_STYLE`, so it goes stale in
+    mixed-backend processes (pre-existing gap, shared with model/effort).
+  - `doctor.sh` greps the RAW configured casing instead of canonicalizing through
+    the resolver first.
+  - Latent vendored gap: `_neutral_agent_yaml` has no framework-root fallback
+    (unlike `_tiers_file`), affecting yaml-only fields (timeout/budget/model) in
+    vendored repos.
+  - Re-derive `AGENT_TIMEOUTS_SECONDS` from `--wall` after ≥3 knob-on iterations.
+  - `session.json`'s `output_styles` stamp is not rewritten after a tripwire revert
+    — `iter_config`/`experiment_reverted` events carry the truth instead.
+  - `missing_evidence` emitters fire on different conditions per agent (e.g.
+    ui-impact only on rc==0) — know each one's trigger before trusting silence.
+  - The cost tripwire needs ≥3 same-session UNSTYLED baseline iterations per agent —
+    run those first, or it has nothing to compare against.
 
 ---
 

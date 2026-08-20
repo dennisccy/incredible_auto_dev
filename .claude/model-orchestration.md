@@ -34,6 +34,24 @@ readme-maintainer, demo-narrator, ux-regression-reviewer. Do not raise a medium 
 "fix" quality — its work is procedural; and do not lower a max judge's effort to save tokens — lower the *context you feed it* instead
 (see `.claude/workflow.md` and the digest tools in `scripts/automation/lib/goal_gate.py`).
 
+Output style (STYLE-1, opt-in, default off): headless dispatches may also carry a Claude
+Code output style, resolved by the wave-1 table in `lib/agent_permissions.py`
+(`OUTPUT_STYLE_OVERRIDES`), armed by `CHAIN_OUTPUT_STYLES=true`. Wave 1 sets `Concise` on
+developer, qa, browser-qa-agent, orchestrator, ui-impact-analyst, ux-regression-reviewer —
+long, machine-consumed, non-judge steps. Judges (`JUDGE_AGENTS`) are refused by construction
+(D4 — never lower a judge's effort/output to save tokens); `Learning` is refused outright
+(it asks the human to write code, stalling headless runs); an unknown style name fails the
+dispatch loudly instead of the CLI's silent fallback to default. The interactive backend has
+no native style support for Agent-tool subagents, so a resolved style is emulated by
+appending a prompt block instead (trace records `<name>(emulated)`); Codex ignores the whole
+mechanism (no `--settings` equivalent). Every dispatch proves its effective style by reading
+the stream-json `init` event back into the trace/telemetry sidecar; a requested-vs-effective
+mismatch fires a loud `WARNING` and an `output_style_mismatch` telemetry event. The experiment
+knobs (`CHAIN_OUTPUT_STYLES`, `CHAIN_AGENT_OUTPUT_STYLE`) act only in goal mode
+(`GOAL_SESSION_DIR` set); the debug override (`CHAIN_OUTPUT_STYLE_OVERRIDE`) works in any
+mode. See `docs/goal-mode-quickstart.md` to try it and `docs/improvement-roadmap.md` §16
+CAND-STYLE for status.
+
 ## 2. The commander does not go into the field
 
 The main conversation (orchestrator/pump/interactive session) exists to route work and hold
@@ -136,6 +154,9 @@ An agent's claim about its own work is a hypothesis, not evidence.
 | `CHAIN_ASYNC_SHOWCASE` | default `true`; demo/summary/README/renders run in the background overlapping the next decomposer (CONTINUE/ESCALATE only; joined + committed before the next executor dispatch) | `run-goal.sh` |
 | `CHAIN_SESSION_RETRO` | default `true`; terminal halts (GOAL_ACHIEVED/STALLED/REGRESSION_HALT/BUDGET_EXHAUSTED) freeze a deterministic evidence snapshot to `state/retro-input.md` AND then dispatch the retro-analyst (light tier) to draft `reports/goal-session-<sid>-retro.md` improvement proposals from it (EVO-2); the drafting dispatch is skipped when the digest is missing; resumable pauses never fire either step; non-blocking — set `false` to disable both | `run-goal.sh`, `lib/retro_collect.sh` |
 | `CHAIN_AGENT_EFFORT` | opt-in experiment, e.g. `developer=high`; **judges are refused by a hardcoded guard**; auto-reverted by the telemetry tripwire on quality movement | `lib/agent_permissions.py` |
+| `CHAIN_OUTPUT_STYLES` | default `false`; `true` arms the wave-1 table in `lib/agent_permissions.py` (`OUTPUT_STYLE_OVERRIDES`) — goal mode only | `lib/agent_permissions.py`, `lib/quota-retry.sh`, `lib/interactive-dispatch.sh` |
+| `CHAIN_AGENT_OUTPUT_STYLE` | per-agent experiment map, e.g. `developer=Concise,qa=Concise` (same grammar as `CHAIN_AGENT_EFFORT`); judges refused | `lib/agent_permissions.py`, `lib/quota-retry.sh`, `lib/interactive-dispatch.sh` |
+| `CHAIN_OUTPUT_STYLE_OVERRIDE` | debug: forces one style on every agent incl. judges (loud NOTICE); wins over all; works in any mode | `lib/agent_permissions.py`, `lib/quota-retry.sh`, `lib/interactive-dispatch.sh` |
 | `CHAIN_DOCTOR` | default `true`; run-goal.sh prints the REL-2 preflight doctor table (PASS/WARN/FAIL environment truth) at engine start, WARN-ONLY BY CONSTRUCTION — crash/nonzero/hang all degrade to a log line and the session proceeds; gating exists only as the doctor CLI's own `--strict-doctor` flag (exit 1 on ≥1 FAIL; the engine never passes it) | `run-goal.sh`, `doctor.sh` |
 
 If you disable a gate/routing knob for an experiment, **re-enable it in the same session**

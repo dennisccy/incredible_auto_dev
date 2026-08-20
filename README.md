@@ -444,6 +444,7 @@ bash scripts/automation/render-summary.sh --session-index <sid>        # re-rend
 | `config/model-tiers.yaml` + `agents/*/agent.yaml` | Tier→model map + per-agent tier |
 | `config/install-security-policy.json` | Package allowlists and deny patterns |
 | `.claude/settings.json` | Claude Code tool permissions |
+| `lib/agent_permissions.py` → `OUTPUT_STYLE_OVERRIDES` | Per-agent Claude Code output style (wave-1: `Concise` on developer/qa/browser-qa-agent/orchestrator/ui-impact-analyst/ux-regression-reviewer); inert until `CHAIN_OUTPUT_STYLES=true` — see `.claude/model-orchestration.md` §7 |
 | `docs/goal.md` | Project vision and success criteria (goal mode also reads Must-have user journeys + Anti-goals) |
 | `runs/goal-session-<sid>/session.json` | Goal-mode session state (halt config, current iteration, last verdict) |
 | `runs/goal-session-<sid>/state/journey-history.json` | Per-journey pass/fail/regressed status across iterations |

@@ -148,6 +148,29 @@ guard). Run ≥3 baseline iterations first; the telemetry tripwire auto-reverts
 the knob if a REGRESSION verdict, journey regression, or repeated first-attempt
 review FAILs appear while it is active.
 
+### Try the opt-in output-style experiment (guarded)
+
+```bash
+CHAIN_OUTPUT_STYLES=true ./scripts/automation/run-goal.sh --resume --session-id my-app
+```
+
+Arms the wave-1 table in `lib/agent_permissions.py` (`OUTPUT_STYLE_OVERRIDES`),
+sending Claude Code's built-in `Concise` output style to developer, qa,
+browser-qa-agent, orchestrator, ui-impact-analyst, and ux-regression-reviewer
+(judges are refused by a hardcoded guard). Run ≥3 baseline iterations with the
+knob OFF first — the cost tripwire needs that many same-session unstyled rows
+per agent to compute a baseline median before it can judge a styled one. The
+telemetry tripwire auto-reverts the knob on a quality regression (as with
+`CHAIN_AGENT_EFFORT` above) AND on a cost regression (styled median
+`output_tokens` or `num_turns` more than 1.5x the unstyled baseline). Check for
+a style mismatch after a run:
+
+```bash
+jq -c 'select(.event=="output_style_mismatch")' runs/goal-session-my-app/telemetry.jsonl
+```
+
+An empty result means every dispatch's effective style matched what was requested.
+
 ### Recover from `BUDGET_EXHAUSTED`
 
 ```bash
