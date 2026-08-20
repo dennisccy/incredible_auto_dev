@@ -122,8 +122,16 @@ programmatic path with an API key** (`run-goal.sh` without `--interactive`).
   the v2 skill landed (`skills/goal-interactive-dispatch.md`). The
   per-call hard timeout now *does* have an interactive equivalent —
   `CHAIN_DISPATCH_INFLIGHT_TIMEOUT` bounds a single claimed subagent (defaulting to
-  `CHAIN_CLAUDE_MAX_RUNTIME_SECONDS`). Per-agent tool/permission isolation and
-  per-agent model **are** preserved (via the agent frontmatter).
+  `CHAIN_CLAUDE_MAX_RUNTIME_SECONDS`). **Output styles are emulated, not native**:
+  Claude Code injects a style only into the default system prompt, which
+  Agent-tool subagents never receive — so when a style resolves (STYLE-1, opt-in)
+  the backend appends its body to the prompt under a
+  `# Output Style: <name> (engine-emulated on the interactive backend)` header,
+  and the trace row records `<name>(emulated)`. Only styles with a known body
+  (`Concise` plus any project `.claude/output-styles/*.md`) emulate; a valid style
+  without one warns, records `<name>(unemulated)`, and dispatches unstyled.
+  Per-agent tool/permission isolation and per-agent model **are** preserved (via
+  the agent frontmatter).
 - **Resume is iteration-level.** A session that stops mid-iteration re-runs that
   iteration from the decomposer on resume. `/goal-resume` first SIGTERMs any
   still-running prior engine for the session (via `runs/goal-session-<sid>/engine.pid`)
@@ -206,7 +214,9 @@ timestamped chain log is always at `runs/goal-session-<sid>/engine.log`.
 - **Richer in-session telemetry** — ~~the stream-json usage sidecar is absent in
   interactive mode~~ done (pump protocol v2 usage sidecar, TOKEN-5): per-agent
   token capture works interactively. Still reduced vs headless: no
-  `total_cost_usd` and no per-call `--effort` attribution.
+  `total_cost_usd`, no per-call `--effort` attribution, and output styles are
+  prompt-emulated rather than native (no `init.output_style` readback, so the
+  effective style cannot be proven per dispatch the way the headless path does).
 - **`.claude/` git retirement** — if the generated `.claude/` tree is later
   removed from git, ensure `.claude/commands/` is regenerated on setup (the
   runtime auto-sync keys on a single agent marker and will not create

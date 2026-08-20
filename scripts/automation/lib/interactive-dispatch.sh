@@ -28,6 +28,8 @@
 #   _interactive_invoke returns that exit code. `out`, `usage_path`, and `model`
 #   are optional for older pumps — a pump that ignores them still works (no
 #   trace / token telemetry captured, byte-identical pre-v2 behavior).
+#   An engine-requested output style (STYLE-1) rides INSIDE `prompt` as an
+#   appended "# Output Style: <name> (engine-emulated ...)" block — no pump/skill change.
 #
 # Request filenames are unique (mktemp), so the concurrent calls produced by
 # run-phase.sh's post-dev fanout never collide. This backend never sleeps until
@@ -234,6 +236,39 @@ _interactive_invoke() {
   # drop them from a prompt that ends in one — the pump must get it byte-exact.
   prompt="$(_interactive_extract_prompt "$@"; printf x)"
   prompt="${prompt%x}"
+
+  # Output style (STYLE-1, opt-in): Claude Code injects a style only into the
+  # DEFAULT system prompt, which Agent-tool subagents never get — this backend
+  # EMULATES it by appending the style body to the prompt. Same resolver and
+  # precedence as headless (judges resolve to "" by construction). Goal-mode
+  # only, like headless. A resolution error refuses the dispatch with 2 (the
+  # "cannot dispatch" convention) rather than running an unlabeled arm. A VALID
+  # style with no known body is a fidelity gap, not a config error: warn,
+  # record "<name>(unemulated)", dispatch unstyled.
+  local _style="" _style_rc=0 _style_text="" _perms_py
+  _perms_py="$(dirname "${BASH_SOURCE[0]}")/agent_permissions.py"
+  _CHAIN_TRACE_OUTPUT_STYLE=""
+  if [[ -f "$_perms_py" && ( -n "${GOAL_SESSION_DIR:-}" || -n "${CHAIN_OUTPUT_STYLE_OVERRIDE:-}" ) ]]; then
+    _style=$(python3 "$_perms_py" output-style "$agent") || _style_rc=$?
+    if [[ $_style_rc -ne 0 ]]; then
+      echo "[interactive-dispatch] *** OUTPUT STYLE RESOLUTION FAILED for agent '$agent' (rc=$_style_rc) — refusing to dispatch. Fix CHAIN_OUTPUT_STYLE_OVERRIDE / CHAIN_AGENT_OUTPUT_STYLE, or unset CHAIN_OUTPUT_STYLES. ***" >&2
+      return 2
+    fi
+  fi
+  if [[ -n "$_style" ]]; then
+    if _style_text=$(python3 "$_perms_py" output-style-text "$_style"); then
+      prompt+=$'\n\n'"# Output Style: $_style (engine-emulated on the interactive backend)"$'\n'"$_style_text"
+      _CHAIN_TRACE_OUTPUT_STYLE="${_style}(emulated)"
+    else
+      echo "[interactive-dispatch] WARNING: output style '$_style' has no emulation text — agent '$agent' dispatches UNSTYLED on the interactive backend (headless applies it natively)." >&2
+      _CHAIN_TRACE_OUTPUT_STYLE="${_style}(unemulated)"
+      if declare -F record_telemetry_event >/dev/null 2>&1; then
+        record_telemetry_event "output_style_mismatch" "$(jq -cn --arg a "$agent" --arg r "$_style" \
+          '{agent:$a, requested:$r, effective:"", backend:"interactive", reason:"no-emulation-text"}' 2>/dev/null \
+          || printf '{"agent":"%s","requested":"%s","effective":"","backend":"interactive","reason":"no-emulation-text"}' "$agent" "$_style")" || true
+      fi
+    fi
+  fi
 
   # Pump-mode TMPDIR bridge: interactive subagents execute in the PUMP session's
   # environment — the engine's exported TMPDIR never reaches them. Relay it as a
@@ -518,11 +553,13 @@ print(json.dumps(d))' < "$pfile" > "$req" || true
     else
       _CHAIN_TRACE_MODEL="$(python3 "$(dirname "${BASH_SOURCE[0]}")/agent_permissions.py" model "$agent" 2>/dev/null || true)"
     fi
-    _CHAIN_TRACE_EFFORT=""   # effort is not applied on the interactive path
+    _CHAIN_TRACE_EFFORT=""   # effort is not applied on the interactive path; _CHAIN_TRACE_OUTPUT_STYLE set above
     _trace_record_invocation "$_out_for_trace" "$_usage_sidecar" "$_dur" "$rc" "$@" || true
     [[ "$_out_for_trace" != "$out" ]] && rm -f "$_out_for_trace" 2>/dev/null || true
     _CHAIN_TRACE_MODEL=""
   fi
+
+  _CHAIN_TRACE_OUTPUT_STYLE=""
 
   rm -f "$res" "$req.ready" "$started" "$out" "$usage_f" 2>/dev/null || true
   return "$rc"
@@ -536,6 +573,7 @@ print(json.dumps(d))' < "$pfile" > "$req" || true
 _interactive_dispatch_self_test() {
   local fails=0 d rc pump r
   export CHAIN_CURRENT_AGENT="developer"
+  unset CHAIN_OUTPUT_STYLES CHAIN_AGENT_OUTPUT_STYLE CHAIN_OUTPUT_STYLE_OVERRIDE
 
   # Test 1 — round-trip returns the pump's exit code.
   d="$(mktemp -d)"; export CHAIN_DISPATCH_DIR="$d"; rc=0

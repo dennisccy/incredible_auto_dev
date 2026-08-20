@@ -245,7 +245,106 @@ else
   fail "g: codex argv wrong (rc=$RUN_RC, argv: $(cat "$G_CODEX"), out: $RUN_OUT)"
 fi
 
-# ── Slice 2 (interactive-backend emulation) cases h/h2/h3 land here ─────────
+# ── Slice 2: interactive-backend emulation (h*) ─────────────────────────────
+# Claude Code injects an output style only into the DEFAULT system prompt, and
+# Agent-tool subagents (the /goal pump backend) never receive it — so the
+# interactive backend EMULATES the style by appending its body to the prompt.
+# These cases drive REAL round-trips through _interactive_invoke against a tiny
+# inline "pump", the same recipe tests/automation/test-quota-retry.sh uses.
+
+IPROMPT='Agent instructions: .claude/agents/developer.md  <-- read this first'
+
+# run_interactive <tag> [ENV=VAL ...]
+# Backgrounds one interactive dispatch, waits (bounded, ~5 s) for the request the
+# seam publishes, saves its `.prompt`, answers `.res`=0, and reaps. Leaves:
+#   IRC          the dispatch's exit code
+#   IPROMPT_FILE the published prompt (empty file when nothing was published)
+#   IREQ_COUNT   req.* files left in the channel
+#   ILOG_TEXT    the dispatch's stdout+stderr
+#   IARGV        recorded argv of the stub `claude` (must stay empty: no headless call)
+run_interactive() {
+  local tag="$1"; shift
+  local D="$WORK/$tag"
+  mkdir -p "$D"
+  IPROMPT_FILE="$D/published.prompt"; : > "$IPROMPT_FILE"
+  IARGV="$D/claude.argv"; : > "$IARGV"
+  touch "$D/.pump-alive"
+  (
+    cd "$SBX" && env \
+      -u CHAIN_OUTPUT_STYLES -u CHAIN_AGENT_OUTPUT_STYLE -u CHAIN_OUTPUT_STYLE_OVERRIDE \
+      -u GOAL_SESSION_DIR -u CHAIN_TRACE_DIR -u CHAIN_CLI -u CHAIN_MODEL_OVERRIDE \
+      -u CHAIN_TMPDIR -u CHAIN_DISPATCH_LANE \
+      PATH="$STUB:$PATH" CLAUDE_STUB_ARGS="$IARGV" REPO_ROOT="$REPO_ROOT" \
+      CHAIN_TELEMETRY_TOKENS=false CHAIN_DISABLE_AUTO_WAIT=true \
+      CHAIN_AGENT_TIMEOUTS=false CHAIN_CLAUDE_MAX_RUNTIME_SECONDS=0 \
+      CHAIN_AGENT_BACKEND=interactive CHAIN_DISPATCH_DIR="$D" \
+      CHAIN_DISPATCH_POLL_SECONDS=0.2 CHAIN_PUMP_HEARTBEAT_TIMEOUT=3600 \
+      "$@" \
+      bash -c 'source "$REPO_ROOT/scripts/automation/lib/quota-retry.sh"; claude_with_quota_retry "$@"' \
+        _seam -p "$IPROMPT" > "$D/log" 2>&1
+    echo "$?" > "$D/rc.out"
+  ) &
+  local bg=$! req="" i
+  for i in $(seq 1 50); do
+    req=$(find "$D" -maxdepth 1 -name 'req.*.ready' 2>/dev/null | head -1)
+    [[ -n "$req" || -f "$D/rc.out" ]] && break
+    sleep 0.1
+  done
+  if [[ -n "$req" ]]; then
+    jq -r '.prompt' "$req" > "$IPROMPT_FILE" 2>/dev/null || : > "$IPROMPT_FILE"
+    echo 0 > "${req%.ready}.res"
+  fi
+  wait "$bg" 2>/dev/null || true
+  IRC=$(cat "$D/rc.out" 2>/dev/null || echo missing)
+  IREQ_COUNT=$(find "$D" -maxdepth 1 -name 'req.*' 2>/dev/null | wc -l | tr -d ' ')
+  ILOG_TEXT=$(cat "$D/log" 2>/dev/null)
+}
+
+H_HDR='# Output Style: Concise (engine-emulated on the interactive backend)'
+H_CTX='already loaded as your system prompt'
+
+# ── h. Armed table → the prompt carries the emulation block, CTX-8 note last ─
+run_interactive h GOAL_SESSION_DIR="$SESS" CHAIN_CURRENT_AGENT=developer CHAIN_OUTPUT_STYLES=true
+H_PROMPT=$(cat "$WORK/h/published.prompt")
+H_PRE_HDR="${H_PROMPT%%"$H_HDR"*}"
+H_PRE_CTX="${H_PROMPT%%"$H_CTX"*}"
+if [[ "$IRC" == "0" && "$H_PROMPT" == *"$H_HDR"* && "$H_PROMPT" == *"Lead with the result"* \
+      && "$H_PROMPT" == *"$H_CTX"* ]] && (( ${#H_PRE_HDR} < ${#H_PRE_CTX} )); then
+  pass "h: interactive prompt carries the Concise emulation block, CTX-8 note after it"
+else
+  fail "h: emulation block missing/misordered (rc=$IRC, prompt: $(printf '%s' "$H_PROMPT" | head -c 300))"
+fi
+
+# ── h2. Judge stays unemulated under the armed table (D4) ───────────────────
+run_interactive h2 GOAL_SESSION_DIR="$SESS" CHAIN_CURRENT_AGENT=goal-evaluator CHAIN_OUTPUT_STYLES=true
+H2_PROMPT=$(cat "$WORK/h2/published.prompt")
+if [[ "$IRC" == "0" && -s "$WORK/h2/published.prompt" && "$H2_PROMPT" != *"# Output Style:"* ]]; then
+  pass "h2: goal-evaluator dispatches unemulated under the armed table"
+else
+  fail "h2: judge picked up an emulation block (rc=$IRC, prompt: $(printf '%s' "$H2_PROMPT" | head -c 300))"
+fi
+
+# ── h3. Unknown style → refuse the dispatch, publish nothing ────────────────
+run_interactive h3 GOAL_SESSION_DIR="$SESS" CHAIN_CURRENT_AGENT=developer \
+  CHAIN_AGENT_OUTPUT_STYLE=developer=Nope
+if [[ "$IRC" == "2" && "$IREQ_COUNT" == "0" && "$ILOG_TEXT" == *"OUTPUT STYLE RESOLUTION FAILED"* ]] \
+   && argv_empty "$WORK/h3/claude.argv"; then
+  pass "h3: unknown style → rc 2, no request published, no headless fallthrough"
+else
+  fail "h3: expected rc 2 + nothing published (rc=$IRC, reqs=$IREQ_COUNT, out: $ILOG_TEXT)"
+fi
+
+# ── h4. Valid style with no emulation text → warn, dispatch unstyled ────────
+run_interactive h4 GOAL_SESSION_DIR="$SESS" CHAIN_CURRENT_AGENT=developer \
+  CHAIN_AGENT_OUTPUT_STYLE=developer=Explanatory
+H4_PROMPT=$(cat "$WORK/h4/published.prompt")
+if [[ "$IRC" == "0" && -s "$WORK/h4/published.prompt" && "$H4_PROMPT" != *"# Output Style:"* \
+      && "$ILOG_TEXT" == *"no emulation text"* ]]; then
+  pass "h4: Explanatory has no body → WARN + unstyled dispatch (fidelity gap, not a config error)"
+else
+  fail "h4: expected an unstyled dispatch + warning (rc=$IRC, out: $ILOG_TEXT, prompt: $(printf '%s' "$H4_PROMPT" | head -c 200))"
+fi
+
 # ── i. Renderer stamps the effective style into the usage sidecar ───────────
 I_SIDE="$WORK/i.sidecar.json"
 printf '%s\n' \
