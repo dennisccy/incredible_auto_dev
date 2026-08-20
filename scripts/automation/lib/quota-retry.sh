@@ -82,6 +82,17 @@
 #                                     `gh pr merge`, etc. to release-manager only. Disable
 #                                     only if you have a reason — see lib/agent_permissions.py
 #                                     for the full default deny list.
+#   CHAIN_OUTPUT_STYLES               "true" arms the per-agent Claude Code output style table in
+#                                     lib/agent_permissions.py (STYLE-1 experiment; default false =
+#                                     no style flag ever passed). Passed as
+#                                     `--settings '{"outputStyle":"<name>"}'` (the CLI has no
+#                                     --output-style flag). Goal mode only (GOAL_SESSION_DIR set).
+#                                     Judges refuse by construction; `Learning` and unknown names
+#                                     FAIL the dispatch (exit 2) because the CLI ignores them silently.
+#   CHAIN_AGENT_OUTPUT_STYLE          Per-agent map "developer=Concise,qa=Concise" (same grammar as
+#                                     CHAIN_AGENT_EFFORT); wins over the table; judge entries refused.
+#   CHAIN_OUTPUT_STYLE_OVERRIDE       Global style for EVERY agent, judges included (debug only — a
+#                                     loud NOTICE per judge dispatch); wins over all; works in any mode.
 
 : "${CHAIN_CLAUDE_RESET_TZ:=Europe/London}"
 : "${CHAIN_CLAUDE_RESET_BUFFER_SECONDS:=120}"
@@ -125,6 +136,11 @@ fi
 : "${CHAIN_DISABLE_MODEL_ROUTING:=false}"
 : "${CHAIN_MODEL_OVERRIDE:=}"
 : "${CHAIN_EFFORT_OVERRIDE:=}"
+
+# Output-style experiment knobs (STYLE-1); resolution: agent_permissions.py output-style.
+: "${CHAIN_OUTPUT_STYLES:=false}"
+: "${CHAIN_AGENT_OUTPUT_STYLE:=}"
+: "${CHAIN_OUTPUT_STYLE_OVERRIDE:=}"
 
 # ── CLI selection ─────────────────────────────────────────────────────────────
 # Which CLI provider drives agent invocations. Set per-run by run-phase.sh / per-session
@@ -318,10 +334,12 @@ _trace_record_invocation() {
   local ts
   ts=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 
-  # Model/effort/backend attribution. The sidecar (spread last) carries the
-  # ground-truth model claude actually ran; _CHAIN_TRACE_MODEL is the resolved
-  # intent (frontmatter/override) used when no sidecar exists (e.g. the
-  # interactive backend). Empty values are omitted, and a sidecar model wins.
+  # Model/effort/style/backend attribution. The sidecar (spread last) carries
+  # the ground-truth model claude actually ran — and, for output styles, the
+  # EFFECTIVE style from the stream-json init event; _CHAIN_TRACE_MODEL and
+  # _CHAIN_TRACE_OUTPUT_STYLE are the resolved intent (frontmatter/override /
+  # style table) used when no sidecar exists (e.g. the interactive backend).
+  # Empty values are omitted, and a sidecar model/output_style wins.
   local backend="${CHAIN_AGENT_BACKEND:-${CHAIN_CLI:-claude}}"
   if command -v jq >/dev/null 2>&1; then
     local args_json
@@ -338,6 +356,7 @@ _trace_record_invocation() {
       --arg backend "$backend" \
       --arg model "${_CHAIN_TRACE_MODEL:-}" \
       --arg effort "${_CHAIN_TRACE_EFFORT:-}" \
+      --arg output_style "${_CHAIN_TRACE_OUTPUT_STYLE:-}" \
       --arg ts "$ts" \
       --argjson exit_code "$invocation_exit" \
       --argjson duration_seconds "$duration_seconds" \
@@ -347,6 +366,7 @@ _trace_record_invocation() {
       '{step:$step, agent:$agent, cli:$cli, backend:$backend, ts:$ts, exit_code:$exit_code, duration_seconds:$duration_seconds, stdout_path:$stdout_path, args:$args}
        + (if $model != "" then {model:$model} else {} end)
        + (if $effort != "" then {effort:$effort} else {} end)
+       + (if $output_style != "" then {output_style:$output_style} else {} end)
        + $usage' 2>/dev/null) || record=""
     if [[ -n "$record" ]]; then
       printf '%s\n' "$record" >> "$trace_dir/trace.jsonl"
@@ -357,6 +377,30 @@ _trace_record_invocation() {
       "$step" "$agent" "$cli" "$backend" "$ts" "$invocation_exit" "$duration_seconds" "$stdout_filename" \
       >> "$trace_dir/trace.jsonl"
   fi
+}
+
+# Requested-vs-effective output style (STYLE-1). The stream-json init event
+# carries the EFFECTIVE style ("default" when none) and the renderer stamps it
+# into the usage sidecar as `output_style`. Claude Code drops an unknown
+# --settings style SILENTLY, so this is the only ground truth that the requested
+# arm actually ran. Loud WARNING + telemetry on mismatch; never changes the exit
+# code (the work already happened).   $1 = sidecar path, $2 = requested ("" = none)
+_output_style_verify() {
+  local sidecar="${1:-}" requested="${2:-}" effective=""
+  [[ -n "$sidecar" && -s "$sidecar" ]] || return 0
+  effective=$(python3 -c 'import json,sys
+try: print((json.load(open(sys.argv[1])) or {}).get("output_style") or "")
+except Exception: print("")' "$sidecar" 2>/dev/null) || effective=""
+  [[ -z "$effective" ]] && return 0          # old CLI / no init event: unknown ≠ mismatch
+  local want="${requested:-default}"
+  [[ "${effective,,}" == "${want,,}" ]] && return 0
+  echo "[quota-retry] $(date -Iseconds) WARNING: output style requested=${requested:-<none>} effective=${effective} (agent=${CHAIN_CURRENT_AGENT:-unattributed}) — the CLI did not apply the requested style; do not count this dispatch in the '${requested:-<none>}' arm." >&2
+  if declare -F record_telemetry_event >/dev/null 2>&1; then
+    record_telemetry_event "output_style_mismatch" "$(jq -cn --arg a "${CHAIN_CURRENT_AGENT:-unattributed}" --arg r "$requested" --arg e "$effective" \
+      '{agent:$a, requested:$r, effective:$e, backend:"headless"}' 2>/dev/null \
+      || printf '{"agent":"%s","requested":"%s","effective":"%s","backend":"headless"}' "${CHAIN_CURRENT_AGENT:-unattributed}" "$requested" "$effective")" || true
+  fi
+  return 0
 }
 
 # ── Internal helpers ─────────────────────────────────────────────────────────
@@ -687,6 +731,27 @@ _claude_invoke() {
     # Recorded intent; the usage sidecar (ground truth) still wins in the trace merge.
     _CHAIN_TRACE_MODEL="$_model"
 
+    # Per-agent output style (STYLE-1, opt-in; goal mode only — standalone
+    # run-phase.sh has no telemetry/tripwire; the debug global override works
+    # anywhere). Unlike the effort lookup, a resolver error is FATAL for the
+    # dispatch: the CLI ignores unknown names SILENTLY, so warn-and-continue
+    # would run an unlabeled default arm while the logs claim otherwise.
+    # Nothing has been spent yet, and exit 2 is the house "cannot dispatch"
+    # code. Resolver stderr is NOT swallowed — its refusal notices are the signal.
+    local _style="" _style_rc=0
+    if [[ -f "$_perms_script" && ( -n "${GOAL_SESSION_DIR:-}" || -n "${CHAIN_OUTPUT_STYLE_OVERRIDE:-}" ) ]]; then
+      _style=$(python3 "$_perms_script" output-style "${CHAIN_CURRENT_AGENT:-}") || _style_rc=$?
+      if [[ $_style_rc -ne 0 ]]; then
+        echo "════════════════════════════════════════════════════════════════════" >&2
+        echo "[quota-retry] $(date -Iseconds) *** OUTPUT STYLE RESOLUTION FAILED (agent=${CHAIN_CURRENT_AGENT:-unattributed}, rc=$_style_rc) — refusing to dispatch ***" >&2
+        echo "[quota-retry] Fix CHAIN_OUTPUT_STYLE_OVERRIDE / CHAIN_AGENT_OUTPUT_STYLE (allowed: Default, Proactive, Concise, Explanatory, or a project .claude/output-styles/<name>.md; Learning is refused), or unset CHAIN_OUTPUT_STYLES to run unstyled." >&2
+        echo "════════════════════════════════════════════════════════════════════" >&2
+        rm -f "$tmp_log"
+        return 2
+      fi
+    fi
+    _CHAIN_TRACE_OUTPUT_STYLE="$_style"
+
     # Per-agent runtime cap: a specific cap (env/yaml/table) tightens the flat
     # global for the agents whose typical durations are well known; agents with
     # no entry — and every agent when the operator exported an explicit flat
@@ -699,6 +764,20 @@ _claude_invoke() {
     local -a _claude_extra_args=(--effort "$_effort")
     if [[ -n "$_model" ]]; then
       _claude_extra_args+=(--model "$_model")
+    fi
+    if [[ -n "$_style" ]]; then
+      # NOTE (probe 2026-08-20, CLI 2.1.237): init.output_style="Concise" with
+      # --settings '{"outputStyle":"Concise"}' and
+      # --exclude-dynamic-system-prompt-sections; permission_denials=[]; the
+      # project's PreToolUse hooks still fired (hook_started/hook_response
+      # events) ⇒ inline --settings MERGES with project/user settings;
+      # available_output_styles is absent from this version's init event (treat
+      # as optional). Names are restricted to [A-Za-z][A-Za-z0-9 _-]* by the
+      # resolver, so plain interpolation is safe.
+      _claude_extra_args+=(--settings "{\"outputStyle\":\"$_style\"}")
+      if [[ "$CHAIN_TELEMETRY_TOKENS" != "true" ]]; then
+        echo "[quota-retry] output style '$_style' requested but CHAIN_TELEMETRY_TOKENS!=true — effective-style verification unavailable for this dispatch." >&2
+      fi
     fi
     if [[ "$CHAIN_CLAUDE_DISABLE_CACHE_HYGIENE" != "true" ]]; then
       _claude_extra_args+=(--exclude-dynamic-system-prompt-sections)
@@ -799,6 +878,7 @@ _claude_invoke() {
       # If telemetry capture is enabled and the renderer wrote a usage sidecar,
       # forward it to the telemetry layer (no-op if telemetry.sh isn't sourced).
       if [[ -n "$_sidecar" && -f "$_sidecar" ]]; then
+        _output_style_verify "$_sidecar" "$_style"
         if declare -F record_claude_usage_from_sidecar >/dev/null 2>&1; then
           record_claude_usage_from_sidecar "$_sidecar" || true
         fi
@@ -1022,8 +1102,9 @@ _codex_invoke() {
         _codex_prompt="$2"
         shift 2
         ;;
-      --effort|--model|--exclude-dynamic-system-prompt-sections|--output-format|--verbose|--include-partial-messages|--disallowedTools|--max-budget-usd)
-        # Claude-only flags. Drop. Some take a value (effort/model/output-format/disallowedTools/max-budget-usd); skip the next arg.
+      --effort|--model|--exclude-dynamic-system-prompt-sections|--output-format|--verbose|--include-partial-messages|--disallowedTools|--max-budget-usd|--settings)
+        # Claude-only flags. Drop. Some take a value (effort/model/output-format/disallowedTools/max-budget-usd/settings); skip the next arg.
+        # --settings carries the output style on Claude; Codex has no equivalent and no emulation (by design).
         case "$1" in
           --exclude-dynamic-system-prompt-sections|--verbose|--include-partial-messages) shift ;;
           *) shift 2 ;;

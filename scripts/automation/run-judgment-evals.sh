@@ -516,6 +516,11 @@ for entry in "${CASES[@]}"; do
   _model="$(_resolve_model "$judge")"
   declare -a CLAUDE_ARGS=(--effort "$_effort")
   [[ -n "$_model" ]] && CLAUDE_ARGS+=(--model "$_model")
+  # Output style parity with _claude_invoke (STYLE-1). Judges resolve to "" by
+  # construction (D4) — a no-op unless the debug-only CHAIN_OUTPUT_STYLE_OVERRIDE
+  # is set; under set -e a resolver error aborts the eval run.
+  _style="$(python3 "$LIB/agent_permissions.py" output-style "$judge")"
+  [[ -n "$_style" ]] && CLAUDE_ARGS+=(--settings "{\"outputStyle\":\"$_style\"}")
   if [[ "${CHAIN_CLAUDE_DISABLE_CACHE_HYGIENE:-false}" != "true" ]]; then
     CLAUDE_ARGS+=(--exclude-dynamic-system-prompt-sections)
   fi

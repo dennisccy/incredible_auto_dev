@@ -50,6 +50,15 @@ _AT_LINE_START = True
 # sidecar — telemetry and traces need per-model attribution.
 _SESSION_MODEL = ""
 
+# Output style observed in the system/init event (STYLE-1). This is the
+# EFFECTIVE style the CLI applied ("default" when none) — Claude Code ignores an
+# unknown `--settings '{"outputStyle":...}'` name SILENTLY, so the init event is
+# the only ground truth that the requested experiment arm actually ran. Stamped
+# into the usage sidecar, from where it rides into trace.jsonl and telemetry.
+_SESSION_OUTPUT_STYLE = ""
+# Comma-joined available_output_styles from init (absent on some CLI versions).
+_SESSION_STYLES_AVAILABLE = ""
+
 
 def _flush_dots() -> None:
     """Write a newline if we have unflushed progress dots, then reset."""
@@ -116,14 +125,23 @@ def _handle_event(event: dict[str, Any]) -> None:
         # Initial session info — usually one-line
         sub = event.get("subtype", "")
         if sub == "init":
-            global _SESSION_MODEL
+            global _SESSION_MODEL, _SESSION_OUTPUT_STYLE, _SESSION_STYLES_AVAILABLE
             model = event.get("model") or ""
             if model:
                 _SESSION_MODEL = model
+            style = event.get("output_style") or ""
+            if isinstance(style, dict):
+                style = style.get("name") or ""
+            if isinstance(style, str) and style:
+                _SESSION_OUTPUT_STYLE = style
+            available = event.get("available_output_styles") or []
+            if isinstance(available, (list, tuple)):
+                _SESSION_STYLES_AVAILABLE = ",".join(str(s) for s in available)
             sid = event.get("session_id") or ""
             if sid:
+                suffix = f" output_style={_SESSION_OUTPUT_STYLE}" if _SESSION_OUTPUT_STYLE else ""
                 sys.stderr.write(
-                    f"[claude] session={sid[:8]}... model={model}\n"
+                    f"[claude] session={sid[:8]}... model={model}{suffix}\n"
                 )
         return
 
@@ -168,6 +186,8 @@ def _write_sidecar(result_event: dict[str, Any]) -> None:
         "is_error": result_event.get("is_error", False),
         "subtype": result_event.get("subtype"),
         "model": result_event.get("model") or _SESSION_MODEL or None,
+        "output_style": _SESSION_OUTPUT_STYLE or None,
+        "available_output_styles": _SESSION_STYLES_AVAILABLE or None,
         "usage": result_event.get("usage", {}) or {},
     }
     try:

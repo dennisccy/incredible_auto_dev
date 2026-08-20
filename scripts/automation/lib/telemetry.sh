@@ -178,11 +178,15 @@ record_claude_usage_from_sidecar() {
   if [[ -z "$payload" ]]; then return 0; fi
 
   # Attach the current agent name so analyzers can attribute cost back to the
-  # agent that drove the call. Falls back to the raw sidecar payload if jq is
-  # unavailable or the payload is malformed.
+  # agent that drove the call, plus the REQUESTED output style (STYLE-1) when
+  # one was in force — the EFFECTIVE style already rides in from the sidecar as
+  # `output_style` (the renderer stamps it from the stream-json init event);
+  # interactive rows read `<name>(emulated)`. Falls back to the raw sidecar
+  # payload if jq is unavailable or the payload is malformed.
   if command -v jq >/dev/null 2>&1 && [[ -n "${CHAIN_CURRENT_AGENT:-}" ]]; then
     local enriched
-    if enriched=$(printf '%s' "$payload" | jq -c --arg a "$CHAIN_CURRENT_AGENT" '. + {agent:$a}' 2>/dev/null); then
+    if enriched=$(printf '%s' "$payload" | jq -c --arg a "$CHAIN_CURRENT_AGENT" --arg os "${_CHAIN_TRACE_OUTPUT_STYLE:-}" \
+        '. + {agent:$a} + (if $os != "" then {output_style_requested:$os} else {} end)' 2>/dev/null); then
       payload="$enriched"
     fi
   fi
