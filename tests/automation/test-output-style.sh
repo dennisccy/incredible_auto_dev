@@ -504,6 +504,20 @@ else
   fail "k4: expected a pinned WARN row (out: $K4_OUT)"
 fi
 
+# ── k5. Invalid name behind a judge WARNING line → FAIL naming it, not a
+# generic "check crashed" (output-style-check's per-entry judge WARNING for
+# 'reviewer' must not crowd the 'Bogus' ERROR line out of the truncated,
+# single-line FAIL detail; a multi-line detail would break run_check's
+# "last line" verdict parser and fall back to a generic crash message).
+mk_fake_claude with
+K5_OUT=$(run_doctor_styles CHAIN_AGENT_OUTPUT_STYLE="reviewer=Concise,qa=Bogus")
+if [[ "$K5_OUT" == *"FAIL"*"output-styles"* && "$K5_OUT" == *"Bogus"* \
+      && "$K5_OUT" != *"check crashed"* ]]; then
+  pass "k5: invalid name survives past a judge WARNING line → FAIL naming Bogus, no generic crash"
+else
+  fail "k5: expected FAIL naming Bogus with no crash fallback (out: $K5_OUT)"
+fi
+
 echo ""
 echo "=== Results: $PASS passed, $FAIL failed ==="
 echo ""

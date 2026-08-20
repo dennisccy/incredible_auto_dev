@@ -672,7 +672,11 @@ check_output_styles() {
   local conf rc=0
   conf="$(cd "$ROOT" 2>/dev/null && python3 "$SCRIPT_DIR/lib/agent_permissions.py" output-styles-configured 2>&1)" || rc=$?
   if [[ "$rc" -ne 0 ]]; then
-    echo "FAIL|output-styles-configured crashed (rc=$rc): $(printf '%.140s' "$conf")"
+    # Collapse to one physical line BEFORE truncating: an embedded newline
+    # here would survive %.140s and split this FAIL row across lines, so
+    # run_check's "last line" parser would miss the "|" and report a generic
+    # "check crashed" instead of this diagnostic.
+    echo "FAIL|output-styles-configured crashed (rc=$rc): $(printf '%.140s' "$(printf '%s' "$conf" | tr '\n' ' ')")"
     return
   fi
 
@@ -702,7 +706,17 @@ check_output_styles() {
   local check_out
   check_out="$(cd "$ROOT" 2>/dev/null && python3 "$SCRIPT_DIR/lib/agent_permissions.py" output-style-check 2>&1)" || rc=$?
   if [[ "$rc" -ne 0 ]]; then
-    echo "FAIL|invalid output style configured: $(printf '%.140s' "$check_out")"
+    # output-style-check prints one WARNING line per judge entry (harmless —
+    # judges refuse at dispatch) ahead of the ERROR line(s) that actually
+    # explain the rc!=0. Prefer the ERROR line(s) so a judge WARNING can't
+    # crowd the real invalid-name diagnostic out of the 140-char budget; fall
+    # back to the full text if somehow no ERROR line is present (e.g. a raw
+    # traceback). Collapse to one physical line before truncating — same
+    # "last line" hazard as the step-1 crash branch above.
+    local err_lines
+    err_lines="$(printf '%s\n' "$check_out" | grep -F 'ERROR' || true)"
+    [[ -n "$err_lines" ]] || err_lines="$check_out"
+    echo "FAIL|invalid output style configured: $(printf '%.140s' "$(printf '%s' "$err_lines" | tr '\n' ' ')")"
     return
   fi
 
@@ -753,7 +767,12 @@ check_output_styles() {
 
   local detail="${#names[@]} configured style(s) present in claude $ver ($arm_word)"
   if [[ -n "$pins" ]]; then
-    echo "WARN|$detail — outputStyle is ALSO pinned in: $pins — the pin silently overrides whatever the engine requests"
+    # The engine's per-dispatch --settings is a session-level override that
+    # OUTRANKS a settings.json pin (fact 2) — the pin never overrides a
+    # requested style. It only reaches dispatches the engine leaves
+    # unstyled: judges, Default-arm agents, and (see the empty-conf branch
+    # above) every dispatch when the knob itself is off.
+    echo "WARN|$detail but outputStyle is pinned in: $pins — the pin applies to every dispatch the engine leaves unstyled (judges, Default-arm agents), contaminating the control arm; the engine's --settings wins only where a style is requested"
   else
     echo "PASS|$detail"
   fi
