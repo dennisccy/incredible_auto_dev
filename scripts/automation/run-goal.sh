@@ -337,6 +337,20 @@ fi
 
 require_cli
 ensure_cli_assets_synced "$CHAIN_CLI"
+
+# STYLE-1: validate every configured output style ONCE before any dispatch
+# (the seams refuse too — defense in depth — but failing here costs seconds,
+# not an iteration; the CLI ignores unknown names silently).
+_STYLE_ARM="off"
+if [[ "${CHAIN_OUTPUT_STYLES:-false}" == "true" || -n "${CHAIN_AGENT_OUTPUT_STYLE:-}" || -n "${CHAIN_OUTPUT_STYLE_OVERRIDE:-}" ]]; then
+  if ! python3 "$SCRIPT_DIR/lib/agent_permissions.py" output-style-check; then
+    echo "[run-goal] ERROR: invalid output style configuration (see above) — fix the knob or unset CHAIN_OUTPUT_STYLES." >&2
+    exit 2
+  fi
+  _STYLE_ARM="CHAIN_OUTPUT_STYLES=${CHAIN_OUTPUT_STYLES:-} CHAIN_AGENT_OUTPUT_STYLE=${CHAIN_AGENT_OUTPUT_STYLE:-} CHAIN_OUTPUT_STYLE_OVERRIDE=${CHAIN_OUTPUT_STYLE_OVERRIDE:-}"
+  _STYLE_ARM="${_STYLE_ARM//[^A-Za-z0-9 =,_:-]/_}"
+  echo "[run-goal] output-style experiment ARMED: $_STYLE_ARM (judges refuse by construction)"
+fi
 JOURNEY_HISTORY="$GOAL_SESSION_DIR_LOCAL/state/journey-history.json"
 EVALUATOR_LOG="$GOAL_SESSION_DIR_LOCAL/state/evaluator-log.md"
 # REL-6: the evaluator-written, decomposer-read iteration digest (single
@@ -1518,6 +1532,7 @@ data = {
   "current_iter": 0,
   "cli": "${CHAIN_CLI:-claude}",
   "agent_backend": "$AGENT_BACKEND",
+  "output_styles": "$_STYLE_ARM",
   "halt_config": {
     "max_iterations": $MAX_ITER,
     "stall_window": $STALL_WINDOW,
@@ -1576,6 +1591,15 @@ if $( [[ "$AUTO_RELEASE" == "true" ]] && echo "True" || echo "False" ):
 d["push_per_iter"] = $( [[ "$PUSH_PER_ITER" == "true" ]] && echo "True" || echo "False" )
 d["push_branch"] = "$PUSH_BRANCH"
 d["agent_backend"] = "$AGENT_BACKEND"
+# STYLE-1 (reporting only — the arm is never re-applied from session.json).
+# Resuming with a different arm silently mixes two populations in one
+# telemetry.jsonl, so say so once, loudly, with the iteration boundary.
+_prev_style = d.get("output_styles", "off")
+if _prev_style != "$_STYLE_ARM":
+    import sys as _sys
+    print("[run-goal] NOTE: output-style arm changed on resume (was '%s', now '%s') — telemetry before iter %s is a different arm."
+          % (_prev_style, "$_STYLE_ARM", "$CURRENT_ITER"), file=_sys.stderr)
+d["output_styles"] = "$_STYLE_ARM"
 if "$RUN_MODE" == "resume" and d.get("status") in ("REGRESSION_HALT", "AWAITING_BLUEPRINT_APPROVAL", "AWAITING_PUMP", "AWAITING_INTENT_REVIEW", "AWAITING_GITHUB_AUTH", "AWAITING_DISK", "AWAITING_HOST_GUARD"):
   d["status"] = "in_progress"
 import os as _os, tempfile as _tf
@@ -2180,6 +2204,9 @@ PY
   # iterations to judge (opt-in speed experiments, .claude/model-orchestration.md).
   if [[ -n "${CHAIN_AGENT_EFFORT:-}" ]]; then
     record_telemetry_event "iter_config" "$(jq -cn --arg k "CHAIN_AGENT_EFFORT" --arg v "$CHAIN_AGENT_EFFORT" '{key:$k, value:$v}' 2>/dev/null || printf '{"key":"CHAIN_AGENT_EFFORT","value":"%s"}' "$CHAIN_AGENT_EFFORT")"
+  fi
+  if [[ "$_STYLE_ARM" != "off" ]]; then
+    record_telemetry_event "iter_config" "$(jq -cn --arg k "CHAIN_OUTPUT_STYLES" --arg v "$_STYLE_ARM" '{key:$k, value:$v}' 2>/dev/null || printf '{"key":"CHAIN_OUTPUT_STYLES","value":"%s"}' "$_STYLE_ARM")"
   fi
 
   echo ""
@@ -2948,19 +2975,32 @@ except Exception as e:
   python3 "$SCRIPT_DIR/lib/analyze_telemetry.py" --wall --iter "$CURRENT_ITER" \
     "$GOAL_SESSION_DIR_LOCAL/telemetry.jsonl" 2>/dev/null | sed 's/^/[run-goal] /' || true
 
-  # Experiment tripwire: while an opt-in speed knob is active, revert it the
-  # moment quality moves in the window (REGRESSION verdict, journey
-  # regressions, repeated first-attempt review FAILs). Exit 3 = TRIP; any
-  # other non-zero rc is an analyzer error and must NOT trigger a revert.
-  if [[ -n "${CHAIN_AGENT_EFFORT:-}" ]]; then
+  # Experiment tripwire: while an opt-in experiment knob is active
+  # (CHAIN_AGENT_EFFORT, the CHAIN_OUTPUT_STYLE* arm), revert every active knob
+  # the moment quality moves in the window (REGRESSION verdict, journey
+  # regressions, an unparseable review verdict, repeated first-attempt review
+  # FAILs) or cost does (styled vs unstyled median output tokens / turns —
+  # ground rule D5). Exit 3 = TRIP; any other non-zero rc is an analyzer error
+  # and must NOT trigger a revert.
+  if [[ -n "${CHAIN_AGENT_EFFORT:-}" || "$_STYLE_ARM" != "off" ]]; then
     _trip_rc=0
     python3 "$SCRIPT_DIR/lib/analyze_telemetry.py" --tripwire --window 3 \
       "$GOAL_SESSION_DIR_LOCAL/telemetry.jsonl" > "$ITER_DIR/.tripwire-report" 2>/dev/null || _trip_rc=$?
     if [[ "$_trip_rc" -eq 3 ]]; then
-      echo "[run-goal] EXPERIMENT TRIPWIRE: quality moved under CHAIN_AGENT_EFFORT='$CHAIN_AGENT_EFFORT' — reverting the knob for the rest of this run." >&2
+      echo "[run-goal] EXPERIMENT TRIPWIRE: quality or cost moved under CHAIN_AGENT_EFFORT='${CHAIN_AGENT_EFFORT:-}' / output-style arm '$_STYLE_ARM' — reverting every active experiment knob for the rest of this run." >&2
       sed 's/^/[run-goal]   /' "$ITER_DIR/.tripwire-report" >&2 2>/dev/null || true
-      record_telemetry_event "experiment_reverted" "$(jq -cn --arg k "CHAIN_AGENT_EFFORT" --arg v "$CHAIN_AGENT_EFFORT" '{key:$k, value:$v}' 2>/dev/null || printf '{"key":"CHAIN_AGENT_EFFORT"}')"
-      unset CHAIN_AGENT_EFFORT
+      if [[ -n "${CHAIN_AGENT_EFFORT:-}" ]]; then
+        record_telemetry_event "experiment_reverted" "$(jq -cn --arg k "CHAIN_AGENT_EFFORT" --arg v "$CHAIN_AGENT_EFFORT" '{key:$k, value:$v}' 2>/dev/null || printf '{"key":"CHAIN_AGENT_EFFORT"}')"
+        unset CHAIN_AGENT_EFFORT
+      fi
+      # Child executors inherit env per dispatch, so the unset takes effect from
+      # the next iteration on. _STYLE_ARM="off" also stops the iter_config mark,
+      # which is what keeps the reverted iterations out of the tripwire window.
+      if [[ "$_STYLE_ARM" != "off" ]]; then
+        record_telemetry_event "experiment_reverted" "$(jq -cn --arg k "CHAIN_OUTPUT_STYLES" --arg v "$_STYLE_ARM" '{key:$k, value:$v}' 2>/dev/null || printf '{"key":"CHAIN_OUTPUT_STYLES","value":"%s"}' "$_STYLE_ARM")"
+        unset CHAIN_OUTPUT_STYLES CHAIN_AGENT_OUTPUT_STYLE CHAIN_OUTPUT_STYLE_OVERRIDE
+        _STYLE_ARM="off"
+      fi
     fi
     rm -f "$ITER_DIR/.tripwire-report" 2>/dev/null || true
   fi

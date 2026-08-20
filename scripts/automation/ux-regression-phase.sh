@@ -92,6 +92,12 @@ Verdict must be one of:
 
 Then STOP." || _agent_rc=$?
 record_agent_invocation_end ux-regression-reviewer "$_agent_t0" "$_agent_rc"
+# REL-11: a returned-but-empty ux-regression review reads downstream as an
+# unremarkable PASS. Loud banner + missing_evidence telemetry instead; still
+# non-blocking (this step is shed-able by design). Quota exhaustion excluded.
+if [[ ! -s "$UX_REGRESSION" && "$_agent_rc" -ne "${QUOTA_EXHAUSTED_EXIT_CODE:-75}" ]]; then
+  warn_missing_evidence "ux-regression-reviewer" "$UX_REGRESSION"
+fi
 (( _agent_rc == 0 )) || exit "$_agent_rc"
 
 echo "[ux-regression] Done. Report: $UX_REGRESSION"

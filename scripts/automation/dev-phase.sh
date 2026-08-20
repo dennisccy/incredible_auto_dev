@@ -129,6 +129,13 @@ When complete:
   This report is for operators, not developers — write in plain language, not code.
 - Update runs/${PHASE}/status.json with current_step: dev_complete" || _agent_rc=$?
 record_agent_invocation_end developer "$_agent_t0" "$_agent_rc"
+# REL-11: same deterministic "went missing" signal as the lean executor — the
+# dev handoff is what every downstream reader treats as proof of the build.
+# Non-blocking; quota exhaustion excluded (nothing was dispatched).
+_DEV_HANDOFF="$REPO_ROOT/docs/handoffs/${PHASE}-dev.md"
+if [[ ! -s "$_DEV_HANDOFF" && "$_agent_rc" -ne "${QUOTA_EXHAUSTED_EXIT_CODE:-75}" ]]; then
+  warn_missing_evidence "developer" "$_DEV_HANDOFF"
+fi
 (( _agent_rc == 0 )) || exit "$_agent_rc"
 
 echo "[dev-phase] Done."

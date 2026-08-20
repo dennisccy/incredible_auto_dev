@@ -151,6 +151,8 @@ Written by `claude_with_quota_retry` after a successful Claude invocation when `
 | `num_turns` | number | Number of model turns (assistant/tool_use cycles) |
 | `is_error` | boolean | True if the result event was an error |
 | `subtype` | string | `success` \| `error_max_turns` \| etc. |
+| `output_style` | string \| null | The **effective** Claude Code output style, read from the stream-json `system/init` event by `lib/claude_stream_renderer.py` and carried in through the usage sidecar. `default` when no style is active; null on CLIs that do not report it (older `claude`, Codex) — null means *unknown*, never "default" |
+| `output_style_requested` | string | The style the engine **requested** for this dispatch (STYLE-1; e.g. `Concise`). Absent when no style was requested. Interactive-backend rows read `<name>(emulated)` — subagents never receive a style natively, so the seam appends the emulation block to the prompt instead. Compare against `output_style` to know whether the arm actually ran |
 
 Enabled by default headless; opt out with `export CHAIN_TELEMETRY_TOKENS=false`. To opt out of cache hygiene (`--exclude-dynamic-system-prompt-sections`): `export CHAIN_CLAUDE_DISABLE_CACHE_HYGIENE=true`.
 
@@ -166,7 +168,7 @@ python3 scripts/automation/lib/analyze_telemetry.py runs/goal-session-<sid>/tele
 | `step_skipped` | `goal-iter-lean.sh`, `run-goal.sh`, `run-phase.sh` | `{step, iter_name|phase, reason}` — a step was skipped instead of dispatched. Reasons: `checkpoint` (resume reused a completed step), `zero-change` (SPEED-14), `iter-budget-trim` (SPEED-15 rungs 3a/3b: `test-plan`/`ux-regression`, payload key `phase`), `ui-combined` (SPEED-24: `ui-test-design` folded into the ui-impact dispatch, payload key `phase`) |
 | `dispatch_wait` | `lib/interactive-dispatch.sh` | `{agent, wait_seconds, run_seconds, status, rc}` — pickup-wait vs run split per interactive dispatch attempt (`ok` \| `pickup-timeout` \| `inflight-timeout` \| `inflight-timeout-requeued`) |
 | `review_verdict` | `goal-iter-lean.sh` | `{verdict, attempt, iter_name}` — reviewer outcome per attempt (feeds the tripwire) |
-| `iter_config` | `run-goal.sh` | `{key, value}` — an opt-in experiment knob (e.g. `CHAIN_AGENT_EFFORT`) was active this iteration |
+| `iter_config` | `run-goal.sh` | `{key, value}` — an opt-in experiment knob was active this iteration. One event per active knob: `CHAIN_AGENT_EFFORT` carries the effort map; `CHAIN_OUTPUT_STYLES` (STYLE-1) carries the whole arm string (`CHAIN_OUTPUT_STYLES=… CHAIN_AGENT_OUTPUT_STYLE=… CHAIN_OUTPUT_STYLE_OVERRIDE=…`, sanitized). Any `iter_config` event marks the iteration knob-active for the tripwire window |
 | `golden_coverage` | `goal-iter-lean.sh`, `browser-qa-phase.sh` (goal iterations) | `{passing, missing_goldens, iter_name}` — PASSing journeys still lacking a replay golden (also persisted to `state/golden-gaps`, SPEED-23) |
 | `experiment_reverted` | `run-goal.sh` | `{key, value}` — the tripwire auto-reverted an experiment knob |
 | `depth_full_granted` / `depth_demoted` | `run-goal.sh` | `{reason, prior_verdict, prior_depth}` — the SPEED-20 deterministic depth arbiter granted a spec-requested full (`prior-verdict-*`, `prior-coherence-fail`, `cadence-due`, `new-fullstack-journey`) or demoted it to lean (`budget-breach`, `full-cap`, `evaluator-requested-*`, legacy `no-full-trigger`) |
@@ -178,12 +180,23 @@ python3 scripts/automation/lib/analyze_telemetry.py runs/goal-session-<sid>/tele
 | `replay_mass_fail_voided` / `replay_mass_fail_confirmed` | `lib/replay-lane.sh` / `goal-iter-lean.sh` | `{iter_name, journeys, canaries}` — SPEED-22 mass-false-FAIL breaker outcome: green canaries voided the replay FAILs (drift), or a canary failure kept the full re-confirm path |
 
 ### `missing_evidence` (REL-11 tripwire)
-Written when a dispatch returns — any exit code, including 0 — without its expected report artifact on disk: full-mode QA (`qa-phase.sh`), the lean browser-qa LLM lane (`goal-iter-lean.sh`; quota pauses excluded), and the retro-analyst (`run-goal.sh`). The telemetry counterpart of the loud `[missing-evidence]` stderr banner (`lib/common.sh` `warn_missing_evidence`). Non-blocking — a tripwire, never a gate.
+Written when a dispatch returns — any exit code, including 0 — without its expected report artifact on disk: full-mode QA (`qa-phase.sh`), the lean browser-qa LLM lane (`goal-iter-lean.sh`; quota pauses excluded), the retro-analyst (`run-goal.sh`), the developer's dev handoff (`goal-iter-lean.sh` lean, `dev-phase.sh` full), the ui-impact-analyst's user-visible-changes report (`ui-impact-phase.sh`, alongside the SKIPPED stub), and the ux-regression review (`ux-regression-phase.sh`). The telemetry counterpart of the loud `[missing-evidence]` stderr banner (`lib/common.sh` `warn_missing_evidence`). Non-blocking — a tripwire, never a gate.
 
 | Field | Type | Description |
 |---|---|---|
-| `agent` | string | Dispatching agent whose report is missing (`qa` \| `browser-qa-agent` \| `retro-analyst`) |
+| `agent` | string | Dispatching agent whose report is missing (`qa` \| `browser-qa-agent` \| `retro-analyst` \| `developer` \| `ui-impact-analyst` \| `ux-regression-reviewer`) |
 | `path` | string | The expected report path that was absent |
+
+### `output_style_mismatch` (STYLE-1)
+Written when the output style the engine requested for a dispatch is **not** the one that actually ran. The headless seam (`lib/quota-retry.sh`) compares the requested name against the effective `output_style` from the stream-json `init` event after each invocation — the CLI ignores an unknown or unapplied `--settings` style silently, so this readback is the only ground truth. The interactive seam (`lib/interactive-dispatch.sh`) writes it when a valid style has no emulation text and the dispatch therefore went out unstyled. Non-blocking — the work already happened — but **any occurrence invalidates that dispatch's membership in the arm**: exclude it before comparing styled vs unstyled numbers.
+
+| Field | Type | Description |
+|---|---|---|
+| `agent` | string | The agent context of the dispatch |
+| `requested` | string | The style the engine asked for (empty = none) |
+| `effective` | string | The style that actually ran (`default` when none; empty on the interactive backend, where there is nothing to read back) |
+| `backend` | string | `headless` \| `interactive` |
+| `reason` | string | Interactive only: `no-emulation-text` |
 
 ### Wall-time report and tripwire
 
@@ -200,8 +213,20 @@ full report in `runs/goal-session-<sid>/summary.md`; the per-iteration HTML page
 carries it as a "Timing" accordion.
 
 The experiment tripwire (exit 3 = TRIP) judges the last `--window` knob-active
-iterations; `run-goal.sh` runs it each iteration while `CHAIN_AGENT_EFFORT` is
-set and auto-reverts the knob on TRIP:
+iterations; `run-goal.sh` runs it each iteration while `CHAIN_AGENT_EFFORT` or
+any `CHAIN_OUTPUT_STYLE*` knob is set, and auto-reverts every active knob on
+TRIP (one `experiment_reverted` event per key):
+
+- **Quality dimension** — any `REGRESSION` verdict, any journey regression, an
+  unparseable review verdict (`review_verdict` with an empty `verdict`, i.e. the
+  reviewer wrote no parseable verdict line), or first-attempt review `FAIL`s in
+  ≥2 iterations of the window.
+- **Cost dimension** (ground rule D5: an earlier "be terser" change *increased*
+  turns and roughly doubled output tokens) — per agent, the median of
+  `usage.output_tokens` and of `num_turns` over the styled `claude_usage` rows
+  in the window (`output_style_requested` set) against the same agent's unstyled
+  rows in the session. TRIPs above **1.5×**, and only with **≥3 rows on each
+  side**. Reasons are prefixed `cost:`.
 
 ```bash
 python3 scripts/automation/lib/analyze_telemetry.py --tripwire --window 3 runs/goal-session-<sid>/telemetry.jsonl

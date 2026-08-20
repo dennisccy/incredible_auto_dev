@@ -924,6 +924,14 @@ When complete:
 - Update runs/${ITER_NAME}/status.json with current_step: dev_complete
 " || _rc=$?
   record_agent_invocation_end "developer" "$_start" "$_rc"
+  # REL-11: the dev handoff is the reviewer's and the goal-evaluator's only
+  # account of what this iteration changed — a dispatch that returns without it
+  # reads downstream as "nothing happened". Loud banner + missing_evidence
+  # telemetry, never a gate (the caller's rc is untouched). Quota exhaustion is
+  # excluded: nothing was dispatched, so nothing went missing.
+  if [[ ! -s "$DEV_HANDOFF" && "$_rc" -ne "${QUOTA_EXHAUSTED_EXIT_CODE:-75}" ]]; then
+    warn_missing_evidence "developer" "$DEV_HANDOFF"
+  fi
   return $_rc
 }
 

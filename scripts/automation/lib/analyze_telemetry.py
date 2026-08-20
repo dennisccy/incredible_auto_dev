@@ -25,6 +25,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import statistics
 import sys
 import tempfile
 import time
@@ -280,6 +281,10 @@ def build_wall_report(paths: list[str]) -> dict[str, dict[str, Any]]:
         return sessions.setdefault(sid, {
             "iterations": [], "open": None, "halts": [],
             "paused_seconds": 0, "last_halt_ts": None,
+            # STYLE-1: flat per-dispatch cost rows for evaluate_cost_tripwire.
+            # Session-scoped (not per-iteration) because the baseline side is
+            # every unstyled row of the session, not just the recent window.
+            "usage_rows": [],
         })
 
     for path in paths:
@@ -333,9 +338,25 @@ def build_wall_report(paths: list[str]) -> dict[str, dict[str, Any]]:
                         "elapsed": int(event.get("elapsed") or 0),
                         "mode": event.get("mode") or "warn",
                         "at_step": event.get("at_step") or "?"}
+            elif kind == "claude_usage":
+                usage = event.get("usage")
+                if not isinstance(usage, dict):
+                    usage = {}
+                s["usage_rows"].append({
+                    "iter_name": (cur or {}).get("iter_name") or "",
+                    "agent": event.get("agent") or "unattributed",
+                    "output_style_requested": str(
+                        event.get("output_style_requested") or ""),
+                    "output_tokens": int(usage.get("output_tokens") or 0),
+                    "num_turns": int(event.get("num_turns") or 0)})
             elif kind == "review_verdict" and cur is not None:
+                # An absent/empty verdict is DATA, not a formatting gap: it means
+                # goal-iter-lean's _review_verdict() found no parseable verdict
+                # line. Keep it as "" so the tripwire can see it (it used to be
+                # coerced to "?" and silently swallowed).
+                _rv = event.get("verdict")
                 cur["review_verdicts"].append({
-                    "verdict": event.get("verdict") or "?",
+                    "verdict": "" if _rv is None else str(_rv),
                     "attempt": int(event.get("attempt") or 0)})
             elif kind == "iter_config" and cur is not None:
                 cur["knob_active"] = True
@@ -460,13 +481,15 @@ def render_wall_json(report: dict[str, dict[str, Any]],
     return json.dumps(out, indent=2, default=str)
 
 
-# ── experiment tripwire (--tripwire) ─────────────────────────────────────────
+# ── experiment tripwire, quality dimension (--tripwire) ──────────────────────
 #
-# Guards opt-in speed experiments (e.g. CHAIN_AGENT_EFFORT=developer=high).
-# Looks at the last --window knob-active completed iterations and TRIPs when
-# quality moved: any REGRESSION verdict, any journey regression count > 0, or
-# first-attempt review FAILs in ≥2 of the window. Exit 3 on TRIP so shell
-# callers can auto-revert the knob.
+# Guards opt-in experiments (e.g. CHAIN_AGENT_EFFORT=developer=high,
+# CHAIN_OUTPUT_STYLES=true). Looks at the last --window knob-active completed
+# iterations and TRIPs when quality moved: any REGRESSION verdict, any journey
+# regression count > 0, an unparseable review verdict, or first-attempt review
+# FAILs in ≥2 of the window. Exit 3 on TRIP so shell callers can auto-revert the
+# knob. The cost dimension lives in evaluate_cost_tripwire below; --tripwire
+# runs both.
 
 
 def evaluate_tripwire(report: dict[str, dict[str, Any]], window: int = 3
@@ -486,6 +509,11 @@ def evaluate_tripwire(report: dict[str, dict[str, Any]], window: int = 3
             if int((rec["journey_deltas"] or {}).get("regressed") or 0) > 0:
                 tripped = True
                 reasons.append(f"{sid}/{rec['iter_name']}: journey regression recorded")
+            if any(rv["verdict"] == "" for rv in rec["review_verdicts"]):
+                tripped = True
+                reasons.append(
+                    f"{sid}/{rec['iter_name']}: unparseable review verdict "
+                    f"(verdict line missing)")
             if any(rv["verdict"] == "FAIL" and rv["attempt"] == 1
                    for rv in rec["review_verdicts"]):
                 fail_iters += 1
@@ -494,6 +522,60 @@ def evaluate_tripwire(report: dict[str, dict[str, Any]], window: int = 3
             reasons.append(
                 f"{sid}: first-attempt review FAIL in {fail_iters}/{len(recent)} "
                 f"knob-active iterations")
+    return tripped, reasons
+
+
+# ── cost tripwire (--tripwire, second dimension) ─────────────────────────────
+#
+# Ground rule D5 (docs/improvement-roadmap.md): an earlier "be terser" change
+# INCREASED turn count and roughly doubled output tokens. A prose-shaping knob
+# (CHAIN_OUTPUT_STYLES) can fail the same way, and the quality dimension above
+# would never see it. So: compare the styled dispatches of the recent knob-active
+# window against the same agent's unstyled dispatches from the same session
+# (medians, so one runaway dispatch cannot trip it), and TRIP when the styled
+# side is more than 1.5x the baseline on output tokens or on turns.
+#
+# Both sides need >=3 rows; below that the medians are noise, not signal.
+
+_COST_RATIO = 1.5
+_COST_MIN_ROWS = 3
+
+
+def _fmt_med(v: float) -> str:
+    return str(int(v)) if float(v).is_integer() else f"{v:.1f}"
+
+
+def evaluate_cost_tripwire(report: dict[str, dict[str, Any]], window: int = 3
+                           ) -> tuple[bool, list[str]]:
+    reasons: list[str] = []
+    tripped = False
+    for sid, s in report.items():
+        rows = s.get("usage_rows") or []
+        if not rows:
+            continue
+        recent = {i["iter_name"] for i in
+                  [x for x in s["iterations"] if x["complete"] and x["knob_active"]][-window:]}
+        if not recent:
+            continue
+        styled_all = [r for r in rows
+                      if r["output_style_requested"] and r["iter_name"] in recent]
+        for agent in sorted({r["agent"] for r in styled_all}):
+            styled = [r for r in styled_all if r["agent"] == agent]
+            base = [r for r in rows
+                    if r["agent"] == agent and not r["output_style_requested"]]
+            if len(styled) < _COST_MIN_ROWS or len(base) < _COST_MIN_ROWS:
+                continue
+            style = ",".join(sorted({r["output_style_requested"] for r in styled}))
+            for metric in ("output_tokens", "num_turns"):
+                b = statistics.median([r[metric] for r in base])
+                v = statistics.median([r[metric] for r in styled])
+                if b <= 0 or v <= _COST_RATIO * b:
+                    continue
+                tripped = True
+                reasons.append(
+                    f"cost: {agent} median {metric} {_fmt_med(b)}→{_fmt_med(v)} "
+                    f"(+{int(round((v - b) / b * 100))}%) under {style} — D5 failure "
+                    f"mode (terse instructions → more turns/tokens)")
     return tripped, reasons
 
 
@@ -596,6 +678,59 @@ _WALL_FIXTURE = [
     # crashed attempt: an iter_start that never ends
     {"event": "iter_start", "session_id": "w-1", "iter_name": "goal-w-iter-3",
      "ts": "2026-07-01T12:31:00Z"},
+]
+
+
+# STYLE-1 cost fixture: three unstyled (baseline) iterations followed by
+# `styled_iters` knob-active iterations whose developer rows carry
+# `output_style_requested`. Verdicts stay clean so ONLY the cost dimension can
+# trip. One claude_usage row per iteration → 3 baseline rows, `styled_iters`
+# styled rows (the ≥3-a-side floor is exercised by the styled_iters=2 variant).
+def _cost_fixture(sid: str, styled_tokens: int, styled_turns: int,
+                  styled_iters: int = 3) -> list[dict[str, Any]]:
+    ev: list[dict[str, Any]] = []
+
+    def _iter(n: int, styled: bool) -> None:
+        name = f"goal-c-iter-{n}"
+        ev.append({"event": "iter_start", "session_id": sid, "iter_name": name,
+                   "ts": f"2026-08-0{n}T10:00:00Z"})
+        if styled:
+            ev.append({"event": "iter_config", "session_id": sid,
+                       "key": "CHAIN_OUTPUT_STYLES",
+                       "value": "CHAIN_OUTPUT_STYLES=true",
+                       "ts": f"2026-08-0{n}T10:00:01Z"})
+        row: dict[str, Any] = {
+            "event": "claude_usage", "session_id": sid, "agent": "developer",
+            "num_turns": styled_turns if styled else 10,
+            "usage": {"output_tokens": styled_tokens if styled else 1000},
+            "ts": f"2026-08-0{n}T10:10:00Z"}
+        if styled:
+            row["output_style_requested"] = "Concise"
+        ev.append(row)
+        ev.append({"event": "iter_end", "session_id": sid, "iter_name": name,
+                   "verdict": "CONTINUE", "journey_deltas": {"regressed": 0},
+                   "ts": f"2026-08-0{n}T11:00:00Z"})
+
+    for n in range(1, 4):
+        _iter(n, styled=False)
+    for n in range(4, 4 + styled_iters):
+        _iter(n, styled=True)
+    return ev
+
+
+# STYLE-1: a knob-active iteration whose reviewer wrote no parseable verdict
+# line (_review_verdict() returned ""). Everything else is clean — only the
+# unparseable-verdict rule may fire here.
+_EMPTY_VERDICT_FIXTURE = [
+    {"event": "iter_start", "session_id": "e-1", "iter_name": "goal-e-iter-1",
+     "ts": "2026-08-10T10:00:00Z"},
+    {"event": "iter_config", "session_id": "e-1", "key": "CHAIN_OUTPUT_STYLES",
+     "value": "CHAIN_OUTPUT_STYLES=true", "ts": "2026-08-10T10:00:01Z"},
+    {"event": "review_verdict", "session_id": "e-1", "verdict": "", "attempt": 1,
+     "iter_name": "goal-e-iter-1", "ts": "2026-08-10T10:30:00Z"},
+    {"event": "iter_end", "session_id": "e-1", "iter_name": "goal-e-iter-1",
+     "verdict": "CONTINUE", "journey_deltas": {"regressed": 0},
+     "ts": "2026-08-10T11:00:00Z"},
 ]
 
 
@@ -713,6 +848,53 @@ def _self_test() -> int:
         if tripped_q:
             print("FAIL: tripwire fired with no knob-active iterations", file=sys.stderr)
             return 1
+
+        # ── STYLE-1 cost dimension (D5: terse instructions → more turns) ─────
+        def _cost_report(name: str, tokens: int, turns: int,
+                         styled_iters: int = 3) -> dict[str, dict[str, Any]]:
+            cpath = Path(tmp) / name
+            cpath.write_text(
+                "\n".join(json.dumps(e) for e in
+                          _cost_fixture("c-1", tokens, turns, styled_iters)) + "\n",
+                encoding="utf-8")
+            return build_wall_report([str(cpath)])
+
+        creport = _cost_report("cost-trip.jsonl", 1800, 21)
+        if creport["c-1"]["usage_rows"][0]["output_tokens"] != 1000:
+            print("FAIL: usage_rows not collected by build_wall_report", file=sys.stderr)
+            return 1
+        ctripped, creasons = evaluate_cost_tripwire(creport, window=3)
+        if not ctripped:
+            print("FAIL: cost tripwire should TRIP on 1000→1800 tokens / 10→21 turns",
+                  file=sys.stderr)
+            return 1
+        if not any(r.startswith("cost: developer") for r in creasons):
+            print(f"FAIL: cost tripwire reasons: {creasons}", file=sys.stderr)
+            return 1
+        # The quality dimension must stay silent on this fixture — otherwise the
+        # cost assertions above would pass for the wrong reason.
+        if evaluate_tripwire(creport, window=3)[0]:
+            print("FAIL: quality tripwire fired on the clean cost fixture", file=sys.stderr)
+            return 1
+        if evaluate_cost_tripwire(_cost_report("cost-cheap.jsonl", 600, 8), window=3)[0]:
+            print("FAIL: cost tripwire fired when the styled arm got CHEAPER",
+                  file=sys.stderr)
+            return 1
+        if evaluate_cost_tripwire(_cost_report("cost-thin.jsonl", 1800, 21, 2),
+                                  window=3)[0]:
+            print("FAIL: cost tripwire fired with only 2 styled rows (<3 a side)",
+                  file=sys.stderr)
+            return 1
+
+        # ── STYLE-1: an unparseable review verdict is a quality trip ─────────
+        epath = Path(tmp) / "empty-verdict.jsonl"
+        epath.write_text(
+            "\n".join(json.dumps(e) for e in _EMPTY_VERDICT_FIXTURE) + "\n",
+            encoding="utf-8")
+        etripped, ereasons = evaluate_tripwire(build_wall_report([str(epath)]), window=3)
+        if not etripped or not any("unparseable review verdict" in r for r in ereasons):
+            print(f"FAIL: empty review verdict should TRIP: {ereasons}", file=sys.stderr)
+            return 1
     print("self-test passed")
     return 0
 
@@ -768,7 +950,7 @@ def main() -> int:
         "--tripwire",
         action="store_true",
         help=(
-            "evaluate the speed-experiment quality tripwire over the last "
+            "evaluate the experiment tripwire (quality + cost) over the last "
             "--window knob-active iterations; exit 3 when tripped"
         ),
     )
@@ -794,12 +976,14 @@ def main() -> int:
         report = build_wall_report(args.paths)
         if args.tripwire:
             tripped, reasons = evaluate_tripwire(report, window=args.window)
-            if tripped:
+            cost_tripped, cost_reasons = evaluate_cost_tripwire(
+                report, window=args.window)
+            if tripped or cost_tripped:
                 print("TRIPWIRE: TRIP")
-                for r in reasons:
+                for r in reasons + cost_reasons:
                     print(f"  - {r}")
                 return 3
-            print("TRIPWIRE: OK (no quality movement in the window)")
+            print("TRIPWIRE: OK (no quality or cost movement in the window)")
             return 0
         if args.json:
             print(render_wall_json(report, iter_filter=args.iter))

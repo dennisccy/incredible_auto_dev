@@ -149,6 +149,9 @@ fi
 # non-empty; if not, write SKIPPED stubs and fail loudly at the source.
 if [[ ! -s "$USER_VISIBLE" || ! -s "$UI_SURFACE_MAP" ]]; then
   _reason="ui-impact-phase.sh: the ui-impact-analyst agent exited 0 but did not write a non-empty user-visible-changes and/or ui-surface-map report. Re-run \`./scripts/automation/ui-impact-phase.sh $PHASE\`."
+  # REL-11: the SKIPPED stub keeps the pipeline fed but reads as a quiet skip;
+  # this emits the loud banner + missing_evidence telemetry alongside it.
+  warn_missing_evidence "ui-impact-analyst" "$USER_VISIBLE"
   write_failed_artifact_stub "$PHASE" "user-visible-changes" "$_reason"
   write_failed_artifact_stub "$PHASE" "ui-surface-map"       "$_reason"
   echo "[ui-impact] ERROR: agent returned success but expected report(s) are missing/empty — wrote SKIPPED stubs and failing." >&2
