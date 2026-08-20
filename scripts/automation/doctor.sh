@@ -732,7 +732,8 @@ check_output_styles() {
   [[ -n "$ver" ]] || ver="unknown version"
 
   # Dedupe configured names (the wave-1 table maps six agents to one style
-  # name) and drop "default" — it carries no binary marker to verify (fact 4).
+  # name) and drop "default" — it carries no binary marker to verify: the
+  # binary has no `# Default Style Active` literal.
   local -a names=() missing=()
   local name src already existing found
   while IFS=$'\t' read -r name src; do
@@ -768,10 +769,11 @@ check_output_styles() {
   local detail="${#names[@]} configured style(s) present in claude $ver ($arm_word)"
   if [[ -n "$pins" ]]; then
     # The engine's per-dispatch --settings is a session-level override that
-    # OUTRANKS a settings.json pin (fact 2) — the pin never overrides a
-    # requested style. It only reaches dispatches the engine leaves
-    # unstyled: judges, Default-arm agents, and (see the empty-conf branch
-    # above) every dispatch when the knob itself is off.
+    # OUTRANKS a settings.json pin (verified via a Step-0 probe, CLI 2.1.237,
+    # 2026-08-20) — the pin never overrides a requested style. It only
+    # reaches dispatches the engine leaves unstyled: judges, Default-arm
+    # agents, and (see the empty-conf branch above) every dispatch when the
+    # knob itself is off.
     echo "WARN|$detail but outputStyle is pinned in: $pins — the pin applies to every dispatch the engine leaves unstyled (judges, Default-arm agents), contaminating the control arm; the engine's --settings wins only where a style is requested"
   else
     echo "PASS|$detail"

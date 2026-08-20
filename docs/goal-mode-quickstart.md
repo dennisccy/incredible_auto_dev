@@ -159,11 +159,12 @@ sending Claude Code's built-in `Concise` output style to developer, qa,
 browser-qa-agent, orchestrator, ui-impact-analyst, and ux-regression-reviewer
 (judges are refused by a hardcoded guard). Run ≥3 baseline iterations with the
 knob OFF first — the cost tripwire needs that many same-session unstyled rows
-per agent to compute a baseline median before it can judge a styled one. The
-telemetry tripwire auto-reverts the knob on a quality regression (as with
-`CHAIN_AGENT_EFFORT` above) AND on a cost regression (styled median
-`output_tokens` or `num_turns` more than 1.5x the unstyled baseline). Check for
-a style mismatch after a run:
+per agent to compute a baseline median before it can judge a styled one. It
+likewise needs ≥3 STYLED rows per agent before it can judge — expect no cost
+verdict before the third knob-on iteration. The telemetry tripwire auto-reverts
+the knob on a quality regression (as with `CHAIN_AGENT_EFFORT` above) AND on a
+cost regression (styled median `output_tokens` or `num_turns` more than 1.5x the
+unstyled baseline). Check for a style mismatch after a run:
 
 ```bash
 jq -c 'select(.event=="output_style_mismatch")' runs/goal-session-my-app/telemetry.jsonl

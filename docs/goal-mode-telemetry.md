@@ -152,6 +152,7 @@ Written by `claude_with_quota_retry` after a successful Claude invocation when `
 | `is_error` | boolean | True if the result event was an error |
 | `subtype` | string | `success` \| `error_max_turns` \| etc. |
 | `output_style` | string \| null | The **effective** Claude Code output style, read from the stream-json `system/init` event by `lib/claude_stream_renderer.py` and carried in through the usage sidecar. `default` when no style is active; null on CLIs that do not report it (older `claude`, Codex) — null means *unknown*, never "default" |
+| `available_output_styles` | string \| null | Comma-joined list of the output styles Claude Code reports as available, read from the same stream-json `system/init` event by `lib/claude_stream_renderer.py` (`:189-190`) and carried in through the usage sidecar. null when the CLI does not report the field — observed on CLI 2.1.237 |
 | `output_style_requested` | string | The style the engine **requested** for this dispatch (STYLE-1; e.g. `Concise`). Absent when no style was requested. Interactive-backend rows read `<name>(emulated)` — subagents never receive a style natively, so the seam appends the emulation block to the prompt instead. Compare against `output_style` to know whether the arm actually ran |
 
 Enabled by default headless; opt out with `export CHAIN_TELEMETRY_TOKENS=false`. To opt out of cache hygiene (`--exclude-dynamic-system-prompt-sections`): `export CHAIN_CLAUDE_DISABLE_CACHE_HYGIENE=true`.

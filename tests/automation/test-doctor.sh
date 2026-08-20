@@ -141,7 +141,8 @@ run_doctor() {
   # (and therefore ras-logging, which keys off reset history) to the clean case;
   # the postmortem dir is redirected so the row's sanctioned write cannot escape
   # into the real cache.
-  env "PATH=$SHIMS:$FARM" "HOME=$FHOME" \
+  env -u CHAIN_OUTPUT_STYLES -u CHAIN_AGENT_OUTPUT_STYLE -u CHAIN_OUTPUT_STYLE_OVERRIDE \
+      "PATH=$SHIMS:$FARM" "HOME=$FHOME" \
       "CHAIN_DOCTOR_REPO_ROOT=$FREPO" "CHAIN_TMP_ROOT=$FTMP" \
       "PLAYWRIGHT_BROWSERS_PATH=$TMP_DIR/browsers" "PYTHONPATH=$PYDIR" \
       "HOST_GUARD_RESET_KLOG_FILE=$TMP_DIR/klog-clean" \

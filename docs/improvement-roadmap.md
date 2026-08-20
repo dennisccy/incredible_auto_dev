@@ -90,8 +90,10 @@ do not resurrect them without new evidence):
   ~doubled output tokens (cost went UP, not down). Judges are hardcoded-refused
   (`JUDGE_AGENTS`, `scripts/automation/lib/agent_permissions.py:296-298`); for
   non-judges the `CHAIN_AGENT_EFFORT` knob stays opt-in and must carry a COST tripwire
-  (REL-8) — the current quality-only tripwire (`lib/analyze_telemetry.py:441-466`)
-  cannot see this failure mode.
+  (REL-8) — the quality tripwire (`lib/analyze_telemetry.py:497-527`) cannot see the D5
+  failure mode; the STYLE-1 cost dimension (`evaluate_cost_tripwire`,
+  `lib/analyze_telemetry.py:550-581`) keys on `output_style_requested`, so it is blind
+  to `CHAIN_AGENT_EFFORT` — REL-8 still owed.
 - **D6** Do not impose word/length budgets on specs or plans. If a spec must shrink,
   cut implementation narrative — NEVER test scenarios or interface/data-contract
   definitions (Superpowers 6: a plan word-budget cut test content −62%; tests and
@@ -2444,7 +2446,7 @@ benchmark (or a real session's telemetry) before AND after (G8).
   and ~doubled output — a COST backfire. Our tripwire watches quality only. Anchors
   verified 2026-07-07 @ `eb5c8f9`.
 - **Problem:** the `CHAIN_AGENT_EFFORT` experiment auto-reverts on quality signals only
-  (`evaluate_tripwire()`, `lib/analyze_telemetry.py:441-466`: any REGRESSION verdict,
+  (`evaluate_tripwire()`, `lib/analyze_telemetry.py:497-527`: any REGRESSION verdict,
   any regressed journey, ≥2-of-3 first-attempt review FAILs). If lowering an agent's
   effort doubles its output tokens — the measured Superpowers failure mode — the
   tripwire never fires and the "saving" quietly costs more than baseline.
@@ -2456,7 +2458,9 @@ benchmark (or a real session's telemetry) before AND after (G8).
   (`analyze_telemetry.py` `by_agent` `:96`, `output_tokens` `:53`, per-agent rows
   `:212`, JSON `:227`). The knob is headless-only (`agent_permissions.py:272-273`)
   and headless always emits `claude_usage` events — the data is guaranteed present
-  exactly when the knob is active.
+  exactly when the knob is active. STYLE-1 (2026-08-20) landed `evaluate_cost_tripwire`
+  (`lib/analyze_telemetry.py:550-581`) for the output-style knob, keyed on
+  `output_style_requested`; REL-8 generalizes it to the effort arm.
 - **Change spec:**
   1. In `evaluate_tripwire()`: parse which agents the knob names from the `iter_config`
      event payload; per knob-active iteration compute those agents' output-token
@@ -3835,16 +3839,28 @@ but appreciated.
   ui-impact-analyst, ux-regression-reviewer; judges (`JUDGE_AGENTS`) are refused by
   a hardcoded guard (D4), `Learning` is refused outright (asks the human to write
   code), and the whole mechanism is inert outside goal mode (`GOAL_SESSION_DIR`
-  unset).
+  unset), except the debug override `CHAIN_OUTPUT_STYLE_OVERRIDE`, which works in
+  any mode.
 - **DoD (experiment):** pre-register predictions in `benchmarks/experiments.md`
   (developer `output_tokens` −20..30%, `num_turns` flat ±10%, attempt-1 review FAIL
   rate unchanged, `cache_creation_input_tokens` ≤ +25K per wave-1 dispatch, zero
   `output_style_mismatch`); run ≥3 knob-off iterations on one real session, then
   `CHAIN_OUTPUT_STYLES=true` for ≥3 more on the same session (G9 confirm — this
-  spends real tokens); flip the default to `true` in a SEPARATE change (G4) only if
-  developer+qa median output tokens drop ≥15% with every tripwire quiet and no
-  artifact-schema issues; if artifacts thinned but tokens still dropped, ship arm 2
-  instead; otherwise record the result here and leave the knob dormant.
+  spends real tokens). The full-depth-only wave-1 agents (qa, orchestrator,
+  ui-impact-analyst, ux-regression-reviewer) accrue rows only in full-depth
+  iterations, so they are measured only when each arm includes ≥3 full-depth
+  iterations. The cost guard cannot fire before the styled side has ≥3 rows per
+  agent — not before the third knob-on iteration (second if a fix-mode retry
+  occurs); the first two armed iterations rely on the quality dimension and the
+  manual read-out. Flip the default to `true` in a SEPARATE change (G4) only if
+  developer's median output tokens drop ≥15% (primary metric) AND no wave-1
+  agent with ≥3 rows per arm trips the cost guard AND every tripwire is quiet
+  AND no artifact-schema issues; agents with <3 styled rows are listed as
+  UNMEASURED in the read-out — the flip covers the whole table only if the
+  unmeasured set is empty, otherwise that separate change flips only the
+  measured agents (edit `OUTPUT_STYLE_OVERRIDES` accordingly); if artifacts
+  thinned but tokens still dropped, ship arm 2 instead; otherwise record the
+  result here and leave the knob dormant.
 - **Verify:** `./scripts/automation/run-evals.sh` · `bash
   tests/automation/test-output-style.sh` · `bash scripts/automation/doctor.sh --only
   output-styles` · the G8 read-out (`T=runs/goal-session-<sid>/telemetry.jsonl`):
@@ -3897,15 +3913,14 @@ but appreciated.
        affected agents; the resolver already accepts project custom styles by
        stem/name, and `output_style_text` already serves the file body as the
        interactive emulation text.
-    4. Caveat (fact 8): no per-turn reminder for custom styles. Measure both
-       arms with the same recipe.
+    4. Caveat: Claude Code emits the per-turn "style active" reminder only for
+       built-in styles; custom styles get none. Measure both arms with the
+       same recipe.
   - The renderer emits `output_style`/`available_output_styles` as `null` when
     unknown, and the trace's `+ $usage` spread can null-override an already-known
     requested value — omit the keys instead of nulling them.
   - `_codex_invoke` never resets `_CHAIN_TRACE_OUTPUT_STYLE`, so it goes stale in
     mixed-backend processes (pre-existing gap, shared with model/effort).
-  - `doctor.sh` greps the RAW configured casing instead of canonicalizing through
-    the resolver first.
   - Latent vendored gap: `_neutral_agent_yaml` has no framework-root fallback
     (unlike `_tiers_file`), affecting yaml-only fields (timeout/budget/model) in
     vendored repos.
@@ -3916,6 +3931,19 @@ but appreciated.
     ui-impact only on rc==0) — know each one's trigger before trusting silence.
   - The cost tripwire needs ≥3 same-session UNSTYLED baseline iterations per agent —
     run those first, or it has nothing to compare against.
+  - The analyzer's cost dimension counts `<name>(unemulated)` rows and headless
+    rows whose effective `output_style` differs from the requested name as
+    styled (`evaluate_cost_tripwire`, `lib/analyze_telemetry.py:565-566`);
+    exclude them (needs `output_style`, not just `output_style_requested`, in
+    the collected row at `:345-350`). Until then the telemetry doc's "exclude
+    mismatched dispatches by hand" rule stands.
+  - `doctor.sh:731`'s `claude --version` is the one probe in the `output-styles`
+    row not wrapped in `_bounded`.
+  - Test hardening: bound `wait "$bg"` in `run_interactive`
+    (`tests/automation/test-output-style.sh`, the interactive helper) with
+    `timeout` or extend the `.ready` poll beyond 5s; add a telemetry-sourced
+    case for `output_style_mismatch` emission; add a baseline-side (<3
+    unstyled rows) cost fixture.
 
 ---
 

@@ -512,18 +512,40 @@ def output_style_text(name: str, styles_dir: Path = PROJECT_OUTPUT_STYLES_DIR) -
         f"OUTPUT_STYLE_EMULATION_TEXT (verbatim from the CLI binary) before using it on the interactive backend")
 
 
+def _soft_canonicalize(raw: str) -> str:
+    """Best-effort casing fix for configured_output_styles(), which is
+    deliberately UNVALIDATED: reuse _canonical_output_style (the same
+    case-insensitive builtin canonicalizer output_style_for() validates
+    against) but never raise and never collapse to "". An unknown/refused/
+    invalid name, a custom project style, or the literal "default" all pass
+    through UNCHANGED — those are left for output-style-check / the
+    binary-presence check below to validate or report; only a recognized
+    builtin (any casing) comes back rewritten to its exact spelling, e.g.
+    "concise" -> "Concise", so doctor's binary-marker grep (which does not
+    add -i — see check_output_styles) and any other consumer see one
+    canonical name."""
+    try:
+        canonical = _canonical_output_style(raw)
+    except OutputStyleError:
+        return raw
+    return canonical or raw
+
+
 def configured_output_styles() -> list[tuple[str, str]]:
     """Every style configured anywhere, UNVALIDATED, as (name, source):
     env:CHAIN_OUTPUT_STYLE_OVERRIDE · env:CHAIN_AGENT_OUTPUT_STYLE[<agent>] ·
-    table:<agent> (only when CHAIN_OUTPUT_STYLES=true). For doctor + boot preflight."""
+    table:<agent> (only when CHAIN_OUTPUT_STYLES=true). Builtin names are
+    casing-canonicalized (_soft_canonicalize); table values are already
+    canonical by construction (asserted in _self_test). For doctor + boot
+    preflight."""
     out: list[tuple[str, str]] = []
     override = os.environ.get("CHAIN_OUTPUT_STYLE_OVERRIDE", "").strip()
     if override:
-        out.append((override, "env:CHAIN_OUTPUT_STYLE_OVERRIDE"))
+        out.append((_soft_canonicalize(override), "env:CHAIN_OUTPUT_STYLE_OVERRIDE"))
     for part in os.environ.get("CHAIN_AGENT_OUTPUT_STYLE", "").split(","):
         key, _, value = part.partition("=")
         if key.strip() and value.strip():
-            out.append((value.strip(), f"env:CHAIN_AGENT_OUTPUT_STYLE[{key.strip()}]"))
+            out.append((_soft_canonicalize(value.strip()), f"env:CHAIN_AGENT_OUTPUT_STYLE[{key.strip()}]"))
     if os.environ.get("CHAIN_OUTPUT_STYLES", "false").strip().lower() == "true":
         for agent, style in OUTPUT_STYLE_OVERRIDES.items():
             out.append((style, f"table:{agent}"))

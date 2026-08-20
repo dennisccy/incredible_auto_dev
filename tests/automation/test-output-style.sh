@@ -518,6 +518,31 @@ else
   fail "k5: expected FAIL naming Bogus with no crash fallback (out: $K5_OUT)"
 fi
 
+# ── k6. Lowercase built-in name via CHAIN_AGENT_OUTPUT_STYLE, marker present →
+# canonicalized to "Concise" before the grep → PASS, not a spurious WARN (the
+# resolver already accepts built-in names case-insensitively at dispatch; the
+# binary-marker grep must agree, not flag a false "not found").
+mk_fake_claude with
+K6_OUT=$(run_doctor_styles CHAIN_AGENT_OUTPUT_STYLE="developer=concise")
+if [[ "$K6_OUT" == *"PASS"*"output-styles"* && "$K6_OUT" != *"WARN"* ]]; then
+  pass "k6: lowercase built-in name canonicalized before the grep → PASS, not WARN"
+else
+  fail "k6: expected a canonicalized PASS row (out: $K6_OUT)"
+fi
+
+# ── k7. CLI-level: output-styles-configured itself prints the canonical
+# spelling, not the raw casing — doctor and any other consumer of this
+# subcommand all read one canonical name (agent_permissions.py is the
+# preferred fix location per the casing ruling, not a doctor.sh-side grep -i).
+K7_OUT=$(env -u CHAIN_OUTPUT_STYLES -u CHAIN_OUTPUT_STYLE_OVERRIDE \
+  CHAIN_AGENT_OUTPUT_STYLE="developer=concise" \
+  python3 "$REPO_ROOT/scripts/automation/lib/agent_permissions.py" output-styles-configured)
+if [[ "$K7_OUT" == "Concise"$'\t'"env:CHAIN_AGENT_OUTPUT_STYLE[developer]" ]]; then
+  pass "k7: output-styles-configured canonicalizes developer=concise → Concise"
+else
+  fail "k7: expected canonical 'Concise' (out: $K7_OUT)"
+fi
+
 echo ""
 echo "=== Results: $PASS passed, $FAIL failed ==="
 echo ""
