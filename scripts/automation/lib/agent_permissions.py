@@ -24,6 +24,10 @@ CLI:
     python3 agent_permissions.py effort <agent>       # --effort value (max|medium)
     python3 agent_permissions.py model <agent>        # resolved model id or empty
     python3 agent_permissions.py tier-model <tier>    # tier's claude model id or empty
+    python3 agent_permissions.py output-style <agent>        # output style name or "" (rc 3 = invalid config)
+    python3 agent_permissions.py output-style-text <name>    # emulation body for the interactive backend (rc 4 = none known)
+    python3 agent_permissions.py output-styles-configured    # "<name>\t<source>" per configured style (env + table), unvalidated
+    python3 agent_permissions.py output-style-check          # validate every configured style; rc 3 on the first invalid one
     python3 agent_permissions.py self-test
 """
 from __future__ import annotations
@@ -336,6 +340,196 @@ def effort_for(agent: str) -> str:
     return EFFORT_OVERRIDES.get(agent, EFFORT_DEFAULT)
 
 
+# ── Output styles (STYLE-1 experiment, default off) ──────────────────────────
+# Claude Code has NO --output-style flag; the per-invocation form is
+# `--settings '{"outputStyle":"<name>"}'`. The CLI SILENTLY ignores names it
+# does not know (falls back to default), so validation lives here and a bad
+# name must FAIL the dispatch loudly — otherwise an experiment arm runs
+# mislabeled. Names are restricted to a JSON-safe alphabet because the shell
+# seam interpolates them into the settings literal verbatim.
+#
+# Precedence (output_style_for):
+#   CHAIN_OUTPUT_STYLE_OVERRIDE   global, EVERY agent (judges included — debug
+#                                 only; loud NOTICE per judge dispatch)
+#   CHAIN_AGENT_OUTPUT_STYLE      "developer=Concise,qa=Concise" — same grammar
+#                                 as CHAIN_AGENT_EFFORT; judge entries refused
+#   OUTPUT_STYLE_OVERRIDES        this table — ONLY when CHAIN_OUTPUT_STYLES=true
+#   ""                            = the CLI default; the seam passes no flag
+# Why a table and not agents/<name>/agent.yaml: vendored deployments have no
+# agents/ dir at CWD (only .claude/, config/, scripts/ are symlinked), and the
+# style is never rendered into frontmatter (subagents cannot use it anyway).
+OUTPUT_STYLE_BUILTINS: tuple[str, ...] = ("Default", "Proactive", "Concise", "Explanatory")
+OUTPUT_STYLE_REFUSED: dict[str, str] = {
+    "Learning": "it asks the human to write code (stalls headless runs)",
+}
+OUTPUT_STYLE_NAME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9 _-]*$")
+PROJECT_OUTPUT_STYLES_DIR = Path(".claude/output-styles")
+# Wave 1 (2026-08-20): the long, machine-consumed, non-judge steps. Judges
+# (JUDGE_AGENTS) must never appear here — the self-test asserts it (D4).
+# Human-facing writers (iteration-summarizer, demo-narrator, readme-maintainer,
+# retro-analyst, ui-test-designer) stay Default by design.
+OUTPUT_STYLE_OVERRIDES: dict[str, str] = {
+    "developer":              "Concise",
+    "qa":                     "Concise",  # both generate-mode and validate-mode
+    "browser-qa-agent":       "Concise",
+    "orchestrator":           "Concise",
+    "ui-impact-analyst":      "Concise",
+    "ux-regression-reviewer": "Concise",
+}
+# Emulation bodies for the interactive backend (Agent-tool subagents never see
+# the default system prompt, the only place Claude Code injects a style).
+# Rules 1-6 are verbatim from the CLI binary; the closing sentence replaces the
+# built-in's "these rules win" clause with an artifact-contract guard because
+# here the text lands in the USER turn, below the agent's system prompt.
+OUTPUT_STYLE_EMULATION_TEXT: dict[str, str] = {
+    "Concise": (
+        'The engine requested Claude Code\'s built-in "Concise" output style for this dispatch. '
+        "Subagents do not receive it natively, so apply it from here:\n"
+        "1. **Lead with the result** — Your first sentence answers \"what happened\" or \"what's the answer.\" "
+        "No preamble (\"Let me...\", \"Now I'll...\") and no closing recap of what you already said.\n"
+        "2. **Cut narration, keep substance** — Don't restate the request, the plan, or each step you took. "
+        "Report outcomes, decisions, and anything the user must act on.\n"
+        "3. **Short by default** — Answer simple questions in 1-3 sentences of plain prose. "
+        "Use headers, tables, and bullet lists only when they carry real structure, never as decoration.\n"
+        "4. **State things plainly** — Skip hedging boilerplate. Mention a caveat only when it changes what the user should do next.\n"
+        "5. **Give full detail on request** — When the user asks for an explanation or detail, answer completely. "
+        "Conciseness never means withholding requested information.\n"
+        "6. **Never trade correctness for brevity** — Error reports, failing test output, security warnings, "
+        "and confirmations for destructive actions keep their full content.\n"
+        "These rules shape only your chat/transcript prose. Every file, report section, table, verdict line, "
+        "and handoff that your agent instructions require must still be written in full."
+    ),
+}
+
+
+class OutputStyleError(ValueError):
+    """Invalid output-style configuration (unknown/refused/unsafe name)."""
+
+
+def _is_judge(agent: str) -> bool:
+    return agent in JUDGE_AGENTS or any(agent.startswith(j + "-") for j in JUDGE_AGENTS)
+
+
+def _custom_output_styles(styles_dir: Path = PROJECT_OUTPUT_STYLES_DIR) -> dict[str, str]:
+    """{name: body} for every project .claude/output-styles/*.md, keyed by file
+    stem AND frontmatter `name:` when present (the body doubles as emulation text)."""
+    out: dict[str, str] = {}
+    if not styles_dir.is_dir():
+        return out
+    for f in sorted(styles_dir.glob("*.md")):
+        try:
+            text = f.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        body, fm = text, _parse_frontmatter(text)
+        if fm is not None:
+            end = text.find("\n---", 3)
+            body = text[end + 4:] if end != -1 else text
+        out[f.stem] = body.strip()
+        name = fm.get("name") if fm else None
+        if isinstance(name, str) and name.strip():
+            out[name.strip()] = body.strip()
+    return out
+
+
+def _canonical_output_style(raw: str, styles_dir: Path = PROJECT_OUTPUT_STYLES_DIR) -> str:
+    """Validate + canonicalize. "" = Default (pass nothing). Raises OutputStyleError."""
+    name = (raw or "").strip()
+    if not name:
+        return ""
+    if not OUTPUT_STYLE_NAME_RE.match(name):
+        raise OutputStyleError(
+            f"output style {raw!r}: names must match [A-Za-z][A-Za-z0-9 _-]* "
+            f"(interpolated verbatim into the --settings JSON)")
+    low = name.lower()
+    for refused, why in OUTPUT_STYLE_REFUSED.items():
+        if low == refused.lower():
+            raise OutputStyleError(f"output style {refused!r} is refused: {why}")
+    if low == "default":
+        return ""
+    for builtin in OUTPUT_STYLE_BUILTINS:
+        if low == builtin.lower():
+            return builtin
+    if name in _custom_output_styles(styles_dir):
+        return name
+    raise OutputStyleError(
+        f"unknown output style {raw!r}; allowed: {', '.join(OUTPUT_STYLE_BUILTINS)} or a project "
+        f"{styles_dir}/<name>.md (Claude Code ignores unknown names SILENTLY, so this layer refuses them)")
+
+
+def _experiment_output_style_override(agent: str) -> str | None:
+    """CHAIN_AGENT_OUTPUT_STYLE="developer=Concise[,agent=Style]" — grammar and
+    judge guard identical to _experiment_effort_override."""
+    raw = os.environ.get("CHAIN_AGENT_OUTPUT_STYLE", "").strip()
+    if not raw:
+        return None
+    for part in raw.split(","):
+        key, _, value = part.partition("=")
+        if key.strip() != agent or not value.strip():
+            continue
+        if _is_judge(agent):
+            print(f"[agent-permissions] CHAIN_AGENT_OUTPUT_STYLE refused for judge '{agent}' — "
+                  f"a judge's verdict prose is the product; judges never run under an output style (D4).",
+                  file=sys.stderr)
+            return None
+        return value.strip()
+    return None
+
+
+def output_style_for(agent: str, styles_dir: Path = PROJECT_OUTPUT_STYLES_DIR) -> str:
+    """Canonical style name for the agent, or "" (= CLI default; pass no flag).
+    Raises OutputStyleError on invalid config — callers must FAIL LOUD."""
+    override = os.environ.get("CHAIN_OUTPUT_STYLE_OVERRIDE", "").strip()
+    if override:
+        name = _canonical_output_style(override, styles_dir)
+        if name and _is_judge(agent):
+            print(f"[agent-permissions] NOTICE: CHAIN_OUTPUT_STYLE_OVERRIDE={name} is styling judge "
+                  f"'{agent}' — debug use only; never measure a judge under a style (D4).", file=sys.stderr)
+        return name
+    mapped = _experiment_output_style_override(agent)
+    if mapped is not None:
+        return _canonical_output_style(mapped, styles_dir)
+    if os.environ.get("CHAIN_OUTPUT_STYLES", "false").strip().lower() != "true":
+        return ""
+    raw = OUTPUT_STYLE_OVERRIDES.get(agent, "")
+    if not raw or _is_judge(agent):
+        return ""
+    return _canonical_output_style(raw, styles_dir)
+
+
+def output_style_text(name: str, styles_dir: Path = PROJECT_OUTPUT_STYLES_DIR) -> str:
+    """Emulation body (interactive backend). Raises when the name is invalid or no body is known."""
+    canonical = _canonical_output_style(name, styles_dir)
+    if not canonical:
+        raise OutputStyleError("Default has no emulation text (it is the absence of a style)")
+    if canonical in OUTPUT_STYLE_EMULATION_TEXT:
+        return OUTPUT_STYLE_EMULATION_TEXT[canonical]
+    custom = _custom_output_styles(styles_dir)
+    if custom.get(canonical):
+        return custom[canonical]
+    raise OutputStyleError(
+        f"no emulation text known for output style {canonical!r} — add it to "
+        f"OUTPUT_STYLE_EMULATION_TEXT (verbatim from the CLI binary) before using it on the interactive backend")
+
+
+def configured_output_styles() -> list[tuple[str, str]]:
+    """Every style configured anywhere, UNVALIDATED, as (name, source):
+    env:CHAIN_OUTPUT_STYLE_OVERRIDE · env:CHAIN_AGENT_OUTPUT_STYLE[<agent>] ·
+    table:<agent> (only when CHAIN_OUTPUT_STYLES=true). For doctor + boot preflight."""
+    out: list[tuple[str, str]] = []
+    override = os.environ.get("CHAIN_OUTPUT_STYLE_OVERRIDE", "").strip()
+    if override:
+        out.append((override, "env:CHAIN_OUTPUT_STYLE_OVERRIDE"))
+    for part in os.environ.get("CHAIN_AGENT_OUTPUT_STYLE", "").split(","):
+        key, _, value = part.partition("=")
+        if key.strip() and value.strip():
+            out.append((value.strip(), f"env:CHAIN_AGENT_OUTPUT_STYLE[{key.strip()}]"))
+    if os.environ.get("CHAIN_OUTPUT_STYLES", "false").strip().lower() == "true":
+        for agent, style in OUTPUT_STYLE_OVERRIDES.items():
+            out.append((style, f"table:{agent}"))
+    return out
+
+
 def timeout_for(agent: str, neutral_dir: Path = NEUTRAL_AGENTS_DIR) -> int | None:
     """Return the per-agent runtime cap in seconds, or None when the agent has
     no specific cap (callers fall back to the flat global).
@@ -553,6 +747,58 @@ def _cmd_timeout(args: list[str]) -> int:
     return 0
 
 
+def _cmd_output_style(args: list[str]) -> int:
+    """Print the style for the agent ("" = none). rc 3 on invalid config —
+    the shell seams treat ANY non-zero rc as "refuse to dispatch"."""
+    if not args:
+        print("Usage: agent_permissions.py output-style <agent>", file=sys.stderr); return 2
+    try:
+        print(output_style_for(args[0]))
+    except OutputStyleError as e:
+        print(f"[agent-permissions] ERROR: {e}", file=sys.stderr); return 3
+    return 0
+
+
+def _cmd_output_style_text(args: list[str]) -> int:
+    """rc 3 invalid name, rc 4 valid name without emulation text."""
+    if not args:
+        print("Usage: agent_permissions.py output-style-text <name>", file=sys.stderr); return 2
+    try:
+        _canonical_output_style(args[0])
+    except OutputStyleError as e:
+        print(f"[agent-permissions] ERROR: {e}", file=sys.stderr); return 3
+    try:
+        print(output_style_text(args[0]))
+    except OutputStyleError as e:
+        print(f"[agent-permissions] {e}", file=sys.stderr); return 4
+    return 0
+
+
+def _cmd_output_styles_configured(_args: list[str]) -> int:
+    for name, source in configured_output_styles():
+        print(f"{name}\t{source}")
+    return 0
+
+
+def _cmd_output_style_check(_args: list[str]) -> int:
+    """Validate every configured style. Judge entries → WARNING (seams refuse at
+    dispatch); invalid names → rc 3."""
+    bad = 0
+    for name, source in configured_output_styles():
+        try:
+            _canonical_output_style(name)
+        except OutputStyleError as e:
+            print(f"[agent-permissions] ERROR: {source}: {e}", file=sys.stderr); bad += 1; continue
+        agent = source.split(":", 1)[1].rstrip("]").split("[")[-1] if source != "env:CHAIN_OUTPUT_STYLE_OVERRIDE" else ""
+        if agent and _is_judge(agent):
+            print(f"[agent-permissions] WARNING: {source}: judge '{agent}' will refuse this style at dispatch (D4)",
+                  file=sys.stderr)
+    if bad:
+        return 3
+    print("output styles: OK")
+    return 0
+
+
 def _self_test() -> int:
     import tempfile
 
@@ -699,6 +945,54 @@ def _self_test() -> int:
         assert effort_for("browser-qa-agent") == "max", "browser-qa stays at max"
         assert effort_for("some-unknown-agent") == "max", "default must be max"
 
+        # Output styles (STYLE-1): table hygiene, precedence, validation, judge guard.
+        assert not (set(OUTPUT_STYLE_OVERRIDES) & JUDGE_AGENTS), "judges must never be in OUTPUT_STYLE_OVERRIDES (D4)"
+        for _v in OUTPUT_STYLE_OVERRIDES.values():
+            assert _canonical_output_style(_v) == _v, f"table value {_v!r} must be canonical"
+        custom_dir = d / "output-styles"; custom_dir.mkdir()
+        (custom_dir / "Terse.md").write_text("---\nname: Terse\ndescription: x\n---\nBe terse.\n", encoding="utf-8")
+        _keys = ("CHAIN_OUTPUT_STYLES", "CHAIN_AGENT_OUTPUT_STYLE", "CHAIN_OUTPUT_STYLE_OVERRIDE")
+        _saved = {k: os.environ.pop(k, None) for k in _keys}
+        try:
+            def _must_raise(fn, label):
+                try: fn()
+                except OutputStyleError: return
+                raise AssertionError(label)
+            kw = dict(styles_dir=custom_dir)
+            assert output_style_for("developer", **kw) == "", "knob off: table is dormant"
+            os.environ["CHAIN_OUTPUT_STYLES"] = "true"
+            assert output_style_for("developer", **kw) == "Concise", "knob on: table applies"
+            assert output_style_for("goal-evaluator", **kw) == "", "judge: never styled from the table"
+            assert output_style_for("browser-qa-replay", **kw) == "", "attribution names without an agent → default"
+            assert output_style_for("iteration-summarizer", **kw) == "", "human-facing writers stay Default"
+            os.environ["CHAIN_AGENT_OUTPUT_STYLE"] = "developer=explanatory,goal-evaluator=Concise,goal-evaluator-confirm=Concise,plain=Terse"
+            assert output_style_for("developer", **kw) == "Explanatory", "env map beats table + canonicalizes case"
+            assert output_style_for("goal-evaluator", **kw) == "", "judge guard: env map refused"
+            assert output_style_for("goal-evaluator-confirm", **kw) == "", "judge guard covers <judge>-* labels"
+            assert output_style_for("plain", **kw) == "Terse", "project custom style accepted"
+            os.environ["CHAIN_AGENT_OUTPUT_STYLE"] = "developer=Learning"
+            _must_raise(lambda: output_style_for("developer", **kw), "Learning must be refused")
+            os.environ["CHAIN_AGENT_OUTPUT_STYLE"] = "developer=Consise"
+            _must_raise(lambda: output_style_for("developer", **kw), "unknown name must raise")
+            del os.environ["CHAIN_AGENT_OUTPUT_STYLE"]
+            os.environ["CHAIN_OUTPUT_STYLE_OVERRIDE"] = "Proactive"
+            assert output_style_for("goal-evaluator", **kw) == "Proactive", "global override styles judges (debug, NOTICE)"
+            os.environ["CHAIN_OUTPUT_STYLE_OVERRIDE"] = "Default"
+            assert output_style_for("developer", **kw) == "", "explicit Default = pass nothing"
+            os.environ["CHAIN_OUTPUT_STYLE_OVERRIDE"] = 'Concise"}'
+            _must_raise(lambda: output_style_for("developer", **kw), "JSON-breaking name must be refused")
+            del os.environ["CHAIN_OUTPUT_STYLE_OVERRIDE"]
+            assert "Lead with the result" in output_style_text("Concise", styles_dir=custom_dir)
+            assert "these rules win" not in output_style_text("Concise", styles_dir=custom_dir)
+            assert output_style_text("Terse", styles_dir=custom_dir) == "Be terse."
+            _must_raise(lambda: output_style_text("Explanatory", styles_dir=custom_dir), "no emulation text must raise")
+            conf = configured_output_styles()
+            assert ("Concise", "table:developer") in conf, conf
+        finally:
+            for k, v in _saved.items():
+                if v is None: os.environ.pop(k, None)
+                else: os.environ[k] = v
+
     print("self-test passed")
     return 0
 
@@ -710,6 +1004,10 @@ _COMMANDS = {
     "model": _cmd_model,
     "tier-model": _cmd_tier_model,
     "timeout": _cmd_timeout,
+    "output-style": _cmd_output_style,
+    "output-style-text": _cmd_output_style_text,
+    "output-styles-configured": _cmd_output_styles_configured,
+    "output-style-check": _cmd_output_style_check,
     "self-test": lambda _args: _self_test(),
 }
 
