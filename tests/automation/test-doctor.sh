@@ -210,7 +210,8 @@ echo ""
 echo "=== doctor.sh: a missing tool FAILs its row, everything else runs ==="
 echo ""
 
-rc=0; out=$(env "PATH=$SHIMS_NOJQ:$FARM" "HOME=$FHOME" \
+rc=0; out=$(env -u CHAIN_OUTPUT_STYLES -u CHAIN_AGENT_OUTPUT_STYLE -u CHAIN_OUTPUT_STYLE_OVERRIDE \
+    "PATH=$SHIMS_NOJQ:$FARM" "HOME=$FHOME" \
     "CHAIN_DOCTOR_REPO_ROOT=$FREPO" "CHAIN_TMP_ROOT=$FTMP" \
     "PLAYWRIGHT_BROWSERS_PATH=$TMP_DIR/browsers" "PYTHONPATH=$PYDIR" \
     "HOST_GUARD_RESET_KLOG_FILE=$TMP_DIR/klog-clean" \
@@ -228,7 +229,8 @@ echo "$out" | grep -Eq '\[doctor\] summary: pass=[0-9]+ warn=0 fail=1 skip=0' \
   && assert "missing jq: summary counts exactly one FAIL" "pass" \
   || assert "missing jq: summary counts exactly one FAIL" "fail"
 
-rc=0; env "PATH=$SHIMS_NOJQ:$FARM" "HOME=$FHOME" \
+rc=0; env -u CHAIN_OUTPUT_STYLES -u CHAIN_AGENT_OUTPUT_STYLE -u CHAIN_OUTPUT_STYLE_OVERRIDE \
+    "PATH=$SHIMS_NOJQ:$FARM" "HOME=$FHOME" \
     "CHAIN_DOCTOR_REPO_ROOT=$FREPO" "CHAIN_TMP_ROOT=$FTMP" \
     "PLAYWRIGHT_BROWSERS_PATH=$TMP_DIR/browsers" "PYTHONPATH=$PYDIR" \
     "HOST_GUARD_RESET_KLOG_FILE=$TMP_DIR/klog-clean" \
