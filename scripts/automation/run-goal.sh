@@ -1029,16 +1029,21 @@ _host_guard_reset_forensics() {
   local script="$SCRIPT_DIR/host-guard/reset-forensics.sh" out path state chk
   local tag hex cause streak prev
   [[ -f "$script" ]] || return 0
-  out="$(bash "$script" ensure-postmortem 2>/dev/null)" || return 0
-  case "$out" in
-    POSTMORTEM\|*) ;;
-    *) return 0 ;;          # CLEAN / NONE / UNKNOWN — say nothing, write nothing
-  esac
-  path="${out#POSTMORTEM|}"; path="${path%|*}"; state="${out##*|}"
+  # check BEFORE ensure-postmortem: freezing the bundles advances the
+  # detector's watermark, so the verdict fields must be captured first.
   chk="$(bash "$script" check 2>/dev/null)" || chk=""
+  case "$chk" in
+    RESET\|*) ;;
+    *) return 0 ;;          # CLEAN / UNKNOWN — say nothing, write nothing
+  esac
   IFS='|' read -r tag hex cause streak prev <<< "$chk"
-  : "$tag" "$prev"
-  echo "[run-goal] host-guard: the PREVIOUS boot ended in a HARDWARE-asserted reset — ${cause:-unknown} (${hex:-?}), ${streak:-?} of the recent boots."
+  : "$tag"
+  out="$(bash "$script" ensure-postmortem 2>/dev/null)" || out=""
+  case "$out" in
+    POSTMORTEM\|*) path="${out#POSTMORTEM|}"; path="${path%|*}"; state="${out##*|}" ;;
+    *)             path="(bundle unavailable: ${out:-no output})"; state="none" ;;
+  esac
+  echo "[run-goal] host-guard: boot ${prev:-unknown} ended in a HARDWARE-asserted reset — ${cause:-unknown} (${hex:-?}), ${streak:-?} of the recent boots."
   echo "[run-goal] host-guard: this is a hardware fault, not a chain failure; no CPU mask or memory ceiling can prevent it."
   echo "[run-goal] host-guard: postmortem → $path"
   echo "[run-goal] host-guard: remediation → docs/host-guard.md § After a hardware reset — root-cause runbook"

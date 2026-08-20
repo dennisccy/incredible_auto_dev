@@ -23,24 +23,39 @@
 #
 # Usage / stdout contract — exactly one line, ALWAYS exit 0 (advisory by
 # construction, like doctor.sh; a broken forensics reader must never stop a run):
-#   check              RESET|<hex>|<cause>|<hits>/<boots>|<prev_boot_id>
+#   check              RESET|<hex>|<cause>|<hits>/<boots>|<crashed_boot_id>
 #                      CLEAN|<why>
 #                      UNKNOWN|<why>
 #   ensure-postmortem  POSTMORTEM|<path>|new   POSTMORTEM|<path>|existing
 #                      NONE|<why>              UNKNOWN|<why>
+#   streak             STREAK|<hits>/<boots>   UNKNOWN|<why>
 #   report             print the newest bundle (rc 1 when there is none)
 #
 # NO-OP RULE (roadmap §20): a host whose kernel prints no reset-reason line —
 # every non-AMD box, and every AMD box that has never reset — reports CLEAN and
 # writes nothing at all. No config file is required for the read-only paths.
 #
+# BOOT-WALK + WATERMARK (fix for the 2026-08-10 crash-#16 blind spot): the
+# decode line is printed by the boot AFTER a crash, and the original detector
+# read ONLY boot 0's kernel log. A fault whose decode line lands in an
+# intermediate boot that is then shut down cleanly (crash 22:30 → short boot →
+# clean poweroff 22:54) was therefore invisible forever — and because
+# ensure-postmortem gates on the same read, its evidence was never frozen.
+# Now detection walks every boot NEWER than a persisted watermark (the last
+# boot already examined; bounded to the last $WINDOW boots when no watermark
+# is usable) and reports the newest unprocessed fault. `check` never writes;
+# `ensure-postmortem` freezes one bundle PER unprocessed fault, then advances
+# the watermark. The HOST_GUARD_RESET_KLOG_FILE seam keeps the original
+# register-anchored single-boot behavior and never touches the watermark.
+#
 # Injection seams (how tests fake the world — no root, no journal, no API):
 #   HOST_GUARD_RESET_KLOG_FILE       stands in for `journalctl -k -b 0`
 #   HOST_GUARD_RESET_KLOG_DIR        per-boot logs: <dir>/<boot-id>.klog (streak)
 #   HOST_GUARD_RESET_BOOTS_FILE      stands in for `journalctl --list-boots`
-#   HOST_GUARD_RESET_JOURNAL_TAIL_FILE  stands in for `journalctl -b -1 -n 80`
+#   HOST_GUARD_RESET_JOURNAL_TAIL_FILE  stands in for `journalctl -b <dead> -n 80`
 #   HOST_GUARD_POSTMORTEM_DIR        bundle dir (default <tmp-root>/host-guard/postmortems)
 #   HOST_GUARD_RESET_BOOT_WINDOW     how many recent boots the streak scans (10)
+#   HOST_GUARD_RESET_WATERMARK_FILE  last-examined-boot marker (default <tmp-root>/host-guard/reset-watermark)
 #   HOST_GUARD_REGISTRY_DIR / CHAIN_TMP_ROOT / HOST_GUARD_EVENTS_FILE (via the lib)
 #
 # COST: every kernel-log read is a STREAM into `grep -m1`/`grep -q`, which exits
@@ -81,6 +96,7 @@ WINDOW="${HOST_GUARD_RESET_BOOT_WINDOW:-10}"
 POSTMORTEM_DIR="${HOST_GUARD_POSTMORTEM_DIR:-${CHAIN_TMP_ROOT:-$HOME/.cache/iad}/host-guard/postmortems}"
 EVENTS_FILE="${HOST_GUARD_EVENTS_FILE:-${CHAIN_TMP_ROOT:-$HOME/.cache/iad}/host-guard/events.jsonl}"
 GLOBAL_HWMON="${HOST_GUARD_HWMON_GLOBAL_DIR:-${CHAIN_TMP_ROOT:-$HOME/.cache/iad}/host-guard/hwmon}/hwmon.csv"
+WATERMARK_FILE="${HOST_GUARD_RESET_WATERMARK_FILE:-${CHAIN_TMP_ROOT:-$HOME/.cache/iad}/host-guard/reset-watermark}"
 
 # ── Boot enumeration ────────────────────────────────────────────────────────
 
@@ -117,10 +133,38 @@ _boot_reset_line() { # $1 boot id → that boot's reset-reason line (empty if no
   return 0
 }
 
+_boot_first_epoch() { # $1 boot id → epoch of that boot's first entry ("" if unknown)
+  # Parsed from the boot list ("<idx> <bid> <Day> <date> <time> <tz> …") so it
+  # works through the BOOTS_FILE seam too. Degrades to "" — callers fall back
+  # to the current boot's btime, which is the pre-watermark behavior.
+  local bid="${1:-}" row
+  [[ -n "$bid" ]] || return 0
+  row="$(_boot_rows | awk -v b="$bid" '$2 == b {print; exit}')"
+  [[ -n "$row" ]] || return 0
+  date -d "$(awk '{print $4" "$5" "$6}' <<< "$row")" +%s 2>/dev/null || true
+}
+
+_wm_read() { [[ -r "$WATERMARK_FILE" ]] && head -n 1 "$WATERMARK_FILE" 2>/dev/null; return 0; }
+
+_wm_write() { # atomic-enough: a torn watermark must never mark a fault as seen
+  local bid="${1:-}"
+  [[ -n "$bid" ]] || return 0
+  mkdir -p "$(dirname "$WATERMARK_FILE")" 2>/dev/null || return 0
+  if printf '%s\n' "$bid" > "$WATERMARK_FILE.tmp.$$" 2>/dev/null; then
+    mv -f "$WATERMARK_FILE.tmp.$$" "$WATERMARK_FILE" 2>/dev/null
+  fi
+  rm -f "$WATERMARK_FILE.tmp.$$" 2>/dev/null
+  return 0
+}
+
 # ── Detection (sets globals; both subcommands share it) ─────────────────────
 
 _DET_STATUS="" _DET_LINE="" _DET_HEX="" _DET_CAUSE="" _DET_WHY=""
 _DET_HITS=0 _DET_TOTAL=0 _DET_PREV="" _DET_ROWS=""
+# Walk-mode extras: the boot that LOGGED the reported fault's decode line, the
+# full unprocessed-fault list ("<crashed>|<detecting>|<line>" per line), and the
+# newest enumerated boot (watermark target). All empty in KLOG_FILE legacy mode.
+_DET_DETBOOT="" _DET_FAULTS="" _DET_LAST_ROW_BID=""
 
 _streak() { # fills _DET_HITS/_DET_TOTAL/_DET_ROWS over the last $WINDOW boots
   # _DET_HITS counts FAULT-class boots only; a planned reboot is recorded in the
@@ -146,42 +190,13 @@ _streak() { # fills _DET_HITS/_DET_TOTAL/_DET_ROWS over the last $WINDOW boots
   return 0
 }
 
-_detect() {
-  _DET_STATUS="" _DET_LINE="" _DET_HEX="" _DET_CAUSE="" _DET_WHY=""
-  local n=0
+_parse_fault_line() { # $1 decode line → _DET_HEX/_DET_CAUSE
+  _DET_HEX="$(sed -n 's/.*reset reason \[\([^]]*\)\].*/\1/p' <<< "${1:-}")"
+  _DET_CAUSE="$(sed -n 's/.*reset reason \[[^]]*\]:[[:space:]]*//p' <<< "${1:-}")"
+  [[ -n "$_DET_CAUSE" ]] || _DET_CAUSE="${1:-}"
+}
 
-  if [[ -n "${HOST_GUARD_RESET_KLOG_FILE:-}" ]]; then
-    if [[ ! -r "$HOST_GUARD_RESET_KLOG_FILE" ]]; then
-      _DET_STATUS="UNKNOWN"
-      _DET_WHY="HOST_GUARD_RESET_KLOG_FILE=$HOST_GUARD_RESET_KLOG_FILE is not readable"
-      return 0
-    fi
-    _DET_LINE="$(grep -i -m1 "$RESET_PAT" "$HOST_GUARD_RESET_KLOG_FILE" 2>/dev/null)"
-  elif command -v journalctl >/dev/null 2>&1; then
-    # Liveness probe first: journalctl can exist and still return nothing when
-    # this user cannot read the kernel log. Without the probe, "no permission"
-    # and "no reset line" would both look CLEAN — the exact false negative this
-    # whole script exists to prevent.
-    if [[ -z "$(journalctl -k -b 0 --no-pager -n 1 2>/dev/null)" ]]; then
-      _DET_STATUS="UNKNOWN"
-      _DET_WHY="journalctl returned no kernel log for this boot — this user probably cannot read it; fix with: sudo usermod -aG systemd-journal \$USER (then log out and back in)"
-      return 0
-    fi
-    _DET_LINE="$(journalctl -k -b 0 --no-pager 2>/dev/null | grep -i -m1 "$RESET_PAT")"
-  elif [[ -r /var/log/kern.log ]]; then
-    # kern.log carries history but cannot be scoped to THIS boot, so a hit here
-    # is not evidence that the LAST boot died. Report honestly, never guess.
-    n="$(grep -c -i "$RESET_PAT" /var/log/kern.log 2>/dev/null)"
-    [[ "$n" =~ ^[0-9]+$ ]] || n=0
-    _DET_STATUS="UNKNOWN"
-    _DET_WHY="journalctl is unavailable; /var/log/kern.log carries $n reset-reason line(s) but cannot be scoped to the current boot — install systemd-journal access for an authoritative read"
-    return 0
-  else
-    _DET_STATUS="UNKNOWN"
-    _DET_WHY="no readable kernel log (no journalctl, no /var/log/kern.log) — the platform reset-reason register cannot be read on this host"
-    return 0
-  fi
-
+_classify_current_line() { # register-anchored classification of _DET_LINE (legacy path)
   if [[ -z "$_DET_LINE" ]]; then
     _DET_STATUS="CLEAN"
     _DET_WHY="no reset-reason line in this boot's kernel log — the previous shutdown was orderly (or this platform exposes no reset-reason register)"
@@ -192,13 +207,120 @@ _detect() {
     _DET_WHY="previous boot ended in a software-initiated reboot, not a fault (${_DET_LINE#*: })"
     return 0
   fi
-
   _DET_STATUS="RESET"
-  _DET_HEX="$(sed -n 's/.*reset reason \[\([^]]*\)\].*/\1/p' <<< "$_DET_LINE")"
-  _DET_CAUSE="$(sed -n 's/.*reset reason \[[^]]*\]:[[:space:]]*//p' <<< "$_DET_LINE")"
-  [[ -n "$_DET_CAUSE" ]] || _DET_CAUSE="$_DET_LINE"
+  _parse_fault_line "$_DET_LINE"
   _streak
   _DET_PREV="$(_prev_boot_id)"
+  return 0
+}
+
+_detect() {
+  _DET_STATUS="" _DET_LINE="" _DET_HEX="" _DET_CAUSE="" _DET_WHY=""
+  _DET_PREV="" _DET_DETBOOT="" _DET_FAULTS="" _DET_LAST_ROW_BID=""
+  local n=0
+
+  # Seam: a single stand-in for the CURRENT boot's kernel log keeps the original
+  # register-anchored behavior — and never touches the watermark.
+  if [[ -n "${HOST_GUARD_RESET_KLOG_FILE:-}" ]]; then
+    if [[ ! -r "$HOST_GUARD_RESET_KLOG_FILE" ]]; then
+      _DET_STATUS="UNKNOWN"
+      _DET_WHY="HOST_GUARD_RESET_KLOG_FILE=$HOST_GUARD_RESET_KLOG_FILE is not readable"
+      return 0
+    fi
+    _DET_LINE="$(grep -i -m1 "$RESET_PAT" "$HOST_GUARD_RESET_KLOG_FILE" 2>/dev/null)"
+    _classify_current_line
+    return 0
+  fi
+
+  if [[ -z "${HOST_GUARD_RESET_KLOG_DIR:-}" ]]; then
+    if command -v journalctl >/dev/null 2>&1; then
+      # Liveness probe first: journalctl can exist and still return nothing when
+      # this user cannot read the kernel log. Without the probe, "no permission"
+      # and "no reset line" would both look CLEAN — the exact false negative this
+      # whole script exists to prevent.
+      if [[ -z "$(journalctl -k -b 0 --no-pager -n 1 2>/dev/null)" ]]; then
+        _DET_STATUS="UNKNOWN"
+        _DET_WHY="journalctl returned no kernel log for this boot — this user probably cannot read it; fix with: sudo usermod -aG systemd-journal \$USER (then log out and back in)"
+        return 0
+      fi
+    elif [[ -r /var/log/kern.log ]]; then
+      # kern.log carries history but cannot be scoped to THIS boot, so a hit here
+      # is not evidence that the LAST boot died. Report honestly, never guess.
+      n="$(grep -c -i "$RESET_PAT" /var/log/kern.log 2>/dev/null)"
+      [[ "$n" =~ ^[0-9]+$ ]] || n=0
+      _DET_STATUS="UNKNOWN"
+      _DET_WHY="journalctl is unavailable; /var/log/kern.log carries $n reset-reason line(s) but cannot be scoped to the current boot — install systemd-journal access for an authoritative read"
+      return 0
+    else
+      _DET_STATUS="UNKNOWN"
+      _DET_WHY="no readable kernel log (no journalctl, no /var/log/kern.log) — the platform reset-reason register cannot be read on this host"
+      return 0
+    fi
+  fi
+
+  # Boot-walk: examine every boot newer than the watermark (bounded to the last
+  # $WINDOW boots when no watermark is usable) for a non-benign decode line.
+  # A decode line in boot N is evidence that boot N-1 died — including decode
+  # lines that landed in an intermediate boot the operator later shut down
+  # cleanly, the case the old boot-0-only read was blind to.
+  local rows
+  rows="$(_boot_rows)"
+  if [[ -z "$rows" ]]; then
+    # No boot enumeration — degrade to the original single-boot read.
+    _DET_LINE="$(journalctl -k -b 0 --no-pager 2>/dev/null | grep -i -m1 "$RESET_PAT")"
+    _classify_current_line
+    return 0
+  fi
+
+  local total wm seen_wm=0 idx0=0 inset row bid prevbid="" line
+  total="$(awk 'END{print NR}' <<< "$rows")"
+  wm="$(_wm_read)"
+  if [[ -n "$wm" ]] && ! awk '{print $2}' <<< "$rows" | grep -qx "$wm"; then
+    wm=""  # watermark rotated out of journal retention — fall back to the window bound
+  fi
+  while IFS= read -r row; do
+    [[ -n "$row" ]] || continue
+    idx0=$(( idx0 + 1 ))
+    bid="$(awk '{print $2}' <<< "$row")"
+    if [[ -n "$wm" ]]; then
+      inset=$seen_wm                       # only boots AFTER the watermark boot
+      [[ "$bid" == "$wm" ]] && seen_wm=1
+    else
+      inset=$(( idx0 > total - WINDOW ? 1 : 0 ))
+    fi
+    if (( inset )); then
+      line="$(_boot_reset_line "$bid")"
+      if [[ -n "$line" ]] && ! _is_benign "$line"; then
+        _DET_FAULTS+="${prevbid:-unknown}|$bid|$line"$'\n'
+      fi
+    fi
+    prevbid="$bid"
+  done <<< "$rows"
+  _DET_LAST_ROW_BID="$prevbid"
+
+  if [[ -z "$_DET_FAULTS" ]]; then
+    _DET_STATUS="CLEAN"
+    line="$(_boot_reset_line "$prevbid")"
+    if [[ -n "$line" ]] && _is_benign "$line"; then
+      _DET_WHY="previous boot ended in a software-initiated reboot, not a fault (${line#*: })"
+    else
+      _DET_WHY="no unprocessed fault reset in the examined boot history${wm:+ (watermark $wm)}"
+    fi
+    return 0
+  fi
+
+  # Report the NEWEST unprocessed fault; ensure-postmortem bundles every one.
+  # printf, not a herestring: _DET_FAULTS already ends in \n and <<< would add
+  # a second, making tail -n 1 return the empty line.
+  local newest rest
+  newest="$(printf '%s' "$_DET_FAULTS" | tail -n 1)"
+  _DET_PREV="${newest%%|*}"
+  rest="${newest#*|}"
+  _DET_DETBOOT="${rest%%|*}"
+  _DET_LINE="${rest#*|}"
+  _DET_STATUS="RESET"
+  _parse_fault_line "$_DET_LINE"
+  _streak
   return 0
 }
 
@@ -242,12 +364,14 @@ _render_records() { # section 3 — and harvest roots/sessions for 4 and 5
   return 0
 }
 
-_render_csv_tail() { # $1 csv path, $2 label — the samples that PRECEDE this boot
-  local csv="$1" label="$2" bt rows last mt
+_render_csv_tail() { # $1 csv path, $2 label, $3 upper-bound epoch — samples PRECEDING the detecting boot
+  local csv="$1" label="$2" bt="${3:-}" rows last mt
   [[ -f "$csv" ]] || return 0
-  bt="$(hg_boot_epoch)"
+  [[ -n "$bt" ]] || bt="$(hg_boot_epoch)"
   # Boot-relative, never a plain tail: a sampler that restarted after the reboot
   # keeps appending, and tailing it would label live idle data "time of death".
+  # For a late-detected fault the bound is the DETECTING boot's first entry, so
+  # samples from intermediate boots never masquerade as the dying breath.
   rows="$(awk -F, -v b="$bt" '$1 ~ /^[0-9]+$/ && $1 + 0 < b' "$csv" 2>/dev/null | tail -n 20)"
   printf '### %s\n\n' "$label"
   printf -- '- file: `%s`\n' "$csv"
@@ -264,12 +388,15 @@ _render_csv_tail() { # $1 csv path, $2 label — the samples that PRECEDE this b
 }
 
 _render() {
-  local now
+  local now before=""
   now="$(date '+%Y-%m-%d %H:%M:%S %Z')"
+  # Telemetry upper bound: the first entry of the boot that logged the decode
+  # line. Empty (→ current btime) in legacy mode or when the row is unparsable.
+  [[ -z "${_DET_DETBOOT:-}" ]] || before="$(_boot_first_epoch "$_DET_DETBOOT")"
 
   printf '# Machine reset postmortem — boot %s\n\n' "${_DET_PREV:-unknown}"
   printf 'Generated %s by `scripts/automation/host-guard/reset-forensics.sh`.\n\n' "$now"
-  printf 'The previous boot did not shut down. The platform reset-reason register says\n'
+  printf 'Boot `%s` did not shut down. The platform reset-reason register says\n' "${_DET_PREV:-unknown}"
   printf 'the HARDWARE asserted reset, so the kernel was never notified and no software\n'
   printf 'guard — CPU mask, memory ceiling, browser confinement — could have prevented\n'
   printf 'it. Remediation is firmware/hardware: see `docs/host-guard.md` §\n'
@@ -297,12 +424,12 @@ _render() {
   _render_records
 
   printf '## 4. Hardware telemetry, final seconds (1 Hz, fsync per line)\n\n'
-  _render_csv_tail "$GLOBAL_HWMON" "machine-global sampler"
+  _render_csv_tail "$GLOBAL_HWMON" "machine-global sampler" "$before"
   local root
   while read -r root; do
     [[ -n "$root" ]] || continue
-    _render_csv_tail "$root/logs/hwmon/hwmon.csv" "$(basename "$root")"
-    [[ -f "$root/logs/hwmon/hwmon.csv" ]] || _render_csv_tail "$root/logs/hwmon/hwmon.csv.1" "$(basename "$root") (rotated)"
+    _render_csv_tail "$root/logs/hwmon/hwmon.csv" "$(basename "$root")" "$before"
+    [[ -f "$root/logs/hwmon/hwmon.csv" ]] || _render_csv_tail "$root/logs/hwmon/hwmon.csv.1" "$(basename "$root") (rotated)" "$before"
   done <<< "$_STALE_ROOTS"
   printf 'Columns: `%s`\n\n' "epoch,tctl_c,gpu_edge_c,ppt_w,ppt_avg_w,nvme_c,dimm0_c,dimm1_c,acpitz_c,load1,mem_avail_mb,swap_free_mb,psi_cpu_avg10,psi_mem_avg10[,cpu_mhz]"
 
@@ -355,12 +482,16 @@ _render() {
   fi
 
   printf '## 7. Journal tail of the dead boot\n\n'
-  printf 'NOTE: journald syncs every 5 minutes by default, so the last minutes before a\n'
-  printf 'hard reset are usually MISSING here — trust §4 for the time of death.\n\n```\n'
+  printf 'NOTE: a quiet system can log NOTHING for many minutes before a hard reset\n'
+  printf '(and journald may also sync lazily) — trust §4 for the time of death.\n\n```\n'
   if [[ -n "${HOST_GUARD_RESET_JOURNAL_TAIL_FILE:-}" ]]; then
     tail -n 80 "$HOST_GUARD_RESET_JOURNAL_TAIL_FILE" 2>/dev/null
   elif command -v journalctl >/dev/null 2>&1; then
-    journalctl -b -1 -n 80 --no-pager 2>/dev/null
+    if [[ -n "${_DET_PREV:-}" && "$_DET_PREV" != "unknown" ]]; then
+      journalctl -b "$_DET_PREV" -n 80 --no-pager 2>/dev/null
+    else
+      journalctl -b -1 -n 80 --no-pager 2>/dev/null
+    fi
   fi
   printf '```\n\n'
 
@@ -394,7 +525,12 @@ cmd_check() {
 cmd_ensure_postmortem() {
   _detect
   case "$_DET_STATUS" in
-    CLEAN) printf 'NONE|%s\n' "$_DET_WHY"; return 0 ;;
+    CLEAN)
+      # Walk mode examined every boot in range and found nothing unprocessed —
+      # advance the watermark so the next run only pays for boots it has not
+      # seen. Legacy KLOG_FILE mode sets no _DET_LAST_ROW_BID and never writes.
+      [[ -z "${_DET_LAST_ROW_BID:-}" ]] || _wm_write "$_DET_LAST_ROW_BID"
+      printf 'NONE|%s\n' "$_DET_WHY"; return 0 ;;
     RESET) ;;
     *)     printf 'UNKNOWN|%s\n' "$_DET_WHY"; return 0 ;;
   esac
@@ -402,24 +538,59 @@ cmd_ensure_postmortem() {
   mkdir -p "$POSTMORTEM_DIR" 2>/dev/null \
     || { printf 'UNKNOWN|cannot create postmortem dir %s\n' "$POSTMORTEM_DIR"; return 0; }
 
-  local name="${_DET_PREV:-}"
-  [[ -n "$name" && "$name" != "unknown" ]] || name="prev-of-$(_hg_boot_id)"
-  local out="$POSTMORTEM_DIR/$name.md"
+  # One bundle PER unprocessed fault — a detection gap can span several resets
+  # (2026-08-10 had two in one day). Legacy mode carries exactly one fault, the
+  # current register, synthesized into the same record shape. Oldest first so
+  # latest.md ends on the newest bundle; the one-line output contract reports
+  # the newest fault's bundle.
+  local faults="${_DET_FAULTS:-}"
+  [[ -n "$faults" ]] || faults="${_DET_PREV:-unknown}|$(_hg_boot_id)|$_DET_LINE"$'\n'
+  local rec rest name out tmp result="" failed=0
+  while IFS= read -r rec; do
+    [[ -n "$rec" ]] || continue
+    _DET_PREV="${rec%%|*}"
+    rest="${rec#*|}"
+    _DET_DETBOOT="${rest%%|*}"
+    _DET_LINE="${rest#*|}"
+    _parse_fault_line "$_DET_LINE"
+    name="$_DET_PREV"
+    [[ -n "$name" && "$name" != "unknown" ]] || name="prev-of-$_DET_DETBOOT"
+    out="$POSTMORTEM_DIR/$name.md"
+    if [[ -f "$out" ]]; then
+      _link_latest "$out"
+      result="POSTMORTEM|$out|existing"
+      continue
+    fi
+    tmp="$out.tmp.$$"
+    _render > "$tmp" 2>/dev/null
+    if mv -f "$tmp" "$out" 2>/dev/null; then
+      _link_latest "$out"
+      result="POSTMORTEM|$out|new"
+    else
+      rm -f "$tmp" 2>/dev/null || true
+      failed=1
+      result="UNKNOWN|cannot write $out"
+    fi
+  done <<< "$faults"
 
-  if [[ -f "$out" ]]; then
-    _link_latest "$out"
-    printf 'POSTMORTEM|%s|existing\n' "$out"
-    return 0
+  # The watermark advances only when every bundle in the gap is on disk — a
+  # write failure must leave the fault visible to the next run.
+  if (( ! failed )) && [[ -n "${_DET_FAULTS:-}" && -n "${_DET_LAST_ROW_BID:-}" ]]; then
+    _wm_write "$_DET_LAST_ROW_BID"
   fi
+  printf '%s\n' "${result:-UNKNOWN|no bundle produced}"
+  return 0
+}
 
-  local tmp="$out.tmp.$$"
-  _render > "$tmp" 2>/dev/null
-  if mv -f "$tmp" "$out" 2>/dev/null; then
-    _link_latest "$out"
-    printf 'POSTMORTEM|%s|new\n' "$out"
+cmd_streak() { # fault-boot count over the last $WINDOW boots, verdict-independent
+  # For consumers (doctor's ras-logging row) that need "has this host EVER
+  # faulted recently", which the watermark-consuming check can no longer answer
+  # once the bundles are frozen.
+  _streak
+  if (( _DET_TOTAL == 0 )); then
+    printf 'UNKNOWN|no boot history available\n'
   else
-    rm -f "$tmp" 2>/dev/null || true
-    printf 'UNKNOWN|cannot write %s\n' "$out"
+    printf 'STREAK|%s/%s\n' "$_DET_HITS" "$_DET_TOTAL"
   fi
   return 0
 }
@@ -438,6 +609,7 @@ cmd_report() {
 case "${1:-}" in
   check)             cmd_check ;;
   ensure-postmortem) cmd_ensure_postmortem ;;
+  streak)            cmd_streak ;;
   report)            cmd_report ;;
-  *) echo "Usage: $0 {check|ensure-postmortem|report}" >&2; exit 2 ;;
+  *) echo "Usage: $0 {check|ensure-postmortem|streak|report}" >&2; exit 2 ;;
 esac

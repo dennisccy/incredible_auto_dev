@@ -569,11 +569,10 @@ check_reset_reason() {
     RESET\|*)
       local hex cause streak prev
       IFS='|' read -r _ hex cause streak prev <<< "$verdict"
-      : "$prev"
       pm="$(_bounded 30 bash "$script" ensure-postmortem 2>/dev/null)"
       path="${pm#POSTMORTEM|}"; path="${path%|*}"
       [[ "$pm" == POSTMORTEM\|* ]] || path="(bundle unavailable: ${pm})"
-      echo "FAIL|the previous boot ended in a HARDWARE-asserted reset: $cause ($hex); $streak recent boots. No CPU mask or memory ceiling can prevent this — postmortem: $path (docs/host-guard.md § After a hardware reset)"
+      echo "FAIL|boot ${prev:-unknown} ended in a HARDWARE-asserted reset: $cause ($hex); $streak recent boots. No CPU mask or memory ceiling can prevent this — postmortem: $path (docs/host-guard.md § After a hardware reset)"
       ;;
     CLEAN\|*)  echo "PASS|${verdict#CLEAN|}" ;;
     UNKNOWN\|*) echo "WARN|${verdict#UNKNOWN|}" ;;
@@ -592,8 +591,18 @@ check_reset_reason() {
 # must not nag hosts that never had the incident.
 check_ras_logging() {
   local script="$SCRIPT_DIR/host-guard/reset-forensics.sh" hist=0 jdir ras missing=""
-  if [[ -f "$script" ]] && [[ "$(_bounded 20 bash "$script" check 2>/dev/null)" == RESET\|* ]]; then
-    hist=1
+  # "History" must mean fault boots in the recent window, not "an unprocessed
+  # fault right now": once ensure-postmortem has frozen the bundles and advanced
+  # the watermark, `check` reads CLEAN — on a host that faulted 16 times.
+  if [[ -f "$script" ]]; then
+    if [[ "$(_bounded 20 bash "$script" check 2>/dev/null)" == RESET\|* ]]; then
+      hist=1
+    else
+      case "$(_bounded 20 bash "$script" streak 2>/dev/null)" in
+        STREAK\|0/*) ;;
+        STREAK\|*)   hist=1 ;;
+      esac
+    fi
   fi
   jdir="${CHAIN_DOCTOR_JOURNALD_DIR:-/etc/systemd/journald.conf.d}"
   if ! grep -rqs 'SyncIntervalSec' "$jdir" 2>/dev/null; then
@@ -611,7 +620,7 @@ check_ras_logging() {
     return
   fi
   if (( hist == 0 )); then
-    echo "PASS|no hardware-reset history on this host — journald/rasdaemon hardening is optional (missing: ${missing%; })"
+    echo "PASS|no hardware-fault reset in this host's recent boot history — journald/rasdaemon hardening is optional (missing: ${missing%; })"
     return
   fi
   echo "WARN|this host HAS hardware-reset history but the next postmortem will be poorer: ${missing%; }— see docs/host-guard.md § After a hardware reset (both need one sudo command)"

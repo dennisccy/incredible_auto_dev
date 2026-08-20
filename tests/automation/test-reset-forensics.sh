@@ -140,10 +140,12 @@ OUT="$(HOST_GUARD_RESET_KLOG_FILE="$WORK/does-not-exist" bash "$RF" check)"
 assert_has "check: unreadable log → UNKNOWN, never CLEAN" "UNKNOWN|" "$OUT"
 # The realistic failure: journalctl EXISTS but returns nothing because this user
 # cannot read the kernel log. Without the liveness probe that case would look
-# exactly like a healthy machine.
+# exactly like a healthy machine. (All file seams cleared: this simulates a real
+# host where journalctl is the only kernel-log source.)
 mkdir -p "$WORK/bin"
 printf '#!/bin/sh\nexit 1\n' > "$WORK/bin/journalctl"; chmod +x "$WORK/bin/journalctl"
-OUT="$(PATH="$WORK/bin:$PATH" HOST_GUARD_RESET_KLOG_FILE="" bash "$RF" check 2>/dev/null)"
+OUT="$(PATH="$WORK/bin:$PATH" HOST_GUARD_RESET_KLOG_FILE="" HOST_GUARD_RESET_KLOG_DIR="" \
+       HOST_GUARD_RESET_BOOTS_FILE="" bash "$RF" check 2>/dev/null)"
 assert_has   "check: silent journalctl → UNKNOWN, never CLEAN" "UNKNOWN|" "$OUT"
 assert_has   "check: UNKNOWN explains how to fix access"        "systemd-journal" "$OUT"
 
@@ -205,8 +207,19 @@ OUT="$(HOST_GUARD_RESET_KLOG_FILE="$WORK/klog-clean" _doc reset-reason)"
 assert_has "doctor: clean boot PASSes" "PASS" "$OUT"
 
 # ras-logging must stay quiet on hosts that never had the incident, and must not
-# smuggle a newline into its row (systemctl prints AND exits non-zero).
+# smuggle a newline into its row (systemctl prints AND exits non-zero). "No
+# incident" now means no fault boot in the WINDOW (the streak), not merely a
+# clean current register — so this fixture needs a genuinely fault-free history.
+cat > "$WORK/boots-nohist" <<'EOF'
+IDX BOOT ID                          FIRST ENTRY                 LAST ENTRY
+ -1 cccccccccccccccccccccccccccccc01 Wed 2026-07-29 08:00:00 BST Wed 2026-07-29 20:00:00 BST
+  0 cccccccccccccccccccccccccccccc02 Wed 2026-07-29 20:01:00 BST Thu 2026-07-30 08:00:00 BST
+EOF
+mkdir -p "$WORK/klogs-nohist"
+cp "$WORK/klog-clean"  "$WORK/klogs-nohist/cccccccccccccccccccccccccccccc01.klog"
+cp "$WORK/klog-reboot" "$WORK/klogs-nohist/cccccccccccccccccccccccccccccc02.klog"
 OUT="$(HOST_GUARD_RESET_KLOG_FILE="$WORK/klog-clean" CHAIN_DOCTOR_RAS_STATE=inactive \
+       HOST_GUARD_RESET_BOOTS_FILE="$WORK/boots-nohist" HOST_GUARD_RESET_KLOG_DIR="$WORK/klogs-nohist" \
        CHAIN_DOCTOR_JOURNALD_DIR="$WORK/nojournald" _doc ras-logging)"
 assert_has   "doctor: ras-logging quiet without reset history" "PASS" "$OUT"
 assert_lacks "doctor: ras-logging never crashes the wrapper"   "check crashed" "$OUT"
@@ -223,6 +236,75 @@ assert_has "doctor: ras-logging PASSes once both are in place" "PASS" "$OUT"
 
 assert_has "doctor: reset-reason is a registered check" "reset-reason" "$(bash "$DOCTOR" --list)"
 assert_has "doctor: ras-logging is a registered check"  "ras-logging"  "$(bash "$DOCTOR" --list)"
+
+echo ""
+echo "── B2. boot-walk + watermark (the crash-#16 blind spot) ────────────────"
+
+# The 2026-08-10 22:30 shape: boot b2 dies of a fault, boot b3 logs the decode
+# line but is then shut down CLEANLY, boot b4 (current) latches nothing. The
+# old boot-0-only read reported CLEAN forever and never froze the evidence.
+cat > "$WORK/boots-walk" <<'EOF'
+IDX BOOT ID                          FIRST ENTRY                 LAST ENTRY
+ -3 bbbbbbbbbbbbbbbbbbbbbbbbbbbbbb01 Mon 2026-08-04 08:00:00 BST Mon 2026-08-04 11:59:00 BST
+ -2 bbbbbbbbbbbbbbbbbbbbbbbbbbbbbb02 Mon 2026-08-04 12:00:00 BST Mon 2026-08-04 22:30:01 BST
+ -1 bbbbbbbbbbbbbbbbbbbbbbbbbbbbbb03 Mon 2026-08-04 22:30:22 BST Mon 2026-08-04 22:54:05 BST
+  0 bbbbbbbbbbbbbbbbbbbbbbbbbbbbbb04 Tue 2026-08-05 00:05:18 BST Tue 2026-08-05 00:08:00 BST
+EOF
+mkdir -p "$WORK/klogs-walk" "$WORK/ghwmon"
+cp "$WORK/klog-clean" "$WORK/klogs-walk/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbb01.klog"
+cp "$WORK/klog-clean" "$WORK/klogs-walk/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbb02.klog"
+cp "$WORK/klog-fault" "$WORK/klogs-walk/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbb03.klog"
+cp "$WORK/klog-clean" "$WORK/klogs-walk/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbb04.klog"
+WMF="$WORK/watermark"
+_walk() { # no KLOG_FILE → boot-walk mode through the file seams
+  HOST_GUARD_RESET_BOOTS_FILE="$WORK/boots-walk" HOST_GUARD_RESET_KLOG_DIR="$WORK/klogs-walk" \
+  HOST_GUARD_RESET_WATERMARK_FILE="$WMF" HOST_GUARD_HWMON_GLOBAL_DIR="$WORK/ghwmon" bash "$RF" "$@"
+}
+
+OUT="$(_walk check)"
+assert_has "walk: decode in an intermediate boot → RESET"   "RESET|0x08000800|" "$OUT"
+assert_has "walk: names the boot that DIED, not boot -1"    "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbb02" "$OUT"
+[[ -f "$WMF" ]] && assert "walk: check never writes the watermark" fail \
+                || assert "walk: check never writes the watermark" pass
+
+OUT="$(_walk ensure-postmortem)"
+assert_has "walk: bundle named after the dead boot"  "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbb02.md|new" "$OUT"
+assert_eq  "walk: watermark advanced to the newest boot" "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbb04" "$(cat "$WMF" 2>/dev/null)"
+assert_has "walk: bundle carries the verbatim decode line" "0x08000800" \
+  "$(cat "$PM/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbb02.md" 2>/dev/null)"
+
+OUT="$(_walk check)"
+assert_has   "walk: frozen + advanced → CLEAN"       "CLEAN|" "$OUT"
+assert_lacks "walk: no repeat RESET after the freeze" "RESET|" "$OUT"
+
+# A gap can span SEVERAL faults (2026-08-10 had two in one day): decode lines in
+# d2 (d1 died) and d4 (d3 died); every fault in the gap must get a bundle.
+cat > "$WORK/boots-walk2" <<'EOF'
+IDX BOOT ID                          FIRST ENTRY                 LAST ENTRY
+ -4 dddddddddddddddddddddddddddddd01 Mon 2026-08-04 08:00:00 BST Mon 2026-08-04 11:59:00 BST
+ -3 dddddddddddddddddddddddddddddd02 Mon 2026-08-04 12:00:00 BST Mon 2026-08-04 18:00:00 BST
+ -2 dddddddddddddddddddddddddddddd03 Mon 2026-08-04 18:01:00 BST Mon 2026-08-04 22:30:01 BST
+ -1 dddddddddddddddddddddddddddddd04 Mon 2026-08-04 22:30:22 BST Mon 2026-08-04 22:54:05 BST
+  0 dddddddddddddddddddddddddddddd05 Tue 2026-08-05 00:05:18 BST Tue 2026-08-05 00:08:00 BST
+EOF
+mkdir -p "$WORK/klogs-walk2"
+for b in 01 03 05; do cp "$WORK/klog-clean" "$WORK/klogs-walk2/dddddddddddddddddddddddddddddd$b.klog"; done
+for b in 02 04; do cp "$WORK/klog-fault" "$WORK/klogs-walk2/dddddddddddddddddddddddddddddd$b.klog"; done
+WMF2="$WORK/watermark2"
+_walk2() {
+  HOST_GUARD_RESET_BOOTS_FILE="$WORK/boots-walk2" HOST_GUARD_RESET_KLOG_DIR="$WORK/klogs-walk2" \
+  HOST_GUARD_RESET_WATERMARK_FILE="$WMF2" HOST_GUARD_HWMON_GLOBAL_DIR="$WORK/ghwmon" bash "$RF" "$@"
+}
+OUT="$(_walk2 ensure-postmortem)"
+assert_has "walk: multi-fault gap reports the newest bundle" "dddddddddddddddddddddddddddddd03.md" "$OUT"
+[[ -f "$PM/dddddddddddddddddddddddddddddd01.md" ]] \
+  && assert "walk: the OLDER fault in the gap got a bundle too" pass \
+  || assert "walk: the OLDER fault in the gap got a bundle too" fail
+assert_has "walk: multi-fault gap then reads CLEAN" "CLEAN|" "$(_walk2 check)"
+
+# streak stays available to consumers (doctor's ras row) after the freeze.
+assert_has "streak: counts fault boots independently of the watermark" "STREAK|2/" \
+  "$(_walk2 streak)"
 
 echo ""
 echo "── D. engine wiring ────────────────────────────────────────────────────"

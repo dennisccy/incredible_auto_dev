@@ -466,7 +466,12 @@ All pending framework improvements — including the former "Token Optimization 
 
 ## Host incident 2026-08-07 — status + pending fix plan (GEEKOM A7 Max)
 
-> **Status: fix EXECUTED — C-state soak ACTIVE since 2026-08-07 21:02:21 BST.** Phase 2 framework
+> **Status 2026-08-08: C-state soak FALSIFIED on day 1 — unit removed; ladder → rung 3 (overnight
+> memtest86+ 08-08→09); goal mode PAUSED pending the verdict.** Fault reset #4 (12:48:17 boot)
+> fired with C2/C3 verifiably off in the dying boot (journal tag + `host_state`; 30 W / load1
+> 3.04 / 84 °C). Postmortem frozen pre-resume: `3f7c111ae8e94cdd8e39ad67cd0cff8b.md`. Memtest
+> errors → DIMM isolation → reseat/swap → RMA; clean → BIOS JEDEC baseline → fresh 7-day soak.
+> *(Previous status: fix EXECUTED — soak ACTIVE since 2026-08-07 21:02:21 BST.)* Phase 2 framework
 > code was committed 17:27 (`be57376` + vendored syncs). The Phase 1 unit was installed 17:26 but
 > left **un-enabled** (`sudo cp` only — the implementing session was killed by fault reset #3 at
 > 17:46, which fired **near-idle** in exactly that gap); enabled + verified 21:02:21 (journal tag

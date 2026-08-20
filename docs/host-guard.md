@@ -204,6 +204,54 @@ activation by `journalctl -t iad-cstate-limit -b 0` + sysfs `state[23]/disable`
 = 1 on all CPUs, never by unit-file presence or `is-active` (oneshot without
 `RemainAfterExit` reads `inactive (dead)` after success).
 
+2026-08-08 OUTCOME — **falsified in one day.** Fault reset #4 (12:48) fired with
+the unit verifiably active in the dying boot (its journal tag 5 s after boot;
+`host_state` `C2:1,C3:1` until 13 min before death) at 30 W / load1 3.04 /
+84 °C: deep-C-state limiting does NOT prevent this signature on this host. The
+unit was removed the same day (falsified, and it cost thermal headroom — the
+hottest run of the incident, Tctl 90 °C with dispatch deferrals), verified by
+sysfs 32×`0`; per the rule above in reverse, later boots must show ZERO
+`iad-cstate-limit` tag lines. Ladder: **rung 3 — overnight memtest86+
+2026-08-08→09 — in progress**, then JEDEC baseline → SO-DIMM reseat/swap →
+GEEKOM RMA. Full record: `~/.cache/iad/host-guard/soak-log.md`.
+
+2026-08-09→11 OUTCOME — the physical ladder is exhausted short of RMA, and the
+owner has declined RMA. Rung 3 memtest86+: **CLEAN, 26 passes / 20.5 h at
+~90 °C** — RAM cells and IMC exonerated, and a discriminator: the memtest
+environment (no OS, no DF/UCLK P-state transitions) never resets, while Linux
+resets at near-idle and load alike. JEDEC rung moot (already at baseline 4800).
+SO-DIMM reseat 2026-08-09 did NOT hold: two more fault resets on 2026-08-10
+(hwmon-anchored 12:08:35 at 58 °C/16 W cooling, and 22:30:02 at 67 °C/22 W).
+Full-journal sweep found **16 fault resets since 2026-07-20**; authoritative
+table: `~/.cache/iad/host-guard/reset-ledger.md`.
+
+**Detector fix (2026-08-11).** The 22:30 reset exposed a blind spot: its decode
+line landed in an intermediate boot that was then shut down cleanly, and the
+old boot-0-only read reported CLEAN forever — never freezing the evidence.
+`reset-forensics.sh` now walks every boot newer than a persisted watermark
+(`~/.cache/iad/host-guard/reset-watermark`), reports the newest unprocessed
+fault, and `ensure-postmortem` writes one bundle per fault in the gap before
+advancing the watermark. `check` never writes. The `streak` subcommand keeps
+"has this host faulted recently" answerable after the freeze (doctor's
+ras-logging row uses it).
+
+**Mitigation rung A (2026-08-11, running): fabric-pin.** The last untested
+OS-active-only variable the discriminator points at: under `auto` DPM the
+fabric clock steps 500/1600/1960 MHz. The root unit `iad-fabric-pin.service`
+runs `scripts/automation/host-guard/fabric-pin.sh apply` at boot, pinning
+fclk/mclk/socclk at top P-state via `power_dpm_force_performance_level=high`
+(a few watts of idle cost; `release` or unit removal rolls back). Verify ONLY
+by tag + sysfs: `journalctl -t iad-fabric-pin -b 0` and the `*` on the TOP row
+of `pp_dpm_fclk`. Acceptance unchanged: seven consecutive CLEAN days at the
+usual ≥1-fault/day baseline. The BIOS-memory rung is UNAVAILABLE on this host
+(owner confirmed 2026-08-11: the GEEKOM BIOS locks memory/DF settings), so
+falsified → `pcie_aspm=off`, then accept-and-tolerate (~20 s self-recovery,
+manual engine resume). Note the soak boot also runs BIOS performance mode
+QUIET (Balanced→Quiet during the Aug 10→11 power-off; observed envelope
+44 W/61 °C vs 63 W/90 °C on Balanced), so the soak tests pin+Quiet combined —
+the owner's planned pin-disable at soak end A/Bs Quiet alone. Soak journal:
+`~/.cache/iad/host-guard/soak-log.md` §2026-08-11.
+
 `doctor.sh --only ras-logging` verifies what it can read without root (the
 journald drop-in and the rasdaemon unit) and stays silent on hosts that have no
 reset history.
