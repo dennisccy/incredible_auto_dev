@@ -1014,3 +1014,20 @@ Entry format contract (grep-able; pinned by
   CHAIN_GOLDEN_AUTODERIVE=false / CHAIN_REPLAY_MASS_FAIL_BREAKER=false /
   CHAIN_UI_COMBINED=false / CHAIN_SKIP_TESTPLAN_IF_PRESENT=false — each knob
   reverts exactly one item.
+
+---
+
+## PRE bench-20260820-2246 · 2026-08-20T22:46:53Z
+- framework-sha: f8c98b95064070eba1a8f58df30e134749fde60d (dirty: false)
+- fixture: todo-app · max-iter 2
+- hypothesis: STYLE-1 G8 stage-1 ARM A = CONTROL at framework f8c98b9 (style knobs unset; same-sha baseline for arm B): chain reaches GOAL_ACHIEVED 3/3 within max-iter 2 with 0 attempt-1 review FAILs and 0 malformed verdicts; every claude_usage row reads output_style=default and carries no output_style_requested; zero iter_config / output_style_mismatch events; the developer iter-1 row is the baseline for arm B's token prediction. Deviation from the CAND-STYLE DoD, recorded: fixture A/B across two sessions instead of a same-session knob flip (both vendored real-session repos have live engines and HOST_GUARD_MAX_ENGINES=2), so the same-session cost guard is NOT exercised here; stage 2 = the real session after the next vendored sync.
+- metrics + prediction (mechanical --predict): journeys_passing_after>=3;final_status==GOAL_ACHIEVED;attempt1_review_fails==0;malformed_verdicts==0
+
+## POST bench-20260820-2246 · 2026-08-20T23:36:04Z
+- results: benchmarks/results/20260820-233604-f8c98b950640.json
+- headline: status=GOAL_ACHIEVED last_verdict=GOAL_ACHIEVED journeys=3/3 iters=2 engine_exit=0 wall=2951s cost=$15.16705
+- predicate: journeys_passing_after>=3 → true (journeys_passing_after=3)
+- predicate: final_status==GOAL_ACHIEVED → true (final_status='GOAL_ACHIEVED')
+- predicate: attempt1_review_fails==0 → true (attempt1_review_fails=0)
+- predicate: malformed_verdicts==0 → true (malformed_verdicts=0)
+- verdict-vs-prediction: CONFIRMED
