@@ -70,7 +70,7 @@ fi
 
 CHECKS=(python3 node playwright chrome-mcp gh-auth git-remote disk timeout jq
         pump-heartbeat engine-lock tmp-health chrome-exclusive mcp-affinity
-        host-guard cpu-boost reset-reason ras-logging ambient-env)
+        host-guard cpu-boost reset-reason ras-logging ambient-env output-styles)
 
 # Run a command under GNU/uutils timeout when available (network probes must
 # degrade, never hang). $1 = seconds, rest = command.
@@ -658,6 +658,105 @@ check_ambient_env() {
   done
   [[ $# -gt 4 ]] && list="$list+$(($# - 4)) more "
   echo "WARN|$# ambient CHAIN_* var(s): ${list}— they silently alter engine behavior; measurement runs demand a clean env"
+}
+
+# STYLE-1 (2026-08-20): the output-style experiment is default-OFF and fully
+# offline-checkable — validate whatever IS configured (env knobs + the wave-1
+# table, the latter only when CHAIN_OUTPUT_STYLES=true) and warn on an ambient
+# `outputStyle` pin in settings.json, which would silently style EVERY
+# headless dispatch even with every knob off (a contaminated "knob-off" arm).
+# Never FAILs on drift or a pin — only a resolver crash or an invalid name is
+# a real config error; a name missing from the installed binary just means
+# Claude Code will silently run that agent as Default (see agent_permissions.py).
+check_output_styles() {
+  local conf rc=0
+  conf="$(cd "$ROOT" 2>/dev/null && python3 "$SCRIPT_DIR/lib/agent_permissions.py" output-styles-configured 2>&1)" || rc=$?
+  if [[ "$rc" -ne 0 ]]; then
+    echo "FAIL|output-styles-configured crashed (rc=$rc): $(printf '%.140s' "$conf")"
+    return
+  fi
+
+  # "armed" mirrors run-goal.sh's OWN gate (STYLE-1 boot check) exactly: the
+  # knob is engaged whether or not it currently resolves to anything.
+  local arm_word="dormant"
+  if [[ "${CHAIN_OUTPUT_STYLES:-false}" == "true" || -n "${CHAIN_AGENT_OUTPUT_STYLE:-}" \
+        || -n "${CHAIN_OUTPUT_STYLE_OVERRIDE:-}" ]]; then
+    arm_word="armed"
+  fi
+
+  local pins="" sf
+  for sf in "$HOME/.claude/settings.json" "$ROOT/.claude/settings.json" "$ROOT/.claude/settings.local.json"; do
+    [[ -f "$sf" ]] && grep -a -q -F -- '"outputStyle"' "$sf" 2>/dev/null && pins+="$sf, "
+  done
+  pins="${pins%, }"
+
+  if [[ -z "$conf" ]]; then
+    if [[ -z "$pins" ]]; then
+      echo "PASS|no output styles configured — $arm_word (CHAIN_OUTPUT_STYLES=${CHAIN_OUTPUT_STYLES-unset})"
+    else
+      echo "WARN|no output styles configured via the engine knobs — $arm_word, but outputStyle is pinned in: $pins — applies to EVERY headless dispatch (knob-off arm contaminated)"
+    fi
+    return
+  fi
+
+  local check_out
+  check_out="$(cd "$ROOT" 2>/dev/null && python3 "$SCRIPT_DIR/lib/agent_permissions.py" output-style-check 2>&1)" || rc=$?
+  if [[ "$rc" -ne 0 ]]; then
+    echo "FAIL|invalid output style configured: $(printf '%.140s' "$check_out")"
+    return
+  fi
+
+  local claude_cmd bin ver
+  claude_cmd="$(command -v claude 2>/dev/null || true)"
+  bin=""
+  [[ -n "$claude_cmd" ]] && bin="$(readlink -f "$claude_cmd" 2>/dev/null || true)"
+  if [[ -z "$bin" || ! -r "$bin" ]]; then
+    echo "WARN|output style(s) configured ($arm_word) but no readable claude binary to verify against"
+    return
+  fi
+  ver="$(claude --version 2>/dev/null | head -n1)"
+  [[ -n "$ver" ]] || ver="unknown version"
+
+  # Dedupe configured names (the wave-1 table maps six agents to one style
+  # name) and drop "default" — it carries no binary marker to verify (fact 4).
+  local -a names=() missing=()
+  local name src already existing found
+  while IFS=$'\t' read -r name src; do
+    [[ -z "$name" ]] && continue
+    [[ "${name,,}" == "default" ]] && continue
+    already=false
+    for existing in "${names[@]}"; do
+      [[ "$existing" == "$name" ]] && { already=true; break; }
+    done
+    $already || names+=("$name")
+  done <<< "$conf"
+
+  for name in "${names[@]}"; do
+    found=false
+    if _bounded 10 grep -a -q -F -- "# $name Style Active" "$bin" 2>/dev/null; then
+      found=true
+    elif [[ -f "$ROOT/.claude/output-styles/$name.md" ]]; then
+      found=true
+    fi
+    $found || missing+=("$name")
+  done
+
+  if [[ "${#missing[@]}" -gt 0 ]]; then
+    local list="" m
+    for m in "${missing[@]}"; do
+      [[ -n "$list" ]] && list+=", "
+      list+="$m"
+    done
+    echo "WARN|built-in style(s) not found in claude $ver: $list — Claude Code ignores unknown names silently; the experiment would run as Default"
+    return
+  fi
+
+  local detail="${#names[@]} configured style(s) present in claude $ver ($arm_word)"
+  if [[ -n "$pins" ]]; then
+    echo "WARN|$detail — outputStyle is ALSO pinned in: $pins — the pin silently overrides whatever the engine requests"
+  else
+    echo "PASS|$detail"
+  fi
 }
 
 # ── Harness ─────────────────────────────────────────────────────────────────

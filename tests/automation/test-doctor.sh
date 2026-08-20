@@ -167,7 +167,8 @@ echo "$out" | grep -Eq 'PASS +chrome-mcp +.*settings\.json' \
   && assert "chrome-mcp PASS says HOW it detected (settings.json)" "pass" \
   || assert "chrome-mcp detection detail" "fail"
 for key in python3 node playwright gh-auth git-remote disk timeout jq \
-           pump-heartbeat engine-lock tmp-health chrome-exclusive ambient-env; do
+           pump-heartbeat engine-lock tmp-health chrome-exclusive ambient-env \
+           output-styles; do
   echo "$out" | grep -Eq "PASS +$key " \
     && assert "row $key PASS on healthy fixture" "pass" \
     || assert "row $key PASS on healthy fixture" "fail"
@@ -184,9 +185,9 @@ echo ""
 
 rc=0; out=$(run_doctor -- --list 2>&1) || rc=$?
 n=$(echo "$out" | grep -c '^[a-z0-9-]*$' || true)
-{ [[ $rc -eq 0 && $n -eq 19 ]]; } \
-  && assert "--list prints the 19 check keys" "pass" \
-  || assert "--list prints the 19 check keys (rc=$rc n=$n)" "fail"
+{ [[ $rc -eq 0 && $n -eq 20 ]]; } \
+  && assert "--list prints the 20 check keys" "pass" \
+  || assert "--list prints the 20 check keys (rc=$rc n=$n)" "fail"
 echo "$out" | grep -qx "tmp-health" && echo "$out" | grep -qx "chrome-exclusive" \
   && assert "--list includes the evidence-born checks" "pass" \
   || assert "--list includes the evidence-born checks" "fail"

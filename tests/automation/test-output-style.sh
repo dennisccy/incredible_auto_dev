@@ -432,7 +432,77 @@ else
   fail "j4: missing unavailable notice (rc=$RUN_RC, out: $RUN_OUT)"
 fi
 
-# ── Slice 4 (doctor + tripwire) cases k/k2/k3/k4 land here ──────────────────
+# ── Slice 4: doctor.sh output-styles row (k*) ───────────────────────────────
+# doctor.sh's own row (STYLE-1, offline): validates configured names, greps
+# the installed claude ELF for "# <Name> Style Active", warns on an ambient
+# outputStyle pin. Drives the REAL doctor.sh against a small fixture: a fake
+# `claude` on a PATH that shadows the real one (so the grep target is ours),
+# plus HOME/CHAIN_DOCTOR_REPO_ROOT overrides so the settings.json pin check
+# reads the fixture, never the real repo/home.
+
+DOCTOR="$REPO_ROOT/scripts/automation/doctor.sh"
+KBIN="$WORK/kbin"
+KHOME="$WORK/khome"
+KHOME4="$WORK/khome4"
+KREPO="$WORK/krepo"
+mkdir -p "$KBIN" "$KHOME/.claude" "$KHOME4/.claude" "$KREPO/.claude"
+printf '{"outputStyle":"Explanatory"}\n' > "$KHOME4/.claude/settings.json"
+
+# Fake `claude`: --version answers sensibly; the Concise marker literal is
+# present only when $1 = with.
+mk_fake_claude() {
+  {
+    printf '#!/usr/bin/env bash\n'
+    printf '[[ "${1:-}" == "--version" ]] && { echo "2.1.237 (Claude Code)"; exit 0; }\n'
+    [[ "$1" == "with" ]] && printf '# Concise Style Active\n'
+    printf 'exit 0\n'
+  } > "$KBIN/claude"
+  chmod +x "$KBIN/claude"
+}
+
+# run_doctor_styles [ENV=VAL ...] — the real doctor.sh, --only output-styles,
+# against the fixture above; the three style knobs are unset by default (a
+# case that wants one armed passes it explicitly, same recipe as run_seam).
+run_doctor_styles() {
+  env -u CHAIN_OUTPUT_STYLES -u CHAIN_AGENT_OUTPUT_STYLE -u CHAIN_OUTPUT_STYLE_OVERRIDE \
+    PATH="$KBIN:$PATH" HOME="$KHOME" CHAIN_DOCTOR_REPO_ROOT="$KREPO" \
+    "$@" bash "$DOCTOR" --only output-styles 2>&1
+}
+
+# ── k. Armed table + the marker present in the binary → PASS "armed" ────────
+mk_fake_claude with
+K_OUT=$(run_doctor_styles CHAIN_OUTPUT_STYLES=true)
+if [[ "$K_OUT" == *"PASS"*"output-styles"* && "$K_OUT" == *"armed"* ]]; then
+  pass "k: armed table + marker present in claude → PASS naming it armed"
+else
+  fail "k: expected an armed PASS row (out: $K_OUT)"
+fi
+
+# ── k2. Armed table but the binary lacks the marker → WARN naming Concise ───
+mk_fake_claude without
+K2_OUT=$(run_doctor_styles CHAIN_OUTPUT_STYLES=true)
+if [[ "$K2_OUT" == *"WARN"*"output-styles"* && "$K2_OUT" == *"Concise"* ]]; then
+  pass "k2: marker missing from claude → WARN naming Concise"
+else
+  fail "k2: expected a WARN row naming Concise (out: $K2_OUT)"
+fi
+
+# ── k3. Knobs off, nothing pinned → PASS "no output styles configured", dormant
+K3_OUT=$(run_doctor_styles)
+if [[ "$K3_OUT" == *"PASS"*"output-styles"* && "$K3_OUT" == *"no output styles configured"* \
+      && "$K3_OUT" == *"dormant"* ]]; then
+  pass "k3: knobs off, nothing pinned → PASS dormant"
+else
+  fail "k3: expected a dormant PASS row (out: $K3_OUT)"
+fi
+
+# ── k4. Knobs off but outputStyle pinned in HOME settings.json → WARN ───────
+K4_OUT=$(run_doctor_styles HOME="$KHOME4")
+if [[ "$K4_OUT" == *"WARN"*"output-styles"* && "$K4_OUT" == *"pinned"* ]]; then
+  pass "k4: knob off but outputStyle pinned in HOME settings.json → WARN"
+else
+  fail "k4: expected a pinned WARN row (out: $K4_OUT)"
+fi
 
 echo ""
 echo "=== Results: $PASS passed, $FAIL failed ==="
