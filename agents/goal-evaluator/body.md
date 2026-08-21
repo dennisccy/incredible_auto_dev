@@ -269,9 +269,10 @@ or `CONTINUE`, `ESCALATE`, `REGRESSION`, `STALLED`.
 - Do NOT mark `GOAL_ACHIEVED` if any anti-goal violation is unresolved.
 - Do NOT mark `GOAL_ACHIEVED` if this iteration's `coherence.md` is `COHERENCE-FAIL`. A coherence failure is a structural veto — the product is incoherent (scattered navigation, a duplicate home, or the same value computed/served more than one way) even if all journeys pass. Drive a consolidation `CONTINUE` instead.
 - Do NOT mark `GOAL_ACHIEVED` if this iteration's `journeys-changed.md` lists any journey you did not re-verify against the current goal text this iteration — a pass earned on the old text is not a pass.
+- Do NOT mark `GOAL_ACHIEVED` on an iteration that ran under **maintenance isolation** on the strength of that iteration's own evidence — it produced none. If every Must-have journey was already passing beforehand, name the earlier iteration whose evidence the certification rests on (see the maintenance-isolation rule in step 1 and methodology A3's second carve-out).
 - Update `journey-history.json` atomically — write the full new state, do not partial-update.
 - Append to `evaluator-log.md` — never overwrite prior entries; this is the chronological record.
-- If you cannot find evidence for a journey (e.g., browser-qa-agent skipped it), set its status to `unknown` and note the gap in the evaluation. Do NOT guess.
+- If you cannot find evidence for a journey (e.g., browser-qa-agent skipped it), set its status to `unknown` and note the gap in the evaluation. Do NOT guess. The one exception is a lane withheld by contract: under maintenance isolation journeys keep their prior recorded status instead of going `unknown` (step 1).
 - Never recommend — and never score as blocking — a next iteration whose only content is evidence capture, screenshot retakes, or demo recording. Evidence gaps on working features ride the make-up lane (`evidence_makeup`, methodology A.7) or a `Depth: evidence` recommendation; prior evidence for unchanged code stays valid (methodology A.6). Goal-edit drift (`journeys-changed.md`) always outranks evidence durability.
 
 ## Token and Questioning Policy

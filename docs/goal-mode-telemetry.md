@@ -66,7 +66,7 @@ Records which pipeline was chosen for this iteration.
 |---|---|---|
 | `depth` | string | `lean` or `full` |
 | `target_journeys` | array of strings | Journey IDs this iteration targets (e.g., `["J-01","J-03"]`) |
-| `maintenance_isolation` | string | `"true"` when this iteration ran under maintenance isolation (`CHAIN_MAINTENANCE_ISOLATION` after `apply_maintenance_isolation_from_spec` has materialized any `Maintenance isolation: required` spec line), else `"false"`. The effective value, and the only per-iteration record that the app/browser lanes were withheld by contract. A string, not a boolean, on both the jq and the jq-less fallback path |
+| `maintenance_isolation` | string | The RAW `${CHAIN_MAINTENANCE_ISOLATION:-false}` literal as it stands after `apply_maintenance_isolation_from_spec` has materialized any `Maintenance isolation: required` spec line — `"true"` when the spec declared it, `"false"` when unset, but any operator-set truthy value (`"1"`, `"yes"`, `"on"`, `"required"`, `"TRUE"`) is emitted verbatim, so consume it with the same truthy set the engine uses rather than `== "true"`. A string on both the jq and the jq-less path, never a boolean. The only per-iteration record that the app/browser lanes were withheld by contract |
 
 ### `agent_invocation_start`, `agent_invocation_end`
 Wrap each agent call inside an iteration (developer, reviewer, browser-qa-agent, etc.).
@@ -119,9 +119,9 @@ Written when a hard halt fires before normal `iter_end`.
 
 | Field | Type | Description |
 |---|---|---|
-| `reason` | string | `BUDGET_EXHAUSTED` \| `STALLED` \| `REGRESSION_HALT` \| `ABORTED` \| `AWAITING_FULL_DEPTH` — plus the other resumable `AWAITING_*` pause statuses `run-goal.sh` writes |
-| `detected_at_step` | string | Where the halt was detected (e.g., `pre_decomposer`, `post_evaluator`; `AWAITING_FULL_DEPTH` uses `depth-arbiter`, `depth-parse`, or `full-dispatch` — the three sites that could otherwise have silently run lean) |
-| `demotion_reason` | string | `AWAITING_FULL_DEPTH` only: why full depth could not be dispatched — `arbiter-demotion:<rung>`, `unparseable Depth line in <spec-path>`, or `run-phase.sh lacks --no-finalize`. Mirrors the `reason=` field of `iter-<N>/depth-requirement-unmet` |
+| `reason` | string | Includes `BUDGET_EXHAUSTED`, `STALLED`, `REGRESSION_HALT`, `ABORT_MALFORMED`, `DECOMPOSER_FAILED`, `GATE_BLOCKED_POST_DECOMPOSE`, `machine_reset`, and the resumable pauses `AWAITING_BLUEPRINT_APPROVAL`, `AWAITING_INTENT_REVIEW`, `AWAITING_PUMP`, `AWAITING_GITHUB_AUTH`, `AWAITING_DISK`, `AWAITING_HOST_GUARD`, `AWAITING_FULL_DEPTH`. `ABORTED` is a session *status* only — the SIGINT trap writes the summary, not a halt event. Not a closed enum: `grep -n 'record_telemetry_event "halt"' scripts/automation/run-goal.sh` is the ground truth |
+| `detected_at_step` | string | Where the halt was detected (e.g., `pre_decomposer`, `post_evaluator`; `AWAITING_FULL_DEPTH` uses `depth-arbiter`, `depth-parse`, `full-dispatch` or `depth-legacy-allowlist` — the four sites that could otherwise have silently run lean) |
+| `demotion_reason` | string | `AWAITING_FULL_DEPTH` only: why full depth could not be dispatched — `arbiter-demotion:<rung>`, `unparseable Depth line in <spec-path>`, `run-phase.sh lacks --no-finalize`, or `legacy-allowlist:no-qualifying-trigger (…)`. Mirrors the `reason=` field of `iter-<N>/depth-requirement-unmet`, which also carries a `remedy=` line naming the one action that unblocks that specific step |
 
 ### `iter_push` (opt-in)
 Written by `run-goal.sh` after each iteration when `--push-per-iter` is enabled. One event per iteration. Captures whether the per-iter commit + push succeeded and which branch received the commit.

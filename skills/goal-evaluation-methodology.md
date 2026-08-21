@@ -44,6 +44,21 @@ your overall impression of the iteration.
      the browser infrastructure itself is the blocker: treat it as a human-owned action
      (STALLED-class, decision tree C.2) instead of scheduling a third silent retry. A fresh
      screenshot this iteration — pass or fail — clears `pending_infra` and scores normally.
+   - **Second carve-out (maintenance isolation):** when this iteration's
+     `ui-test-results.md` is all-SKIPPED and its `**Reason:**` line names maintenance
+     isolation, the lane was FORBIDDEN by the iteration's contract, not missing — full
+     reviewer/QA/auditor/coherence depth was retained while application-service boot,
+     browser QA and the deterministic replay lane were prohibited. So this is neither an
+     absent citation nor an infra failure: EVERY journey KEEPS its prior recorded status
+     (never `unknown`, `failing` or `regressed` on that basis alone), you do NOT set
+     `pending_infra` (nothing is owed by the infrastructure — the contract withheld it),
+     and you state in the report that the iteration ran under maintenance isolation and
+     which journeys therefore went unverified. It never runs the other way: an isolated
+     iteration produced no browser evidence, so no journey may be promoted TO
+     `passing`/`already_passing` on it, and a `GOAL_ACHIEVED` verdict on such an iteration
+     must cite the earlier iteration whose evidence it rests on (the deterministic results
+     gate counts only `FAIL` and `DEFERRED-BUDGET` cells, so an empty isolated table will
+     not stop you — that judgment is yours).
 4. **Stable-journey spot-check.** Journeys with unchanged `passing`/`already_passing` status
    that are in this iteration's **Required-still-passing set** (and have a stored golden
    script) are re-verified mechanically by the replay lane (`demo_runner.py --mode verify`)
@@ -150,7 +165,11 @@ tests pass; marking passing." The results file has no row for J-07 (browser lane
 and there is no screenshot. Wrong: `passing` because the code "clearly works". Right: status
 `unknown`, gap noted ("browser lane skipped J-07 — no evidence"), verdict `CONTINUE` with
 next-step "re-run browser QA for J-07". Unit tests are never journey evidence (a routing typo
-can 404 the page while every unit test passes).
+can 404 the page while every unit test passes). *Contrast, and the one case where "no row" is
+NOT `unknown`:* if the results file is all-SKIPPED because its `**Reason:**` line names
+maintenance isolation, the lane was withheld by contract rather than skipped by accident, and
+every journey keeps its prior status (A3, second carve-out). The test is the DECLARED reason,
+never the bare absence of a row.
 
 ## E. Pre-finalize self-check (all five, in your head, before writing eval.md)
 

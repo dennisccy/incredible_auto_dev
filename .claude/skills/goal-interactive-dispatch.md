@@ -1,6 +1,6 @@
 # Goal Mode — Interactive Dispatch (Pump Protocol)
 
-version: 3.0.1 (protocol v3 — pump pid-liveness ident; bump with every change to this file)
+version: 3.0.2 (protocol v3 — pump pid-liveness ident; bump with every change to this file)
 
 This skill defines how the foreground Claude Code session (the "pump") runs the
 existing goal-mode engine so that every agent executes as an interactive
@@ -274,7 +274,7 @@ is authoritative:
 - `AWAITING_GITHUB_AUTH` — ask the user to run `gh auth login`, then `/goal-resume`.
 - `AWAITING_DISK` — free disk still under the hard floor after automatic cleanup; run `bash scripts/automation/tmp-doctor.sh --aggressive` yourself (no user approval needed), then `/goal-resume`. Only involve the user if the doctor exits 2 (the machine is genuinely out of disk).
 - `AWAITING_PUMP` — the pump/session went away mid-iteration; re-open it and `/goal-resume` (it re-runs that iteration).
-- `AWAITING_FULL_DEPTH` — nothing was dispatched: the iteration declared full depth a HARD requirement (`CHAIN_REQUIRE_FULL_DEPTH`, or a `Depth enforcement: required` line in its spec) and the deterministic arbiter could only grant lean, so the engine halted BEFORE any developer mutation, browser lane or service boot. Report the engine's `reason:` line and `runs/goal-session-<sid>/iter-<N>/depth-requirement-unmet` (it records `requested`, `actual`, `reason`, `step`). Offer the three escape hatches — disable the one-full-per-window cap with `CHAIN_FULL_CADENCE_CAP=1`, restore the legacy allowlist with `CHAIN_DEPTH_ARBITER=false`, or wait out the current window — then `/goal-resume`. NEVER clear the requirement itself (unset `CHAIN_REQUIRE_FULL_DEPTH`, edit the spec line) to make the pause go away: the requirement is why the pause exists.
+- `AWAITING_FULL_DEPTH` — nothing was dispatched: the iteration declared full depth a HARD requirement (`CHAIN_REQUIRE_FULL_DEPTH`, or a `Depth enforcement: required` line in its spec) and the engine could not dispatch it, so it halted BEFORE any developer mutation, browser lane or service boot. Report the engine's `reason:` line and `runs/goal-session-<sid>/iter-<N>/depth-requirement-unmet` — it records `requested`, `actual`, `reason`, `step` and `remedy`. Relay THAT remedy, which depends on `step`: `depth-arbiter` (the cost ladder could not grant full) — let the cadence window pass or re-run with `CHAIN_FULL_CADENCE_CAP=1`; `depth-parse` — fix the spec's `Depth:` line so it parses; `full-dispatch` — the installed `run-phase.sh` has no `--no-finalize` flag, so update/restore the framework checkout; `depth-legacy-allowlist` — add the qualifying `Full trigger: <1-4> — <reason>` line to the spec, or re-enable the deterministic arbiter (unset `CHAIN_DEPTH_ARBITER`). Then `/goal-resume`. NEVER clear the requirement itself (unset `CHAIN_REQUIRE_FULL_DEPTH`, edit the spec line) to make the pause go away — the requirement is why the pause exists — and never suggest `CHAIN_DEPTH_ARBITER=false`, which removes the precedence rung and the guard rather than resolving anything.
 - `REGRESSION_HALT` — report the regression; resuming requires `--acknowledge-regression`.
 - `STALLED` or `BUDGET_EXHAUSTED` — report it and suggest editing `docs/goal.md` or raising `--max-iter`.
 - `ABORTED` — the run was interrupted; `/goal-resume` continues from the last iteration.

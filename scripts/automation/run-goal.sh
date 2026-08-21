@@ -79,12 +79,18 @@
 #                      project-extensions/host-guard/README.md), then --resume
 #   AWAITING_FULL_DEPTH - an iteration declared full depth a HARD requirement
 #                      (CHAIN_REQUIRE_FULL_DEPTH=true or a spec `Depth enforcement: required`
-#                      line) but the deterministic depth arbiter could only grant lean. The
-#                      engine halts BEFORE dispatch: no developer mutation, no lean parallel
-#                      browser-QA/replay lane, no second backend/frontend, no DB or network
-#                      action, and no depth-dispatched marker is written (so a resume cannot
-#                      inherit a stale lean decision). Widen CHAIN_FULL_CADENCE_CAP, set
-#                      CHAIN_DEPTH_ARBITER=false, or let the cadence window pass — then --resume
+#                      line) and the engine could not dispatch it. The engine halts BEFORE
+#                      dispatch: no developer mutation, no lean parallel browser-QA/replay
+#                      lane, no second backend/frontend, no DB or network action, and no
+#                      depth-dispatched marker is written (so a resume cannot inherit a stale
+#                      lean decision). The remedy is per-path and is printed with the pause
+#                      (also `remedy=` in iter-<N>/depth-requirement-unmet): depth-arbiter ->
+#                      wait out the cadence window or CHAIN_FULL_CADENCE_CAP=1; depth-parse ->
+#                      fix the spec's `Depth:` line; full-dispatch -> the installed
+#                      run-phase.sh lacks --no-finalize, update the framework;
+#                      depth-legacy-allowlist -> add the qualifying `Full trigger:` line or
+#                      re-enable the arbiter. Then --resume. Turning the arbiter off is NOT a
+#                      way out: it removes the precedence rung and the guard itself
 #
 # Quota exhaustion is NOT a halt: claude_with_quota_retry transparently sleeps
 # until the quota resets and resumes.
@@ -1085,12 +1091,30 @@ _full_depth_pause() { # $1 reason, $2 detected_at_step — pause AWAITING_FULL_D
   # depth-dispatched marker is NOT written, so a resume cannot inherit a stale
   # `lean` decision for this iteration.
   local reason="$1" step="${2:-depth-arbiter}"
+  # Per-path remedy. The generic three-hatch list this used to print was
+  # arbiter-shaped, so it was wrong for the two capability paths — and one of its
+  # entries, CHAIN_DEPTH_ARBITER=false, does not resolve the pause at all: it
+  # deletes the precedence rung and this guard and routes the iteration to the
+  # legacy allowlist. Each site names the ONE thing that actually unblocks it.
+  local remedy=""
+  case "$step" in
+    depth-arbiter)
+      remedy="let the cadence window pass, or re-run with CHAIN_FULL_CADENCE_CAP=1 (disables the one-full-per-window cap)" ;;
+    depth-parse)
+      remedy="fix this iteration spec's 'Depth:' line so it parses (lean | full | evidence)" ;;
+    full-dispatch)
+      remedy="the installed run-phase.sh has no --no-finalize flag: update/restore the framework checkout so the full pipeline can be dispatched" ;;
+    depth-legacy-allowlist)
+      remedy="add the qualifying 'Full trigger: <1-4> — <reason>' line to the spec, or re-enable the deterministic arbiter (unset CHAIN_DEPTH_ARBITER), whose precedence rung grants a hard-required full outright" ;;
+    *)
+      remedy="resolve the cause printed above" ;;
+  esac
   echo "[run-goal] Full depth is REQUIRED for this iteration but could not be dispatched — pausing (AWAITING_FULL_DEPTH)."
   echo "[run-goal]   reason: $reason"
   echo "[run-goal]   no fallback: the iteration did NOT run at lean depth, nothing was dispatched, and no mutation occurred."
   rm -f "$ITER_DIR/depth-dispatched" 2>/dev/null || true
   mkdir -p "$ITER_DIR" 2>/dev/null || true
-  printf 'requested=full\nactual=UNMET\nreason=%s\nstep=%s\n' "$reason" "$step" \
+  printf 'requested=full\nactual=UNMET\nreason=%s\nstep=%s\nremedy=%s\n' "$reason" "$step" "$remedy" \
     > "$ITER_DIR/depth-requirement-unmet" 2>/dev/null || true
   python3 - <<PY
 import json, datetime
@@ -1106,16 +1130,18 @@ _os.replace(_tmp, "$SESSION_JSON")
 PY
   record_telemetry_event "halt" "$(printf '{"reason":"AWAITING_FULL_DEPTH","detected_at_step":"%s","demotion_reason":"%s"}' "$step" "$reason")"
   echo ""
-  echo "Full depth was required but the deterministic arbiter could not grant it."
-  echo "Resolve by one of:"
-  echo "  * let the cadence window pass (the cap is CHAIN_FULL_CADENCE_CAP, default 4), or"
-  echo "  * raise/disable the cap for this run: CHAIN_FULL_CADENCE_CAP=1, or"
-  echo "  * restore the legacy allowlist: CHAIN_DEPTH_ARBITER=false"
+  echo "Full depth was REQUIRED for this iteration and could not be dispatched."
+  echo "Where it was caught: $step"
+  echo "Resolve: $remedy"
   echo "then resume:"
   echo "  ./scripts/automation/run-goal.sh --resume --session-id $SESSION_ID"
-  echo "Do NOT clear CHAIN_REQUIRE_FULL_DEPTH to make this pause go away — the"
+  echo ""
+  echo "Do NOT clear CHAIN_REQUIRE_FULL_DEPTH, and do not delete the spec's"
+  echo "'Depth enforcement: required' line, to make this pause go away — the"
   echo "requirement exists because lean depth would skip the lane that gates a"
-  echo "destructive write."
+  echo "destructive write. CHAIN_DEPTH_ARBITER=false is NOT a way out either: it"
+  echo "removes the precedence rung and this very guard, sending the iteration to"
+  echo "the legacy allowlist instead of running it at full depth."
   explain_goal_status "AWAITING_FULL_DEPTH" "$SESSION_ID" "$REPO_ROOT"
   echo "════════════════════════════════════════════════════════════════════"
   exit 0
@@ -2653,6 +2679,22 @@ Do NOT write code or implement anything. The iteration spec and any blueprint ed
       _full_reason="cadence-due"
     fi
     if [[ -z "$_full_reason" ]]; then
+      # FAIL CLOSED — the same rung the arbiter's precedence check applies, on the
+      # one demotion path that check never sees. The precedence rung AND the
+      # _full_depth_pause backstop both live inside the arbiter's `if`, so a
+      # hard-required iteration reaches this block whenever the arbiter is skipped:
+      # CHAIN_DEPTH_ARBITER=false, or iter-0 (the arbiter exempts baseline). Without
+      # this guard that downgraded it to lean with nothing but a depth_demoted event
+      # — and CHAIN_DEPTH_ARBITER=false was itself documented as the way OUT of
+      # AWAITING_FULL_DEPTH, so the advertised escape removed the control rather than
+      # the cause. (The arbiter's PRIOR_DEPTH==full rung also sets
+      # _use_legacy_allowlist, but only for iterations the precedence rung did not
+      # claim, i.e. never hard-required ones — inert there, kept as defence in depth.)
+      # Ordinary iterations are untouched: the predicate is false unless
+      # CHAIN_REQUIRE_FULL_DEPTH is set or the spec declares it.
+      if goal_full_depth_required "$ITER_SPEC_PATH"; then
+        _full_depth_pause "legacy-allowlist:no-qualifying-trigger (no 'Full trigger:' line, prior verdict ${PRIOR_VERDICT:-none}, no prior coherence FAIL, cadence not due)" "depth-legacy-allowlist"
+      fi
       echo "[run-goal] Depth allowlist: the spec asked for a FULL pass but named no trigger (no 'Full trigger:' line, prior verdict was ${PRIOR_VERDICT:-none}, no prior coherence FAIL, cadence not due) — running LEAN instead. Set CHAIN_DEPTH_ALLOWLIST=false to disable this check."
       record_telemetry_event "depth_demoted" "$(jq -cn --arg pv "${PRIOR_VERDICT:-}" '{from:"full", to:"lean", reason:"no-full-trigger", prior_verdict:$pv}' 2>/dev/null || printf '{"from":"full","to":"lean"}')"
       DEPTH="lean"

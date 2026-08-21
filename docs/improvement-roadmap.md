@@ -3786,7 +3786,8 @@ but appreciated.
 ### CAND-MAINT-ISO · Hard full-depth requirement + maintenance isolation (LANDED 2026-08-21 — reverse-ported from trendora)
 - **Priority:** P1 · **Effort:** M · **Risk:** LOW · **Status:** DONE 2026-08-21 on branch
   `port/trendora-046dd956` — `bfa3a3f` (the port), `959b5fb` + `6555446` (integration
-  guards + tests), and this docs/contract commit. BOTH features are default-OFF: with
+  guards + tests), the docs/contract commit, and fix 1 (the legacy-allowlist guard +
+  per-path resume guidance found by review). BOTH features are default-OFF: with
   `CHAIN_REQUIRE_FULL_DEPTH` and `CHAIN_MAINTENANCE_ISOLATION` unset and no spec line, every
   path is the pre-port path (the one deliberate exception is the jq-less `iter_dispatch`
   fallback, which now also emits `maintenance_isolation:"false"`). NOT yet exercised live —
@@ -3816,8 +3817,9 @@ but appreciated.
   `Maintenance isolation: required` spec line). `_full_depth_pause()` in `run-goal.sh`
   mirrors the `_host_guard_pause` idiom: resumable `AWAITING_FULL_DEPTH` BEFORE dispatch,
   an `iter-<N>/depth-requirement-unmet` marker, and `depth-dispatched` REMOVED so a resume
-  cannot inherit a stale lean decision — wired at all three demotion sites (`depth-arbiter`,
-  `depth-parse`, `full-dispatch`). A precedence rung resolves a hard-required iteration to
+  cannot inherit a stale lean decision — wired at the demotion sites (`depth-arbiter`,
+  `depth-parse`, `full-dispatch`; a fourth, `depth-legacy-allowlist`, was added by fix 1 —
+  see Integration deltas (10)). A precedence rung resolves a hard-required iteration to
   full ahead of every cost rung and records the rung it overrode as `depth_cost_overridden`
   while leaving that rung's on-disk marker untouched, so the arbiter pause is a backstop
   against a future reordering rather than a reachable path.
@@ -3862,11 +3864,19 @@ but appreciated.
   running app". (7) `qa-phase.sh` no longer appends the "backend did NOT become healthy after
   retries" warning + dependency hint under isolation — `QA_BACKEND_UP=no` there because
   nobody was ALLOWED to start a backend, and the prompt told the agent two stories about the
-  same service. (8) `run-goal.sh`'s jq-less `iter_dispatch` fallback now carries
-  `maintenance_isolation` (the only record that an iteration ran isolated; a host without jq
-  dropped it). (9) `lib/replay-lane.sh`'s isolation guard fails CLOSED — `declare -F
+  same service. (8) `iter_dispatch` carries `maintenance_isolation` on BOTH paths — the
+  port added it to the jq payload, and this side added it to the jq-less `printf` fallback,
+  which had silently dropped the only record that an iteration ran isolated. (9) `lib/replay-lane.sh`'s isolation guard fails CLOSED — `declare -F
   <predicate> && <predicate>` read "not isolated" when `common.sh` was never sourced, making
   the one state in which the contract is uncheckable the state that lets the browser run.
+  (10) **Fix 1 (2026-08-21, after review):** the legacy SPEED-10 allowlist gained the same
+  `goal_full_depth_required` guard — the precedence rung and the `_full_depth_pause` backstop both
+  live inside the arbiter's `if`, so whenever the arbiter is skipped (`CHAIN_DEPTH_ARBITER=false`,
+  or iter-0, which it exempts) a hard-required spec fell through to the allowlist, which demoted it
+  to lean with no pause when it named no `Full trigger:` line — while that same knob was documented as the way OUT
+  of `AWAITING_FULL_DEPTH`. It now pauses at `depth-legacy-allowlist`, `_full_depth_pause` prints a
+  PER-PATH remedy (also stored as `remedy=` in `depth-requirement-unmet`), and every doc that
+  offered the knob as a hatch now denies it explicitly.
   Agent/operator contract (this commit): the goal-evaluator scores an all-SKIPPED isolation
   `ui-test-results.md` like `DEFERRED-BUDGET` (journeys keep their prior status, and no
   journey may be promoted TO passing on an iteration that produced no browser evidence); the
@@ -3897,7 +3907,7 @@ but appreciated.
     python gate — agreeing on the truthy set by convention and comment, not by a shared
     constant. A parity test (bash truthy set == `_ISOLATION_ENV_TRUTHY`) is a follow-up.
 - **Verify:** `bash tests/automation/test-maintenance-isolation.sh` (71) · `bash
-  tests/automation/test-full-depth-required.sh` (33) · `bash
+  tests/automation/test-full-depth-required.sh` (40) · `bash
   tests/automation/test-closure-gate.sh` (29) · `bash tests/automation/test-depth-arbiter.sh`
   (33) · `bash tests/automation/test-replay-lane.sh` (59) · `bash
   tests/automation/test-plain-language.sh` (63) · `python3
@@ -3914,7 +3924,9 @@ but appreciated.
   them: `unset CHAIN_REQUIRE_FULL_DEPTH CHAIN_MAINTENANCE_ISOLATION` and remove any
   `Depth enforcement:` / `Maintenance isolation:` spec line. `CHAIN_DEPTH_ARBITER=false`
   additionally restores the legacy SPEED-10 allowlist. To remove the mechanism itself,
-  revert the three port commits (run-evals returns to 153 / 0).
+  revert this branch's four commits — `bfa3a3f`, `959b5fb`, `6555446` and the docs/fix commits
+  on top (run-evals returns to 153 / 0). Those are THIS repo's commits; the four `Source`
+  commits above are trendora's, and are not present here.
 
 ### CAND-STYLE · Per-agent Claude Code output style (landed default-off; experiment pending)
 - **Priority:** P2 · **Effort:** M · **Risk:** LOW-MED · **Status:** IMPLEMENTED

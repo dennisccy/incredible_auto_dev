@@ -121,7 +121,11 @@ if [[ -n "$_arb_guard" && -n "$_dispatch" && "$_arb_guard" -lt "$_dispatch" ]]; 
 else
   assert "halt ordering: guard fires before ANY pipeline dispatch (no dev mutation, no replay, no QA, no 2nd backend)" "fail"
 fi
-if awk "NR>=$_pause_def && NR<=$((_pause_def + 45))" "$RG" | grep -q '^  exit 0$'; then
+# Slice the REAL function body (first column-0 `}` after its header) rather than
+# guessing a line window: the per-path remedy `case` made a fixed +45 window stop
+# short of the exit, which is an anchor defect, not a behaviour change.
+_pause_end="$(awk -v s="$_pause_def" 'NR>s && $0=="}" {print NR; exit}' "$RG")"
+if [[ -n "$_pause_end" ]] && awk "NR>=$_pause_def && NR<=$_pause_end" "$RG" | grep -q '^  exit 0$'; then
   assert "halt: the pause exits (never falls through to a lean dispatch)" "pass"
 else
   assert "halt: the pause exits (never falls through to a lean dispatch)" "fail"
@@ -306,6 +310,126 @@ if grep -q 'depth_cost_overridden' "$RG"; then
 else
   assert "evidence: the overridden cost rung is recorded in telemetry" "fail"
 fi
+
+# ══════════════════════════════════════════════════════════════════════════════
+# LEGACY ALLOWLIST PATH: CHAIN_DEPTH_ARBITER=false must not defeat the
+# requirement.
+#
+# THE HOLE: the whole precedence rung AND the _full_depth_pause backstop live
+# inside `if [[ "${CHAIN_DEPTH_ARBITER:-true}" == "true" ... ]]`. With the knob
+# off (or on the arbiter's own PRIOR_DEPTH==full rung) control falls through to
+# the SPEED-10 allowlist, which has no goal_full_depth_required guard at all: a
+# hard-required spec that names no `Full trigger:` was demoted to lean with a
+# `depth_demoted` event and NO pause. The knob was even documented as a resume
+# hatch for AWAITING_FULL_DEPTH — i.e. the advertised escape silently removed
+# the control instead of the cause.
+#
+# Sliced and executed like the ladder above: the allowlist block is inline, so
+# take it between its own `if` and the matching 2-space `fi`.
+# ══════════════════════════════════════════════════════════════════════════════
+_leg_start="$(grep -n 'DEPTH" == "full" && -n "\$_use_legacy_allowlist"' "$RG" | head -1 | cut -d: -f1)"
+_leg_end="$(awk -v s="$_leg_start" 'NR>s && $0=="  fi" {print NR; exit}' "$RG")"
+awk -v s="$_leg_start" -v e="$_leg_end" 'NR>=s && NR<=e' "$RG" > "$WORK/legacy-block.sh"
+if [[ -n "$_leg_start" && -n "$_leg_end" ]] && bash -n "$WORK/legacy-block.sh" 2>/dev/null; then
+  assert "harness: the legacy allowlist slices out as a syntactically complete block" "pass"
+else
+  assert "harness: the legacy allowlist slices out as a syntactically complete block" "fail"
+fi
+
+# run_legacy <hard:0|1> <full_trigger:0|1> <prior_verdict>
+# -> "PAUSE:<reason>:<step>" when the guard pauses, else "DEPTH:<effective depth>"
+run_legacy() {
+  local hard="$1" trig="$2" pv="$3"
+  # The pause stub cannot echo its result: the sourced block's stdout is
+  # discarded (engine chatter) and `exit 0` skips the tail printf. Route both
+  # outcomes through files instead.
+  rm -f "$WORK/legacy-pause" "$WORK/legacy-depth"
+  (
+    set +e
+    PRIOR_VERDICT="$pv"
+    CURRENT_ITER=8; LEAN_STREAK=0; DEPTH="full"; _use_legacy_allowlist=1
+    GOAL_SESSION_DIR_LOCAL="$WORK/sess"; ITER_SPEC_PATH="$WORK/legacy-spec.md"
+    mkdir -p "$WORK/sess/iter-7"
+    printf -- '- **Depth:** full\n' > "$ITER_SPEC_PATH"
+    [[ "$trig" == 1 ]] && printf -- '- **Full trigger:** 1 — new journey\n' >> "$ITER_SPEC_PATH"
+    [[ "$hard" == 1 ]] && printf -- '- **Depth enforcement:** required\n' >> "$ITER_SPEC_PATH"
+    goal_cadence_forces_full() { return 1; }
+    record_telemetry_event() { :; }
+    _full_depth_pause() { printf 'PAUSE:%s:%s' "$1" "$2" > "$WORK/legacy-pause"; exit 0; }
+    # shellcheck disable=SC1090
+    . "$WORK/legacy-block.sh" >/dev/null 2>&1
+    printf 'DEPTH:%s' "$DEPTH" > "$WORK/legacy-depth"
+  )
+  if [[ -s "$WORK/legacy-pause" ]]; then cat "$WORK/legacy-pause"; else cat "$WORK/legacy-depth" 2>/dev/null; fi
+}
+
+# a. hard-required + legacy path + no Full trigger -> PAUSE, never lean
+r="$(run_legacy 1 0 CONTINUE)"
+if [[ "$r" == PAUSE:*:depth-legacy-allowlist ]]; then
+  assert "legacy allowlist: hard-required + no trigger -> AWAITING_FULL_DEPTH (step depth-legacy-allowlist)" "pass"
+else
+  assert "legacy allowlist: hard-required + no trigger -> AWAITING_FULL_DEPTH (got '$r')" "fail"
+fi
+
+# b. control — ordinary iteration on the same path still demotes to lean
+r="$(run_legacy 0 0 CONTINUE)"
+[[ "$r" == "DEPTH:lean" ]] \
+  && assert "legacy allowlist control: ordinary + no trigger -> lean (SPEED-10 unchanged)" "pass" \
+  || assert "legacy allowlist control: ordinary + no trigger -> lean (got '$r')" "fail"
+
+# c. control — a hard-required spec that DOES name a trigger runs full, no pause
+r="$(run_legacy 1 1 CONTINUE)"
+[[ "$r" == "DEPTH:full" ]] \
+  && assert "legacy allowlist control: hard-required + trigger -> full, no pause" "pass" \
+  || assert "legacy allowlist control: hard-required + trigger -> full, no pause (got '$r')" "fail"
+
+# d. control — ordinary spec with a trigger is untouched
+r="$(run_legacy 0 1 CONTINUE)"
+[[ "$r" == "DEPTH:full" ]] \
+  && assert "legacy allowlist control: ordinary + trigger -> full (SPEED-10 unchanged)" "pass" \
+  || assert "legacy allowlist control: ordinary + trigger -> full (got '$r')" "fail"
+
+# e. CHAIN_DEPTH_ARBITER=false must never be offered as a way OUT of this pause.
+#    It removes the precedence rung AND the backstop and routes to the legacy
+#    allowlist — the path that used to demote a hard-required iteration. (The
+#    knob's ordinary "spec asked full, ladder demoted it" log line is a different
+#    message and stays; only pause-guidance contexts are checked here.)
+_hatch_ok=pass
+# Each of these files documents the pause on ONE line. The knob may appear there
+# only as an explicit non-remedy, never in the list of things to try.
+for f in "$ENGINE_ROOT/docs/goal-mode-quickstart.md" \
+         "$ENGINE_ROOT/README.md" \
+         "$ENGINE_ROOT/skills/goal-interactive-dispatch.md" \
+         "$ENGINE_ROOT/.claude/skills/goal-interactive-dispatch.md"; do
+  _ln="$(grep -h 'AWAITING_FULL_DEPTH' "$f" 2>/dev/null | grep 'CHAIN_DEPTH_ARBITER=false' || true)"
+  [[ -n "$_ln" ]] && ! printf '%s' "$_ln" | grep -qE 'NOT remed|NOT a way|is not a way|never suggest|not a hatch' && _hatch_ok=fail
+  # the old recommendation shapes must be gone outright
+  printf '%s' "$_ln" | grep -qiE 'restore the legacy allowlist: `?CHAIN_DEPTH_ARBITER=false|or `?CHAIN_DEPTH_ARBITER=false`?,' && _hatch_ok=fail
+done
+# run-goal.sh's own status-header entry for the pause
+_hdr="$(awk '/^#   AWAITING_FULL_DEPTH/{f=1} f&&/^#/{print} f&&!/^#/{exit}' "$RG")"
+printf '%s' "$_hdr" | grep -q 'CHAIN_DEPTH_ARBITER=false' && _hatch_ok=fail
+# _full_depth_pause: never as a bulleted option; if named at all, only as a denial
+_fp_start="$(grep -n '^_full_depth_pause()' "$RG" | head -1 | cut -d: -f1)"
+_fp_end="$(awk -v s="$_fp_start" 'NR>s && $0=="}" {print NR; exit}' "$RG")"
+awk -v s="$_fp_start" -v e="$_fp_end" 'NR>=s && NR<=e' "$RG" > "$WORK/pause-fn.sh"
+grep -qE 'echo "[[:space:]]*\*.*CHAIN_DEPTH_ARBITER=false' "$WORK/pause-fn.sh" && _hatch_ok=fail
+if grep -q 'CHAIN_DEPTH_ARBITER' "$WORK/pause-fn.sh"; then
+  grep -qiE 'is NOT|not a hatch|does not|never' "$WORK/pause-fn.sh" || _hatch_ok=fail
+else
+  _hatch_ok=fail   # the ruling requires the denial to be stated, not just omitted
+fi
+assert "guidance: CHAIN_DEPTH_ARBITER=false is denied, never offered, as an AWAITING_FULL_DEPTH remedy" "$_hatch_ok"
+
+# f. the pause guidance is per-path, not one generic arbiter-only list
+if grep -q 'depth-legacy-allowlist' "$RG" \
+   && grep -q 'remedy=' "$RG" \
+   && grep -q 'no-finalize' "$RG"; then
+  assert "guidance: _full_depth_pause carries per-path remedy text and a marker remedy= field" "pass"
+else
+  assert "guidance: _full_depth_pause carries per-path remedy text and a marker remedy= field" "fail"
+fi
+
 
 echo ""
 echo "  ${PASS} passed, ${FAIL} failed"
