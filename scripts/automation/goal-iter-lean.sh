@@ -1098,7 +1098,7 @@ else
   _rev_rc=0
   run_reviewer || _rev_rc=$?
   _pause_if_transport "$_rev_rc" "reviewer"
-  record_review_verdict "$REVIEW_REPORT" 1 "$ITER_NAME" "$_rev_rc"
+  record_review_verdict "$REVIEW_REPORT" 1 "$ITER_NAME" "$_rev_rc" || true
   if [[ "$_rev_rc" -eq 0 ]] && _review_parses; then
     step_mark_done review-1 --dir "$ITER_DIR" --verdict "$(_review_verdict)" "$REVIEW_REPORT"
   fi
@@ -1143,7 +1143,7 @@ Review report path: $REVIEW_REPORT
     _rev_rc=0
     run_reviewer || _rev_rc=$?
     _pause_if_transport "$_rev_rc" "reviewer (fix-mode)"
-    record_review_verdict "$REVIEW_REPORT" 2 "$ITER_NAME" "$_rev_rc"
+    record_review_verdict "$REVIEW_REPORT" 2 "$ITER_NAME" "$_rev_rc" || true
     if [[ "$_rev_rc" -eq 0 ]] && _review_parses; then
       step_mark_done review-2 --dir "$ITER_DIR" --verdict "$(_review_verdict)" "$REVIEW_REPORT"
     fi

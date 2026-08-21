@@ -221,7 +221,8 @@ TRIP (one `experiment_reverted` event per key):
 - **Quality dimension** — any `REGRESSION` verdict, any journey regression, an
   unparseable review verdict, or first-attempt review `FAIL`s in ≥2 iterations of
   the window. "Unparseable" is a `review_verdict` event with an empty `verdict`:
-  `goal-iter-lean.sh` writes one when the reviewer was dispatched and came back
+  `goal-iter-lean.sh` (and `run-phase.sh` Step 3 in full-depth iterations, via
+  the same helper) writes one when the reviewer was dispatched and came back
   without a parseable `**Verdict:**` line (quota pauses excluded, and a
   resume-skipped review emits no event at all).
 - **Cost dimension** (ground rule D5: an earlier "be terser" change *increased*

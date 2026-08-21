@@ -91,7 +91,7 @@ record_telemetry_event() {
 record_review_verdict() {
   local report="$1" attempt="$2" iter_name="$3" rc="${4:-0}" v=""
   if grep -qE '^\*\*Verdict:\*\*[[:space:]]*(PASS_WITH_NOTES|PASS|FAIL)[[:space:]]*$' "$report" 2>/dev/null; then
-    v="$(grep -m1 -E '^\*\*Verdict:\*\*' "$report" 2>/dev/null | grep -oE 'PASS_WITH_NOTES|PASS|FAIL' | head -1)"
+    v="$(grep -m1 -E '^\*\*Verdict:\*\*[[:space:]]*(PASS_WITH_NOTES|PASS|FAIL)[[:space:]]*$' "$report" 2>/dev/null | grep -oE 'PASS_WITH_NOTES|PASS|FAIL' | head -1 || true)"
   elif [[ "$rc" -eq "${QUOTA_EXHAUSTED_EXIT_CODE:-75}" ]]; then
     return 0
   fi
