@@ -236,6 +236,17 @@ bqa_results_infra_reason() {
 replay_lane_partition_and_verify() {
   local _rl_iter="$1"
 
+  # FAIL-CLOSED: the deterministic replay drives a real browser against real
+  # services. Under maintenance isolation that is forbidden regardless of how we
+  # got here — note the partitioner routes TARGET journeys as well as
+  # Required-still-passing ones, so an empty required set is NOT what makes an
+  # iteration safe. Refuse rather than partition.
+  if declare -F goal_maintenance_isolation_required >/dev/null 2>&1 \
+     && goal_maintenance_isolation_required; then
+    maintenance_isolation_refuse "replay_lane_partition_and_verify" "deterministic replay for ${_rl_iter}" || true
+    return 0
+  fi
+
   # Stale-artifact hygiene: a prior run/attempt's lane files must not survive
   # into this run — a merge would ingest them as current output, and a lane
   # that does not engage this run (no goldens, hatch off) would leave last

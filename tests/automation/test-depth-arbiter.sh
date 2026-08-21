@@ -253,7 +253,11 @@ grep -q 'BINDING by default' "$RG" \
 
 # TARGET_JOURNEYS must be parsed BEFORE the arbiter consumes it.
 _tj_line="$(grep -n 'Target journeys:\\\*\\\*' "$RG" | head -1 | cut -d: -f1)"
-_arb_line="$(grep -n 'CHAIN_DEPTH_ARBITER' "$RG" | head -1 | cut -d: -f1)"
+# Anchor on the ladder's actual gate expression, not any mention of the knob:
+# the status-header docs and the AWAITING_FULL_DEPTH pause both name
+# CHAIN_DEPTH_ARBITER in prose (and sit earlier in the file), which would make a
+# bare token grep report a false ordering failure.
+_arb_line="$(grep -n '"${CHAIN_DEPTH_ARBITER:-true}"' "$RG" | head -1 | cut -d: -f1)"
 if [[ -n "$_tj_line" && -n "$_arb_line" && "$_tj_line" -lt "$_arb_line" ]]; then
   assert "wiring: TARGET_JOURNEYS parsed before the arbiter ladder" "pass"
 else

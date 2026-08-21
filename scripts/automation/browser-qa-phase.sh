@@ -40,6 +40,39 @@ UI_TEST_PLAN="$REPO_ROOT/reports/phase-${PHASE}-ui-test-plan.md"
 UI_SURFACE_MAP="$REPO_ROOT/reports/phase-${PHASE}-ui-surface-map.md"
 UI_TEST_RESULTS="$REPO_ROOT/reports/phase-${PHASE}-ui-test-results.md"
 
+# FAIL-CLOSED: maintenance isolation forbids this entire lane — browser QA and
+# the deterministic replay it drives both start processes and read a database
+# this iteration has declared off-limits. Refuse BEFORE any service probe, any
+# replay partition, and any agent dispatch, and leave an honest SKIPPED artifact
+# so the merge/evaluator path sees a contract decision, not a silent gap.
+if goal_maintenance_isolation_required "$SPEC"; then
+  maintenance_isolation_refuse "browser-qa-phase" "browser QA + deterministic replay lane" || true
+  mkdir -p "$(dirname "$UI_TEST_RESULTS")" 2>/dev/null || true
+  cat > "$UI_TEST_RESULTS" <<EOF
+# Phase ${PHASE} — UI Test Results
+
+**Browser QA Verdict:** SKIPPED
+
+## Why this lane did not run
+
+This iteration declares **maintenance isolation**. Application-service boot,
+browser QA, and the deterministic replay lane are **forbidden by contract** for
+it — this is a deliberate contract decision, not an infrastructure failure and
+not an accidental gap.
+
+Full reviewer / QA / auditor / coherence / evaluator depth is unchanged and still
+required; only app-service and browser execution are withheld. No backend or
+frontend was started, no browser was opened, no replay was partitioned or run,
+and no golden replay script was written.
+
+No journey is marked PASS or FAIL here. A journey failure against the current
+dataset would be expected damage from a known, still-unrepaired condition rather
+than a regression, so recording either verdict from this lane would be misleading.
+EOF
+  echo "[browser-qa] SKIPPED by maintenance isolation — wrote $UI_TEST_RESULTS"
+  exit 0
+fi
+
 echo "[browser-qa] Running browser QA for: $PHASE"
 
 # Detect frontend

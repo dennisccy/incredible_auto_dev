@@ -30,13 +30,31 @@ PLAN_FILE="$REPO_ROOT/runs/${PHASE}/plan.md"
 SPEC=$(phase_spec_path "$PHASE")
 TEST_PLAN="$REPO_ROOT/reports/qa/${PHASE}-test-plan.md"
 
+# Resolve maintenance isolation FIRST — before frontend detection, before any
+# start command is resolved, and before any service call. The previous ordering
+# resolved services and called ensure_services_running, and only then consulted
+# isolation; that is backwards. Under `set -e` it also meant relying on a
+# deliberate non-zero refusal as control flow. The static path now bypasses
+# service startup entirely, and ensure_services_running's refusal is left purely
+# as a backstop for accidental callers.
+MAINTENANCE_ISOLATION="no"
+if apply_maintenance_isolation_from_spec "$SPEC"; then
+  MAINTENANCE_ISOLATION="yes"
+fi
+
 # Detect if this phase has frontend (for Chrome MCP decision)
 FRONTEND_PRESENT="no"
-if detect_frontend_in_plan "$PLAN_FILE"; then
+if [[ "$MAINTENANCE_ISOLATION" == "yes" ]]; then
+  FRONTEND_PRESENT="no"   # contract: no browser/Chrome requirement is initialized
+elif detect_frontend_in_plan "$PLAN_FILE"; then
   FRONTEND_PRESENT="yes"
 fi
 
-echo "[qa-phase] Running QA for: $PHASE (frontend: $FRONTEND_PRESENT)"
+if [[ "$MAINTENANCE_ISOLATION" == "yes" ]]; then
+  echo "[qa-phase] Running QA for: $PHASE (MAINTENANCE ISOLATION — static/no-service mode; app services prohibited by contract)"
+else
+  echo "[qa-phase] Running QA for: $PHASE (frontend: $FRONTEND_PRESENT)"
+fi
 
 # ── Service bootstrapping ─────────────────────────────────────────────────
 QA_STARTED_PIDS=()
@@ -72,15 +90,22 @@ if [[ "${CHAIN_SHARED_SERVICES:-false}" != "true" ]]; then
   trap _cleanup_qa_services EXIT
 fi
 
-# Resolve start commands — use env vars if set, fall back to conventional scripts
-BACKEND_START_CMD="${CHAIN_START_BACKEND_CMD:-}"
-FRONTEND_START_CMD="${CHAIN_START_FRONTEND_CMD:-}"
+# Resolve start commands — use env vars if set, fall back to conventional scripts.
+# Under maintenance isolation these stay EMPTY: the fallback to start-backend.sh /
+# start-frontend.sh is never resolved into an executable command, so there is
+# nothing for any later caller to run. This is the bypass, not a skipped call.
+BACKEND_START_CMD=""
+FRONTEND_START_CMD=""
+if [[ "$MAINTENANCE_ISOLATION" != "yes" ]]; then
+  BACKEND_START_CMD="${CHAIN_START_BACKEND_CMD:-}"
+  FRONTEND_START_CMD="${CHAIN_START_FRONTEND_CMD:-}"
 
-if [[ -z "$BACKEND_START_CMD" ]] && [[ -f "$REPO_ROOT/scripts/start-backend.sh" ]]; then
-  BACKEND_START_CMD="bash $REPO_ROOT/scripts/start-backend.sh"
-fi
-if [[ -z "$FRONTEND_START_CMD" ]] && [[ -f "$REPO_ROOT/scripts/start-frontend.sh" ]]; then
-  FRONTEND_START_CMD="bash $REPO_ROOT/scripts/start-frontend.sh"
+  if [[ -z "$BACKEND_START_CMD" ]] && [[ -f "$REPO_ROOT/scripts/start-backend.sh" ]]; then
+    BACKEND_START_CMD="bash $REPO_ROOT/scripts/start-backend.sh"
+  fi
+  if [[ -z "$FRONTEND_START_CMD" ]] && [[ -f "$REPO_ROOT/scripts/start-frontend.sh" ]]; then
+    FRONTEND_START_CMD="bash $REPO_ROOT/scripts/start-frontend.sh"
+  fi
 fi
 
 # Derive URLs from port env vars (set by run-phase.sh for port isolation)
@@ -103,15 +128,48 @@ export QA_FRONTEND_REQUIRED="$FRONTEND_PRESENT"
 
 # Initial start — records PIDs in QA_STARTED_PIDS via the shared helper.
 # Skip when CHAIN_SHARED_SERVICES=true; the caller already booted services.
-if [[ "${CHAIN_SHARED_SERVICES:-false}" != "true" ]]; then
+# Under maintenance isolation the call is BYPASSED entirely rather than made and
+# refused: relying on a deliberate non-zero return as control flow under `set -e`
+# is fragile, and an attempted-then-refused boot would also misreport as
+# "services unavailable" instead of "prohibited by contract".
+if [[ "$MAINTENANCE_ISOLATION" == "yes" ]]; then
+  export QA_BACKEND_UP="no"
+  export QA_FRONTEND_UP="no"
+  echo "[qa-phase] Service startup bypassed — maintenance isolation (prohibited by contract, not unavailable)."
+elif [[ "${CHAIN_SHARED_SERVICES:-false}" != "true" ]]; then
   ensure_services_running
 fi
 
 # Build services context note for the agent prompt.
+if [[ "$MAINTENANCE_ISOLATION" == "yes" ]]; then
+  # Static/no-service QA. Full skepticism is still required — this withholds
+  # application services, NOT scrutiny. The note must say the restriction is a
+  # contract decision so the report cannot read as an accidental gap, and must
+  # forbid fabricating the evidence those services would have produced.
+  SERVICES_NOTE="
+MAINTENANCE ISOLATION IS ACTIVE FOR THIS ITERATION — run QA in no-service (static) mode.
+
+FORBIDDEN, by contract rather than by circumstance: starting the backend or frontend,
+calling ensure_services_running, any browser/Chrome automation, and the deterministic
+replay lane. No service is running and none may be started; the runner has deliberately
+not booted any. Note that this project's backend boot warmup itself writes derived rows,
+which is one reason the contract withholds it.
+
+STILL REQUIRED — full QA depth, using what does not need a running app: read the code and
+the diff; run the allowed file-scoped/unit tests; inspect persisted artifacts and reports;
+run direct READ-ONLY database queries where the iteration spec authorizes them; and verify
+mutation accounting after the developer's execution.
+
+State plainly in your report that it ran under maintenance isolation and that app-service
+and browser checks were prohibited by contract, not skipped by accident. Record those checks
+as SKIPPED with that reason. Do NOT fabricate browser evidence, and do NOT mark a journey
+PASS or FAIL from a lane that did not run."
+else
 SERVICES_NOTE="
 Note: The QA runner manages backend (${BACKEND_HEALTH_URL}, log: ${QA_BACKEND_LOG})$(if [[ "$FRONTEND_PRESENT" == "yes" ]]; then echo " and frontend (${FRONTEND_URL}, log: ${QA_FRONTEND_LOG})"; fi) for this validation.
 Services are restarted automatically if they die during quota-retry sleeps.
 You do NOT need to start or stop them yourself."
+fi
 
 # If the backend never came up, hand the QA agent the real reason (dependency
 # hint + captured start-up log tail set by ensure_services_running) so it records
@@ -126,7 +184,13 @@ fi
 # Pre-retry hook — revive any services that died during a long quota sleep
 # before claude attempts the next call. Hook runs in this shell (via eval),
 # so it can reference ensure_services_running and the QA_* env vars set above.
-export CHAIN_CLAUDE_PRE_RETRY_HOOK="ensure_services_running"
+# Under maintenance isolation the retry hook is NOT registered: a quota-retry
+# sleep must not become a back door that boots services the contract forbids.
+if [[ "$MAINTENANCE_ISOLATION" == "yes" ]]; then
+  unset CHAIN_CLAUDE_PRE_RETRY_HOOK 2>/dev/null || true
+else
+  export CHAIN_CLAUDE_PRE_RETRY_HOOK="ensure_services_running"
+fi
 
 # ── Host-safety: pinned + headless + confined QA browser (see browser-qa-phase)
 # The "qa" lane suffix keeps this lane off the browser-qa lane's profile lock —

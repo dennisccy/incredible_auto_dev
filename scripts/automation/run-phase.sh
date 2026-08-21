@@ -92,6 +92,14 @@ if [[ -z "$SPEC" ]]; then
   exit 1
 fi
 
+# Materialize maintenance isolation from THIS phase's spec before frontend
+# detection, shared-service logic, or any QA/UI/browser routing. run-goal.sh
+# already applies it for goal-mode dispatch; doing it here as well makes the
+# phase contract correct when run-phase.sh is invoked directly, so the guarantee
+# never depends on which wrapper you entered through. Same single parser; safe to
+# apply twice.
+apply_maintenance_isolation_from_spec "$SPEC" || true
+
 REVIEW_REPORT="$REPO_ROOT/reports/reviews/${PHASE}-review.md"
 QA_REPORT="$REPO_ROOT/reports/qa/${PHASE}-qa.md"
 PLAN_FILE="$REPO_ROOT/runs/${PHASE}/plan.md"
@@ -213,6 +221,18 @@ _render_summary_html() {
 # The caller is responsible for `kill_phase_servers` AFTER the fanout completes.
 # Mirrors the env contract `browser-qa-phase.sh` already uses for its own boot.
 _boot_shared_services() {
+  # FAIL-CLOSED under maintenance isolation. Beyond skipping the boot itself, we
+  # deliberately leave QA_BACKEND_START_CMD / QA_FRONTEND_START_CMD UNSET: those
+  # are what `ensure_services_running` requires before it will spawn anything, so
+  # a downstream lane that calls it anyway still cannot start a service. Belt and
+  # braces with the refusal inside ensure_services_running itself.
+  if goal_maintenance_isolation_required; then
+    export QA_FRONTEND_REQUIRED="no"
+    unset QA_BACKEND_START_CMD QA_FRONTEND_START_CMD 2>/dev/null || true
+    maintenance_isolation_refuse "_boot_shared_services" "shared app-service fanout boot" || true
+    log "Post-dev fanout: shared service boot SKIPPED — maintenance isolation (full review depth retained, app services forbidden)."
+    return 0
+  fi
   local _be_port="${CHAIN_BACKEND_PORT:-8000}"
   local _fe_port="${CHAIN_FRONTEND_PORT:-3000}"
   local _be_health="${CHAIN_BACKEND_HEALTH_URL:-http://localhost:${_be_port}/health}"

@@ -599,6 +599,18 @@ case "$_BQA_REQUESTED" in
     echo "[goal-iter-lean] CHAIN_LEAN_PARALLEL_BROWSER_QA='$_BQA_REQUESTED' is not off|replay|full — using off." >&2
     _BQA_MODE="off" ;;
 esac
+# FAIL-CLOSED belt-and-braces: when full depth is a hard requirement, this lean
+# path must never have been reached at all — run-goal.sh pauses AWAITING_FULL_DEPTH
+# before dispatch. If some other caller reaches lean anyway, the parallel
+# browser-QA/replay lane stays OFF regardless of the knob: that lane is exactly
+# what ran against a knowingly damaged database in the incident this guard exists
+# to prevent (it forks service boots + a replay the moment developer.done lands).
+if [[ "$_BQA_MODE" != "off" ]] && declare -F goal_full_depth_required >/dev/null 2>&1 \
+   && goal_full_depth_required "${SPEC:-}"; then
+  echo "[goal-iter-lean] Full depth is REQUIRED for this iteration — forcing CHAIN_LEAN_PARALLEL_BROWSER_QA=off (no replay, no browser QA, no second backend/frontend)." >&2
+  _BQA_MODE="off"
+  _BQA_OFF_REASON="full-depth-required"
+fi
 if [[ "$_BQA_MODE" == "replay" || "$_BQA_MODE" == "full" ]]; then
   _tw_rc=0
   _bqa_tripwire_active || _tw_rc=$?

@@ -30,6 +30,7 @@ AWAITING_PUMP
 AWAITING_GITHUB_AUTH
 AWAITING_DISK
 AWAITING_HOST_GUARD
+AWAITING_FULL_DEPTH
 KEYS
   return 0
 }
@@ -111,6 +112,11 @@ explain_goal_status() {
     AWAITING_HOST_GUARD)
       echo "  The chain paused because this computer's hardware protection is not in place — it never builds unprotected."
       echo "  Follow the reason printed above (project-extensions/host-guard/README.md), then resume."
+      ;;
+    AWAITING_FULL_DEPTH)
+      echo "  The chain paused because this step required its full, deeper review pass and could only have run a shorter one."
+      echo "  It stopped instead of quietly doing less checking — nothing was built or changed."
+      echo "  Follow the reason printed above, then resume."
       ;;
   esac
   echo "  Read more: ${PLAIN_LANG_GUIDE}  (what each status and verdict means)"

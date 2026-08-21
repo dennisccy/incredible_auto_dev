@@ -323,7 +323,16 @@ fi
 [[ "${CHAIN_DEMO_CAPTION:-}" =~ ^(1|true|yes|TRUE|YES)$ ]] && RUNNER_ARGS+=(--caption)
 
 _runner_rc=0
+if goal_maintenance_isolation_required 2>/dev/null; then
+  # FAIL-CLOSED: the demo runner drives Playwright against a live app. Refuse
+  # before launching a browser. Demo is non-gating showcase, so a skip here never
+  # blocks the pipeline — it simply produces no walkthrough for this iteration.
+  maintenance_isolation_refuse "demo_runner" "Playwright showcase for ${ID}" || true
+  echo "[demo] SKIPPED — maintenance isolation forbids browser/app execution for this iteration." >&2
+  _runner_rc=3
+else
 python3 "$RUNNER" "${RUNNER_ARGS[@]}" || _runner_rc=$?
+fi
 
 case "$_runner_rc" in
   0) ;;
@@ -340,7 +349,9 @@ esac
 # (lib/replay-lane.sh). Runs at both depths — demo-phase.sh is the one
 # recording hook the lean tail and the full pipeline share. Non-gating
 # showcase enrichment: any failure inside is contained.
-if [[ "$MODE" == "record" && $_runner_rc -eq 0 && "$ID" =~ ^goal-.+-iter-[0-9]+$ ]]; then
+if goal_maintenance_isolation_required 2>/dev/null; then
+  maintenance_isolation_refuse "demo golden auto-derive" "browser-driven showcase for ${ID}" || true
+elif [[ "$MODE" == "record" && $_runner_rc -eq 0 && "$ID" =~ ^goal-.+-iter-[0-9]+$ ]]; then
   source "$SCRIPT_DIR/lib/replay-lane.sh"
   # shellcheck disable=SC2034  # log prefix consumed by the lane lib
   REPLAY_LANE_TAG="demo"

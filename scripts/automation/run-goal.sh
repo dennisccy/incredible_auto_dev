@@ -77,6 +77,14 @@
 #                      budget is exceeded by the concurrently running sessions, or CPU boost was
 #                      re-enabled); fix per the printed reason (docs/host-guard.md,
 #                      project-extensions/host-guard/README.md), then --resume
+#   AWAITING_FULL_DEPTH - an iteration declared full depth a HARD requirement
+#                      (CHAIN_REQUIRE_FULL_DEPTH=true or a spec `Depth enforcement: required`
+#                      line) but the deterministic depth arbiter could only grant lean. The
+#                      engine halts BEFORE dispatch: no developer mutation, no lean parallel
+#                      browser-QA/replay lane, no second backend/frontend, no DB or network
+#                      action, and no depth-dispatched marker is written (so a resume cannot
+#                      inherit a stale lean decision). Widen CHAIN_FULL_CADENCE_CAP, set
+#                      CHAIN_DEPTH_ARBITER=false, or let the cadence window pass — then --resume
 #
 # Quota exhaustion is NOT a halt: claude_with_quota_retry transparently sleeps
 # until the quota resets and resumes.
@@ -1067,6 +1075,52 @@ _host_guard_reset_forensics() {
   hg_event reset_detected "$(printf '{"code":"%s","streak":"%s"}' "$hex" "$streak")"
   return 0
 }
+_full_depth_pause() { # $1 reason, $2 detected_at_step — pause AWAITING_FULL_DEPTH (resumable) and exit
+  # FAIL-CLOSED depth guard. Reached only when full depth is a HARD requirement
+  # (goal_full_depth_required) and the engine was about to run the iteration at
+  # a lesser depth. We halt BEFORE dispatch, so by construction this iteration
+  # performs no developer mutation, forks no lean parallel browser-QA/replay
+  # lane, starts no second backend/frontend, and touches no database or network.
+  # The requirement is recorded as UNMET rather than silently rewritten: the
+  # depth-dispatched marker is NOT written, so a resume cannot inherit a stale
+  # `lean` decision for this iteration.
+  local reason="$1" step="${2:-depth-arbiter}"
+  echo "[run-goal] Full depth is REQUIRED for this iteration but could not be dispatched — pausing (AWAITING_FULL_DEPTH)."
+  echo "[run-goal]   reason: $reason"
+  echo "[run-goal]   no fallback: the iteration did NOT run at lean depth, nothing was dispatched, and no mutation occurred."
+  rm -f "$ITER_DIR/depth-dispatched" 2>/dev/null || true
+  mkdir -p "$ITER_DIR" 2>/dev/null || true
+  printf 'requested=full\nactual=UNMET\nreason=%s\nstep=%s\n' "$reason" "$step" \
+    > "$ITER_DIR/depth-requirement-unmet" 2>/dev/null || true
+  python3 - <<PY
+import json, datetime
+d = json.load(open("$SESSION_JSON"))
+d["status"] = "AWAITING_FULL_DEPTH"
+d["updated_at"] = datetime.datetime.now(datetime.UTC).isoformat().replace('+00:00','Z')
+import os as _os, tempfile as _tf
+_fd, _tmp = _tf.mkstemp(dir=_os.path.dirname("$SESSION_JSON") or ".", suffix=".sjtmp")
+with _os.fdopen(_fd, "w") as _f:
+    json.dump(d, _f, indent=2)
+    _f.write("\n")
+_os.replace(_tmp, "$SESSION_JSON")
+PY
+  record_telemetry_event "halt" "$(printf '{"reason":"AWAITING_FULL_DEPTH","detected_at_step":"%s","demotion_reason":"%s"}' "$step" "$reason")"
+  echo ""
+  echo "Full depth was required but the deterministic arbiter could not grant it."
+  echo "Resolve by one of:"
+  echo "  * let the cadence window pass (the cap is CHAIN_FULL_CADENCE_CAP, default 4), or"
+  echo "  * raise/disable the cap for this run: CHAIN_FULL_CADENCE_CAP=1, or"
+  echo "  * restore the legacy allowlist: CHAIN_DEPTH_ARBITER=false"
+  echo "then resume:"
+  echo "  ./scripts/automation/run-goal.sh --resume --session-id $SESSION_ID"
+  echo "Do NOT clear CHAIN_REQUIRE_FULL_DEPTH to make this pause go away — the"
+  echo "requirement exists because lean depth would skip the lane that gates a"
+  echo "destructive write."
+  explain_goal_status "AWAITING_FULL_DEPTH" "$SESSION_ID" "$REPO_ROOT"
+  echo "════════════════════════════════════════════════════════════════════"
+  exit 0
+}
+
 _host_guard_pause() { # $1 reason, $2 detected_at_step — pause AWAITING_HOST_GUARD (resumable) and exit
   local reason="$1" step="${2:-preflight}"
   echo "[run-goal] Host-guard check failed — pausing (AWAITING_HOST_GUARD)."
@@ -2462,6 +2516,14 @@ Do NOT write code or implement anything. The iteration spec and any blueprint ed
     DEPTH="lean"
   fi
   if [[ "$DEPTH" != "lean" && "$DEPTH" != "full" && "$DEPTH" != "evidence" ]]; then
+    # THIRD demotion site: an unparseable Depth line silently defaults to lean.
+    # Harmless normally, but under a hard full-depth requirement it is the same
+    # silent degradation the guard exists to stop — a malformed spec line must
+    # not be the reason an adversarial audit lane is skipped. (A spec that
+    # legitimately parses as `lean` never reaches here.)
+    if goal_full_depth_required "$ITER_SPEC_PATH"; then
+      _full_depth_pause "unparseable Depth line in $ITER_SPEC_PATH" "depth-parse"
+    fi
     echo "[run-goal] Could not parse Depth (expected 'lean', 'full', or 'evidence') from $ITER_SPEC_PATH. Defaulting to lean." >&2
     DEPTH="lean"
   fi
@@ -2490,7 +2552,34 @@ Do NOT write code or implement anything. The iteration spec and any blueprint ed
       _prev_coh_file="$GOAL_SESSION_DIR_LOCAL/iter-$((CURRENT_ITER - 1))/coherence.md"
       _prev_budget_marker="$GOAL_SESSION_DIR_LOCAL/iter-$((CURRENT_ITER - 1))/budget-breached"
       _arb_decision="" _arb_reason=""
-      if [[ "${PRIOR_VERDICT:-}" == "ESCALATE" || "${PRIOR_VERDICT:-}" == "REGRESSION" ]]; then
+      if goal_full_depth_required "$ITER_SPEC_PATH"; then
+        # ── PRECEDENCE: a hard full-depth requirement outranks COST policy ─────
+        # Everything below this rung is a cost/performance heuristic answering
+        # "is full depth worth the wall-clock here?" — budget-breach, full-cap,
+        # cadence, and the evaluator's lean preference. None of them answers
+        # "can this engine execute full depth?", which is the only question that
+        # may override a safety requirement. When an iteration is hard-required
+        # full (CHAIN_REQUIRE_FULL_DEPTH, or a spec `Depth enforcement: required`
+        # line) the adversarial review/audit lane IS the control standing between
+        # a destructive write and an unreviewed mutation, so cost may not trade
+        # it away. The cost rungs stay fully intact for every ordinary iteration.
+        _arb_decision="full"; _arb_reason="hard-full-required"
+        # Evidence, not behaviour: record which cost rung WOULD have demoted this
+        # iteration, so the budget/cadence signal is preserved in telemetry
+        # rather than silently discarded. Markers on disk are never touched.
+        _overridden=""
+        if [[ -f "$_prev_budget_marker" && "${PRIOR_VERDICT:-}" == "CONTINUE" ]]; then
+          _overridden="budget-breach"
+        elif goal_full_ran_in_window "$GOAL_SESSION_DIR_LOCAL" "$CURRENT_ITER"; then
+          _overridden="full-cap"
+        elif [[ "$PRIOR_DEPTH" == "lean" || "$PRIOR_DEPTH" == "evidence" ]]; then
+          _overridden="evaluator-requested-${PRIOR_DEPTH}"
+        fi
+        if [[ -n "$_overridden" ]]; then
+          echo "[run-goal] Depth arbiter: HARD full-depth requirement overrides the cost rung '$_overridden' (the signal is recorded, not acted on; its marker is preserved)."
+          record_telemetry_event "depth_cost_overridden" "$(jq -cn --arg o "$_overridden" --arg pv "${PRIOR_VERDICT:-}" --arg pd "${PRIOR_DEPTH:-}" '{requirement:"hard-full-required", overridden_cost_rung:$o, prior_verdict:$pv, prior_depth:$pd}' 2>/dev/null || printf '{"requirement":"hard-full-required","overridden_cost_rung":"%s"}' "$_overridden")"
+        fi
+      elif [[ "${PRIOR_VERDICT:-}" == "ESCALATE" || "${PRIOR_VERDICT:-}" == "REGRESSION" ]]; then
         _arb_decision="full"; _arb_reason="prior-verdict-${PRIOR_VERDICT}"
       elif grep -qE '^\*\*Verdict:\*\* COHERENCE-FAIL' "$_prev_coh_file" 2>/dev/null; then
         _arb_decision="full"; _arb_reason="prior-coherence-fail"
@@ -2519,6 +2608,15 @@ Do NOT write code or implement anything. The iteration spec and any blueprint ed
         # PRIOR_DEPTH==full: the evaluator itself asked for full — fall back
         # to the legacy SPEED-10 allowlist for the trigger check.
         _use_legacy_allowlist=1
+      fi
+      if [[ "$_arb_decision" == "lean" ]] && goal_full_depth_required "$ITER_SPEC_PATH"; then
+        # Defence in depth. With the precedence rung above, a hard-required
+        # iteration always resolves to full, so this is unreachable by design —
+        # AWAITING_FULL_DEPTH must mean "the engine cannot execute full depth",
+        # never "the cost ladder preferred lean". It stays as a backstop so a
+        # future edit that reorders or adds a cost rung cannot silently
+        # reintroduce the demotion this guard exists to stop.
+        _full_depth_pause "arbiter-demotion:${_arb_reason}" "depth-arbiter"
       fi
       if [[ "$_arb_decision" == "lean" ]]; then
         echo "[run-goal] Depth arbiter: spec asked FULL but the deterministic ladder demotes it to LEAN (reason: $_arb_reason; prior verdict: ${PRIOR_VERDICT:-none}; evaluator depth recommendation: ${PRIOR_DEPTH:-none}). Set CHAIN_DEPTH_ARBITER=false to restore the legacy allowlist."
@@ -2612,7 +2710,18 @@ PYEOF
   # (the iter-8 CLOSURE-FAIL root cause). Exported unconditionally (empty = none)
   # so a prior iteration's value never leaks forward.
   export CHAIN_GOAL_TARGET_JOURNEYS="$TARGET_JOURNEYS"
-  record_telemetry_event "iter_dispatch" "$(jq -cn --arg d "$DEPTH" --arg tj "$TARGET_JOURNEYS" '{depth:$d, target_journeys:$tj}' 2>/dev/null || printf '{"depth":"%s"}' "$DEPTH")"
+  # Materialize this iteration's maintenance-isolation declaration into the
+  # environment BEFORE any child dispatch (run-phase.sh / goal-iter-lean.sh /
+  # evidence micro-path). Most chokepoints — _boot_shared_services,
+  # ensure_services_running, detect_frontend_in_plan, the replay lane, the demo
+  # runner — are called with no spec path and can only consult the environment,
+  # so without this a spec could declare isolation and still have services booted
+  # beneath it. Recomputed every iteration, so an isolated one never leaks into
+  # the next. Note the ordering: this must precede the CHAIN_GOAL_TARGET_JOURNEYS
+  # consumer too, since the target-journey frontend override is what isolation
+  # subordinates.
+  apply_maintenance_isolation_from_spec "$ITER_SPEC_PATH" || true
+  record_telemetry_event "iter_dispatch" "$(jq -cn --arg d "$DEPTH" --arg tj "$TARGET_JOURNEYS" --arg mi "${CHAIN_MAINTENANCE_ISOLATION:-false}" '{depth:$d, target_journeys:$tj, maintenance_isolation:$mi}' 2>/dev/null || printf '{"depth":"%s"}' "$DEPTH")"
 
   # 2c. Join the previous iteration's background showcase tail (if any) BEFORE
   # dispatching build work: its artifacts get committed here, so developer /
@@ -2654,6 +2763,11 @@ PYEOF
       bash "$SCRIPT_DIR/run-phase.sh" "$ITER_NAME" "${_full_extra_args[@]}" || _exec_rc=$?
       _engine_step_done
     else
+      # SECOND demotion site: an older run-phase.sh without --no-finalize used to
+      # silently fall back to lean here too. Same fail-closed rule applies.
+      if goal_full_depth_required "$ITER_SPEC_PATH"; then
+        _full_depth_pause "run-phase.sh lacks --no-finalize" "full-dispatch"
+      fi
       echo "[run-goal] run-phase.sh does not yet support --no-finalize. Falling back to lean for safety." >&2
       printf 'lean' > "$ITER_DIR/depth-dispatched"
       _engine_step_begin "lean-pipeline"

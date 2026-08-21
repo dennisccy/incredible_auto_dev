@@ -1145,6 +1145,134 @@ goal_full_ran_in_window() {
   return 1
 }
 
+# goal_full_depth_required <spec_path>
+# True iff full depth is a HARD REQUIREMENT for this iteration rather than a
+# preference the arbiter may trade away for wall-clock. The arbiter above is a
+# COST ladder: it demotes a spec's `Depth: full` to lean whenever a full already
+# ran in the cadence window ("full-cap"), which is correct for ordinary feature
+# work and WRONG when full depth is the safety control itself — e.g. an
+# iteration whose adversarial audit lane is the thing standing between a
+# destructive database write and an unreviewed mutation. In that case a silent
+# demotion removes the very check the iteration exists to satisfy, and lean depth
+# additionally auto-enables the parallel browser-QA replay lane
+# (goal-iter-lean.sh: CHAIN_LEAN_PARALLEL_BROWSER_QA defaults to `replay`).
+#
+# Two independent ways to declare the requirement — either is sufficient:
+#   * CHAIN_REQUIRE_FULL_DEPTH=true|1  — session-level (set by the operator for
+#     a run whose contract makes full depth mandatory);
+#   * the iteration spec carries a `Depth enforcement: required` line — so a
+#     decomposer can mark a single destructive iteration without pinning the
+#     whole session.
+# Default OFF: with neither present the arbiter keeps its existing behaviour
+# exactly, so ordinary projects and legitimately lean iterations are unaffected.
+goal_full_depth_required() {
+  local spec_path="${1:-}"
+  case "${CHAIN_REQUIRE_FULL_DEPTH:-}" in
+    true|TRUE|1|yes|on) return 0 ;;
+  esac
+  [[ -n "$spec_path" && -f "$spec_path" ]] || return 1
+  grep -qiE '^[[:space:]]*-?[[:space:]]*(\*\*)?Depth[ -]enforcement:?(\*\*)?[[:space:]]*:?[[:space:]]*(\*\*)?required' \
+    "$spec_path" 2>/dev/null
+}
+
+# ── Maintenance isolation (raw-layer/destructive maintenance iterations) ──────
+# THE PROBLEM IT SOLVES: "full depth" and "boot the app" were the same thing.
+# A backend-only maintenance iteration that must keep FULL reviewer/audit
+# scrutiny had no way to say so without also dragging in the browser lane —
+# `detect_frontend_in_plan` force-enables it whenever CHAIN_GOAL_TARGET_JOURNEYS
+# is non-empty (overriding "Frontend Present: no"), `run-phase.sh` boots shared
+# services in its post-dev fanout, `qa-phase.sh` self-boots the backend through
+# `ensure_services_running`, and the deterministic replay lane routes TARGET
+# journeys as well as required ones. For a repair iteration operating on a
+# damaged database — where backend boot warmup itself writes derived rows — that
+# is a correctness hazard, not merely wasted time.
+#
+# Maintenance isolation means exactly:
+#     full reasoning/reviewer/audit depth REQUIRED
+#     application-service and browser execution FORBIDDEN
+# Allowed: developer, reviewer, file-scoped tests, static QA, auditor, coherence,
+# evaluator. Forbidden: backend boot, frontend boot, browser QA, deterministic
+# replay, demo/showcase browser, shared app-service fanout.
+#
+# Declared per iteration by a `Maintenance isolation: required` spec line, or
+# session-wide by CHAIN_MAINTENANCE_ISOLATION. run-goal.sh exports the env form
+# once it has parsed the spec, so components that never receive a spec path
+# (ensure_services_running, replay-lane, browser-qa-phase) consult the SAME
+# predicate. Default OFF — ordinary projects and iterations are unaffected.
+goal_maintenance_isolation_required() {
+  local spec_path="${1:-}"
+  case "${CHAIN_MAINTENANCE_ISOLATION:-}" in
+    true|TRUE|1|yes|on|required) return 0 ;;
+  esac
+  [[ -n "$spec_path" && -f "$spec_path" ]] || return 1
+  grep -qiE '^[[:space:]]*-?[[:space:]]*(\*\*)?Maintenance[ -]isolation:?(\*\*)?[[:space:]]*:?[[:space:]]*(\*\*)?required' \
+    "$spec_path" 2>/dev/null
+}
+
+# apply_maintenance_isolation_from_spec <spec_path>
+# Materialize the SPEC-level declaration into runtime state so child processes
+# inherit it. Without this the contract is only half-wired: most chokepoints
+# (_boot_shared_services, ensure_services_running, detect_frontend_in_plan, the
+# replay lane, the demo runner) are called with NO spec path and can only consult
+# the environment, while the marker itself lives in a file they never read. A
+# spec could therefore declare isolation and still have services booted beneath
+# it. Call this once per phase/iteration, immediately after the spec is resolved
+# and BEFORE any child dispatch or service logic.
+#
+# Uses the single predicate — no second parser. Always recomputes and overwrites:
+# an isolated iteration must not leak CHAIN_MAINTENANCE_ISOLATION into the next,
+# ordinary one, so the else-branch explicitly UNSETS rather than leaving stale
+# truth behind. Idempotent; safe to call from both run-goal.sh and a standalone
+# run-phase.sh entry.
+apply_maintenance_isolation_from_spec() {
+  local spec_path="${1:-}"
+  # Clear only what WE materialized for a previous iteration. Without this the
+  # predicate — which checks the environment first — would re-affirm its own
+  # stale value and an isolated iteration would silently isolate every iteration
+  # after it. An operator's session-wide CHAIN_MAINTENANCE_ISOLATION is tagged
+  # `env` instead and is never cleared here.
+  if [[ "${CHAIN_MAINTENANCE_ISOLATION_SOURCE:-}" == "spec" ]]; then
+    unset CHAIN_MAINTENANCE_ISOLATION CHAIN_MAINTENANCE_ISOLATION_SOURCE 2>/dev/null || true
+  fi
+  if goal_maintenance_isolation_required; then   # no spec arg ⇒ environment only
+    export CHAIN_MAINTENANCE_ISOLATION_SOURCE=env
+    echo "[maintenance-isolation] ACTIVE (session-level CHAIN_MAINTENANCE_ISOLATION) — application-service and browser execution forbidden; full reviewer/QA/audit depth retained." >&2
+    return 0
+  fi
+  if goal_maintenance_isolation_required "$spec_path"; then
+    export CHAIN_MAINTENANCE_ISOLATION=true
+    export CHAIN_MAINTENANCE_ISOLATION_SOURCE=spec
+    echo "[maintenance-isolation] ACTIVE for this phase/iteration (declared by $spec_path) — application-service and browser execution forbidden; full reviewer/QA/audit depth retained." >&2
+    return 0
+  fi
+  unset CHAIN_MAINTENANCE_ISOLATION CHAIN_MAINTENANCE_ISOLATION_SOURCE 2>/dev/null || true
+  return 1
+}
+
+# maintenance_isolation_refuse <operation> [detail]
+# FAIL CLOSED. Called from every forbidden path so a reached-anyway attempt is
+# loud and recorded instead of silently proceeding. Writes an explicit marker
+# next to the iteration when one is resolvable, emits telemetry when available,
+# and returns non-zero so the caller aborts that operation.
+maintenance_isolation_refuse() {
+  local op="${1:-unknown-operation}" detail="${2:-}"
+  echo "[maintenance-isolation] FORBIDDEN under maintenance isolation: ${op}${detail:+ — $detail}" >&2
+  echo "[maintenance-isolation] This iteration declared full reviewer/audit depth WITHOUT application-service or browser execution. Refusing, not degrading." >&2
+  local dir=""
+  if declare -F goal_iter_dir >/dev/null 2>&1; then dir="$(goal_iter_dir 2>/dev/null || true)"; fi
+  [[ -z "$dir" && -n "${ITER_DIR:-}" ]] && dir="$ITER_DIR"
+  if [[ -n "$dir" ]]; then
+    mkdir -p "$dir" 2>/dev/null || true
+    printf '%s\toperation=%s\tdetail=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$op" "$detail" \
+      >> "$dir/maintenance-isolation-refusals" 2>/dev/null || true
+  fi
+  if declare -F record_telemetry_event >/dev/null 2>&1; then
+    record_telemetry_event "maintenance_isolation_refused" \
+      "$(printf '{"operation":"%s","detail":"%s"}' "$op" "$detail")" 2>/dev/null || true
+  fi
+  return 1
+}
+
 # goal_new_fullstack_journey <spec_path> <journey_history>
 # True iff the spec plans a genuinely NEW full-stack journey: ≥1 concrete
 # Backend bullet AND ≥1 concrete Frontend bullet under IN SCOPE, a non-"none"
@@ -1256,6 +1384,20 @@ ensure_services_running() {
   export QA_FRONTEND_UP="unknown"
   export QA_BACKEND_LOG_TAIL=""
   export QA_FRONTEND_LOG_TAIL=""
+
+  # FAIL-CLOSED service gate. This is the single chokepoint every self-boot path
+  # goes through — qa-phase.sh calls it directly AND registers it as the
+  # quota-retry pre-hook, browser-qa/demo call it before their lanes. Refusing
+  # here makes backend/frontend start structurally impossible under isolation,
+  # rather than relying on any agent choosing not to.
+  if goal_maintenance_isolation_required; then
+    export QA_BACKEND_UP="no"
+    export QA_FRONTEND_UP="no"
+    export QA_BACKEND_LOG_TAIL="refused: maintenance isolation forbids application-service boot for this iteration"
+    export QA_FRONTEND_LOG_TAIL="$QA_BACKEND_LOG_TAIL"
+    maintenance_isolation_refuse "ensure_services_running" "backend/frontend boot"
+    return 1
+  fi
 
   # Backend: 2 attempts × 45s = the same 90s ceiling as the previous single shot,
   # but now re-SPAWNS on failure and reclaims a stale/drifted uvicorn by cwd.
@@ -1562,6 +1704,30 @@ verify_ui_artifacts() {
 # Handles both "Frontend Present: yes" (inline) and "## Frontend Present\nyes" (heading)
 detect_frontend_in_plan() {
   local plan_file="$1"
+  # Goal-mode override (ops-hardening iter-8 lesson): when the engine parsed a
+  # non-empty journey list for this iteration (CHAIN_GOAL_TARGET_JOURNEYS, exported
+  # by run-goal.sh), the browser lane MUST run even if the plan says
+  # "Frontend Present: no" — journeys are user-visible by contract, and a mis-written
+  # plan line once silently suppressed ALL browser evidence (iter-8 CLOSURE-FAIL,
+  # worked around since by hand-writing "yes" into every spec). Phase mode is
+  # unaffected: the variable is only ever set by run-goal.sh.
+  # Maintenance isolation OUTRANKS the target-journey override (scoped exception,
+  # default off). The override exists so a mis-written plan line cannot silently
+  # suppress browser evidence for a real product journey — that behaviour is
+  # preserved for every ordinary iteration. But a raw-layer maintenance iteration
+  # legitimately has target journeys AND legitimately must not start the app;
+  # without this, `Target journeys: J-10` alone would force the browser lane onto
+  # a damaged database. Isolation only ever REMOVES execution, never adds it.
+  if goal_maintenance_isolation_required; then
+    echo "[detect_frontend_in_plan] maintenance isolation active — NOT forcing the browser lane despite goal-mode journeys (${CHAIN_GOAL_TARGET_JOURNEYS:-none}); app/browser execution is forbidden for this iteration" >&2
+    return 1
+  fi
+  if [[ -n "${CHAIN_GOAL_TARGET_JOURNEYS:-}" ]]; then
+    if ! { [[ -f "$plan_file" ]] && grep -qi "frontend present: yes" "$plan_file"; }; then
+      echo "[detect_frontend_in_plan] goal-mode journeys present (${CHAIN_GOAL_TARGET_JOURNEYS}) — forcing browser lane despite plan" >&2
+    fi
+    return 0
+  fi
   [[ -f "$plan_file" ]] || return 1
   grep -qi "frontend present: yes" "$plan_file" && return 0
   grep -Pzoq '(?i)frontend present\s*\n\s*yes' "$plan_file" 2>/dev/null && return 0
