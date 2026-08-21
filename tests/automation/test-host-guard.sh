@@ -382,6 +382,9 @@ ENG_REG="$WORK/registry-engine"; mkdir -p "$ENG_REG"
 ENG_BOOST="$WORK/boost-engine"; echo 0 > "$ENG_BOOST"
 HOSTENV="$WORK/engine-host.env"
 
+# CHROME_PROFILE_ROOT / HOST_GUARD_MCP_MATCH are scoped to the sandbox because
+# the engine's EXIT trap reaps QA browsers (lib/common.sh:qa_browser_reap_on_exit)
+# — unscoped, a test engine's exit would scan the developer's real profile root.
 run_goal_bg() { # log, then run-goal args
   local log="$1"; shift
   ( cd "$SBX" && env "PATH=$STUB_DIR:$PATH" \
@@ -391,6 +394,8 @@ run_goal_bg() { # log, then run-goal args
       HOST_GUARD_REGISTRY_DIR="$ENG_REG" \
       HOST_GUARD_HOST_ENV_FILE="$HOSTENV" \
       HOST_GUARD_SYS_BOOST_PATH="$ENG_BOOST" \
+      CHROME_PROFILE_ROOT="$SBX/.chrome-profiles" \
+      HOST_GUARD_MCP_MATCH="$SBX/no-such-mcp" \
       setsid bash scripts/automation/run-goal.sh "$@" ) >"$log" 2>&1 &
   _SPAWNED_PGIDS+=("$!")
 }

@@ -1943,21 +1943,37 @@ _goal_engine_owns_lock() {
 # nothing is still writing into the tmp dir, then remove pid file + tmp dir.
 _goal_engine_on_exit() {
   _join_showcase_tail --kill 2>/dev/null || true
-  # Reap this project's pinned QA browsers (headless engine only; see
-  # lib/common.sh:qa_browser_reap_on_exit) — only when THIS process owns the
-  # engine: a refused second start must never kill a live engine's browser.
-  if _goal_engine_owns_lock; then
-    qa_browser_reap_on_exit 2>/dev/null || true
-  fi
   rm -f "$ENGINE_PID_FILE" 2>/dev/null || true
   chain_tmp_cleanup
   # Drop this engine's host-guard registry record so a concurrent project sees
   # the freed budget immediately (the pid sweep would catch it anyway).
   hg_event engine_stop "$(printf '{"iter":%s}' "${CURRENT_ITER:-0}")" 2>/dev/null || true
   hg_release 2>/dev/null || true
-  # REL-4: release LAST so the lock covers the whole cleanup window. Owner-
-  # checked no-op when this process never acquired (e.g. a refused start).
+  # Ownership of the engine lock decides whether we may reap this project's QA
+  # browsers below; sample it HERE, because release_engine_lock clears the record
+  # the predicate reads. A refused second start never acquired, so it is 0.
+  local _owns_engine=0
+  # `if`, not `&&`: an unowned lock must not trip `set -e` inside the EXIT trap.
+  if _goal_engine_owns_lock; then _owns_engine=1; fi
+  # REL-4: release after the cleanup above, so the lock covers the whole
+  # state-mutating window (only the browser reap below, which needs no lock,
+  # follows). Owner-checked no-op when this process never acquired (e.g. a
+  # refused start).
   release_engine_lock
+  # Reap this project's pinned QA browsers (headless engine only; see
+  # lib/common.sh:qa_browser_reap_on_exit). Dead last, and AFTER the lock is
+  # free: the reap needs no lock, and holding one across it refuses a --resume
+  # launched off the pause message this engine has already printed (observed as
+  # "[engine-lock] REFUSED … age 1s", tests/automation/test-host-guard.sh B3).
+  # Releasing first is also what makes the race safe: a resuming engine that
+  # takes the lock in this window is then seen by the hook's own sibling guard,
+  # which skips the reap. The cheap cleanups above are all done by now, so a
+  # goal-pause SIGKILL landing inside the reap cannot skip them.
+  # stderr is deliberately NOT swallowed — the skip line and browser-confine's
+  # warnings belong in the engine log.
+  if (( _owns_engine )); then
+    qa_browser_reap_on_exit || true
+  fi
 }
 trap _goal_engine_on_exit EXIT
 

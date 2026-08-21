@@ -57,14 +57,14 @@ SCHEMAS: tuple[ArtifactSchema, ...] = (
         path_pattern=re.compile(r"reports/reviews/.+-review\.md$"),
         verdict_enum=Verdict,
         required_h2=(),
-        description="Reviewer report — reports/reviews/<phase>-review.md (first-line `**Verdict:**` contract, no required H2)",
+        description="Reviewer report — reports/reviews/<phase>-review.md (bold `**Verdict:**` line contract, no required H2)",
     ),
     ArtifactSchema(
         artifact_type="qa",
         path_pattern=re.compile(r"reports/qa/.+-qa\.md$"),
         verdict_enum=Verdict,
         required_h2=(),
-        description="QA validation report — reports/qa/<phase>-qa.md (first-line `**Verdict:**` contract, no required H2)",
+        description="QA validation report — reports/qa/<phase>-qa.md (bold `**Verdict:**` line contract, no required H2)",
     ),
     ArtifactSchema(
         artifact_type="audit",

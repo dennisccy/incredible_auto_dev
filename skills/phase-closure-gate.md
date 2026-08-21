@@ -27,6 +27,8 @@ For every phase, verify all exist and are non-empty:
 
 Reject any artifact that contains only:
 - Generic placeholders: "TBD", "TODO", "FIXME", "FILL IN", "N/A" where content is expected
+  — the marker tokens are matched case-sensitively (uppercase), so lowercase "todo"
+  in ordinary product prose ("a todo list app") is not a placeholder
 - Vague test steps: "Test the form", "Verify it works", "Check the page"
 - Empty sections with just headers
 - Fewer than 5 lines of actual content (excluding headers)

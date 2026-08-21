@@ -28,7 +28,7 @@ disables everything.
 | `HOST_GUARD_REQUIRE_MARKERS` + `HOST_GUARD_MARKER_FILES` | require HOST-GUARD cap blocks in listed launcher scripts | project-specific |
 | `HOST_GUARD_TCTL_PAUSE` / `_RESUME` / `_MAX_WAIT` | thermal gate thresholds (°C, °C, s) | `90` / `80` / `1800` |
 | `HOST_GUARD_SAMPLER_INTERVAL` / `_MAX_BYTES` | forensics sampler cadence / csv ring size | `1` / `10485760` |
-| `HOST_GUARD_BROWSER_CONFINE` | `0` disables the QA-browser confinement pass | `1` (default) |
+| `HOST_GUARD_BROWSER_CONFINE` | `0` disables passes A–C of the QA-browser pass; `--reap` (pass D) is governed by `CHAIN_BQA_REAP` / `CHAIN_BQA_REAP_ON_EXIT` | `1` (default) |
 
 ## Machine-global aggregate budget
 
@@ -329,8 +329,15 @@ detached QA browser from a finished session blocked the next session's lane).
 | `CHROME_WS_PROFILE` / `CHROME_WS_PORT` | pinned QA browser identity, per project path and lane (`iad-qa-<project>-<offset>` on `10000+offset`, the qa lane `iad-qa-<project>-<offset>-qa` on `11000+offset`; `<offset>` = the same path hash for both, so a name collision between two projects cannot split profile from port) | set by `ensure_qa_browser_env` |
 | `CHAIN_BQA_HEADED` | `1` keeps a visible browser in engine mode | `0` |
 | `CHAIN_BQA_REAP` | `1` reaps this project's QA browsers at phase end (engine mode only) | `0` |
-| `CHAIN_BQA_REAP_ON_EXIT` | `1` (default) reaps this project's QA browsers when the headless engine exits — leave-warm is about the next dispatch of the same engine, which at exit no longer exists; never in the interactive backend, and skipped when another goal-session engine lock in this checkout names a live pid. Costs up to ~11 s of exit latency (a `flock -w 5` wait for a concurrent confine pass, then TERM→3 s→KILL per own browser, two lanes) | `1` |
-| `HOST_GUARD_BROWSER_CONFINE` | `0` disables the pass entirely | `1` |
+| `CHAIN_BQA_REAP_ON_EXIT` | `1` (default) reaps this project's QA browsers when the headless engine exits — leave-warm is about the next dispatch of the same engine, which at exit no longer exists; never in the interactive backend, and skipped when another goal-session engine lock in this checkout names a live pid. Reap-only (passes A–C never run at exit). Costs up to ~11 s of exit latency (a `flock -w 5` wait for a concurrent confine pass, then TERM→3 s→KILL per own browser, two lanes), incurred *after* the engine lock is released so it cannot refuse a resume | `1` |
+| `HOST_GUARD_BROWSER_CONFINE` | `0` disables passes A–C; `--reap` is governed by `CHAIN_BQA_REAP` / `CHAIN_BQA_REAP_ON_EXIT` | `1` |
+
+**One-time migration.** A browser still running under the pre-offset name
+(`iad-qa-<project>`) is *foreign* to the new pass — it is never reaped, yet it
+still holds the pinned DevTools port the new name will dial, which is exactly the
+split that ends in `ECONNREFUSED`. Close any old-name browsers once before the
+first post-upgrade session (or just restart them):
+`pgrep -af 'iad-qa-' | grep -v -- '-[0-9]\{1,3\}\( \|-qa\)'`.
 
 Pump sessions deliberately get **no** profile pin. A Claude Code `env` setting
 overrides the inherited process environment, so a pinned value there would clobber

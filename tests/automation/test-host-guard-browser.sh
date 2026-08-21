@@ -260,12 +260,15 @@ pkill -KILL -f "fake-chrome --user-data-dir=$PROOT" 2>/dev/null
 # never for the interactive backend, CHAIN_BQA_REAP_ON_EXIT=0 opts out.
 # `2>&1 >/dev/null` (in that order) forwards the hook's STDERR to the caller and
 # drops browser-confine's stdout summary — B12 asserts on the stderr skip line.
-reap_on_exit() { # <backend> <on-exit-knob> → runs the hook in a clean env
+# $PRE (when set in the extra env) runs inside the SAME shell that then calls the
+# hook — B13 uses it to acquire an engine lock carrying that shell's own $$.
+reap_on_exit() { # <backend> <on-exit-knob> [extra env...] → runs the hook in a clean env
   env -u CHROME_WS_PROFILE -u CHROME_WS_PORT CHROME_PROFILE_ROOT="$PROOT" \
       HOST_GUARD_MCP_MATCH="$WORK/no-such-mcp" \
-      CHAIN_AGENT_BACKEND="$1" CHAIN_BQA_REAP_ON_EXIT="$2" bash -c "
+      CHAIN_AGENT_BACKEND="$1" CHAIN_BQA_REAP_ON_EXIT="$2" "${@:3}" bash -c "
     source '$AUTO/lib/common.sh' >/dev/null 2>&1
     REPO_ROOT='$PROJ_NOHG'
+    eval \"\${PRE:-}\"
     qa_browser_reap_on_exit" 2>&1 >/dev/null
 }
 P_OWN="$(spawn "--user-data-dir=$PROOT/$OWN_PROF" --remote-debugging-port=10999)"
@@ -275,6 +278,13 @@ reap_on_exit claude 0
 alive "$P_OWN" && assert "exit hook: CHAIN_BQA_REAP_ON_EXIT=0 opts out" pass || assert "exit hook: CHAIN_BQA_REAP_ON_EXIT=0 opts out" fail
 reap_on_exit claude 1
 wait_for 8 dead "$P_OWN" && assert "exit hook: headless engine reaps its own browser" pass || assert "exit hook: headless engine reaps its own browser" fail
+# HOST_GUARD_ROOT is a documented operator override; inherited from the launching
+# shell it would aim Pass D at ANOTHER project's browsers while the sibling guard
+# (keyed on $REPO_ROOT/runs) stayed blind. The lanes pinned their identity from
+# REPO_ROOT, so the reap must too.
+P_OWN="$(spawn "--user-data-dir=$PROOT/$OWN_PROF" --remote-debugging-port=10999)"
+reap_on_exit claude 1 HOST_GUARD_ROOT=/some/other/project
+wait_for 8 dead "$P_OWN" && assert "exit hook: an inherited HOST_GUARD_ROOT cannot redirect the reap" pass || assert "exit hook: an inherited HOST_GUARD_ROOT cannot redirect the reap" fail
 pkill -KILL -f "fake-chrome --user-data-dir=$PROOT" 2>/dev/null
 
 # B12. A LIVE sibling engine in the same checkout blocks the exit reap. The QA
@@ -291,11 +301,39 @@ P_OWN="$(spawn "--user-data-dir=$PROOT/$OWN_PROF" --remote-debugging-port=10999)
 OUT="$(reap_on_exit claude 1)"
 alive "$P_OWN" && assert "exit hook: live sibling engine blocks the reap" pass || assert "exit hook: live sibling engine blocks the reap" fail
 [[ "$OUT" == *"exit reap skipped"*"$SIB_LOCK"*"pid $P_SIB"* ]] && assert "exit hook: skip line names the sibling lock and pid" pass || assert "exit hook: skip line names the sibling lock and pid ($OUT)" fail
-echo 999999 > "$SIB_LOCK/pid"                     # holder is gone
+# Same lock, same recorded pid — but the holder is now provably gone. (A literal
+# "dead" pid would be a flake: pid_max on this host is in the millions.)
+kill -KILL "$P_SIB" 2>/dev/null
+wait_for 8 dead "$P_SIB" && assert "sibling fake is provably dead before the second reap" pass || assert "sibling fake is provably dead before the second reap" fail
 reap_on_exit claude 1
 wait_for 8 dead "$P_OWN" && assert "exit hook: dead sibling lock does not block the reap" pass || assert "exit hook: dead sibling lock does not block the reap" fail
-kill -KILL "$P_SIB" 2>/dev/null
 rm -rf "$PROJ_NOHG/runs"
+pkill -KILL -f "fake-chrome --user-data-dir=$PROOT" 2>/dev/null
+
+# B13. The branch EVERY real engine exit takes: the only lock in the checkout is
+# our own, and it must not be read as a sibling — that would turn the default-on
+# reap into a silent no-op. The lock has to record the calling shell's $$, so it
+# is acquired via $PRE inside the hook's own shell, using the real helper.
+P_OWN="$(spawn "--user-data-dir=$PROOT/$OWN_PROF" --remote-debugging-port=10999)"
+OUT="$(reap_on_exit claude 1 \
+  PRE="source '$AUTO/lib/engine-lock.sh'; acquire_engine_lock '$PROJ_NOHG/runs/goal-session-self/.engine.lock' self >/dev/null")"
+wait_for 8 dead "$P_OWN" && assert "exit hook: our OWN engine lock does not block the reap" pass || assert "exit hook: our OWN engine lock does not block the reap" fail
+[[ -z "$OUT" ]] && assert "exit hook: own lock prints no skip line" pass || assert "exit hook: own lock prints no skip line ($OUT)" fail
+rm -rf "$PROJ_NOHG/runs"
+pkill -KILL -f "fake-chrome --user-data-dir=$PROOT" 2>/dev/null
+
+# B14. The exit hook is reap-ONLY. Passes A-C scan the whole profile root and
+# (pass B) the DEFAULT Chrome-MCP match, neither of which the hook scopes — so an
+# engine exiting anywhere (a test sandbox included) would re-taskset browsers and
+# MCP servers that are not its own into its mask. At exit there is nothing to
+# gain from confining a browser we are about to kill. $PROJ carries a
+# host-guard.env (mask "0"), so without the guard the passes WOULD run here.
+P_FGN4="$(spawn "--user-data-dir=$PROOT/other-wide3" --remote-debugging-port=10997)"
+BEFORE4="$(allowed "$P_FGN4")"
+P_OWN="$(spawn "--user-data-dir=$PROOT/$OWN" --remote-debugging-port=10996)"
+reap_on_exit claude 1 PRE="REPO_ROOT='$PROJ'"
+wait_for 8 dead "$P_OWN" && assert "exit hook: reaps under a guarded project too" pass || assert "exit hook: reaps under a guarded project too" fail
+assert_eq "exit hook is reap-only: a foreign browser's affinity is untouched" "$BEFORE4" "$(allowed "$P_FGN4")"
 pkill -KILL -f "fake-chrome --user-data-dir=$PROOT" 2>/dev/null
 
 echo ""
@@ -334,6 +372,9 @@ grep -q 'CHROME_WS_PROFILE=' "$AUTO/host-guard-exec.sh" && assert "exec: does no
 # second `trap … EXIT` would silently drop the first one's cleanup.
 grep -q 'qa_browser_reap_on_exit' "$AUTO/run-goal.sh" && assert "run-goal.sh exit trap calls qa_browser_reap_on_exit" pass || assert "run-goal.sh exit trap calls qa_browser_reap_on_exit" fail
 awk '/^_goal_engine_on_exit\(\)/,/^}/' "$AUTO/run-goal.sh" | grep -q 'qa_browser_reap_on_exit' && assert "the call sits inside _goal_engine_on_exit (single composed trap)" pass || assert "the call sits inside _goal_engine_on_exit" fail
+# The skip line and browser-confine's warnings must reach the engine log: the
+# call site may not redirect the hook's stderr away.
+awk '/^_goal_engine_on_exit\(\)/,/^}/' "$AUTO/run-goal.sh" | grep -q 'qa_browser_reap_on_exit 2>/dev/null' && assert "the exit-trap call keeps the hook's stderr" fail || assert "the exit-trap call keeps the hook's stderr" pass
 # Anchored so the prose in the trap's own comment ("never add a second `trap …
 # EXIT`") is not counted as a second installation.
 grep -cE '^[[:space:]]*trap [^#]*EXIT' "$AUTO/run-goal.sh" | grep -qx '1' && assert "run-goal.sh still has exactly one EXIT trap" pass || assert "run-goal.sh still has exactly one EXIT trap" fail

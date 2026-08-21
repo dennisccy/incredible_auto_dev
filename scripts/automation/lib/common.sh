@@ -407,7 +407,10 @@ qa_browser_reap_on_exit() {
   # it work; it only stops a default-on reap from making it worse by killing the
   # live sibling's browser mid-dispatch. Live sibling = a goal-session lock whose
   # recorded pid is alive and is not us; the pid is read with engine-lock.sh's
-  # own reader so there is only ever one lock format.
+  # own reader so there is only ever one lock format. Liveness is engine_lock_
+  # classify's verdict, not a bare `kill -0`: it also rules out a recycled pid,
+  # a pre-reboot lock, and a cross-host holder we cannot probe (FRESH there =
+  # "unprovable", which for us correctly means "do not touch its browser").
   local _lockdir _lpid
   if ! declare -F _engine_lock_meta >/dev/null 2>&1; then
     # shellcheck source=engine-lock.sh
@@ -417,14 +420,27 @@ qa_browser_reap_on_exit() {
     [[ -d "$_lockdir" ]] || continue
     _lpid="$(_engine_lock_meta "$_lockdir" pid 2>/dev/null | tr -dc 0-9)"
     [[ -n "$_lpid" && "$_lpid" != "$$" ]] || continue
-    kill -0 "$_lpid" 2>/dev/null || continue
+    [[ "$(engine_lock_classify "$_lockdir" 2>/dev/null)" == FRESH* ]] || continue
     echo "[qa-browser] exit reap skipped: another engine is live in this checkout ($_lockdir, pid $_lpid)" >&2
     return 0
   done
   local bc
   bc="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../host-guard/browser-confine.sh"
   [[ -f "$bc" ]] || return 0
-  CHAIN_BQA_REAP=1 HOST_GUARD_ROOT="${HOST_GUARD_ROOT:-$REPO_ROOT}" bash "$bc" --reap || true
+  # HOST_GUARD_ROOT is pinned to REPO_ROOT, never inherited: it is a documented
+  # operator override (host-guard-exec.sh, hwmon-log.sh), and an exported value
+  # naming another project would aim Pass D at THAT project's browsers while the
+  # sibling guard above (keyed on $REPO_ROOT/runs) stayed blind. The lanes
+  # derived their profile from $REPO_ROOT (ensure_qa_browser_env), so the reap
+  # must use the same root — the form browser-qa-phase.sh already uses.
+  # HOST_GUARD_BROWSER_CONFINE=0 makes this reap-ONLY (pass D). Passes A-C scan
+  # the whole profile root and, for pass B, the DEFAULT Chrome-MCP cmdline match
+  # — neither scoped to this project — so at exit they would re-taskset OTHER
+  # projects' browsers and the developer's live MCP servers into this project's
+  # mask. There is nothing to gain from confining a browser we are about to
+  # kill; confinement belongs to the QA dispatches, which run this pass in full.
+  CHAIN_BQA_REAP=1 HOST_GUARD_BROWSER_CONFINE=0 HOST_GUARD_ROOT="$REPO_ROOT" \
+    bash "$bc" --reap || true
   return 0
 }
 
