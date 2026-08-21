@@ -62,9 +62,12 @@ UI_ARTIFACTS = [
 ]
 
 # Objective placeholder markers (skill "Vagueness Detection" + SPEED-17 list).
-_PLACEHOLDER_RE = re.compile(
-    r"\bTODO\b|\bTBD\b|<fill|\bFILL IN\b|\blorem\b|\bxxx+\b", re.IGNORECASE
-)
+# Marker TOKENS are case-sensitive: `TODO`/`FIXME`/`TBD`/`FILL IN` are how a
+# writer flags unfinished work; "todo"/"Todo" in prose is product vocabulary
+# (a todo app tripped the gate on every artifact — G8 stage 1, 2026-08-21).
+# The free-text placeholders stay case-insensitive.
+_PLACEHOLDER_RE_TOKENS = re.compile(r"\bTODO\b|\bFIXME\b|\bTBD\b|\bFILL IN\b")
+_PLACEHOLDER_RE_TEXT = re.compile(r"<fill|\blorem\b|\bxxx+\b", re.IGNORECASE)
 
 # N/A-stub / backend-only claim markers — the same set check_backend_only_claim
 # greps (lib/common.sh) so both layers agree on what a backend-only claim is.
@@ -183,8 +186,9 @@ def placeholder_hits(text: str) -> list[str]:
     for i, line in enumerate(text.splitlines(), 1):
         if line.strip().startswith("<!--"):
             continue
-        for m in _PLACEHOLDER_RE.finditer(line):
-            hits.append(f"{m.group(0)} (line {i})")
+        for rx in (_PLACEHOLDER_RE_TOKENS, _PLACEHOLDER_RE_TEXT):
+            for m in rx.finditer(line):
+                hits.append(f"{m.group(0)} (line {i})")
     return hits
 
 
@@ -644,7 +648,17 @@ def _self_test() -> int:
         assert classify_step('4. Fill "Name" with "demo" — Expect: row appears') == "ok"
         assert classify_step("5. Verify the total updates correctly to $45") == "warn"
         assert placeholder_hits("real\nTODO: later\n") != []
+        assert placeholder_hits("real\nFIXME: wire up\n") != []
+        assert placeholder_hits("real\nTBD\n") != []
+        assert placeholder_hits("real\n<fill in the route>\n") != []
+        assert placeholder_hits("real\nLorem ipsum dolor\n") != []
         assert placeholder_hits("<!-- TBD template note -->\nreal\n") == []
+        # Product vocabulary is not a marker (G8 stage 1: a todo app tripped the gate).
+        assert placeholder_hits("Add a todo via the form\n") == []
+        assert placeholder_hits("state is stored in todo.json\n") == []
+        assert placeholder_hits("the heading 'Todo' is visible\n") == []
+        assert placeholder_hits("shows the todos list\n") == []
+        assert placeholder_hits("Fixme is a band name\n") == []
 
     def t_skip_detection():
         skipped = ("**Browser QA Verdict:** SKIPPED\n"

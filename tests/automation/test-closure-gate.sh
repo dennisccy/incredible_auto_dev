@@ -195,7 +195,24 @@ rc="$(run_gate "$ROOT")"
   && assert "backend-only N/A stubs: CLOSURE-PASS" "pass" \
   || assert "backend-only N/A stubs: CLOSURE-PASS (got exit $rc)" "fail"
 
-# ── (e) vague what-to-click -> CLOSURE-FAIL ──────────────────────────────────
+# ── (e) product vocabulary "todo"/"Todo" in the UI artifacts is NOT a placeholder
+make_fixture "$ROOT" yes
+for a in implementation-summary user-visible-changes ui-surface-map ui-test-plan; do
+  printf -- '- Add a todo via the form; the heading Todo is visible; state lives in todo.json\n' >> "$ROOT/reports/phase-p1-$a.md"
+done
+rc="$(run_gate "$ROOT")"
+head -1 "$(VERDICT_FILE "$ROOT")" | grep -q '^\*\*Verdict:\*\* CLOSURE-PASS$' \
+  && assert "product noun 'todo' in artifacts: CLOSURE-PASS" "pass" \
+  || assert "product noun 'todo' in artifacts: CLOSURE-PASS (got exit $rc: $(grep -m3 -i 'todo' "$(VERDICT_FILE "$ROOT")" | tr '\n' ' '))" "fail"
+# ── (f) a real marker still fails
+make_fixture "$ROOT" yes
+printf -- '- TODO: wire the filter control\n' >> "$ROOT/reports/phase-p1-ui-test-plan.md"
+rc="$(run_gate "$ROOT")"
+head -1 "$(VERDICT_FILE "$ROOT")" | grep -q '^\*\*Verdict:\*\* CLOSURE-FAIL$' \
+  && assert "uppercase TODO marker: CLOSURE-FAIL" "pass" \
+  || assert "uppercase TODO marker: CLOSURE-FAIL (got exit $rc)" "fail"
+
+# ── (g) vague what-to-click -> CLOSURE-FAIL ──────────────────────────────────
 ROOT="$WORK/vague"
 make_fixture "$ROOT" yes
 cat > "$ROOT/reports/phase-p1-what-to-click.md" <<'EOF'
@@ -217,7 +234,7 @@ rc="$(run_gate "$ROOT")"
   && assert "vague what-to-click (Test the form class): CLOSURE-FAIL" "pass" \
   || assert "vague what-to-click (Test the form class): CLOSURE-FAIL" "fail"
 
-# ── (e2) FAILed upstream verdict -> CLOSURE-FAIL naming the report ───────────
+# ── (g2) FAILed upstream verdict -> CLOSURE-FAIL naming the report ───────────
 ROOT="$WORK/failgate"
 make_fixture "$ROOT" yes
 printf '**Verdict:** FAIL\n' > "$ROOT/reports/qa/p1-qa.md"
@@ -226,7 +243,7 @@ rc="$(run_gate "$ROOT")"
   && assert "FAILed QA verdict: CLOSURE-FAIL names the QA report" "pass" \
   || assert "FAILed QA verdict: CLOSURE-FAIL names the QA report" "fail"
 
-# ── (f) escape-hatch wiring in phase-closure-check.sh ────────────────────────
+# ── (h) escape-hatch wiring in phase-closure-check.sh ────────────────────────
 grep -q 'CHAIN_CLOSURE_LLM:-false.*==.*true' "$CHECK_SH" \
   && assert "wiring: CHAIN_CLOSURE_LLM=true routes to the LLM dispatch branch" "pass" \
   || assert "wiring: CHAIN_CLOSURE_LLM=true routes to the LLM dispatch branch" "fail"

@@ -3913,19 +3913,15 @@ but appreciated.
 - **Follow-ups:**
   - Flip `CHAIN_OUTPUT_STYLES`'s default only in a separate change, after G8
     evidence.
-  - (from G8 stage 1, framework defects — not style effects) The benchmark /
-    browser-QA Chrome (`superpowers/browser-profiles/iad-qa-scratch*`) outlives the
-    engine and holds the pinned chrome-mcp profile, blocking the NEXT session's browser
-    lane (`ECONNREFUSED` on the pinned CDP port): reap it at engine exit or pin the
-    profile per session — must land before stage 2. `closure_gate.py:66` matches the word
-    "todo" case-insensitively as a TODO marker (fails every iteration of a todo app).
-    The full-depth review (`review-phase.sh`) emits no `review_verdict` telemetry, so
-    the attempt-1 FAIL-rate metric is blind in full iterations. The trace row's `args`
-    records the caller argv only — record the injected `--settings` (and `--effort` /
-    `--model` are already separate fields) so the flag is directly auditable.
-    `artifact_schemas.py validate` requires a `## Verdict` section while lean review
-    reports and the QA report use the `**Verdict:**` first-line format — reconcile
-    before using it as the thinning signal.
+  - (G8 stage-1 framework defects — FIXED 2026-08-21, STAGE2-PREREQ T1-T5) QA
+    browser profile now carries the path-hash offset (`iad-qa-<project>-<offset>`)
+    and the headless engine reaps its own QA browsers at exit
+    (`CHAIN_BQA_REAP_ON_EXIT`, default on; `browser-confine.sh --reap` runs without
+    host-guard); `record_review_verdict` emits `review_verdict` from the full-depth
+    loop too; trace rows carry `output_style_requested`; review/qa schemas follow the
+    first-line `**Verdict:**` contract; closure-gate markers are case-sensitive
+    tokens (+`FIXME`). Stage 2 is unblocked on the framework side — it still needs
+    the operator's vendored sync and a free engine slot.
   - Arm 2 custom style `pipeline-terse` (pre-drafted, NOT shipped — ships as its
     own CAND item): use only if wave-1 measurement shows Concise leaking into
     artifacts (schema failures, thinner handoffs) while the token win is real.

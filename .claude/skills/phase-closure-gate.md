@@ -26,7 +26,7 @@ For every phase, verify all exist and are non-empty:
 ## Vagueness Detection
 
 Reject any artifact that contains only:
-- Generic placeholders: "TBD", "TODO", "FILL IN", "N/A" where content is expected
+- Generic placeholders: "TBD", "TODO", "FIXME", "FILL IN", "N/A" where content is expected
 - Vague test steps: "Test the form", "Verify it works", "Check the page"
 - Empty sections with just headers
 - Fewer than 5 lines of actual content (excluding headers)
