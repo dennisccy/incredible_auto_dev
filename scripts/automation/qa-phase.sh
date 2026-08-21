@@ -152,8 +152,8 @@ MAINTENANCE ISOLATION IS ACTIVE FOR THIS ITERATION — run QA in no-service (sta
 FORBIDDEN, by contract rather than by circumstance: starting the backend or frontend,
 calling ensure_services_running, any browser/Chrome automation, and the deterministic
 replay lane. No service is running and none may be started; the runner has deliberately
-not booted any. Note that this project's backend boot warmup itself writes derived rows,
-which is one reason the contract withholds it.
+not booted any. A backend boot may itself write derived rows, which is one reason the
+contract withholds it.
 
 STILL REQUIRED — full QA depth, using what does not need a running app: read the code and
 the diff; run the allowed file-scoped/unit tests; inspect persisted artifacts and reports;

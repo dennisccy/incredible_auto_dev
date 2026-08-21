@@ -1204,8 +1204,11 @@ benchmark (or a real session's telemetry) before AND after (G8).
   allowlist's `Full trigger:` arm is self-certifying — the decomposer wrote a
   qualifying line into every spec and full ran 5-of-6 (anti-pattern 25).
   SPEED-20's deterministic arbiter is now the default path; this allowlist
-  survives verbatim as the arbiter's PRIOR_DEPTH=full rung and as the
-  `CHAIN_DEPTH_ARBITER=false` escape hatch.
+  survives as the arbiter's PRIOR_DEPTH=full rung and as the
+  `CHAIN_DEPTH_ARBITER=false` escape hatch — no longer verbatim: since
+  CAND-MAINT-ISO fix 1 it carries a fail-closed pause for hard-required specs
+  (`depth-legacy-allowlist`), because skipping the arbiter used to skip the
+  requirement with it.
 
 ### SPEED-11 · Lean replay-fork default flip (off→replay)
 - **Priority:** P1 · **Effort:** S · **Risk:** LOW-MED · **Status:** IN-PROGRESS —
@@ -1413,7 +1416,9 @@ benchmark (or a real session's telemetry) before AND after (G8).
 - **Verify:** `bash tests/automation/test-depth-arbiter.sh` (29 cases) ·
   `test-depth-cadence.sh` still green · run-evals.
 - **Files:** `run-goal.sh`, `lib/common.sh`, `agents/goal-decomposer/*`, tests.
-- **Rollback:** `CHAIN_DEPTH_ARBITER=false` (legacy SPEED-10 allowlist verbatim);
+- **Rollback:** `CHAIN_DEPTH_ARBITER=false` (legacy SPEED-10 allowlist — which now
+  carries a fail-closed pause for hard-required specs, so the knob is not an escape
+  from `AWAITING_FULL_DEPTH`);
   `CHAIN_FULL_CADENCE_CAP=0` removes just the window cap.
 - **Stop-and-ask:** a demoted full producing an ESCALATE, or the full ratio
   staying >1-in-4 over the next 6 real iterations (the PRE entry grades it).
@@ -3877,6 +3882,21 @@ but appreciated.
   of `AWAITING_FULL_DEPTH`. It now pauses at `depth-legacy-allowlist`, `_full_depth_pause` prints a
   PER-PATH remedy (also stored as `remedy=` in `depth-requirement-unmet`), and every doc that
   offered the knob as a hatch now denies it explicitly.
+  (11) **Final review (2026-08-21):** isolation now IMPLIES the full-depth requirement.
+  `goal_full_depth_required` returns true under `goal_maintenance_isolation_required`, so an
+  isolated `Depth: full` spec is protected by the existing precedence rung (previously it could be
+  cost-demoted unless the operator ALSO wrote `Depth enforcement: required`) and
+  `goal-iter-lean.sh`'s fail-closed guard forces its parallel browser-QA/replay fork off. A spec
+  that resolved to lean/evidence under isolation now PAUSES before dispatch
+  (`isolation-requires-full`) — nothing is promoted. That path mattered: `goal-iter-lean.sh` has no
+  isolation handling at all (bare `ensure_services_running` in its boot unit), so with the fork on
+  the refusal was swallowed and `ui-test-results.md` blamed "frontend not running" — no
+  `**Reason:** maintenance isolation` line, so neither the evaluator carve-out nor
+  `closure_gate.py` could fire and journeys went `unknown`; with the fork off the executor aborted
+  under `set -e` only AFTER developer and reviewer had mutated the tree. Same commit: a resume that
+  regenerates a spec carrying an operator-only line warns loudly and emits `spec_regenerated`
+  (the decomposer is forbidden to rewrite those lines, so regeneration silently dropped them), and
+  the QA brief's product-specific database claim was made generic.
   Agent/operator contract (this commit): the goal-evaluator scores an all-SKIPPED isolation
   `ui-test-results.md` like `DEFERRED-BUDGET` (journeys keep their prior status, and no
   journey may be promoted TO passing on an iteration that produced no browser evidence); the
@@ -3900,14 +3920,38 @@ but appreciated.
   - A showcase tail reaped under isolation returns before the join path's commit/push block
     (which only runs with `--push-per-iter`), so iteration N−1's summary / README / renders
     can be partial and uncommitted; iteration N's own per-iter commit sweeps them up.
+  - **Iteration 0 is the sharp edge of both session-wide knobs**, because the arbiter exempts the
+    baseline and the baseline spec is verify-only. `CHAIN_REQUIRE_FULL_DEPTH=true` plus a baseline
+    spec that says `Depth: full` and names no `Full trigger:` halts at iteration 0
+    (`depth-legacy-allowlist`) — and "re-enable the arbiter" is inert there, so only the
+    `Full trigger:` line helps. `CHAIN_MAINTENANCE_ISOLATION=true` halts an ordinary verify-only
+    baseline at `isolation-requires-full`, since that spec asks for lean. Both are fail-closed by
+    design; declare the controls from iteration 1, or write the baseline spec to match.
   - `closure_gate.py`'s backend-only WARN channel still reads "Plan says Frontend Present:
     no but frontend-looking files changed this phase" for an isolation-declared plan that
     says `yes`. Wording only — no verdict effect. Follow-up.
   - The isolation carve-out now exists in TWO implementations — the bash predicate and the
     python gate — agreeing on the truthy set by convention and comment, not by a shared
     constant. A parity test (bash truthy set == `_ISOLATION_ENV_TRUTHY`) is a follow-up.
-- **Verify:** `bash tests/automation/test-maintenance-isolation.sh` (71) · `bash
-  tests/automation/test-full-depth-required.sh` (40) · `bash
+- **Follow-ups (tracked, NOT done):**
+  - Deterministic GOAL_ACHIEVED refusal on an isolated iteration (`goal_gate_filter_verdict`,
+    ~5 lines). Today the rule is agent-side only: the evaluator body and methodology forbid
+    certifying on an isolated iteration's own evidence, but no gate enforces it. Whether the
+    gate should refuse outright is a design choice for the owner.
+  - `write_session_summary` and the HTML renderer have no badge/branch for
+    `AWAITING_FULL_DEPTH`; it renders as an unknown status.
+  - `async-showcase-join` records a refusal only when `_SHOWCASE_PID` is still set, which a
+    completed-but-unjoined tail clears only at the join — so a tail that finished on its own
+    leaves no refusal record even though the reap path was the contract-relevant one.
+  - `agents/phase-closure-auditor/body.md` has no isolation carve-out, so the LLM escape hatch
+    could still read six N/A stubs as an absent frontend.
+  - No parity test pins the bash truthy set against `closure_gate.py`'s `_ISOLATION_ENV_TRUTHY`;
+    they agree by comment and convention.
+  - The developer / reviewer / auditor prompts carry no isolation note. The FORBIDDEN half binds
+    the engine's own service and browser call sites, so nothing the pipeline drives can start the
+    app — but an agent told to run it by hand would not know it must not.
+- **Verify:** `bash tests/automation/test-maintenance-isolation.sh` (78) · `bash
+  tests/automation/test-full-depth-required.sh` (53) · `bash
   tests/automation/test-closure-gate.sh` (29) · `bash tests/automation/test-depth-arbiter.sh`
   (33) · `bash tests/automation/test-replay-lane.sh` (59) · `bash
   tests/automation/test-plain-language.sh` (63) · `python3
@@ -3924,9 +3968,10 @@ but appreciated.
   them: `unset CHAIN_REQUIRE_FULL_DEPTH CHAIN_MAINTENANCE_ISOLATION` and remove any
   `Depth enforcement:` / `Maintenance isolation:` spec line. `CHAIN_DEPTH_ARBITER=false`
   additionally restores the legacy SPEED-10 allowlist. To remove the mechanism itself,
-  revert this branch's four commits — `bfa3a3f`, `959b5fb`, `6555446` and the docs/fix commits
-  on top (run-evals returns to 153 / 0). Those are THIS repo's commits; the four `Source`
-  commits above are trendora's, and are not present here.
+  revert this branch's six commits — `bfa3a3f` (port), `959b5fb` + `6555446` (integration
+  guards), `f9f9624` (docs/contracts), `de23d27` (fix 1) and the final-review fix on top
+  (run-evals returns to 153 / 0). Those are THIS repo's commits; the four `Source` commits
+  above are trendora's and are not present here.
 
 ### CAND-STYLE · Per-agent Claude Code output style (landed default-off; experiment pending)
 - **Priority:** P2 · **Effort:** M · **Risk:** LOW-MED · **Status:** IMPLEMENTED
@@ -4903,8 +4948,9 @@ forensics work would have blurred what this package is for.
     `CHAIN_GOAL_TARGET_JOURNEYS` browser-lane override came back with the
     maintenance-isolation reverse-port — Option A, trendora's whole
     `detect_frontend_in_plan` taken verbatim with the isolation carve-out ABOVE the
-    override — so `run-goal.sh:2708`'s comment ("forces the browser lane whenever this
-    iteration names journeys") is true again with no edit.
+    override — so `run-goal.sh`'s comment at the `CHAIN_GOAL_TARGET_JOURNEYS` export
+    ("forces the browser lane whenever this iteration names journeys") is true again with
+    no edit.
   - `lib/replay-lane.sh` rc=7 backend-unreachable handling: **still un-upstreamed**. The
     isolation port touched that file (a fail-closed guard at
     `replay_lane_partition_and_verify`) but deliberately took no other trendora hunk;

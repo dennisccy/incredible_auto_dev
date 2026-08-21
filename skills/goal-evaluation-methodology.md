@@ -34,7 +34,7 @@ your overall impression of the iteration.
      claim, including the dev handoff.
    - Record the citation (results row + screenshot filename). **No citation → the journey's
      status is `unknown`, and you say so.**
-   - **One carve-out (REL-14):** when the journey is listed in this iteration's
+   - **Two carve-outs. First (REL-14):** when the journey is listed in this iteration's
      `<iter-dir>/browser-infra.json` (the engine's browser-infra token: services/Chrome
      failed, NOT the product) and there is no fresh screenshot, score it `partial` with the
      gap noted as `pending-infra`, and set `pending_infra: true` on it in journey-history —
@@ -44,7 +44,7 @@ your overall impression of the iteration.
      the browser infrastructure itself is the blocker: treat it as a human-owned action
      (STALLED-class, decision tree C.2) instead of scheduling a third silent retry. A fresh
      screenshot this iteration — pass or fail — clears `pending_infra` and scores normally.
-   - **Second carve-out (maintenance isolation):** when this iteration's
+   - **Second (maintenance isolation):** when this iteration's
      `ui-test-results.md` is all-SKIPPED and its `**Reason:**` line names maintenance
      isolation, the lane was FORBIDDEN by the iteration's contract, not missing — full
      reviewer/QA/auditor/coherence depth was retained while application-service boot,

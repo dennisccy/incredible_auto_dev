@@ -1170,6 +1170,22 @@ goal_full_depth_required() {
   case "${CHAIN_REQUIRE_FULL_DEPTH:-}" in
     true|TRUE|1|yes|on) return 0 ;;
   esac
+  # Maintenance isolation IS a full-depth requirement — that is the contract's own
+  # first clause ("full reviewer/QA/auditor/coherence/evaluator depth REQUIRED"),
+  # and until this line it was advertised without being enforced: an isolated
+  # `Depth: full` spec could still be cost-demoted by the arbiter unless the
+  # operator ALSO wrote `Depth enforcement: required`, and the lean path it landed
+  # in has no isolation handling at all (its boot unit calls
+  # ensure_services_running bare; inside the parallel fork the refusal is swallowed
+  # and the results file blames "frontend not running", so the `**Reason:**
+  # maintenance isolation` line the evaluator and closure_gate.py key on never
+  # appears). Routing isolation through this predicate reuses the machinery that
+  # already exists: the arbiter's precedence rung, every _full_depth_pause site,
+  # and goal-iter-lean.sh's fail-closed fork guard. It never PROMOTES a lean spec —
+  # run-goal.sh pauses such an iteration (isolation-requires-full) instead.
+  if goal_maintenance_isolation_required "$spec_path"; then
+    return 0
+  fi
   [[ -n "$spec_path" && -f "$spec_path" ]] || return 1
   grep -qiE '^[[:space:]]*-?[[:space:]]*(\*\*)?Depth[ -]enforcement:?(\*\*)?[[:space:]]*:?[[:space:]]*(\*\*)?required' \
     "$spec_path" 2>/dev/null
@@ -1190,6 +1206,11 @@ goal_full_depth_required() {
 # Maintenance isolation means exactly:
 #     full reasoning/reviewer/audit depth REQUIRED
 #     application-service and browser execution FORBIDDEN
+# Both halves are enforced, not merely stated. The first is routed through
+# goal_full_depth_required above (isolation ⇒ hard full), so the arbiter's
+# precedence rung protects an isolated full spec from every cost rung and
+# run-goal.sh pauses a NON-full isolated spec before dispatch
+# (AWAITING_FULL_DEPTH, step isolation-requires-full) rather than promoting it.
 # Allowed: developer, reviewer, file-scoped tests, static QA, auditor, coherence,
 # evaluator. Forbidden: backend boot, frontend boot, browser QA, deterministic
 # replay, demo/showcase browser, shared app-service fanout.

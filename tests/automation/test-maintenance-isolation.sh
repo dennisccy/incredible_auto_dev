@@ -559,6 +559,62 @@ grep -q 'source "$SCRIPT_DIR/lib/common.sh"' "$BQA" \
   && assert "replay lane: both production callers source common.sh (backstop, not a live path)" "pass" \
   || assert "replay lane: both production callers source common.sh (backstop, not a live path)" "fail"
 
+# ── isolation IS a full-depth requirement (the contract's own first clause) ───
+# "full reviewer/QA/auditor/coherence/evaluator depth REQUIRED" was advertised in
+# the predicate's own comment and in every doc, but goal_full_depth_required never
+# consulted isolation — so an isolated iteration could be cost-demoted to lean and
+# dispatched into goal-iter-lean.sh, which has NO isolation handling: its boot unit
+# calls ensure_services_running bare, the refusal is swallowed inside the parallel
+# fork, and ui-test-results.md ends up blaming "frontend not running" instead of
+# carrying the `**Reason:** maintenance isolation` line the evaluator carve-out and
+# closure_gate.py both key on.
+goal_full_depth_required "$SPEC_ISO" \
+  && assert "contract: a spec declaring isolation is a full-depth requirement" "pass" \
+  || assert "contract: a spec declaring isolation is a full-depth requirement" "fail"
+goal_full_depth_required "$SPEC_PLAIN" \
+  && assert "contract control: a plain full spec is not a requirement (default OFF)" "fail" \
+  || assert "contract control: a plain full spec is not a requirement (default OFF)" "pass"
+
+# goal-iter-lean.sh's belt-and-braces: with the requirement true, the parallel
+# browser-QA/replay fork is forced off whatever the knob says. Sliced + executed.
+_LEAN="$A/goal-iter-lean.sh"
+_bb_start="$(grep -n 'FAIL-CLOSED belt-and-braces' "$_LEAN" | head -1 | cut -d: -f1)"
+_bb_end="$(awk -v s="$_bb_start" 'NR>s && $0=="fi" {print NR; exit}' "$_LEAN")"
+awk -v s="$_bb_start" -v e="$_bb_end" 'NR>=s && NR<=e' "$_LEAN" > "$WORK/lean-bb.sh"
+run_bb() { # <spec-file> -> effective _BQA_MODE
+  ( set +e
+    _BQA_MODE="replay"; _BQA_OFF_REASON=""; SPEC="$1"
+    # shellcheck disable=SC1090
+    . "$WORK/lean-bb.sh" >/dev/null 2>&1
+    printf '%s' "$_BQA_MODE" )
+}
+if [[ -n "$_bb_start" && -n "$_bb_end" ]] && bash -n "$WORK/lean-bb.sh" 2>/dev/null; then
+  assert "harness: goal-iter-lean's fail-closed depth guard slices out complete" "pass"
+else
+  assert "harness: goal-iter-lean's fail-closed depth guard slices out complete" "fail"
+fi
+[[ "$(run_bb "$SPEC_ISO")" == "off" ]] \
+  && assert "lean path: an isolated spec forces the parallel browser-QA/replay fork OFF" "pass" \
+  || assert "lean path: an isolated spec forces the parallel browser-QA/replay fork OFF (got '$(run_bb "$SPEC_ISO")')" "fail"
+[[ "$(run_bb "$SPEC_PLAIN")" == "replay" ]] \
+  && assert "lean path control: an ordinary spec keeps the requested fork mode" "pass" \
+  || assert "lean path control: an ordinary spec keeps the requested fork mode" "fail"
+
+# The engine must refuse a non-full isolated iteration BEFORE dispatch rather than
+# rely on downstream refusals firing inside an already-mutating pipeline.
+if grep -q 'isolation-requires-full' "$A/run-goal.sh"; then
+  assert "engine: a non-full isolated spec pauses (isolation-requires-full), never dispatches lean" "pass"
+else
+  assert "engine: a non-full isolated spec pauses (isolation-requires-full), never dispatches lean" "fail"
+fi
+
+# The QA brief must not assert a product-specific fact about the operator's data.
+if grep -q "this project's backend boot warmup" "$QA"; then
+  assert "qa brief: no product-specific database claim leaked into the generic prompt" "fail"
+else
+  assert "qa brief: no product-specific database claim leaked into the generic prompt" "pass"
+fi
+
 echo ""
 echo "  ${PASS} passed, ${FAIL} failed"
 [[ "$FAIL" -eq 0 ]]

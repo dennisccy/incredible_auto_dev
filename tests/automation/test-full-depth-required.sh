@@ -124,32 +124,38 @@ fi
 # Slice the REAL function body (first column-0 `}` after its header) rather than
 # guessing a line window: the per-path remedy `case` made a fixed +45 window stop
 # short of the exit, which is an anchor defect, not a behaviour change.
+# Materialize the slice ONCE into a file. `awk … | grep -q` is a pipefail
+# landmine: grep -q exits on its first match, awk dies with SIGPIPE, and the
+# pipeline's status becomes 141 — so the assertion failed at random (observed
+# ~2 runs in 5 once the function body grew). Nothing here may depend on that race.
 _pause_end="$(awk -v s="$_pause_def" 'NR>s && $0=="}" {print NR; exit}' "$RG")"
-if [[ -n "$_pause_end" ]] && awk "NR>=$_pause_def && NR<=$_pause_end" "$RG" | grep -q '^  exit 0$'; then
+_pause_body="$WORK/pause-body.txt"
+awk "NR>=$_pause_def && NR<=${_pause_end:-0}" "$RG" > "$_pause_body"
+if [[ -n "$_pause_end" ]] && grep -q '^  exit 0$' "$_pause_body"; then
   assert "halt: the pause exits (never falls through to a lean dispatch)" "pass"
 else
   assert "halt: the pause exits (never falls through to a lean dispatch)" "fail"
 fi
-if awk "NR>=$_pause_def && NR<=$((_pause_def + 45))" "$RG" | grep -qE 'bash .*(goal-iter-lean|run-phase)\.sh'; then
+if grep -qE 'bash .*(goal-iter-lean|run-phase)\.sh' "$_pause_body"; then
   assert "halt: the pause body launches no pipeline" "fail"
 else
   assert "halt: the pause body launches no pipeline" "pass"
 fi
 
 # ── 7. requirement recorded as UNMET, never silently rewritten ────────────────
-if awk "NR>=$_pause_def && NR<=$((_pause_def + 45))" "$RG" | grep -q 'depth-requirement-unmet'; then
+if grep -q 'depth-requirement-unmet' "$_pause_body"; then
   assert "record: an explicit depth-requirement-unmet marker is written" "pass"
 else
   assert "record: an explicit depth-requirement-unmet marker is written" "fail"
 fi
-if awk "NR>=$_pause_def && NR<=$((_pause_def + 45))" "$RG" | grep -q 'AWAITING_FULL_DEPTH'; then
+if grep -q 'AWAITING_FULL_DEPTH' "$_pause_body"; then
   assert "record: session status becomes AWAITING_FULL_DEPTH (resumable)" "pass"
 else
   assert "record: session status becomes AWAITING_FULL_DEPTH (resumable)" "fail"
 fi
 
 # ── 10. a resume cannot inherit a stale lean dispatch decision ────────────────
-if awk "NR>=$_pause_def && NR<=$((_pause_def + 45))" "$RG" | grep -q 'rm -f "$ITER_DIR/depth-dispatched"'; then
+if grep -q 'rm -f "$ITER_DIR/depth-dispatched"' "$_pause_body"; then
   assert "resume: the pause clears depth-dispatched so a retry cannot inherit stale 'lean'" "pass"
 else
   assert "resume: the pause clears depth-dispatched so a retry cannot inherit stale 'lean'" "fail"
@@ -189,12 +195,14 @@ fi
 # `--resume` does not reset that status to in_progress, the session is stuck in a
 # pause it can never leave — and the requirement's only escape becomes deleting it.
 _allow="$(grep -n 'RUN_MODE" == "resume" and d.get("status") in' "$RG" | head -1 | cut -d: -f1)"
-if [[ -n "$_allow" ]] && sed -n "${_allow}p" "$RG" | grep -q 'AWAITING_FULL_DEPTH'; then
+sed -n "${_allow:-0}p" "$RG" > "$WORK/allow.txt"
+sed -n "$((${_allow:-0} + 1))p" "$RG" > "$WORK/allow-next.txt"
+if [[ -n "$_allow" ]] && grep -q 'AWAITING_FULL_DEPTH' "$WORK/allow.txt"; then
   assert "resume: AWAITING_FULL_DEPTH is in the resumable-status allowlist" "pass"
 else
   assert "resume: AWAITING_FULL_DEPTH is in the resumable-status allowlist" "fail"
 fi
-if [[ -n "$_allow" ]] && sed -n "$((_allow + 1))p" "$RG" | grep -q 'in_progress'; then
+if [[ -n "$_allow" ]] && grep -q 'in_progress' "$WORK/allow-next.txt"; then
   assert "resume: that allowlist is the one that resets the session to in_progress" "pass"
 else
   assert "resume: that allowlist is the one that resets the session to in_progress" "fail"
@@ -218,10 +226,13 @@ else
   assert "harness: the arbiter ladder slices out as a syntactically complete block" "fail"
 fi
 
-# run_arb <hard:0|1> <budget_marker:0|1> <full_in_window:0|1> <prior_verdict> <prior_depth>
-# -> echoes "<decision>:<reason>"
+# run_arb <hard:0|1> <budget_marker:0|1> <full_in_window:0|1> <prior_verdict> <prior_depth> [iso:0|1]
+# -> echoes "<decision>:<reason>"; telemetry event names land in $WORK/arb-events.
+# `iso` declares the requirement the OTHER way — a `Maintenance isolation: required`
+# line and no `Depth enforcement:` line — which must reach the same precedence rung.
 run_arb() {
-  local hard="$1" budget="$2" inwin="$3" pv="$4" pd="$5"
+  local hard="$1" budget="$2" inwin="$3" pv="$4" pd="$5" iso="${6:-0}"
+  rm -f "$WORK/arb-events"
   (
     set +e
     PRIOR_VERDICT="$pv"; PRIOR_DEPTH="$pd"
@@ -234,10 +245,11 @@ run_arb() {
     rm -f "$_prev_budget_marker"; [[ "$budget" == 1 ]] && : > "$_prev_budget_marker"
     printf -- '- **Depth:** full\n- **Full trigger:** 1\n' > "$ITER_SPEC_PATH"
     [[ "$hard" == 1 ]] && printf -- '- **Depth enforcement:** required\n' >> "$ITER_SPEC_PATH"
+    [[ "$iso" == 1 ]] && printf -- '- **Maintenance isolation:** required\n' >> "$ITER_SPEC_PATH"
     goal_full_ran_in_window() { [[ "$inwin" == 1 ]]; }
     goal_cadence_forces_full() { return 1; }
     goal_new_fullstack_journey() { return 1; }
-    record_telemetry_event() { :; }
+    record_telemetry_event() { printf '%s\n' "$1" >> "$WORK/arb-events"; }
     # shellcheck disable=SC1090
     . "$WORK/arb-block.sh" >/dev/null 2>&1
     printf '%s:%s' "$_arb_decision" "$_arb_reason"
@@ -401,14 +413,17 @@ for f in "$ENGINE_ROOT/docs/goal-mode-quickstart.md" \
          "$ENGINE_ROOT/README.md" \
          "$ENGINE_ROOT/skills/goal-interactive-dispatch.md" \
          "$ENGINE_ROOT/.claude/skills/goal-interactive-dispatch.md"; do
-  _ln="$(grep -h 'AWAITING_FULL_DEPTH' "$f" 2>/dev/null | grep 'CHAIN_DEPTH_ARBITER=false' || true)"
-  [[ -n "$_ln" ]] && ! printf '%s' "$_ln" | grep -qE 'NOT remed|NOT a way|is not a way|never suggest|not a hatch' && _hatch_ok=fail
-  # the old recommendation shapes must be gone outright
-  printf '%s' "$_ln" | grep -qiE 'restore the legacy allowlist: `?CHAIN_DEPTH_ARBITER=false|or `?CHAIN_DEPTH_ARBITER=false`?,' && _hatch_ok=fail
+  grep -h 'AWAITING_FULL_DEPTH' "$f" 2>/dev/null > "$WORK/awfd.txt" || true
+  grep 'CHAIN_DEPTH_ARBITER=false' "$WORK/awfd.txt" > "$WORK/awfd-knob.txt" || true
+  if [[ -s "$WORK/awfd-knob.txt" ]]; then
+    grep -qE 'NOT remed|NOT a way|is not a way|never suggest|not a hatch' "$WORK/awfd-knob.txt" || _hatch_ok=fail
+    # the old recommendation shapes must be gone outright
+    grep -qiE 'restore the legacy allowlist: `?CHAIN_DEPTH_ARBITER=false|or `?CHAIN_DEPTH_ARBITER=false`?,' "$WORK/awfd-knob.txt" && _hatch_ok=fail
+  fi
 done
 # run-goal.sh's own status-header entry for the pause
-_hdr="$(awk '/^#   AWAITING_FULL_DEPTH/{f=1} f&&/^#/{print} f&&!/^#/{exit}' "$RG")"
-printf '%s' "$_hdr" | grep -q 'CHAIN_DEPTH_ARBITER=false' && _hatch_ok=fail
+awk '/^#   AWAITING_FULL_DEPTH/{f=1} f&&/^#/{print} f&&!/^#/{exit}' "$RG" > "$WORK/hdr.txt"
+grep -q 'CHAIN_DEPTH_ARBITER=false' "$WORK/hdr.txt" && _hatch_ok=fail
 # _full_depth_pause: never as a bulleted option; if named at all, only as a denial
 _fp_start="$(grep -n '^_full_depth_pause()' "$RG" | head -1 | cut -d: -f1)"
 _fp_end="$(awk -v s="$_fp_start" 'NR>s && $0=="}" {print NR; exit}' "$RG")"
@@ -430,6 +445,134 @@ else
   assert "guidance: _full_depth_pause carries per-path remedy text and a marker remedy= field" "fail"
 fi
 
+
+# ══════════════════════════════════════════════════════════════════════════════
+# MAINTENANCE ISOLATION *IS* A FULL-DEPTH REQUIREMENT.
+#
+# The contract's own words are "full reviewer/QA/auditor/coherence/evaluator depth
+# REQUIRED; application-service and browser execution FORBIDDEN" — but
+# goal_full_depth_required never consulted isolation, so the first half was
+# advertised and not enforced. Two live holes:
+#   (a) an isolated `Depth: full` spec could still be cost-demoted by the arbiter
+#       (full-cap / budget-breach / evaluator-lean) unless the operator ALSO wrote
+#       `Depth enforcement: required`;
+#   (b) an isolated `Depth: lean`/`evidence` spec dispatched goal-iter-lean.sh,
+#       which has no isolation handling at all: its boot unit calls
+#       ensure_services_running bare, the refusal is swallowed inside the parallel
+#       fork, SKIPPED rows blame "frontend not running", no `**Reason:** maintenance
+#       isolation` line ever reaches ui-test-results.md — so the evaluator's
+#       carve-out cannot fire and journeys go `unknown`. With the fork off, the
+#       inline path aborts the executor under `set -e` AFTER developer+reviewer
+#       already mutated the tree.
+# Fix: isolation implies the hard requirement (so the existing precedence rung and
+# the existing pause sites cover it), and a non-full isolated spec pauses BEFORE
+# dispatch. No lean spec is ever promoted.
+# ══════════════════════════════════════════════════════════════════════════════
+_iso_spec="$WORK/iso-spec.md"; _plain_spec="$WORK/plain-spec.md"
+printf -- '- **Depth:** full\n- **Maintenance isolation:** required\n' > "$_iso_spec"
+printf -- '- **Depth:** full\n' > "$_plain_spec"
+
+goal_full_depth_required "$_plain_spec" \
+  && assert "predicate: a plain spec is still NOT a full-depth requirement (default OFF)" "fail" \
+  || assert "predicate: a plain spec is still NOT a full-depth requirement (default OFF)" "pass"
+goal_full_depth_required "$_iso_spec" \
+  && assert "predicate: a spec declaring maintenance isolation IS a full-depth requirement" "pass" \
+  || assert "predicate: a spec declaring maintenance isolation IS a full-depth requirement" "fail"
+( CHAIN_MAINTENANCE_ISOLATION=true; goal_full_depth_required "$_plain_spec" ) \
+  && assert "predicate: session-level CHAIN_MAINTENANCE_ISOLATION IS a full-depth requirement" "pass" \
+  || assert "predicate: session-level CHAIN_MAINTENANCE_ISOLATION IS a full-depth requirement" "fail"
+
+# arbiter: an isolated full spec that never says `Depth enforcement:` must still
+# outrank a cost rung, and must record the rung it overrode.
+r="$(run_arb 0 0 1 CONTINUE full 1)"
+if [[ "$r" == "full:hard-full-required" ]] && grep -q 'depth_cost_overridden' "$WORK/arb-events" 2>/dev/null; then
+  assert "precedence: isolated full + full-cap -> FULL, overridden rung telemetered" "pass"
+else
+  assert "precedence: isolated full + full-cap -> FULL, overridden rung telemetered (got '$r')" "fail"
+fi
+
+# The pre-dispatch guard: sliced from run-goal.sh and executed, like the ladder.
+_ireq_start="$(grep -n 'apply_maintenance_isolation_from_spec "\$ITER_SPEC_PATH"' "$RG" | head -1 | cut -d: -f1)"
+_ireq_end="$(awk -v s="$_ireq_start" 'NR>s && /record_telemetry_event "iter_dispatch"/ {print NR; exit}' "$RG")"
+awk -v s="$_ireq_start" -v e="$_ireq_end" 'NR>=s && NR<e' "$RG" > "$WORK/iso-guard.sh"
+if [[ -n "$_ireq_start" && -n "$_ireq_end" ]] && bash -n "$WORK/iso-guard.sh" 2>/dev/null; then
+  assert "harness: the isolation/full-depth guard slices out as a complete block" "pass"
+else
+  assert "harness: the isolation/full-depth guard slices out as a complete block" "fail"
+fi
+
+# run_iso_guard <spec:iso|plain> <depth> -> "PAUSE:<reason>:<step>" | "OK:<depth>"
+run_iso_guard() {
+  local kind="$1" depth="$2"
+  rm -f "$WORK/iso-pause" "$WORK/iso-ok"
+  (
+    set +e
+    unset CHAIN_MAINTENANCE_ISOLATION CHAIN_MAINTENANCE_ISOLATION_SOURCE
+    DEPTH="$depth"; TARGET_JOURNEYS=""
+    ITER_SPEC_PATH="$WORK/guard-spec.md"
+    printf -- '- **Depth:** %s\n' "$depth" > "$ITER_SPEC_PATH"
+    [[ "$kind" == iso ]] && printf -- '- **Maintenance isolation:** required\n' >> "$ITER_SPEC_PATH"
+    record_telemetry_event() { :; }
+    _full_depth_pause() { printf 'PAUSE:%s:%s' "$1" "$2" > "$WORK/iso-pause"; exit 0; }
+    # shellcheck disable=SC1090
+    . "$WORK/iso-guard.sh" >/dev/null 2>&1
+    printf 'OK:%s' "$DEPTH" > "$WORK/iso-ok"
+  )
+  if [[ -s "$WORK/iso-pause" ]]; then cat "$WORK/iso-pause"; else cat "$WORK/iso-ok" 2>/dev/null; fi
+}
+
+r="$(run_iso_guard iso lean)"
+[[ "$r" == PAUSE:*:isolation-requires-full ]] \
+  && assert "isolation: a Depth-lean isolated spec PAUSES before any dispatch" "pass" \
+  || assert "isolation: a Depth-lean isolated spec PAUSES before any dispatch (got '$r')" "fail"
+r="$(run_iso_guard iso evidence)"
+[[ "$r" == PAUSE:*:isolation-requires-full ]] \
+  && assert "isolation: a Depth-evidence isolated spec PAUSES before any dispatch" "pass" \
+  || assert "isolation: a Depth-evidence isolated spec PAUSES before any dispatch (got '$r')" "fail"
+r="$(run_iso_guard iso full)"
+[[ "$r" == "OK:full" ]] \
+  && assert "isolation: an isolated FULL spec is dispatched, not paused" "pass" \
+  || assert "isolation: an isolated FULL spec is dispatched, not paused (got '$r')" "fail"
+r="$(run_iso_guard plain lean)"
+[[ "$r" == "OK:lean" ]] \
+  && assert "isolation control: an ordinary lean iteration is untouched (no promotion, no pause)" "pass" \
+  || assert "isolation control: an ordinary lean iteration is untouched (got '$r')" "fail"
+
+# ── operator-only spec lines must not be silently rewritten away on resume ────
+# The depth-parse pause fires exactly when the spec's `Depth:` line does not
+# grep; that is also the condition under which --resume declines to reuse the
+# spec and re-runs the decomposer, which regenerates the file and — being
+# forbidden to emit them — drops `Depth enforcement:` / `Maintenance isolation:`.
+# The engine must at minimum say so loudly and record it.
+_redisp="$(grep -n 'step_invalidate_from decomposer "\$ITER_DIR"' "$RG" | head -1 | cut -d: -f1)"
+if [[ -n "$_redisp" ]] && { awk -v s="$_redisp" 'NR>=s-24 && NR<=s' "$RG" > "$WORK/redisp.txt"; grep -q 'will DROP operator-only line' "$WORK/redisp.txt"; }; then
+  assert "resume: regenerating a spec that carries operator-only lines warns loudly" "pass"
+else
+  assert "resume: regenerating a spec that carries operator-only lines warns loudly" "fail"
+fi
+if [[ -n "$_redisp" ]] && { awk -v s="$_redisp" 'NR>=s-24 && NR<=s' "$RG" > "$WORK/redisp.txt"; grep -q 'spec_regenerated' "$WORK/redisp.txt"; }; then
+  assert "resume: the dropped operator lines are recorded as telemetry" "pass"
+else
+  assert "resume: the dropped operator lines are recorded as telemetry" "fail"
+fi
+if grep -q 'still-unparseable' "$RG" \
+   && grep -q 'still-unparseable' "$ENGINE_ROOT/docs/goal-mode-quickstart.md" \
+   && grep -q 'still-unparseable' "$ENGINE_ROOT/skills/goal-interactive-dispatch.md"; then
+  assert "resume: depth-parse guidance says to fix the line BEFORE resuming" "pass"
+else
+  assert "resume: depth-parse guidance says to fix the line BEFORE resuming" "fail"
+fi
+
+# isolation-requires-full must be registered everywhere the other steps are
+_reg_ok=pass
+for f in "$RG" "$ENGINE_ROOT/docs/goal-mode-telemetry.md" \
+         "$ENGINE_ROOT/docs/goal-mode-quickstart.md" \
+         "$ENGINE_ROOT/README.md" \
+         "$ENGINE_ROOT/skills/goal-interactive-dispatch.md" \
+         "$ENGINE_ROOT/.claude/skills/goal-interactive-dispatch.md"; do
+  grep -q 'isolation-requires-full' "$f" || _reg_ok=fail
+done
+assert "registration: isolation-requires-full appears in the engine, telemetry doc, quickstart, README and skill" "$_reg_ok"
 
 echo ""
 echo "  ${PASS} passed, ${FAIL} failed"

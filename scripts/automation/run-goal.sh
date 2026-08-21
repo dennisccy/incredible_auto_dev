@@ -89,8 +89,12 @@
 #                      fix the spec's `Depth:` line; full-dispatch -> the installed
 #                      run-phase.sh lacks --no-finalize, update the framework;
 #                      depth-legacy-allowlist -> add the qualifying `Full trigger:` line or
-#                      re-enable the arbiter. Then --resume. Turning the arbiter off is NOT a
-#                      way out: it removes the precedence rung and the guard itself
+#                      re-enable the arbiter (at iteration 0, which the arbiter exempts, only
+#                      the `Full trigger:` line helps); isolation-requires-full -> the spec
+#                      declared maintenance isolation, which REQUIRES full depth, but resolved
+#                      to lean/evidence: write `Depth: full` or drop the declaration. Then
+#                      --resume. Turning the arbiter off is NOT a way out: it removes the
+#                      precedence rung and the guard itself
 #
 # Quota exhaustion is NOT a halt: claude_with_quota_retry transparently sleeps
 # until the quota resets and resumes.
@@ -1101,11 +1105,13 @@ _full_depth_pause() { # $1 reason, $2 detected_at_step — pause AWAITING_FULL_D
     depth-arbiter)
       remedy="let the cadence window pass, or re-run with CHAIN_FULL_CADENCE_CAP=1 (disables the one-full-per-window cap)" ;;
     depth-parse)
-      remedy="fix this iteration spec's 'Depth:' line so it parses (lean | full | evidence)" ;;
+      remedy="fix this iteration spec's 'Depth:' line so it parses (lean | full | evidence) BEFORE resuming — a still-unparseable line makes --resume re-run the decomposer, which rewrites the whole spec and drops operator-only lines (Depth enforcement:, Maintenance isolation:)" ;;
     full-dispatch)
       remedy="the installed run-phase.sh has no --no-finalize flag: update/restore the framework checkout so the full pipeline can be dispatched" ;;
     depth-legacy-allowlist)
-      remedy="add the qualifying 'Full trigger: <1-4> — <reason>' line to the spec, or re-enable the deterministic arbiter (unset CHAIN_DEPTH_ARBITER), whose precedence rung grants a hard-required full outright" ;;
+      remedy="add the qualifying 'Full trigger: <1-4> — <reason>' line to the spec, or re-enable the deterministic arbiter (unset CHAIN_DEPTH_ARBITER), whose precedence rung grants a hard-required full outright — note the arbiter exempts iteration 0, so at the baseline only the 'Full trigger:' line helps" ;;
+    isolation-requires-full)
+      remedy="write 'Depth: full' in this iteration's spec — plus the qualifying 'Full trigger:' line when the arbiter is skipped — or drop the isolation declaration; maintenance isolation is enforced only at full depth, so a non-full isolated iteration is refused rather than run" ;;
     *)
       remedy="resolve the cause printed above" ;;
   esac
@@ -2402,6 +2408,30 @@ except Exception: print(0)" 2>/dev/null || echo 0)"
     echo "[run-goal] Resume: goal-decomposer already completed for iteration $CURRENT_ITER (checkpoint + spec verified) — skipping."
     record_telemetry_event "step_skipped" "$(jq -cn --arg n "$ITER_NAME" '{step:"goal-decomposer", iter_name:$n, reason:"checkpoint"}' 2>/dev/null || printf '{"step":"goal-decomposer"}')"
   else
+  # Operator-only lines do NOT survive regeneration. The resume-skip above needs a
+  # parseable `Depth:` line, which is exactly what the depth-parse pause reports as
+  # missing — so resuming without fixing that line lands here, and the decomposer
+  # (forbidden to emit either control) rewrites the spec without them. Say so
+  # loudly and record it; the operator's own edit is the only fix.
+  if [[ -f "$ITER_SPEC_PATH" ]]; then
+    # Detected through the PREDICATES, never a second copy of their regexes (the
+    # marker regex lives in exactly one place, lib/common.sh, and a test pins that).
+    # The env forms are unset for the probe because only a SPEC-borne declaration is
+    # what regeneration destroys. Isolation short-circuits goal_full_depth_required,
+    # so when both lines are present the isolation one is what gets named — which is
+    # also the operative one, since isolation implies the depth requirement.
+    _dropped=""
+    if ( unset CHAIN_MAINTENANCE_ISOLATION; goal_maintenance_isolation_required "$ITER_SPEC_PATH" ); then
+      _dropped="Maintenance isolation: required"
+    elif ( unset CHAIN_REQUIRE_FULL_DEPTH CHAIN_MAINTENANCE_ISOLATION; goal_full_depth_required "$ITER_SPEC_PATH" ); then
+      _dropped="Depth enforcement: required"
+    fi
+    if [[ -n "$_dropped" ]]; then
+      echo "[run-goal] WARNING: regenerating $ITER_SPEC_PATH will DROP operator-only line(s): $_dropped" >&2
+      echo "[run-goal]          The goal-decomposer is forbidden to write them (anti-pattern 25), so re-add them by hand after this iteration's spec is written, or declare them session-wide with CHAIN_REQUIRE_FULL_DEPTH / CHAIN_MAINTENANCE_ISOLATION." >&2
+      record_telemetry_event "spec_regenerated" "$(jq -cn --arg d "$_dropped" --arg n "$ITER_NAME" '{iter_name:$n, dropped:$d}' 2>/dev/null || printf '{"dropped":"%s"}' "$_dropped")"
+    fi
+  fi
   step_invalidate_from decomposer "$ITER_DIR"
   record_agent_invocation_start "goal-decomposer"   # bare call: must NOT be $(...) or the CHAIN_CURRENT_AGENT export is lost to a subshell
   _decomp_start=$CHAIN_AGENT_START_EPOCH
@@ -2763,6 +2793,18 @@ PYEOF
   # consumer too, since the target-journey frontend override is what isolation
   # subordinates.
   apply_maintenance_isolation_from_spec "$ITER_SPEC_PATH" || true
+  # Isolation's first clause is "full depth REQUIRED". goal_full_depth_required now
+  # honours it, which protects an isolated FULL spec from every cost rung — but a
+  # spec that asked for lean/evidence in the first place never entered the arbiter,
+  # so nothing above promoted it, and nothing may. Pause instead, BEFORE any
+  # executor dispatch: the lean path has no isolation handling (bare
+  # ensure_services_running inside a fork whose refusal is swallowed), so running it
+  # would burn the boot timeout, write SKIPPED rows blaming "frontend not running"
+  # instead of the contract, and — with the fork off — abort under `set -e` only
+  # AFTER developer and reviewer had already mutated the tree.
+  if goal_maintenance_isolation_required && [[ "$DEPTH" != "full" ]]; then
+    _full_depth_pause "maintenance isolation requires full depth but this spec resolved to $DEPTH" "isolation-requires-full"
+  fi
   record_telemetry_event "iter_dispatch" "$(jq -cn --arg d "$DEPTH" --arg tj "$TARGET_JOURNEYS" --arg mi "${CHAIN_MAINTENANCE_ISOLATION:-false}" '{depth:$d, target_journeys:$tj, maintenance_isolation:$mi}' 2>/dev/null || printf '{"depth":"%s","maintenance_isolation":"%s"}' "$DEPTH" "${CHAIN_MAINTENANCE_ISOLATION:-false}")"
 
   # 2c. Join the previous iteration's background showcase tail (if any) BEFORE
