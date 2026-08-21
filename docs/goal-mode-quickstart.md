@@ -124,7 +124,10 @@ instead of running a lane it is not allowed to run.
 
 The **session-wide** form is the env one and is the only one with a guarantee that spans
 iterations: `CHAIN_REQUIRE_FULL_DEPTH=true` / `CHAIN_MAINTENANCE_ISOLATION=true` on the
-`run-goal.sh` command line. The **per-iteration** form is a spec line, and the goal-decomposer is
+`run-goal.sh` command line. Note that the env form also binds iteration 0: the baseline
+spec is `Depth: lean` by contract, so a fresh session started with either env form set pauses
+`AWAITING_FULL_DEPTH` before the baseline runs — start the session without the env form and add
+it on the `--resume` that follows the baseline, or accept the pause and resume. The **per-iteration** form is a spec line, and the goal-decomposer is
 forbidden to write it (a governor that reads the governed agent's own prose is not a governor —
 anti-pattern 25), so a human adds it: let the loop pause once the decomposer checkpoint for that
 iteration exists, edit `docs/phases/goal-<sid>-iter-<N>.md` to add the line (and `Depth: full`),

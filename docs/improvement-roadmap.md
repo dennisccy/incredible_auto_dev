@@ -3950,6 +3950,17 @@ but appreciated.
   - The developer / reviewer / auditor prompts carry no isolation note. The FORBIDDEN half binds
     the engine's own service and browser call sites, so nothing the pipeline drives can start the
     app — but an agent told to run it by hand would not know it must not.
+  - (final-review residuals, 2026-08-21) The `isolation-requires-full` pause exits before the
+    showcase-join step's explicit `kill_phase_servers`, so app services an earlier showcase tail
+    had already started survive that pause (the EXIT trap reaps the tail itself; the services
+    predate the isolated iteration). `tests/automation/test-maintenance-isolation.sh` still carries
+    ten `awk|grep -q`-style pipelines under `pipefail` — the SIGPIPE flake pattern removed from its
+    sibling; route slices through files before it grows. `run-goal.sh`'s
+    `apply_maintenance_isolation_from_spec … || true` is now load-bearing for the isolation guard
+    (a silent failure there would disarm a spec-declared isolation; unreachable today).
+    `goal-iter-lean.sh`'s "Full depth is REQUIRED" line fires for isolation too (reason tag
+    `full-depth-required`; behaviour correct, message imprecise). The quickstart's "let the loop
+    pause once the decomposer checkpoint exists" does not say how (`/goal-pause` or Ctrl-C).
 - **Verify:** `bash tests/automation/test-maintenance-isolation.sh` (78) · `bash
   tests/automation/test-full-depth-required.sh` (53) · `bash
   tests/automation/test-closure-gate.sh` (29) · `bash tests/automation/test-depth-arbiter.sh`
