@@ -3785,7 +3785,10 @@ but appreciated.
 
 ### CAND-STYLE · Per-agent Claude Code output style (landed default-off; experiment pending)
 - **Priority:** P2 · **Effort:** M · **Risk:** LOW-MED · **Status:** IMPLEMENTED
-  2026-08-20 behind `CHAIN_OUTPUT_STYLES` (default off, G4).
+  2026-08-20 behind `CHAIN_OUTPUT_STYLES` (default off, G4); G8 stage 1 (fixture A/B)
+  run 2026-08-21 — mechanism confirmed, token win indicative (−44% on the one
+  like-for-like developer cell), journey clause refuted by an orphan-Chrome
+  infrastructure defect; stage 2 (same-session real rollout) pending.
 - **Problem:** long, machine-consumed pipeline steps (developer, qa,
   browser-qa-agent, orchestrator, ui-impact-analyst, ux-regression-reviewer) pay
   sonnet-priced tokens narrating a transcript no human reads. Claude Code's built-in
@@ -3861,6 +3864,30 @@ but appreciated.
   measured agents (edit `OUTPUT_STYLE_OVERRIDES` accordingly); if artifacts
   thinned but tokens still dropped, ship arm 2 instead; otherwise record the
   result here and leave the knob dormant.
+- **G8 stage-1 result (2026-08-21, fixture A/B — NOT the flip decision):** two
+  `run-benchmark.sh` arms on the todo-app fixture at framework `f8c98b9` (arm A control
+  `bench-20260820-2246`, arm B `CHAIN_OUTPUT_STYLES=true` `bench-20260820-2337`; full
+  grading in `benchmarks/experiments.md` under `POST bench-20260820-2337`). Run this way
+  because both real-session repos had live engines under `HOST_GUARD_MAX_ENGINES` and
+  run an older vendored framework copy; cross-session, so the same-session cost guard
+  was not exercised. **Mechanism CONFIRMED:** every wave-1 dispatch requested and read
+  back `output_style=Concise` (developer ×2, browser-qa-agent ×2, and — iter-1 ran full
+  depth — orchestrator, ui-impact-analyst, qa, ux-regression-reviewer); judges and
+  showcase agents `default`; `iter_config` per iteration; zero `output_style_mismatch`,
+  `missing_evidence`, `experiment_reverted`; tripwire quiet; doctor PASS armed at boot.
+  **Tokens (indicative, n=1 per cell):** the one like-for-like cell, developer iter-0
+  (lean/lean): 14,967 → 8,416 output tokens (−44%), 35 → 28 turns, 184 → 109 s,
+  cache_creation +17.9K (≤ +25K budget held); iter-1 depth-confounded (A lean 29,518 /
+  45 turns vs B FULL 33,098 / 46). **Journeys 3/3 REFUTED for arm B (1/3,
+  BUDGET_EXHAUSTED) for infrastructure reasons, not the style:** arm A's browser-QA
+  Chrome outlived its engine and held the pinned chrome-mcp profile, so arm B's browser
+  lane got `ECONNREFUSED :10547` in both iterations; the evaluator graded J-02/J-03
+  partial from the Playwright demo walkthrough alone (its step 4, authored by the
+  Default-styled demo-narrator, clicked an already-done item). **Watch item:** the styled
+  QA report over-claimed its screenshot evidence once (caught by the auditor and by the
+  styled ux-regression-reviewer) — count QA over-claims per arm in stage 2. Stage 2 =
+  the same-session real rollout above, after the next vendored sync and after the
+  orphan-Chrome reap (Follow-ups) is fixed.
 - **Verify:** `./scripts/automation/run-evals.sh` · `bash
   tests/automation/test-output-style.sh` · `bash scripts/automation/doctor.sh --only
   output-styles` · the G8 read-out (`T=runs/goal-session-<sid>/telemetry.jsonl`):
@@ -3886,6 +3913,19 @@ but appreciated.
 - **Follow-ups:**
   - Flip `CHAIN_OUTPUT_STYLES`'s default only in a separate change, after G8
     evidence.
+  - (from G8 stage 1, framework defects — not style effects) The benchmark /
+    browser-QA Chrome (`superpowers/browser-profiles/iad-qa-scratch*`) outlives the
+    engine and holds the pinned chrome-mcp profile, blocking the NEXT session's browser
+    lane (`ECONNREFUSED` on the pinned CDP port): reap it at engine exit or pin the
+    profile per session — must land before stage 2. `closure_gate.py:66` matches the word
+    "todo" case-insensitively as a TODO marker (fails every iteration of a todo app).
+    The full-depth review (`review-phase.sh`) emits no `review_verdict` telemetry, so
+    the attempt-1 FAIL-rate metric is blind in full iterations. The trace row's `args`
+    records the caller argv only — record the injected `--settings` (and `--effort` /
+    `--model` are already separate fields) so the flag is directly auditable.
+    `artifact_schemas.py validate` requires a `## Verdict` section while lean review
+    reports and the QA report use the `**Verdict:**` first-line format — reconcile
+    before using it as the thinning signal.
   - Arm 2 custom style `pipeline-terse` (pre-drafted, NOT shipped — ships as its
     own CAND item): use only if wave-1 measurement shows Concise leaking into
     artifacts (schema failures, thinner handoffs) while the token win is real.
