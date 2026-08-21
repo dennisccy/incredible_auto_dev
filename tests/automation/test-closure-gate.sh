@@ -243,6 +243,28 @@ rc="$(run_gate "$ROOT")"
   && assert "FAILed QA verdict: CLOSURE-FAIL names the QA report" "pass" \
   || assert "FAILed QA verdict: CLOSURE-FAIL names the QA report" "fail"
 
+# ── (i) maintenance-isolation SKIPPED stub (real producer) -> CLOSURE-PASS ───
+# An isolated iteration withholds the browser lane by contract, and run-phase.sh
+# writes the stub through write_na_ui_artifacts (lib/common.sh). Generated here by
+# the REAL producer so the artifact and this gate cannot drift apart: it must
+# carry a documented reason AND enough content to clear the frontend-phase
+# content floor, since the gate reads the plan text and cannot see the contract.
+ROOT="$WORK/isolation"
+make_fixture "$ROOT" yes
+rm -f "$ROOT/reports/phase-p1-ui-test-results.md"
+( REPO_ROOT="$ROOT"; CHAIN_MAINTENANCE_ISOLATION=true
+  write_na_ui_artifacts p1 ui-test-results >/dev/null 2>&1 )
+rc="$(run_gate "$ROOT")"
+[[ "$rc" == "0" ]] \
+  && assert "maintenance-isolation SKIPPED stub: exit 0" "pass" \
+  || assert "maintenance-isolation SKIPPED stub: exit 0 (got $rc: $(grep -m2 '^[0-9]\. \*\*' "$(VERDICT_FILE "$ROOT")" | tr '\n' ' '))" "fail"
+head -1 "$(VERDICT_FILE "$ROOT")" | grep -q '^\*\*Verdict:\*\* CLOSURE-PASS$' \
+  && assert "maintenance-isolation SKIPPED stub: first line is CLOSURE-PASS" "pass" \
+  || assert "maintenance-isolation SKIPPED stub: first line is CLOSURE-PASS" "fail"
+grep -q '^- WARN:.*all-SKIPPED' "$(VERDICT_FILE "$ROOT")" \
+  && assert "maintenance-isolation SKIPPED stub: recorded as a documented skip (WARN, not blocking)" "pass" \
+  || assert "maintenance-isolation SKIPPED stub: recorded as a documented skip (WARN, not blocking)" "fail"
+
 # ── (h) escape-hatch wiring in phase-closure-check.sh ────────────────────────
 grep -q 'CHAIN_CLOSURE_LLM:-false.*==.*true' "$CHECK_SH" \
   && assert "wiring: CHAIN_CLOSURE_LLM=true routes to the LLM dispatch branch" "pass" \

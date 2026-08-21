@@ -179,6 +179,23 @@ else
 fi
 
 
+# ── resume: the new pause status must be in the resumable allowlist ──────────
+# _full_depth_pause writes a status the operator clears by removing the CAUSE
+# (cadence window, CHAIN_FULL_CADENCE_CAP, CHAIN_DEPTH_ARBITER) and resuming. If
+# `--resume` does not reset that status to in_progress, the session is stuck in a
+# pause it can never leave — and the requirement's only escape becomes deleting it.
+_allow="$(grep -n 'RUN_MODE" == "resume" and d.get("status") in' "$RG" | head -1 | cut -d: -f1)"
+if [[ -n "$_allow" ]] && sed -n "${_allow}p" "$RG" | grep -q 'AWAITING_FULL_DEPTH'; then
+  assert "resume: AWAITING_FULL_DEPTH is in the resumable-status allowlist" "pass"
+else
+  assert "resume: AWAITING_FULL_DEPTH is in the resumable-status allowlist" "fail"
+fi
+if [[ -n "$_allow" ]] && sed -n "$((_allow + 1))p" "$RG" | grep -q 'in_progress'; then
+  assert "resume: that allowlist is the one that resets the session to in_progress" "pass"
+else
+  assert "resume: that allowlist is the one that resets the session to in_progress" "fail"
+fi
+
 # ══════════════════════════════════════════════════════════════════════════════
 # PRECEDENCE: a hard full-depth requirement outranks the COST ladder.
 #

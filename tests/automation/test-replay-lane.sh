@@ -178,6 +178,12 @@ run_partition() {  # $1 = REQUIRED_JOURNEYS value
     if [[ -n "${STUB_SVC_STAMP:-}" ]]; then
       ensure_services_running() { echo recheck >> "$STUB_SVC_STAMP"; }
     fi
+    # The lane refuses outright when the maintenance-isolation predicate is not
+    # defined (fail closed — see replay_lane_partition_and_verify). This harness
+    # deliberately does not source common.sh, so declare the state these lane
+    # scenarios run in: not isolated. The fail-closed branch itself is covered by
+    # test-maintenance-isolation.sh.
+    goal_maintenance_isolation_required() { return 1; }
     replay_lane_paths "$ITER"
     if [[ -n "${RUN_PARTITION_LOG:-}" ]]; then
       replay_lane_partition_and_verify "$ITER" > "$RUN_PARTITION_LOG" 2>&1

@@ -1654,7 +1654,7 @@ if _prev_style != "$_STYLE_ARM":
     print("[run-goal] NOTE: output-style arm changed on resume (was '%s', now '%s') — telemetry before iter %s is a different arm."
           % (_prev_style, "$_STYLE_ARM", "$CURRENT_ITER"), file=_sys.stderr)
 d["output_styles"] = "$_STYLE_ARM"
-if "$RUN_MODE" == "resume" and d.get("status") in ("REGRESSION_HALT", "AWAITING_BLUEPRINT_APPROVAL", "AWAITING_PUMP", "AWAITING_INTENT_REVIEW", "AWAITING_GITHUB_AUTH", "AWAITING_DISK", "AWAITING_HOST_GUARD"):
+if "$RUN_MODE" == "resume" and d.get("status") in ("REGRESSION_HALT", "AWAITING_BLUEPRINT_APPROVAL", "AWAITING_PUMP", "AWAITING_INTENT_REVIEW", "AWAITING_GITHUB_AUTH", "AWAITING_DISK", "AWAITING_HOST_GUARD", "AWAITING_FULL_DEPTH"):
   d["status"] = "in_progress"
 import os as _os, tempfile as _tf
 _fd, _tmp = _tf.mkstemp(dir=_os.path.dirname("$SESSION_JSON") or ".", suffix=".sjtmp")
@@ -2721,7 +2721,7 @@ PYEOF
   # consumer too, since the target-journey frontend override is what isolation
   # subordinates.
   apply_maintenance_isolation_from_spec "$ITER_SPEC_PATH" || true
-  record_telemetry_event "iter_dispatch" "$(jq -cn --arg d "$DEPTH" --arg tj "$TARGET_JOURNEYS" --arg mi "${CHAIN_MAINTENANCE_ISOLATION:-false}" '{depth:$d, target_journeys:$tj, maintenance_isolation:$mi}' 2>/dev/null || printf '{"depth":"%s"}' "$DEPTH")"
+  record_telemetry_event "iter_dispatch" "$(jq -cn --arg d "$DEPTH" --arg tj "$TARGET_JOURNEYS" --arg mi "${CHAIN_MAINTENANCE_ISOLATION:-false}" '{depth:$d, target_journeys:$tj, maintenance_isolation:$mi}' 2>/dev/null || printf '{"depth":"%s","maintenance_isolation":"%s"}' "$DEPTH" "${CHAIN_MAINTENANCE_ISOLATION:-false}")"
 
   # 2c. Join the previous iteration's background showcase tail (if any) BEFORE
   # dispatching build work: its artifacts get committed here, so developer /
@@ -2729,7 +2729,21 @@ PYEOF
   # would have produced. Overlapping it with the decomposer above is where the
   # ~6-13 min saving comes from.
   _engine_step_begin "showcase-join"
-  _join_showcase_tail
+  # Under maintenance isolation this join is a service-boot back door: the tail
+  # was FORKED during iteration N-1, so its subshell carries the PRE-isolation
+  # environment, and demo-phase.sh inside it boots the app idempotently for that
+  # iteration's walkthrough. Waiting for it would therefore start services in the
+  # middle of an isolated iteration. Reap it instead — its artifacts are showcase
+  # only, and a partial walkthrough is the correct trade for the contract.
+  # `--kill` returns early, before the join path's own kill_phase_servers, so
+  # anything the tail already started is cleared here explicitly.
+  if [[ -n "${_SHOWCASE_PID:-}" ]] && goal_maintenance_isolation_required; then
+    maintenance_isolation_refuse "async-showcase-join" "iter ${_SHOWCASE_ITER:-?} tail forked before isolation" || true
+    _join_showcase_tail --kill
+    kill_phase_servers 2>/dev/null || true
+  else
+    _join_showcase_tail
+  fi
   _engine_step_done
 
   # Tmp hygiene boundary — the per-iteration cleanup step. The previous

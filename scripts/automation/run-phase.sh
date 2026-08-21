@@ -231,6 +231,12 @@ _boot_shared_services() {
     unset QA_BACKEND_START_CMD QA_FRONTEND_START_CMD 2>/dev/null || true
     maintenance_isolation_refuse "_boot_shared_services" "shared app-service fanout boot" || true
     log "Post-dev fanout: shared service boot SKIPPED — maintenance isolation (full review depth retained, app services forbidden)."
+    # Deliberate: this returns BEFORE `export CHAIN_SHARED_SERVICES=true`. That
+    # flag means "the caller owns a running app", so setting it with no services
+    # up would tell each child to skip its own boot AND its own teardown for a
+    # tree that has none. Unset is the consistent state for every child here:
+    # qa-phase.sh resolves isolation before it consults the flag, browser-qa
+    # refuses and exits first, and demo-phase skips at its own guard.
     return 0
   fi
   local _be_port="${CHAIN_BACKEND_PORT:-8000}"

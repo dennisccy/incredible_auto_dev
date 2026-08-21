@@ -53,6 +53,8 @@ if goal_maintenance_isolation_required "$SPEC"; then
 
 **Browser QA Verdict:** SKIPPED
 
+**Reason:** maintenance isolation is required for this iteration — application-service boot, browser QA and the deterministic replay lane are forbidden by contract, so no browser validation was executed.
+
 ## Why this lane did not run
 
 This iteration declares **maintenance isolation**. Application-service boot,

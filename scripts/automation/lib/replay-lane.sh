@@ -241,8 +241,17 @@ replay_lane_partition_and_verify() {
   # got here — note the partitioner routes TARGET journeys as well as
   # Required-still-passing ones, so an empty required set is NOT what makes an
   # iteration safe. Refuse rather than partition.
-  if declare -F goal_maintenance_isolation_required >/dev/null 2>&1 \
-     && goal_maintenance_isolation_required; then
+  #
+  # "Cannot evaluate" counts as forbidden. This is a library: a caller that never
+  # sourced common.sh has no predicate, and treating that as "not isolated" would
+  # make the one state in which the contract is uncheckable the state that lets
+  # the browser run. Both production callers (browser-qa-phase.sh,
+  # goal-iter-lean.sh) source common.sh, so this branch is a backstop.
+  if ! declare -F goal_maintenance_isolation_required >/dev/null 2>&1; then
+    echo "[replay-lane] lib/common.sh not sourced — cannot evaluate maintenance isolation; refusing the replay lane (fail closed)" >&2
+    return 0
+  fi
+  if goal_maintenance_isolation_required; then
     maintenance_isolation_refuse "replay_lane_partition_and_verify" "deterministic replay for ${_rl_iter}" || true
     return 0
   fi
