@@ -1928,11 +1928,15 @@ EOF
 echo "$$" > "$ENGINE_PID_FILE" 2>/dev/null || true
 # Engine-lock owner predicate — the SAME test release_engine_lock applies
 # (lib/engine-lock.sh): _ENGINE_LOCK_HELD is set only by a successful acquire,
-# and the lock's recorded pid must still be ours. False for a refused second
+# and the lock's recorded pid (and host, so a cross-host takeover cannot be
+# claimed from the losing side) must still be ours. False for a refused second
 # start, which never acquired.
 _goal_engine_owns_lock() {
-  [[ -n "${_ENGINE_LOCK_HELD:-}" ]] \
-    && [[ "$(_engine_lock_meta "$_ENGINE_LOCK_HELD" pid | tr -dc 0-9)" == "$$" ]]
+  [[ -n "${_ENGINE_LOCK_HELD:-}" ]] || return 1
+  local pid host
+  pid="$(_engine_lock_meta "$_ENGINE_LOCK_HELD" pid | tr -dc 0-9)"
+  host="$(_engine_lock_meta "$_ENGINE_LOCK_HELD" host)"
+  [[ "$pid" == "$$" && ( -z "$host" || "$host" == "$(_engine_lock_host)" ) ]]
 }
 # Composed EXIT trap (single trap owner — never add a second `trap … EXIT`, it
 # would silently drop earlier cleanup): join/kill the showcase tail FIRST so

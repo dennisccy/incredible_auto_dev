@@ -258,13 +258,15 @@ pkill -KILL -f "fake-chrome --user-data-dir=$PROOT" 2>/dev/null
 
 # B11. qa_browser_reap_on_exit (lib/common.sh): the engine-exit hook. Default on,
 # never for the interactive backend, CHAIN_BQA_REAP_ON_EXIT=0 opts out.
+# `2>&1 >/dev/null` (in that order) forwards the hook's STDERR to the caller and
+# drops browser-confine's stdout summary — B12 asserts on the stderr skip line.
 reap_on_exit() { # <backend> <on-exit-knob> → runs the hook in a clean env
   env -u CHROME_WS_PROFILE -u CHROME_WS_PORT CHROME_PROFILE_ROOT="$PROOT" \
       HOST_GUARD_MCP_MATCH="$WORK/no-such-mcp" \
       CHAIN_AGENT_BACKEND="$1" CHAIN_BQA_REAP_ON_EXIT="$2" bash -c "
     source '$AUTO/lib/common.sh' >/dev/null 2>&1
     REPO_ROOT='$PROJ_NOHG'
-    qa_browser_reap_on_exit" >/dev/null 2>&1
+    qa_browser_reap_on_exit" 2>&1 >/dev/null
 }
 P_OWN="$(spawn "--user-data-dir=$PROOT/$OWN_PROF" --remote-debugging-port=10999)"
 reap_on_exit interactive 1
@@ -273,6 +275,27 @@ reap_on_exit claude 0
 alive "$P_OWN" && assert "exit hook: CHAIN_BQA_REAP_ON_EXIT=0 opts out" pass || assert "exit hook: CHAIN_BQA_REAP_ON_EXIT=0 opts out" fail
 reap_on_exit claude 1
 wait_for 8 dead "$P_OWN" && assert "exit hook: headless engine reaps its own browser" pass || assert "exit hook: headless engine reaps its own browser" fail
+pkill -KILL -f "fake-chrome --user-data-dir=$PROOT" 2>/dev/null
+
+# B12. A LIVE sibling engine in the same checkout blocks the exit reap. The QA
+# browser identity is per project PATH, but the REL-4 engine lock is per SESSION
+# (runs/goal-session-<sid>/.engine.lock), so two headless sessions in one
+# checkout satisfy the owner predicate independently and would reap each other's
+# browser mid-dispatch. The lock is written by engine-lock.sh's own acquire, so
+# the layout can never drift from the real one; only the pid is rewritten.
+SIB_LOCK="$PROJ_NOHG/runs/goal-session-other/.engine.lock"
+bash -c "source '$AUTO/lib/engine-lock.sh'; acquire_engine_lock '$SIB_LOCK' 'sibling engine'" >/dev/null 2>&1
+P_SIB="$(spawn "--sibling-engine=$WORK/other")"   # a live pid that is not a browser
+echo "$P_SIB" > "$SIB_LOCK/pid"
+P_OWN="$(spawn "--user-data-dir=$PROOT/$OWN_PROF" --remote-debugging-port=10999)"
+OUT="$(reap_on_exit claude 1)"
+alive "$P_OWN" && assert "exit hook: live sibling engine blocks the reap" pass || assert "exit hook: live sibling engine blocks the reap" fail
+[[ "$OUT" == *"exit reap skipped"*"$SIB_LOCK"*"pid $P_SIB"* ]] && assert "exit hook: skip line names the sibling lock and pid" pass || assert "exit hook: skip line names the sibling lock and pid ($OUT)" fail
+echo 999999 > "$SIB_LOCK/pid"                     # holder is gone
+reap_on_exit claude 1
+wait_for 8 dead "$P_OWN" && assert "exit hook: dead sibling lock does not block the reap" pass || assert "exit hook: dead sibling lock does not block the reap" fail
+kill -KILL "$P_SIB" 2>/dev/null
+rm -rf "$PROJ_NOHG/runs"
 pkill -KILL -f "fake-chrome --user-data-dir=$PROOT" 2>/dev/null
 
 echo ""

@@ -399,6 +399,28 @@ ensure_qa_browser_env() {
 qa_browser_reap_on_exit() {
   [[ "${CHAIN_BQA_REAP_ON_EXIT:-1}" == "1" ]] || return 0
   [[ "${CHAIN_AGENT_BACKEND:-}" != "interactive" ]] || return 0
+  # Sibling guard. The QA browser identity is per project PATH, but the REL-4
+  # engine lock is per SESSION (run-goal.sh locks
+  # runs/goal-session-<sid>/.engine.lock, not the repo-wide lock run-phase.sh
+  # takes), so two headless goal sessions in ONE checkout share the pinned
+  # browser. That is not a supported configuration and this guard does not make
+  # it work; it only stops a default-on reap from making it worse by killing the
+  # live sibling's browser mid-dispatch. Live sibling = a goal-session lock whose
+  # recorded pid is alive and is not us; the pid is read with engine-lock.sh's
+  # own reader so there is only ever one lock format.
+  local _lockdir _lpid
+  if ! declare -F _engine_lock_meta >/dev/null 2>&1; then
+    # shellcheck source=engine-lock.sh
+    source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/engine-lock.sh" 2>/dev/null || true
+  fi
+  for _lockdir in "$REPO_ROOT"/runs/goal-session-*/.engine.lock; do
+    [[ -d "$_lockdir" ]] || continue
+    _lpid="$(_engine_lock_meta "$_lockdir" pid 2>/dev/null | tr -dc 0-9)"
+    [[ -n "$_lpid" && "$_lpid" != "$$" ]] || continue
+    kill -0 "$_lpid" 2>/dev/null || continue
+    echo "[qa-browser] exit reap skipped: another engine is live in this checkout ($_lockdir, pid $_lpid)" >&2
+    return 0
+  done
   local bc
   bc="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../host-guard/browser-confine.sh"
   [[ -f "$bc" ]] || return 0
