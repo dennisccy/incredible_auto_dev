@@ -1031,3 +1031,20 @@ Entry format contract (grep-able; pinned by
 - predicate: attempt1_review_fails==0 → true (attempt1_review_fails=0)
 - predicate: malformed_verdicts==0 → true (malformed_verdicts=0)
 - verdict-vs-prediction: CONFIRMED
+
+---
+
+## PRE bench-20260820-2337 · 2026-08-20T23:37:25Z
+- framework-sha: 3e165ba9a35f0216e8c742a8ac5c532184edd2a4 (dirty: false)
+- fixture: todo-app · max-iter 2
+- hypothesis: STYLE-1 G8 stage-1 ARM B = ARMED at framework f8c98b9 (CHAIN_OUTPUT_STYLES=true): every wave-1 dispatch (developer, qa, browser-qa-agent, orchestrator, ui-impact-analyst, ux-regression-reviewer) carries --settings outputStyle=Concise in its trace args AND reads back output_style=Concise from the init event; judges read output_style=default; zero output_style_mismatch; exactly one iter_config key=CHAIN_OUTPUT_STYLES per iteration; chain still GOAL_ACHIEVED 3/3 with 0 attempt-1 review FAILs, 0 malformed verdicts, 0 missing_evidence rows and no artifact-schema issues; developer iter-1 output_tokens -20..30 percent vs arm A with num_turns flat within 10 percent and cache_creation_input_tokens at most +25K per wave-1 dispatch; wall not worse than arm A +10 percent. Graded MANUAL with the CAND-STYLE read-out recipe; n=1 real iteration per arm, so the token clause is indicative only — the pass/fail clauses are the proof of mechanism.
+- metrics + prediction (mechanical --predict): journeys_passing_after>=3;final_status==GOAL_ACHIEVED;attempt1_review_fails==0;malformed_verdicts==0
+
+## POST bench-20260820-2337 · 2026-08-21T00:38:32Z
+- results: benchmarks/results/20260821-003832-3e165ba9a35f.json
+- headline: status=BUDGET_EXHAUSTED last_verdict=CONTINUE journeys=1/3 iters=2 engine_exit=0 wall=3667s cost=$19.847708
+- predicate: journeys_passing_after>=3 → false (journeys_passing_after=1)
+- predicate: final_status==GOAL_ACHIEVED → false (final_status='BUDGET_EXHAUSTED')
+- predicate: attempt1_review_fails==0 → true (attempt1_review_fails=0)
+- predicate: malformed_verdicts==0 → true (malformed_verdicts=0)
+- verdict-vs-prediction: MIXED
