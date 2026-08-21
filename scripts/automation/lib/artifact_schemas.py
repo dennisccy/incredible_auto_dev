@@ -56,15 +56,15 @@ SCHEMAS: tuple[ArtifactSchema, ...] = (
         artifact_type="review",
         path_pattern=re.compile(r"reports/reviews/.+-review\.md$"),
         verdict_enum=Verdict,
-        required_h2=("Verdict",),
-        description="Reviewer report — reports/reviews/<phase>-review.md",
+        required_h2=(),
+        description="Reviewer report — reports/reviews/<phase>-review.md (first-line `**Verdict:**` contract, no required H2)",
     ),
     ArtifactSchema(
         artifact_type="qa",
         path_pattern=re.compile(r"reports/qa/.+-qa\.md$"),
         verdict_enum=Verdict,
-        required_h2=("Verdict",),
-        description="QA validation report — reports/qa/<phase>-qa.md",
+        required_h2=(),
+        description="QA validation report — reports/qa/<phase>-qa.md (first-line `**Verdict:**` contract, no required H2)",
     ),
     ArtifactSchema(
         artifact_type="audit",
@@ -267,7 +267,12 @@ def _cmd_list(_argv: list[str]) -> int:
 _FIXTURES = {
     "review_pass": (
         "reports/reviews/phase-1-review.md",
-        "# Code Review Report\n\n## Verdict\n\n**Verdict:** PASS\n\n## Findings\n\nNone.\n",
+        "**Verdict:** PASS\n\n```yaml\nphase: phase-1\ndate: 2026-08-21\nreviewer: reviewer\nsummary: |\n  Implements the spec.\n```\n",
+        True,
+    ),
+    "review_pass_with_notes_lean": (
+        "reports/reviews/goal-demo-iter-1-review.md",
+        "**Verdict:** PASS_WITH_NOTES\n\n```yaml\nphase: goal-demo-iter-1\n```\n",
         True,
     ),
     "review_missing_verdict": (
@@ -277,7 +282,22 @@ _FIXTURES = {
     ),
     "review_invalid_verdict": (
         "reports/reviews/phase-1-review.md",
-        "# Code Review Report\n\n## Verdict\n\n**Verdict:** GOOD\n",
+        "**Verdict:** GOOD\n",
+        False,
+    ),
+    "review_h2_only_is_not_a_verdict": (
+        "reports/reviews/phase-1-review.md",
+        "# Code Review Report\n\n## Verdict\n\nPASS\n",
+        False,  # the H2 alone never satisfied the consumers (the bold line is the contract)
+    ),
+    "qa_pass": (
+        "reports/qa/phase-1-qa.md",
+        "**Verdict:** PASS\n\n## QA Validation Report\n\n| Test | Result |\n|---|---|\n| UT-01 | PASS |\n",
+        True,
+    ),
+    "qa_missing_verdict": (
+        "reports/qa/phase-1-qa.md",
+        "## QA Validation Report\n\nAll good.\n",
         False,
     ),
     "audit_missing_h2": (
