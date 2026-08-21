@@ -40,6 +40,7 @@ from __future__ import annotations
 
 import datetime
 import json
+import os
 import re
 import subprocess
 import sys
@@ -68,6 +69,18 @@ UI_ARTIFACTS = [
 # The free-text placeholders stay case-insensitive.
 _PLACEHOLDER_RE_TOKENS = re.compile(r"\bTODO\b|\bFIXME\b|\bTBD\b|\bFILL IN\b")
 _PLACEHOLDER_RE_TEXT = re.compile(r"<fill|\blorem\b|\bxxx+\b", re.IGNORECASE)
+
+# Maintenance isolation, as the engine declares it. Same shape as the bash
+# marker regex (goal_maintenance_isolation_required, lib/common.sh): optional
+# list dash, optional bold, tolerant of `- **Maintenance isolation:** required`.
+_ISOLATION_MARKER_RE = re.compile(
+    r"^[ \t]*-?[ \t]*(?:\*\*)?maintenance[ -]isolation:?(?:\*\*)?[ \t]*:?[ \t]*(?:\*\*)?required",
+    re.IGNORECASE | re.MULTILINE,
+)
+# Deliberately the SAME literal set the bash predicate accepts — not a
+# case-insensitive superset. A value bash reads as "not isolated" (e.g. "True")
+# must not make this gate the more lenient of the two.
+_ISOLATION_ENV_TRUTHY = frozenset({"true", "TRUE", "1", "yes", "on", "required"})
 
 # N/A-stub / backend-only claim markers — the same set check_backend_only_claim
 # greps (lib/common.sh) so both layers agree on what a backend-only claim is.
@@ -128,8 +141,32 @@ def content_lines(text: str) -> int:
     return n
 
 
+def maintenance_isolation_active(plan_text: str = "") -> bool:
+    """True when this phase/iteration declared maintenance isolation.
+
+    Read the two ways the feature propagates: the environment variable
+    run-goal.sh / run-phase.sh export once the spec is resolved
+    (apply_maintenance_isolation_from_spec), and the marker line itself for a
+    consumer that never inherited that environment — a hand re-run of closure,
+    say. The spec regex is NOT re-implemented against the spec file: this reads
+    the plan text the gate already has.
+    """
+    if os.environ.get("CHAIN_MAINTENANCE_ISOLATION", "") in _ISOLATION_ENV_TRUTHY:
+        return True
+    return bool(plan_text) and bool(_ISOLATION_MARKER_RE.search(plan_text))
+
+
 def frontend_present(plan_text: str) -> bool:
-    """Mirror of detect_frontend_in_plan (lib/common.sh)."""
+    """Mirror of detect_frontend_in_plan (lib/common.sh), including the
+    maintenance-isolation carve-out: isolation withholds browser execution, so
+    every UI artifact is legitimately an N/A stub and the frontend branch must
+    not demand real content for a lane the contract forbade. The bash function's
+    OTHER branch — the CHAIN_GOAL_TARGET_JOURNEYS override — is deliberately not
+    mirrored: it only ever ADDS the browser lane, and this gate reads artifacts
+    that the lane either produced or did not.
+    """
+    if maintenance_isolation_active(plan_text):
+        return False
     if re.search(r"frontend present:\s*yes", plan_text, re.IGNORECASE):
         return True
     return bool(re.search(r"frontend present\s*\n\s*yes", plan_text, re.IGNORECASE))
@@ -640,6 +677,24 @@ def _self_test() -> int:
         assert frontend_present("Frontend Present: yes")
         assert frontend_present("## Frontend Present\nyes")
         assert not frontend_present("Frontend Present: no")
+        # maintenance isolation carve-out (env + plan marker), and its default OFF
+        assert not maintenance_isolation_active("Frontend Present: yes")
+        assert maintenance_isolation_active("- **Maintenance isolation:** required")
+        assert maintenance_isolation_active("Maintenance-isolation: REQUIRED")
+        assert not frontend_present(
+            "Frontend Present: yes\n- **Maintenance isolation:** required\n"
+        )
+        _prev_env = os.environ.get("CHAIN_MAINTENANCE_ISOLATION")
+        try:
+            os.environ["CHAIN_MAINTENANCE_ISOLATION"] = "true"
+            assert not frontend_present("Frontend Present: yes")
+            os.environ["CHAIN_MAINTENANCE_ISOLATION"] = "False"
+            assert frontend_present("Frontend Present: yes")  # not a bash-truthy value
+        finally:
+            if _prev_env is None:
+                os.environ.pop("CHAIN_MAINTENANCE_ISOLATION", None)
+            else:
+                os.environ["CHAIN_MAINTENANCE_ISOLATION"] = _prev_env
         assert content_lines("# h\n\n---\n<!-- c -->\nreal\nreal2\n") == 2
         assert len(numbered_steps("1. a\n2) b\nx\n 3. c\n")) == 3
         assert classify_step("1. Test the form") == "blocking"

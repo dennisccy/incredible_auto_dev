@@ -338,6 +338,38 @@ grep -qi 'Backend-only phase' "$NA_ORD/reports/phase-p1-ui-test-results.md" \
   && assert "na-stub control: an ordinary backend-only phase keeps its existing wording" "pass" \
   || assert "na-stub control: an ordinary backend-only phase keeps its existing wording" "fail"
 
+# ...and the same holds for the other five: run-phase.sh writes N/A stubs for
+# ui-test-plan / what-to-click (Step 5) and the ui-impact pair (Step 4) at the
+# same moment, and closure_gate.py iterates all SIX. One honest artifact among
+# five "Backend-only phase" stubs is still a phase that reports a contract
+# decision as an absent frontend.
+NA_ALL="$WORK/na-all"; NA_ALL_ORD="$WORK/na-all-ord"
+( REPO_ROOT="$NA_ALL"; CHAIN_MAINTENANCE_ISOLATION=true
+  write_na_ui_artifacts p1 >/dev/null 2>&1 )
+( REPO_ROOT="$NA_ALL_ORD"; unset CHAIN_MAINTENANCE_ISOLATION
+  write_na_ui_artifacts p1 >/dev/null 2>&1 )
+_na_bad=""
+for _a in implementation-summary user-visible-changes ui-surface-map ui-test-plan what-to-click; do
+  _f="$NA_ALL/reports/phase-p1-${_a}.md"
+  if ! grep -qi 'maintenance isolation' "$_f" 2>/dev/null; then _na_bad+="${_a}:no-contract-wording "; fi
+  if grep -qi 'backend-only' "$_f" 2>/dev/null; then _na_bad+="${_a}:says-backend-only "; fi
+done
+[[ -z "$_na_bad" ]] \
+  && assert "na-stub: all six isolated stubs report the contract, none claims 'Backend-only'" "pass" \
+  || assert "na-stub: all six isolated stubs report the contract, none claims 'Backend-only' ($_na_bad)" "fail"
+grep -q 'no application service may be started' "$NA_ALL/reports/phase-p1-what-to-click.md" \
+  && assert "na-stub: what-to-click states WHY no click path exists (app execution forbidden)" "pass" \
+  || assert "na-stub: what-to-click states WHY no click path exists (app execution forbidden)" "fail"
+_na_ord_bad=""
+for _a in implementation-summary user-visible-changes ui-surface-map ui-test-plan what-to-click; do
+  if ! grep -qi 'backend-only' "$NA_ALL_ORD/reports/phase-p1-${_a}.md" 2>/dev/null; then
+    _na_ord_bad+="${_a} "
+  fi
+done
+[[ -z "$_na_ord_bad" ]] \
+  && assert "na-stub control: the ordinary six keep their existing backend-only wording" "pass" \
+  || assert "na-stub control: the ordinary six keep their existing backend-only wording ($_na_ord_bad)" "fail"
+
 # ── the SKIPPED artifact must satisfy the deterministic closure gate ──────────
 # closure_gate.py accepts an all-SKIPPED browser-QA file only with a `**Reason:**`
 # line or a `## Reason` section; the lane's own heredoc explains itself under a
