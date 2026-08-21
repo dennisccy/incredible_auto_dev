@@ -403,7 +403,7 @@ else
   fail "j2: spurious mismatch warning (rc=$RUN_RC, out: $RUN_OUT)"
 fi
 
-# ── j3. The trace row records the requested style ──────────────────────────
+# ── j3. The trace row records the requested style (and keeps the effective one) ──
 J3="$WORK/j3.argv"
 J3_TRACE="$WORK/trace"
 mkdir -p "$J3_TRACE"
@@ -415,11 +415,50 @@ rows = [json.loads(l) for l in open(sys.argv[1]) if l.strip()]
 dev = [r for r in rows if r.get("agent") == "developer"]
 assert dev, "no developer row"
 assert dev[-1].get("output_style") == "Concise", dev[-1].get("output_style")
+assert dev[-1].get("output_style_requested") == "Concise", dev[-1].get("output_style_requested")
 PY
 then
-  pass "j3: trace.jsonl developer row carries output_style=Concise"
+  pass "j3: trace.jsonl developer row carries output_style=Concise and output_style_requested=Concise"
 else
-  fail "j3: trace row missing output_style (rc=$RUN_RC, trace: $(cat "$J3_TRACE/trace.jsonl" 2>/dev/null))"
+  fail "j3: trace row missing style keys (rc=$RUN_RC, trace: $(cat "$J3_TRACE/trace.jsonl" 2>/dev/null))"
+fi
+
+# ── j3b. Requested ≠ effective: the trace keeps BOTH (requested is not clobbered) ──
+J3B="$WORK/j3b.argv"
+J3B_TRACE="$WORK/trace-j3b"
+mkdir -p "$J3B_TRACE"
+run_seam "$J3B" GOAL_SESSION_DIR="$SESS" CHAIN_CURRENT_AGENT=developer \
+  CHAIN_OUTPUT_STYLES=true CHAIN_TELEMETRY_TOKENS=true CLAUDE_STUB_EFFECTIVE=default CHAIN_TRACE_DIR="$J3B_TRACE"
+if [[ $RUN_RC -eq 0 ]] && python3 - "$J3B_TRACE/trace.jsonl" <<'PY'
+import json, sys
+rows = [json.loads(l) for l in open(sys.argv[1]) if l.strip()]
+dev = [r for r in rows if r.get("agent") == "developer"]
+assert dev, "no developer row"
+assert dev[-1].get("output_style") == "default", dev[-1].get("output_style")
+assert dev[-1].get("output_style_requested") == "Concise", dev[-1].get("output_style_requested")
+PY
+then
+  pass "j3b: mismatch run keeps output_style=default (effective) and output_style_requested=Concise"
+else
+  fail "j3b: trace row lost the requested style (rc=$RUN_RC, trace: $(cat "$J3B_TRACE/trace.jsonl" 2>/dev/null))"
+fi
+
+# ── j3c. No style requested → no output_style_requested key at all ──
+J3C="$WORK/j3c.argv"
+J3C_TRACE="$WORK/trace-j3c"
+mkdir -p "$J3C_TRACE"
+run_seam "$J3C" GOAL_SESSION_DIR="$SESS" CHAIN_CURRENT_AGENT=developer CHAIN_TRACE_DIR="$J3C_TRACE"
+if [[ $RUN_RC -eq 0 ]] && python3 - "$J3C_TRACE/trace.jsonl" <<'PY'
+import json, sys
+rows = [json.loads(l) for l in open(sys.argv[1]) if l.strip()]
+dev = [r for r in rows if r.get("agent") == "developer"]
+assert dev, "no developer row"
+assert "output_style_requested" not in dev[-1], dev[-1]
+PY
+then
+  pass "j3c: unstyled dispatch has no output_style_requested key"
+else
+  fail "j3c: unexpected output_style_requested on an unstyled dispatch (rc=$RUN_RC)"
 fi
 
 # ── j4. Style requested with token telemetry off → say so, don't pretend ───

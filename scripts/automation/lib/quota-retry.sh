@@ -339,7 +339,12 @@ _trace_record_invocation() {
   # EFFECTIVE style from the stream-json init event; _CHAIN_TRACE_MODEL and
   # _CHAIN_TRACE_OUTPUT_STYLE are the resolved intent (frontmatter/override /
   # style table) used when no sidecar exists (e.g. the interactive backend).
-  # Empty values are omitted, and a sidecar model/output_style wins.
+  # Empty values are omitted, and a sidecar model/output_style wins — so
+  # output_style is EFFECTIVE when a sidecar exists, else the requested
+  # intent. output_style_requested is additive and always the requested
+  # intent (the sidecar can never clobber it), mirroring the
+  # output_style_requested key on the claude_usage telemetry row
+  # (lib/telemetry.sh record_claude_usage_from_sidecar).
   local backend="${CHAIN_AGENT_BACKEND:-${CHAIN_CLI:-claude}}"
   if command -v jq >/dev/null 2>&1; then
     local args_json
@@ -357,6 +362,7 @@ _trace_record_invocation() {
       --arg model "${_CHAIN_TRACE_MODEL:-}" \
       --arg effort "${_CHAIN_TRACE_EFFORT:-}" \
       --arg output_style "${_CHAIN_TRACE_OUTPUT_STYLE:-}" \
+      --arg output_style_requested "${_CHAIN_TRACE_OUTPUT_STYLE:-}" \
       --arg ts "$ts" \
       --argjson exit_code "$invocation_exit" \
       --argjson duration_seconds "$duration_seconds" \
@@ -367,6 +373,7 @@ _trace_record_invocation() {
        + (if $model != "" then {model:$model} else {} end)
        + (if $effort != "" then {effort:$effort} else {} end)
        + (if $output_style != "" then {output_style:$output_style} else {} end)
+       + (if $output_style_requested != "" then {output_style_requested:$output_style_requested} else {} end)
        + $usage' 2>/dev/null) || record=""
     if [[ -n "$record" ]]; then
       printf '%s\n' "$record" >> "$trace_dir/trace.jsonl"
