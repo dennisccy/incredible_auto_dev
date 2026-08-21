@@ -366,13 +366,18 @@ ensure_phase_ports() {
 # A pinned identity makes the QA browser findable — by host-guard's confinement
 # pass, by the doctor, and by the reaper. Lane suffix keeps the concurrent qa and
 # browser-qa lanes off each other's profile lock.
+# The profile carries the SAME path-hash offset as the port: two projects that
+# merely share a directory name (every benchmark scratch is ".../scratch") must
+# not share a profile while hashing to different ports — the chrome-mcp plugin
+# reconnects by profile meta but dials the pinned port, and that split ends in
+# ECONNREFUSED on the next session (STYLE-1 G8 stage 1, 2026-08-21).
 # Idempotent; never overrides an operator-supplied value.
 ensure_qa_browser_env() {
   local suffix="${1:-}" project_root="$REPO_ROOT" base offset
   [[ "$project_root" == */incredible_auto_dev ]] && project_root="${project_root%/incredible_auto_dev}"
   base="$(basename "$project_root")"
   offset=$(_project_port_offset)
-  [[ -z "${CHROME_WS_PROFILE:-}" ]] && export CHROME_WS_PROFILE="iad-qa-${base}${suffix:+-$suffix}"
+  [[ -z "${CHROME_WS_PROFILE:-}" ]] && export CHROME_WS_PROFILE="iad-qa-${base}-${offset}${suffix:+-$suffix}"
   if [[ -z "${CHROME_WS_PORT:-}" ]]; then
     if [[ -n "$suffix" ]]; then
       export CHROME_WS_PORT=$((11000 + offset))
@@ -380,6 +385,24 @@ ensure_qa_browser_env() {
       export CHROME_WS_PORT=$((10000 + offset))
     fi
   fi
+  return 0
+}
+
+# qa_browser_reap_on_exit — TERM this project's own pinned QA browsers when the
+# HEADLESS ENGINE exits. The per-phase leave-warm default (CHAIN_BQA_REAP=0:
+# reconnecting saves a cold start on the next dispatch) is about the next
+# dispatch of the SAME engine; at engine exit there is none, and the chrome-mcp
+# plugin spawns the browser detached+unref'd, so without this the browser is
+# reparented to init and can block the next session's lane. Never in the
+# interactive backend (the pump's MCP server is still alive and would respawn
+# what we killed). CHAIN_BQA_REAP_ON_EXIT=0 opts out. Always returns 0.
+qa_browser_reap_on_exit() {
+  [[ "${CHAIN_BQA_REAP_ON_EXIT:-1}" == "1" ]] || return 0
+  [[ "${CHAIN_AGENT_BACKEND:-}" != "interactive" ]] || return 0
+  local bc
+  bc="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../host-guard/browser-confine.sh"
+  [[ -f "$bc" ]] || return 0
+  CHAIN_BQA_REAP=1 HOST_GUARD_ROOT="${HOST_GUARD_ROOT:-$REPO_ROOT}" bash "$bc" --reap || true
   return 0
 }
 

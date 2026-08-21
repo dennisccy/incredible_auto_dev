@@ -45,6 +45,13 @@ PROJ="$WORK/proj"
 PROOT="$WORK/cache/superpowers/browser-profiles"
 mkdir -p "$PROJ/project-extensions/host-guard" "$PROOT"
 BASE="$(basename "$PROJ")"
+# Section A's fakes must carry the profile names browser-confine.sh derives for
+# $PROJ: iad-qa-<base>-<path-hash offset>. Same derivation as
+# lib/common.sh:_project_port_offset — section B (B10) proves the two agree by
+# reaping a profile name that came out of ensure_qa_browser_env itself.
+# Computed inline because helper_env is only defined in section B.
+_h="$(printf '%s' "$PROJ" | sha1sum | cut -c1-4)"
+OWN="iad-qa-$BASE-$(( 16#$_h % 1000 ))"
 printf 'while :; do sleep 1; done\n' > "$WORK/fake-chrome"
 
 # Every fake is uniquely identifiable by the sandbox path in its argv, so the
@@ -82,7 +89,7 @@ MCP_MATCH="$WORK/superpowers-chrome mcp/dist/index.js"
 echo "── A. browser-confine.sh behavior ─────────────────────────────────────"
 
 # A0. Project-neutrality: no host-guard.env at all ⇒ nothing happens.
-P0="$(spawn --user-data-dir=$PROOT/iad-qa-$BASE --remote-debugging-port=10001)"
+P0="$(spawn --user-data-dir=$PROOT/$OWN --remote-debugging-port=10001)"
 BEFORE="$(allowed "$P0")"
 OUT="$(run_bc)"
 [[ "$OUT" == *"nothing to do"* ]] && assert "no host-guard.env → no-op message" pass || assert "no host-guard.env → no-op message" fail
@@ -125,7 +132,7 @@ alive "$P_FGN2" && assert "foreign unconfined browser not killed" pass || assert
 
 # A5. Renderer/helper processes (--type=) are not treated as main browsers;
 # they ride the parent's tree walk.
-P_REND="$(spawn --type=renderer --user-data-dir=$PROOT/iad-qa-$BASE --remote-debugging-port=10004)"
+P_REND="$(spawn --type=renderer --user-data-dir=$PROOT/$OWN --remote-debugging-port=10004)"
 OUT="$(run_bc)"
 [[ "$OUT" == *"qa_browsers=3"* ]] && assert "renderer excluded from main-browser count" pass || assert "renderer excluded from main-browser count ($OUT)" fail
 pkill -KILL -f "fake-chrome --type=renderer" 2>/dev/null
@@ -134,15 +141,15 @@ pkill -KILL -f "fake-chrome --type=renderer" 2>/dev/null
 # bookkeeping swept; a FOREIGN one is only warned about.
 SHIM="$WORK/shim"; mkdir -p "$SHIM"
 printf '#!/usr/bin/env bash\nexit 1\n' > "$SHIM/taskset"; chmod +x "$SHIM/taskset"
-P_OWN2="$(spawn --user-data-dir=$PROOT/iad-qa-$BASE-qa --remote-debugging-port=10005)"
-printf '{"port":10005,"pid":%s}' "$P_OWN2" > "$PROOT/iad-qa-$BASE-qa.meta.json"
-printf '{"pid":%s}' "$P_OWN2" > "$PROOT/iad-qa-$BASE-qa.mcp.lock"
+P_OWN2="$(spawn --user-data-dir=$PROOT/$OWN-qa --remote-debugging-port=10005)"
+printf '{"port":10005,"pid":%s}' "$P_OWN2" > "$PROOT/$OWN-qa.meta.json"
+printf '{"pid":%s}' "$P_OWN2" > "$PROOT/$OWN-qa.mcp.lock"
 P_FGN3="$(spawn --user-data-dir=$PROOT/other-wide2 --remote-debugging-port=10006)"
 OUT="$(env PATH="$SHIM:$PATH" HOST_GUARD_ROOT="$PROJ" CHROME_PROFILE_ROOT="$PROOT" \
         HOST_GUARD_MCP_MATCH="$WORK/no-such-mcp" bash "$BC" 2>&1)"
 wait_for 8 dead "$P_OWN2" && assert "taskset impossible → own browser terminated" pass || assert "taskset impossible → own browser terminated" fail
-[[ -f "$PROOT/iad-qa-$BASE-qa.meta.json" ]] && assert "terminated browser's meta.json swept" fail || assert "terminated browser's meta.json swept" pass
-[[ -f "$PROOT/iad-qa-$BASE-qa.mcp.lock" ]] && assert "terminated browser's mcp.lock swept" fail || assert "terminated browser's mcp.lock swept" pass
+[[ -f "$PROOT/$OWN-qa.meta.json" ]] && assert "terminated browser's meta.json swept" fail || assert "terminated browser's meta.json swept" pass
+[[ -f "$PROOT/$OWN-qa.mcp.lock" ]] && assert "terminated browser's mcp.lock swept" fail || assert "terminated browser's mcp.lock swept" pass
 alive "$P_FGN3" && assert "taskset impossible → foreign browser NOT killed" pass || assert "taskset impossible → foreign browser NOT killed" fail
 [[ "$OUT" == *"not ours to kill"* ]] && assert "foreign unconfinable browser warns" pass || assert "foreign unconfinable browser warns" fail
 pkill -KILL -f "fake-chrome --user-data-dir=$PROOT/other-wide2" 2>/dev/null
@@ -191,12 +198,19 @@ helper_env() { # REPO_ROOT suffix [preset...] → "profile port"
     echo \"\$CHROME_WS_PROFILE \$CHROME_WS_PORT\""
 }
 read -r PROF PORT <<< "$(helper_env /x/myproj '')"
-assert_eq "browser-qa lane profile" "iad-qa-myproj" "$PROF"
+[[ "$PROF" =~ ^iad-qa-myproj-[0-9]{1,3}$ ]] && assert "browser-qa lane profile = iad-qa-<base>-<offset>" pass || assert "browser-qa lane profile = iad-qa-<base>-<offset> (got $PROF)" fail
 [[ "$PORT" -ge 10000 && "$PORT" -le 10999 ]] && assert "browser-qa lane port in 10000-10999" pass || assert "browser-qa lane port in 10000-10999 ($PORT)" fail
+assert_eq "profile offset equals port offset (browser-qa lane)" "$(( PORT - 10000 ))" "${PROF##*-}"
 read -r PROF2 PORT2 <<< "$(helper_env /x/myproj qa)"
-assert_eq "qa lane profile carries the suffix" "iad-qa-myproj-qa" "$PROF2"
+[[ "$PROF2" =~ ^iad-qa-myproj-[0-9]{1,3}-qa$ ]] && assert "qa lane profile carries offset then suffix" pass || assert "qa lane profile carries offset then suffix (got $PROF2)" fail
 [[ "$PORT2" -ge 11000 && "$PORT2" -le 11999 ]] && assert "qa lane port in 11000-11999" pass || assert "qa lane port in 11000-11999 ($PORT2)" fail
 [[ "$PORT" != "$PORT2" ]] && assert "concurrent lanes get different ports" pass || assert "concurrent lanes get different ports" fail
+# Same directory NAME, different paths (every benchmark scratch is ".../scratch"):
+# the profiles MUST differ — sharing one while the ports differ is the G8
+# stage-1 ECONNREFUSED failure.
+read -r PROF_A PORT_A <<< "$(helper_env /tmp/a/scratch '')"
+read -r PROF_B PORT_B <<< "$(helper_env /tmp/b/scratch '')"
+[[ "$PROF_A" != "$PROF_B" ]] && assert "same basename, different path → different profiles" pass || assert "same basename, different path → different profiles (both $PROF_A)" fail
 read -r PROF3 PORT3 <<< "$(env CHROME_WS_PROFILE=operator CHROME_WS_PORT=9999 bash -c "
     source '$AUTO/lib/common.sh' >/dev/null 2>&1; REPO_ROOT=/x/myproj; ensure_qa_browser_env ''
     echo \"\$CHROME_WS_PROFILE \$CHROME_WS_PORT\"")"
@@ -205,7 +219,7 @@ assert_eq "operator port override respected"    "9999"     "$PORT3"
 
 # Vendored layout: the offset must key off the PROJECT root, not the subtree.
 read -r PROF4 PORT4 <<< "$(helper_env /x/myproj/incredible_auto_dev '')"
-assert_eq "vendored layout resolves to project name" "iad-qa-myproj" "$PROF4"
+assert_eq "vendored layout resolves to project profile" "$PROF" "$PROF4"
 assert_eq "vendored layout resolves to project port" "$PORT" "$PORT4"
 
 # DISPLAY stripping (engine-mode headless) + the debug escape hatch.
@@ -226,6 +240,40 @@ for p in /x/alpha /y/beta /z/gamma; do
   c="$(python3 -c "import hashlib,sys; print(int(hashlib.sha1(sys.argv[1].encode()).hexdigest()[:4],16)%1000)" "$p")"
   assert_eq "offset parity bash/exec/python for $p" "$a|$a" "$b|$c"
 done
+
+# B10. Reap works WITHOUT host-guard.env (the framework repo and every benchmark
+# scratch have none): confinement is skipped, Pass D still runs, own profile dies,
+# foreign survives, and the own meta/lock files are swept.
+PROJ_NOHG="$WORK/proj-nohg"; mkdir -p "$PROJ_NOHG"
+read -r OWN_PROF _ <<< "$(helper_env "$PROJ_NOHG" '')"
+P_OWN="$(spawn "--user-data-dir=$PROOT/$OWN_PROF" --remote-debugging-port=10999)"
+P_OTHER="$(spawn "--user-data-dir=$PROOT/iad-qa-elsewhere-7" --remote-debugging-port=10998)"
+printf '{"port":10999,"pid":%s}\n' "$P_OWN" > "$PROOT/$OWN_PROF.meta.json"
+OUT="$(env HOST_GUARD_ROOT="$PROJ_NOHG" CHROME_PROFILE_ROOT="$PROOT" HOST_GUARD_MCP_MATCH="$WORK/no-such-mcp" CHAIN_BQA_REAP=1 CHAIN_AGENT_BACKEND=claude bash "$BC" --reap 2>&1)"
+wait_for 8 dead "$P_OWN" && assert "reap without host-guard: own browser reaped" pass || assert "reap without host-guard: own browser reaped" fail
+alive "$P_OTHER" && assert "reap without host-guard: foreign browser survives" pass || assert "reap without host-guard: foreign browser survives" fail
+[[ ! -f "$PROOT/$OWN_PROF.meta.json" ]] && assert "reap sweeps the reaped profile's meta" pass || assert "reap sweeps the reaped profile's meta" fail
+[[ "$OUT" == *"reap only"* ]] && assert "reap without host-guard announces confinement skipped" pass || assert "reap without host-guard announces confinement skipped ($OUT)" fail
+pkill -KILL -f "fake-chrome --user-data-dir=$PROOT" 2>/dev/null
+
+# B11. qa_browser_reap_on_exit (lib/common.sh): the engine-exit hook. Default on,
+# never for the interactive backend, CHAIN_BQA_REAP_ON_EXIT=0 opts out.
+reap_on_exit() { # <backend> <on-exit-knob> → runs the hook in a clean env
+  env -u CHROME_WS_PROFILE -u CHROME_WS_PORT CHROME_PROFILE_ROOT="$PROOT" \
+      HOST_GUARD_MCP_MATCH="$WORK/no-such-mcp" \
+      CHAIN_AGENT_BACKEND="$1" CHAIN_BQA_REAP_ON_EXIT="$2" bash -c "
+    source '$AUTO/lib/common.sh' >/dev/null 2>&1
+    REPO_ROOT='$PROJ_NOHG'
+    qa_browser_reap_on_exit" >/dev/null 2>&1
+}
+P_OWN="$(spawn "--user-data-dir=$PROOT/$OWN_PROF" --remote-debugging-port=10999)"
+reap_on_exit interactive 1
+alive "$P_OWN" && assert "exit hook: no-op in interactive backend" pass || assert "exit hook: no-op in interactive backend" fail
+reap_on_exit claude 0
+alive "$P_OWN" && assert "exit hook: CHAIN_BQA_REAP_ON_EXIT=0 opts out" pass || assert "exit hook: CHAIN_BQA_REAP_ON_EXIT=0 opts out" fail
+reap_on_exit claude 1
+wait_for 8 dead "$P_OWN" && assert "exit hook: headless engine reaps its own browser" pass || assert "exit hook: headless engine reaps its own browser" fail
+pkill -KILL -f "fake-chrome --user-data-dir=$PROOT" 2>/dev/null
 
 echo ""
 echo "── C. dispatch-surface wiring ─────────────────────────────────────────"
@@ -259,6 +307,14 @@ grep -q 'hg_register pump' "$AUTO/host-guard-adopt.sh" && assert "adopt: registe
 # The pump wrapper must NOT pin a profile: it serves both QA lanes at once and
 # an explicit profile would collapse them onto one shared browser.
 grep -q 'CHROME_WS_PROFILE=' "$AUTO/host-guard-exec.sh" && assert "exec: does not pin a shared pump profile" fail || assert "exec: does not pin a shared pump profile" pass
+# The engine-exit reap must ride run-goal.sh's single composed EXIT trap: a
+# second `trap … EXIT` would silently drop the first one's cleanup.
+grep -q 'qa_browser_reap_on_exit' "$AUTO/run-goal.sh" && assert "run-goal.sh exit trap calls qa_browser_reap_on_exit" pass || assert "run-goal.sh exit trap calls qa_browser_reap_on_exit" fail
+awk '/^_goal_engine_on_exit\(\)/,/^}/' "$AUTO/run-goal.sh" | grep -q 'qa_browser_reap_on_exit' && assert "the call sits inside _goal_engine_on_exit (single composed trap)" pass || assert "the call sits inside _goal_engine_on_exit" fail
+# Anchored so the prose in the trap's own comment ("never add a second `trap …
+# EXIT`") is not counted as a second installation.
+grep -cE '^[[:space:]]*trap [^#]*EXIT' "$AUTO/run-goal.sh" | grep -qx '1' && assert "run-goal.sh still has exactly one EXIT trap" pass || assert "run-goal.sh still has exactly one EXIT trap" fail
+
 grep -q 'CHROME_WS_PROFILE' "$ENGINE_ROOT/adapters/claude/sync.py" \
   && ! grep -q 'setdefault("CHROME_WS_PROFILE"' "$ENGINE_ROOT/adapters/claude/sync.py" \
   && assert "sync.py documents why settings.local.json carries no browser pin" pass \

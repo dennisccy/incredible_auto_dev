@@ -1926,11 +1926,25 @@ EOF
 # not available to a later /goal-pause). Cleaned up on any exit, including the
 # on_abort path below (which exits 130 → the EXIT trap fires).
 echo "$$" > "$ENGINE_PID_FILE" 2>/dev/null || true
+# Engine-lock owner predicate — the SAME test release_engine_lock applies
+# (lib/engine-lock.sh): _ENGINE_LOCK_HELD is set only by a successful acquire,
+# and the lock's recorded pid must still be ours. False for a refused second
+# start, which never acquired.
+_goal_engine_owns_lock() {
+  [[ -n "${_ENGINE_LOCK_HELD:-}" ]] \
+    && [[ "$(_engine_lock_meta "$_ENGINE_LOCK_HELD" pid | tr -dc 0-9)" == "$$" ]]
+}
 # Composed EXIT trap (single trap owner — never add a second `trap … EXIT`, it
 # would silently drop earlier cleanup): join/kill the showcase tail FIRST so
 # nothing is still writing into the tmp dir, then remove pid file + tmp dir.
 _goal_engine_on_exit() {
   _join_showcase_tail --kill 2>/dev/null || true
+  # Reap this project's pinned QA browsers (headless engine only; see
+  # lib/common.sh:qa_browser_reap_on_exit) — only when THIS process owns the
+  # engine: a refused second start must never kill a live engine's browser.
+  if _goal_engine_owns_lock; then
+    qa_browser_reap_on_exit 2>/dev/null || true
+  fi
   rm -f "$ENGINE_PID_FILE" 2>/dev/null || true
   chain_tmp_cleanup
   # Drop this engine's host-guard registry record so a concurrent project sees

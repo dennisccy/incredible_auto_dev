@@ -24,8 +24,9 @@
 #      the next dispatch cold-starts instead of "reconnecting" to a corpse.
 #   D. Reap (--reap, opt-in) — TERM this project's own QA browsers at phase end.
 #
-# Absent/disabled host-guard.env (or HOST_GUARD_BROWSER_CONFINE=0) ⇒ no-op:
-# the framework stays project-neutral.
+# Absent/disabled host-guard.env (or HOST_GUARD_BROWSER_CONFINE=0) ⇒ passes A-C
+# are skipped: the framework stays project-neutral. Pass D still runs — a
+# project with no host-guard still leaks a detached QA browser at engine exit.
 #
 # Usage: browser-confine.sh [--reap]
 # Exit:  always 0 (advisory pass — never fail a QA phase over browser hygiene).
@@ -42,21 +43,35 @@ ROOT="${HOST_GUARD_ROOT:-$(git -C "$PWD" rev-parse --show-toplevel 2>/dev/null |
 ENV_FILE="$ROOT/project-extensions/host-guard/host-guard.env"
 # shellcheck disable=SC1090
 [[ -f "$ENV_FILE" ]] && source "$ENV_FILE" 2>/dev/null
+# CONFINE gates passes A-C (they need a CPU mask + taskset). Pass D (--reap)
+# needs neither: a project with no host-guard still leaves a detached QA
+# browser behind at engine exit, and reaping it is what keeps the NEXT
+# session's lane reachable (G8 stage 1, 2026-08-21).
+CONFINE=1
 if [[ "${HOST_GUARD_ENABLED:-0}" != "1" || -z "${HOST_GUARD_CPU_LIST:-}" \
       || "${HOST_GUARD_BROWSER_CONFINE:-1}" == "0" ]]; then
-  echo "[browser-confine] host-guard absent/disabled for $ROOT — nothing to do."
-  exit 0
-fi
-if ! command -v taskset >/dev/null 2>&1; then
+  if (( REAP )); then
+    echo "[browser-confine] host-guard absent/disabled for $ROOT — confinement skipped; reap only."
+    CONFINE=0
+  else
+    echo "[browser-confine] host-guard absent/disabled for $ROOT — nothing to do."
+    exit 0
+  fi
+elif ! command -v taskset >/dev/null 2>&1; then
   echo "[browser-confine] taskset unavailable — cannot confine browsers." >&2
-  exit 0
+  (( REAP )) || exit 0
+  CONFINE=0
 fi
 
-MASK="$HOST_GUARD_CPU_LIST"
+MASK="${HOST_GUARD_CPU_LIST:-}"
 PROFILE_ROOT="${CHROME_PROFILE_ROOT:-${XDG_CACHE_HOME:-$HOME/.cache}/superpowers/browser-profiles}"
 _proj="$ROOT"; [[ "$_proj" == */incredible_auto_dev ]] && _proj="${_proj%/incredible_auto_dev}"
 BASE="$(basename "$_proj")"
-OWN_DIRS=( "$PROFILE_ROOT/iad-qa-$BASE" "$PROFILE_ROOT/iad-qa-$BASE-qa" )
+# Same derivation as lib/common.sh:_project_port_offset — keep the two in sync
+# (tests/automation/test-host-guard-browser.sh asserts the parity).
+_hex="$(printf '%s' "$_proj" | sha1sum | cut -c1-4)"
+OFFSET=$(( 16#$_hex % 1000 ))
+OWN_DIRS=( "$PROFILE_ROOT/iad-qa-$BASE-$OFFSET" "$PROFILE_ROOT/iad-qa-$BASE-$OFFSET-qa" )
 UID_SELF="$(id -u)"
 
 # ── helpers ──────────────────────────────────────────────────────────────────
@@ -147,68 +162,74 @@ n_qa=0; n_confined=0; n_kept=0; n_killed=0; n_mcp=0; n_mcp_confined=0; n_swept=0
 # ── Pass A: QA browsers ──────────────────────────────────────────────────────
 # Only MAIN browser processes: renderers/GPU helpers carry --type= and are
 # handled by the tree walk (they are children of the main process).
-for pid in $(_scan "$PROFILE_ROOT/"); do
-  cmd="$(_cmdline "$pid")"
-  [[ "$cmd" == *" --type="* ]] && continue
-  n_qa=$(( n_qa + 1 ))
-  allowed="$(_allowed "$pid")"
-  if _owned "$cmd"; then
-    # Ours: must sit exactly inside this project's mask.
-    _is_subset "$allowed" "$MASK" && { n_kept=$(( n_kept + 1 )); continue; }
-  else
-    # Someone else's QA profile (e.g. the other project's, or a legacy
-    # auto-disambiguated one). Only act when it is effectively unconfined —
-    # narrowing a browser another project already confined would be rude and
-    # pointless; leaving an all-CPU browser running is what resets the host.
-    (( $(_width "$allowed") <= $(_width "$MASK") )) && { n_kept=$(( n_kept + 1 )); continue; }
-  fi
-  if _confine_tree "$pid"; then
-    n_confined=$(( n_confined + 1 ))
-    echo "[browser-confine] confined QA chrome pid $pid to $MASK."
-    continue
-  fi
-  if _owned "$cmd"; then
-    echo "[browser-confine] pid $pid could not be confined — terminating (own profile)." >&2
-    if _terminate "$pid"; then
-      n_killed=$(( n_killed + 1 ))
-      for d in "${OWN_DIRS[@]}"; do
-        [[ "$cmd" == *"--user-data-dir=$d"* ]] && _sweep_profile_files "$d"
-      done
+if (( CONFINE )); then
+  for pid in $(_scan "$PROFILE_ROOT/"); do
+    cmd="$(_cmdline "$pid")"
+    [[ "$cmd" == *" --type="* ]] && continue
+    n_qa=$(( n_qa + 1 ))
+    allowed="$(_allowed "$pid")"
+    if _owned "$cmd"; then
+      # Ours: must sit exactly inside this project's mask.
+      _is_subset "$allowed" "$MASK" && { n_kept=$(( n_kept + 1 )); continue; }
+    else
+      # Someone else's QA profile (e.g. the other project's, or a legacy
+      # auto-disambiguated one). Only act when it is effectively unconfined —
+      # narrowing a browser another project already confined would be rude and
+      # pointless; leaving an all-CPU browser running is what resets the host.
+      (( $(_width "$allowed") <= $(_width "$MASK") )) && { n_kept=$(( n_kept + 1 )); continue; }
     fi
-  else
-    echo "[browser-confine] WARNING: chrome pid $pid ($allowed) is outside $MASK and is not ours to kill — close it manually." >&2
-  fi
-done
+    if _confine_tree "$pid"; then
+      n_confined=$(( n_confined + 1 ))
+      echo "[browser-confine] confined QA chrome pid $pid to $MASK."
+      continue
+    fi
+    if _owned "$cmd"; then
+      echo "[browser-confine] pid $pid could not be confined — terminating (own profile)." >&2
+      if _terminate "$pid"; then
+        n_killed=$(( n_killed + 1 ))
+        for d in "${OWN_DIRS[@]}"; do
+          [[ "$cmd" == *"--user-data-dir=$d"* ]] && _sweep_profile_files "$d"
+        done
+      fi
+    else
+      echo "[browser-confine] WARNING: chrome pid $pid ($allowed) is outside $MASK and is not ours to kill — close it manually." >&2
+    fi
+  done
+fi
 
 # ── Pass B: MCP servers (confine, never kill) ────────────────────────────────
 # HOST_GUARD_MCP_MATCH holds the cmdline tokens that identify a Chrome-MCP
 # server (ALL must match). It exists so tests can scope this pass to their own
 # fake server — pass B is deliberately profile-root-independent, so without the
 # seam a sandboxed run would reach the operator's real, live MCP server.
-read -r -a _mcp_match <<< "${HOST_GUARD_MCP_MATCH:-superpowers-chrome mcp/dist/index.js}"
-for pid in $(_scan "${_mcp_match[@]}"); do
-  n_mcp=$(( n_mcp + 1 ))
-  _is_subset "$(_allowed "$pid")" "$MASK" && continue
-  if _confine_tree "$pid"; then
-    n_mcp_confined=$(( n_mcp_confined + 1 ))
-    echo "[browser-confine] confined Chrome-MCP server pid $pid to $MASK (its future browsers inherit it)."
-  else
-    echo "[browser-confine] WARNING: Chrome-MCP server pid $pid stays outside $MASK — browsers it spawns will be unconfined." >&2
-  fi
-done
+if (( CONFINE )); then
+  read -r -a _mcp_match <<< "${HOST_GUARD_MCP_MATCH:-superpowers-chrome mcp/dist/index.js}"
+  for pid in $(_scan "${_mcp_match[@]}"); do
+    n_mcp=$(( n_mcp + 1 ))
+    _is_subset "$(_allowed "$pid")" "$MASK" && continue
+    if _confine_tree "$pid"; then
+      n_mcp_confined=$(( n_mcp_confined + 1 ))
+      echo "[browser-confine] confined Chrome-MCP server pid $pid to $MASK (its future browsers inherit it)."
+    else
+      echo "[browser-confine] WARNING: Chrome-MCP server pid $pid stays outside $MASK — browsers it spawns will be unconfined." >&2
+    fi
+  done
+fi
 
 # ── Pass C: stale meta/lock sweep ────────────────────────────────────────────
 # The age guard keeps a racing MCP server's freshly-written file: it records the
 # pid before the browser is up, so a <30s file with a dead pid may be mid-launch.
-for f in "$PROFILE_ROOT"/*.meta.json "$PROFILE_ROOT"/*.mcp.lock; do
-  [[ -e "$f" ]] || continue
-  age=$(( EPOCHSECONDS - $(stat -c %Y "$f" 2>/dev/null || echo "$EPOCHSECONDS") ))
-  (( age > 30 )) || continue
-  fpid="$(sed -n 's/.*"pid"[: ]*\([0-9][0-9]*\).*/\1/p' "$f" 2>/dev/null | head -n 1)"
-  [[ -n "$fpid" ]] || continue
-  [[ -d "/proc/$fpid" ]] && continue
-  rm -f "$f" 2>/dev/null && n_swept=$(( n_swept + 1 ))
-done
+if (( CONFINE )); then
+  for f in "$PROFILE_ROOT"/*.meta.json "$PROFILE_ROOT"/*.mcp.lock; do
+    [[ -e "$f" ]] || continue
+    age=$(( EPOCHSECONDS - $(stat -c %Y "$f" 2>/dev/null || echo "$EPOCHSECONDS") ))
+    (( age > 30 )) || continue
+    fpid="$(sed -n 's/.*"pid"[: ]*\([0-9][0-9]*\).*/\1/p' "$f" 2>/dev/null | head -n 1)"
+    [[ -n "$fpid" ]] || continue
+    [[ -d "/proc/$fpid" ]] && continue
+    rm -f "$f" 2>/dev/null && n_swept=$(( n_swept + 1 ))
+  done
+fi
 
 # ── Pass D: reap (opt-in, engine backend only) ───────────────────────────────
 if (( REAP )) && [[ "${CHAIN_BQA_REAP:-0}" == "1" && "${CHAIN_AGENT_BACKEND:-}" != "interactive" ]]; then

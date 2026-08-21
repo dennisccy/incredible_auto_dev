@@ -320,13 +320,16 @@ uses), dropping GPU compositing and the raster thread pool. Screenshots are
 unaffected. `CHAIN_BQA_HEADED=1` restores a visible browser for debugging;
 `CHAIN_BQA_REAP=1` additionally terminates this project's QA browsers when an
 engine-mode phase finishes (default is leave-warm — a cold start costs seconds
-and an idle browser inside the mask costs nothing).
+and an idle browser inside the mask costs nothing). Without a `host-guard.env`,
+`browser-confine.sh` skips confinement but `--reap` still runs (G8 stage 1: a
+detached QA browser from a finished session blocked the next session's lane).
 
 | Var | Meaning | Default |
 |---|---|---|
-| `CHROME_WS_PROFILE` / `CHROME_WS_PORT` | pinned QA browser identity, per project and lane (`iad-qa-<project>` on `10000+hash`, the qa lane on `11000+hash`) | set by `ensure_qa_browser_env` |
+| `CHROME_WS_PROFILE` / `CHROME_WS_PORT` | pinned QA browser identity, per project path and lane (`iad-qa-<project>-<offset>` on `10000+offset`, the qa lane `iad-qa-<project>-<offset>-qa` on `11000+offset`; `<offset>` = the same path hash for both, so a name collision between two projects cannot split profile from port) | set by `ensure_qa_browser_env` |
 | `CHAIN_BQA_HEADED` | `1` keeps a visible browser in engine mode | `0` |
 | `CHAIN_BQA_REAP` | `1` reaps this project's QA browsers at phase end (engine mode only) | `0` |
+| `CHAIN_BQA_REAP_ON_EXIT` | `1` (default) reaps this project's QA browsers when the headless engine exits — leave-warm is about the next dispatch of the same engine, which at exit no longer exists; never in the interactive backend | `1` |
 | `HOST_GUARD_BROWSER_CONFINE` | `0` disables the pass entirely | `1` |
 
 Pump sessions deliberately get **no** profile pin. A Claude Code `env` setting
