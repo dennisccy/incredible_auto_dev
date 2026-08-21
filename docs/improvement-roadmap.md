@@ -3922,6 +3922,21 @@ but appreciated.
     first-line `**Verdict:**` contract; closure-gate markers are case-sensitive
     tokens (+`FIXME`). Stage 2 is unblocked on the framework side — it still needs
     the operator's vendored sync and a free engine slot.
+  - (residuals parked by the STAGE2-PREREQ final review, 2026-08-21 — none blocks
+    stage 2) `browser-confine.sh` `_cmdline()` puts `< /proc/<pid>/cmdline` before
+    `2>/dev/null`, so a process that exits mid-scan leaks "No such file" into the
+    engine log (brace-group fix, one line). A project `host-guard.env` that sets
+    `HOST_GUARD_BROWSER_CONFINE=1` is sourced after the exit hook's `=0` and would
+    re-run confine passes A–C at engine exit (no project sets it; close with a
+    `--reap-only` argv flag). No test distinguishes the `engine_lock_classify`
+    liveness guard from the `kill -0` it replaced (recycled-pid / pre-boot /
+    cross-host branches). The migration grep in `docs/host-guard.md` lists a
+    new-shape profile name as old-shape when it is the last cmdline token.
+    `tests/automation/test-host-guard-browser.sh` is load-sensitive (bounded
+    `wait_for 5/8` process waits; one FAIL seen with a concurrent second instance,
+    clean in isolation) — never run two instances at once; consider a per-suite
+    flock. Verdict-parsing regex now lives in three places (`_review_parses`,
+    `_review_verdict`, `record_review_verdict`) — consolidation candidate.
   - Arm 2 custom style `pipeline-terse` (pre-drafted, NOT shipped — ships as its
     own CAND item): use only if wave-1 measurement shows Concise leaking into
     artifacts (schema failures, thinner handoffs) while the token win is real.
