@@ -3783,6 +3783,139 @@ but appreciated.
 - **Verify idea:** run-evals + one fixture goal-iteration dry parse with a Reference
   line present and absent.
 
+### CAND-MAINT-ISO · Hard full-depth requirement + maintenance isolation (LANDED 2026-08-21 — reverse-ported from trendora)
+- **Priority:** P1 · **Effort:** M · **Risk:** LOW · **Status:** DONE 2026-08-21 on branch
+  `port/trendora-046dd956` — `bfa3a3f` (the port), `959b5fb` + `6555446` (integration
+  guards + tests), and this docs/contract commit. BOTH features are default-OFF: with
+  `CHAIN_REQUIRE_FULL_DEPTH` and `CHAIN_MAINTENANCE_ISOLATION` unset and no spec line, every
+  path is the pre-port path (the one deliberate exception is the jq-less `iter_dispatch`
+  fallback, which now also emits `maintenance_isolation:"false"`). NOT yet exercised live —
+  the first operator-authored isolated iteration in a real session is still owed.
+- **Source:** four framework-only commits authored inside trendora's vendored copy of this
+  framework (branch `goal/market-compass`, 2026-08-21), reverse-synced file-by-file with
+  `git merge-file --diff3` against each file's OWN pre-change blob rather than copied:
+  `046dd956` (fail closed when `Depth: full` is required but only lean can be dispatched),
+  `29e53651` (framework hunks only — the precedence rung + its cases), `8a4a3a21`
+  (maintenance isolation), `933d5f79` (propagate isolation before child dispatch; reorder
+  QA).
+- **Problem:** the depth arbiter is a COST ladder with no notion of "full depth IS the
+  safety control here", and it had THREE silent full→lean paths, not one — the arbiter
+  ladder (`full-cap` / `budget-breach` / `evaluator-requested-lean`), the full dispatch site
+  when `run-phase.sh` lacks `--no-finalize`, and the depth parser on an unparseable `Depth:`
+  line. Once lean is chosen, `goal-iter-lean.sh` defaults `CHAIN_LEAN_PARALLEL_BROWSER_QA`
+  to `replay` and forks a browser-QA service boot plus a replay lane the moment
+  `developer.done` lands: that is how market-compass iterations 6 and 8 ran an ungated
+  browser replay against a knowingly damaged database. The same defect's other half:
+  "full depth" and "boot the app" were ONE thing, so a backend-only repair iteration could
+  not keep full reviewer/audit scrutiny without also starting services and a browser against
+  the data it was repairing (backend warm-up itself writes derived rows).
+- **Landed (`bfa3a3f`):** two predicates in `lib/common.sh`, each the single place its
+  marker regex lives — `goal_full_depth_required <spec>` (`CHAIN_REQUIRE_FULL_DEPTH` truthy,
+  or a `Depth enforcement: required` spec line) and `goal_maintenance_isolation_required
+  [spec]` (`CHAIN_MAINTENANCE_ISOLATION` truthy, incl. the literal `required`, or a
+  `Maintenance isolation: required` spec line). `_full_depth_pause()` in `run-goal.sh`
+  mirrors the `_host_guard_pause` idiom: resumable `AWAITING_FULL_DEPTH` BEFORE dispatch,
+  an `iter-<N>/depth-requirement-unmet` marker, and `depth-dispatched` REMOVED so a resume
+  cannot inherit a stale lean decision — wired at all three demotion sites (`depth-arbiter`,
+  `depth-parse`, `full-dispatch`). A precedence rung resolves a hard-required iteration to
+  full ahead of every cost rung and records the rung it overrode as `depth_cost_overridden`
+  while leaving that rung's on-disk marker untouched, so the arbiter pause is a backstop
+  against a future reordering rather than a reachable path.
+  `apply_maintenance_isolation_from_spec` materializes the spec declaration into the
+  environment before any child dispatch — at BOTH entry points (`run-goal.sh`,
+  `run-phase.sh`) — unsets on an ordinary spec so isolation cannot leak forward, and stamps
+  `CHAIN_MAINTENANCE_ISOLATION_SOURCE=spec|env` so an operator's session-level declaration is
+  never cleared. Six chokepoints: `detect_frontend_in_plan` (subordinates the
+  `CHAIN_GOAL_TARGET_JOURNEYS` browser override), plus `_boot_shared_services`,
+  `ensure_services_running`, `browser-qa-phase.sh`, `replay_lane_partition_and_verify` and
+  `demo-phase.sh`, which refuse through `maintenance_isolation_refuse` (refusals marker +
+  `maintenance_isolation_refused` telemetry). `goal-iter-lean.sh` keeps the parallel
+  browser-QA/replay lane off under a hard requirement regardless of the knob;
+  `AWAITING_FULL_DEPTH` is registered in the `run-goal.sh` status header and in
+  `lib/plain-language.sh` (keys + explainer).
+- **Integration deltas added on THIS side (`959b5fb`, `6555446`)** — each one a path an
+  isolated iteration actually reaches here, or a defect inherited from trendora HEAD:
+  (1) `browser-qa-phase.sh`'s isolation SKIPPED artifact carries a `**Reason:**` line —
+  `closure_gate.py` accepts an all-SKIPPED browser-QA file only via `**Reason:**`,
+  `## Reason` or the browser-infra taxonomy, so the ported heredoc's `## Why this lane did
+  not run` closed the phase CLOSURE-FAIL. (2) `write_na_ui_artifacts` writes isolation
+  wording for ALL SIX N/A UI stubs from one shared reason string — under isolation
+  `detect_frontend_in_plan` refuses, so `run-phase.sh` takes its backend-only branches and
+  `browser-qa-phase.sh` is never entered, and the withheld lane was being reported to the
+  evaluator as "Backend-only phase (Frontend Present: no)". (3) `closure_gate.py`'s
+  `frontend_present()` gained the carve-out the bash predicate already had:
+  `maintenance_isolation_active()` reads the exported `CHAIN_MAINTENANCE_ISOLATION` (the SAME
+  literal truthy set bash accepts, deliberately not a case-insensitive superset) or a
+  `Maintenance isolation: required` plan line, so an isolated iteration's six stubs pass even
+  when the plan says `Frontend Present: yes`. (4) `run-goal.sh`'s showcase-join REAPS the
+  previous iteration's background tail (`_join_showcase_tail --kill` + an explicit
+  `kill_phase_servers`) instead of waiting for it — the tail forked during iteration N−1 and
+  carries the PRE-isolation environment, so joining it would boot the app mid-isolation.
+  (5) `AWAITING_FULL_DEPTH` added to `run-goal.sh`'s `--resume` status allowlist (inherited
+  gap: the pause is documented resumable, but `--resume` never reset the status, so the only
+  escape was deleting the requirement). (6) `demo-phase.sh` checks isolation BEFORE its
+  self-boot block and prints exactly ONE skip line via a dedicated `_runner_rc=90` — under
+  `set -e` the refusal from `ensure_services_running` killed the script ~120 lines before the
+  ported guard, and the runner's rc 3 would otherwise have followed a contract decision with
+  "Playwright not available"; documented, not changed: `_boot_shared_services` never exports
+  `CHAIN_SHARED_SERVICES=true` under isolation, because that flag means "the caller owns a
+  running app". (7) `qa-phase.sh` no longer appends the "backend did NOT become healthy after
+  retries" warning + dependency hint under isolation — `QA_BACKEND_UP=no` there because
+  nobody was ALLOWED to start a backend, and the prompt told the agent two stories about the
+  same service. (8) `run-goal.sh`'s jq-less `iter_dispatch` fallback now carries
+  `maintenance_isolation` (the only record that an iteration ran isolated; a host without jq
+  dropped it). (9) `lib/replay-lane.sh`'s isolation guard fails CLOSED — `declare -F
+  <predicate> && <predicate>` read "not isolated" when `common.sh` was never sourced, making
+  the one state in which the contract is uncheckable the state that lets the browser run.
+  Agent/operator contract (this commit): the goal-evaluator scores an all-SKIPPED isolation
+  `ui-test-results.md` like `DEFERRED-BUDGET` (journeys keep their prior status, and no
+  journey may be promoted TO passing on an iteration that produced no browser evidence); the
+  goal-decomposer must NEVER emit `Depth enforcement:` or `Maintenance isolation:`;
+  `goal-interactive-dispatch` 3.0.0→3.0.1 gains the `AWAITING_FULL_DEPTH` bullet.
+- **Deliberately NOT done:** the decomposer cannot arm either control — a governor reading
+  the governed agent's own prose is not a governor (anti-pattern 25), so both lines are
+  operator-authored and the decomposer states the NEED in BACKGROUND prose instead. The
+  brief's proposed `GOAL_SESSION_DIR`/`GOAL_ITER_INDEX` fallback inside
+  `maintenance_isolation_refuse` was NOT written: `lib/common.sh` sources
+  `lib/checkpoint.sh`, and `goal_iter_dir` already PREFERS those two exported vars, so it
+  would have been dead code — the behaviour is pinned by a test instead. Trendora's other
+  un-upstreamed patches stay out (see §20 "Known gaps"): `lib/replay-lane.sh`'s rc=7
+  backend-unreachable handling and `resolve_backend_health_url`. No
+  `render_iteration_summary.py` badge for the new status yet.
+- **Known steady state (record it; do not "fix" it by accident):**
+  - A hard-required iteration may breach the SPEED-15 wall budget and then override its own
+    `budget-breached` marker on the NEXT iteration. That is the design — a safety
+    requirement outranks a cost rung — and it is visible as `depth_cost_overridden
+    {overridden_cost_rung:"budget-breach"}`; the marker itself is deliberately left on disk.
+  - A showcase tail reaped under isolation returns before the join path's commit/push block
+    (which only runs with `--push-per-iter`), so iteration N−1's summary / README / renders
+    can be partial and uncommitted; iteration N's own per-iter commit sweeps them up.
+  - `closure_gate.py`'s backend-only WARN channel still reads "Plan says Frontend Present:
+    no but frontend-looking files changed this phase" for an isolation-declared plan that
+    says `yes`. Wording only — no verdict effect. Follow-up.
+  - The isolation carve-out now exists in TWO implementations — the bash predicate and the
+    python gate — agreeing on the truthy set by convention and comment, not by a shared
+    constant. A parity test (bash truthy set == `_ISOLATION_ENV_TRUTHY`) is a follow-up.
+- **Verify:** `bash tests/automation/test-maintenance-isolation.sh` (71) · `bash
+  tests/automation/test-full-depth-required.sh` (33) · `bash
+  tests/automation/test-closure-gate.sh` (29) · `bash tests/automation/test-depth-arbiter.sh`
+  (33) · `bash tests/automation/test-replay-lane.sh` (59) · `bash
+  tests/automation/test-plain-language.sh` (63) · `python3
+  scripts/automation/lib/closure_gate.py self-test` · `./scripts/automation/run-evals.sh`
+  (155 / 0). Semantic smoke without an engine run:
+
+  ```bash
+  source scripts/automation/lib/common.sh
+  CHAIN_MAINTENANCE_ISOLATION=true goal_maintenance_isolation_required && echo isolated
+  printf -- '- **Depth enforcement:** required\n' > /tmp/spec.md
+  goal_full_depth_required /tmp/spec.md && echo required
+  ```
+- **Rollback:** both features are default-OFF, so the live rollback is to stop declaring
+  them: `unset CHAIN_REQUIRE_FULL_DEPTH CHAIN_MAINTENANCE_ISOLATION` and remove any
+  `Depth enforcement:` / `Maintenance isolation:` spec line. `CHAIN_DEPTH_ARBITER=false`
+  additionally restores the legacy SPEED-10 allowlist. To remove the mechanism itself,
+  revert the three port commits (run-evals returns to 153 / 0).
+
 ### CAND-STYLE · Per-agent Claude Code output style (landed default-off; experiment pending)
 - **Priority:** P2 · **Effort:** M · **Risk:** LOW-MED · **Status:** IMPLEMENTED
   2026-08-20 behind `CHAIN_OUTPUT_STYLES` (default off, G4); G8 stage 1 (fixture A/B)
@@ -4754,3 +4887,13 @@ forensics work would have blurred what this package is for.
 - **Trendora carries two un-upstreamed framework patches** worth reverse-porting:
   `lib/common.sh` (force the browser lane when `CHAIN_GOAL_TARGET_JOURNEYS` is set) and
   `lib/replay-lane.sh` (rc=7 backend-unreachable handling).
+  - `lib/common.sh` half **DONE 2026-08-21** (CAND-MAINT-ISO): the
+    `CHAIN_GOAL_TARGET_JOURNEYS` browser-lane override came back with the
+    maintenance-isolation reverse-port — Option A, trendora's whole
+    `detect_frontend_in_plan` taken verbatim with the isolation carve-out ABOVE the
+    override — so `run-goal.sh:2708`'s comment ("forces the browser lane whenever this
+    iteration names journeys") is true again with no edit.
+  - `lib/replay-lane.sh` rc=7 backend-unreachable handling: **still un-upstreamed**. The
+    isolation port touched that file (a fail-closed guard at
+    `replay_lane_partition_and_verify`) but deliberately took no other trendora hunk;
+    `grep -c TARGET_JOURNEYS scripts/automation/lib/replay-lane.sh` is still 0.

@@ -66,6 +66,7 @@ Records which pipeline was chosen for this iteration.
 |---|---|---|
 | `depth` | string | `lean` or `full` |
 | `target_journeys` | array of strings | Journey IDs this iteration targets (e.g., `["J-01","J-03"]`) |
+| `maintenance_isolation` | string | `"true"` when this iteration ran under maintenance isolation (`CHAIN_MAINTENANCE_ISOLATION` after `apply_maintenance_isolation_from_spec` has materialized any `Maintenance isolation: required` spec line), else `"false"`. The effective value, and the only per-iteration record that the app/browser lanes were withheld by contract. A string, not a boolean, on both the jq and the jq-less fallback path |
 
 ### `agent_invocation_start`, `agent_invocation_end`
 Wrap each agent call inside an iteration (developer, reviewer, browser-qa-agent, etc.).
@@ -118,8 +119,9 @@ Written when a hard halt fires before normal `iter_end`.
 
 | Field | Type | Description |
 |---|---|---|
-| `reason` | string | `BUDGET_EXHAUSTED` \| `STALLED` \| `REGRESSION_HALT` \| `ABORTED` |
-| `detected_at_step` | string | Where the halt was detected (e.g., `pre_decomposer`, `post_evaluator`) |
+| `reason` | string | `BUDGET_EXHAUSTED` \| `STALLED` \| `REGRESSION_HALT` \| `ABORTED` \| `AWAITING_FULL_DEPTH` — plus the other resumable `AWAITING_*` pause statuses `run-goal.sh` writes |
+| `detected_at_step` | string | Where the halt was detected (e.g., `pre_decomposer`, `post_evaluator`; `AWAITING_FULL_DEPTH` uses `depth-arbiter`, `depth-parse`, or `full-dispatch` — the three sites that could otherwise have silently run lean) |
+| `demotion_reason` | string | `AWAITING_FULL_DEPTH` only: why full depth could not be dispatched — `arbiter-demotion:<rung>`, `unparseable Depth line in <spec-path>`, or `run-phase.sh lacks --no-finalize`. Mirrors the `reason=` field of `iter-<N>/depth-requirement-unmet` |
 
 ### `iter_push` (opt-in)
 Written by `run-goal.sh` after each iteration when `--push-per-iter` is enabled. One event per iteration. Captures whether the per-iter commit + push succeeded and which branch received the commit.
@@ -173,6 +175,8 @@ python3 scripts/automation/lib/analyze_telemetry.py runs/goal-session-<sid>/tele
 | `golden_coverage` | `goal-iter-lean.sh`, `browser-qa-phase.sh` (goal iterations) | `{passing, missing_goldens, iter_name}` — PASSing journeys still lacking a replay golden (also persisted to `state/golden-gaps`, SPEED-23) |
 | `experiment_reverted` | `run-goal.sh` | `{key, value}` — the tripwire auto-reverted an experiment knob |
 | `depth_full_granted` / `depth_demoted` | `run-goal.sh` | `{reason, prior_verdict, prior_depth}` — the SPEED-20 deterministic depth arbiter granted a spec-requested full (`prior-verdict-*`, `prior-coherence-fail`, `cadence-due`, `new-fullstack-journey`) or demoted it to lean (`budget-breach`, `full-cap`, `evaluator-requested-*`, legacy `no-full-trigger`) |
+| `depth_cost_overridden` | `run-goal.sh` | `{requirement:"hard-full-required", overridden_cost_rung, prior_verdict, prior_depth}` — the iteration was hard-required full (`CHAIN_REQUIRE_FULL_DEPTH` or a `Depth enforcement: required` spec line) and the precedence rung overrode a COST rung that would otherwise have demoted it: `budget-breach`, `full-cap`, or `evaluator-requested-lean`/`evaluator-requested-evidence`. Evidence only — the overridden rung's on-disk marker (e.g. the previous iteration's `budget-breached`) is deliberately left untouched. Without jq the payload carries `requirement` + `overridden_cost_rung` only |
+| `maintenance_isolation_refused` | `lib/common.sh` `maintenance_isolation_refuse` (called from `_boot_shared_services`, `ensure_services_running`, `browser-qa-phase.sh`, `replay_lane_partition_and_verify`, `demo-phase.sh` and `run-goal.sh`'s showcase-join) | `{operation, detail}` — a path forbidden under maintenance isolation was reached and REFUSED rather than degraded. `operation` is the refusing site (`ensure_services_running`, `_boot_shared_services`, `browser-qa-phase`, `replay_lane_partition_and_verify`, `demo-phase`, `demo_runner`, `demo golden auto-derive`, `async-showcase-join`). The same call appends a tab-separated `<utc-timestamp>\toperation=…\tdetail=…` line to `runs/goal-session-<sid>/iter-<N>/maintenance-isolation-refusals`, so the refusal survives even where telemetry is unavailable |
 | `iter_budget` | `lib/common.sh` (any budget-aware script) | `{budget, elapsed, mode, at_step}` — first over-budget check of the process (SPEED-15; defaults 3600s/trim) |
 | `iter_budget_trim` | `run-goal.sh`, `goal-iter-lean.sh`, `run-phase.sh`, `browser-qa-phase.sh` | `{rung}` — a trim rung actually shed work (`showcase-defer`, `replay-narrow`, `testplan-skip`, `ux-regression-skip`) |
 | `goal_slice_fallback` | `lib/common.sh` (executor dispatch sites) | `{iter_name, rc}` — the TOKEN-10 executor goal-slice build failed; the dispatch fell back loudly to the full `docs/goal.md` |

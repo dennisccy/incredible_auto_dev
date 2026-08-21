@@ -62,6 +62,15 @@ pain into its §16 staging section.
 - **The pump protocol changes but a running pump predates it.** Pump behavior (out files,
   model overrides, >8KB file-indirection) comes from `.claude/skills/goal-interactive-dispatch.md`
   loaded at pump start — after changing it, restart the pump session before resuming.
+- **A safety control ends up on a cost ladder.** Any ladder that can downgrade work has two
+  kinds of rung: "is this worth the wall-clock?" (budget, cadence, window caps) and "can this
+  engine execute it at all?" — and only the second may override a REQUIREMENT. SPEED-20's
+  depth arbiter had only the first kind, so a lean demotion quietly removed the adversarial
+  review lane an iteration existed to run and auto-armed a browser replay against a knowingly
+  damaged database. Before you add a rung, say out loud which question it answers: a control
+  a cost heuristic may trade away is not a control. Tripwire: `depth_cost_overridden` names
+  the rung that got outranked, and `AWAITING_FULL_DEPTH` must never mean "the cost ladder
+  preferred lean" (reverse-ported 2026-08-21 — `docs/improvement-roadmap.md` CAND-MAINT-ISO).
 
 ## Known limitations we chose NOT to fix (so you don't rediscover them as bugs)
 
