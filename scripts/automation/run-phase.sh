@@ -779,6 +779,9 @@ if [[ "$SKIP_DEV_REVIEW" == "false" ]]; then
       continue
     fi
     _guard_step_rc "$rev_rc" "Step 3 (review)"
+    if declare -F record_review_verdict >/dev/null 2>&1; then
+      record_review_verdict "$REVIEW_REPORT" "$ATTEMPT" "$PHASE" "$rev_rc" || true
+    fi
     [[ $rev_rc -ne 0 ]] && log "  Warning: review-phase.sh exited with error (attempt $ATTEMPT) -- checking verdict"
 
     if verdict_passes "$REVIEW_REPORT"; then

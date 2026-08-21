@@ -79,6 +79,28 @@ record_telemetry_event() {
   fi
 }
 
+# record_review_verdict <report> <attempt> <iter_name> [<reviewer-rc>=0]
+# The ONE emitter of `review_verdict {verdict, attempt, iter_name}` for both
+# review loops (goal-iter-lean.sh lean path, run-phase.sh Step 3 full-depth
+# path). verdict = PASS | PASS_WITH_NOTES | FAIL when the report carries a
+# strict `**Verdict:** <v>` line; "" when the reviewer was dispatched (rc != the
+# quota code) but wrote no parseable line — silence would be indistinguishable
+# from "no review ran", and analyze_telemetry.py --tripwire treats an
+# unparseable verdict as quality movement only if an event exists. A quota
+# pause (rc 75) with no verdict emits nothing: nothing was reviewed.
+record_review_verdict() {
+  local report="$1" attempt="$2" iter_name="$3" rc="${4:-0}" v=""
+  if grep -qE '^\*\*Verdict:\*\*[[:space:]]*(PASS_WITH_NOTES|PASS|FAIL)[[:space:]]*$' "$report" 2>/dev/null; then
+    v="$(grep -m1 -E '^\*\*Verdict:\*\*' "$report" 2>/dev/null | grep -oE 'PASS_WITH_NOTES|PASS|FAIL' | head -1)"
+  elif [[ "$rc" -eq "${QUOTA_EXHAUSTED_EXIT_CODE:-75}" ]]; then
+    return 0
+  fi
+  record_telemetry_event "review_verdict" \
+    "$(jq -cn --arg v "$v" --argjson a "$attempt" --arg n "$iter_name" '{verdict:$v, attempt:$a, iter_name:$n}' 2>/dev/null \
+       || printf '{"verdict":"%s","attempt":%s,"iter_name":"%s"}' "$v" "$attempt" "$iter_name")" || true
+  return 0
+}
+
 # ── engine-step wall-time attribution (RETRO-1, ops-hardening retro) ─────────
 # Wraps big NON-AGENT engine steps (the full/lean sub-pipeline dispatch, the
 # showcase-tail join) so the wall-time report can name what the former
