@@ -195,6 +195,12 @@ signal that says "do this now").
     telemetry (PRE iteration-shape-20260729).*
 
 ---
+12. **2026-09-01 package (user-approved; adversarially reviewed in Dennis's ChatGPT project
+    chat):** HOST-10 (DONE) → goal-proposer retirement (DONE; NEED-8 RETIRED) → **TOKEN-12 →
+    TOKEN-11a → EXP-6 (operator-run, real spend) → TOKEN-13 → TOKEN-16 → TOKEN-15a →
+    TOKEN-11b experiment → TOKEN-15b → hygiene (TOKEN-11c, CAND-EVAL-DEDUP)**; REL-15 as
+    capacity allows. Never bundled: each item ships with its own TOKEN-12 before/after delta;
+    judge models/effort are never lowered; STYLE-1 stays default-off on current evidence.
 
 ## 6. P0 — User-need capture
 
@@ -2093,6 +2099,187 @@ benchmark (or a real session's telemetry) before AND after (G8).
   have read (the slice prompt names the full file as the escape) — bring the
   iteration before widening the slice.
 
+
+### TOKEN-11 · Pump plumbing diet — three independently knobbed sub-changes
+- **Priority:** P1 · **Effort:** M · **Risk:** MED · **Status:** TODO — promoted 2026-09-01
+  (user-approved package after an adversarial second-opinion review; 11a is the FIRST real
+  token-saving implementation, 11b/11c are specs + default-off knobs).
+- **Problem:** the foreground pump session is plumbing, yet every pump turn re-reads the pump's
+  whole context. Measured on the largest real tapeology session (2026-09-01, pump transcript,
+  usage deduped by `message.id`): 1,751 usage-bearing pump turns, **890M cache_read
+  (~508K tokens/turn)**, 1.41M output, for 325 Agent dispatches — 5.4 pump turns per dispatch
+  (await → read request → Agent with the prompt re-emitted → write out → usage jq → write
+  res). Aggregate ranking: pump (~890M) > developer (~665M) > evaluator (~91M) > browser-qa
+  (~67M). None of it is in any framework telemetry.
+- **Current state:** `goal-await-dispatch.sh:108-117` option loop, `_claim_and_emit` `:193-200`,
+  self-test `:29-105`; `interactive-dispatch.sh:329-372` request builder (already writes the
+  prompt to `$dir/.prompt.XXXXXX` at `:343-344` and deletes it at `:372`), CTX-8 note `:288-290`,
+  cleanup `:564`; pump protocol `skills/goal-interactive-dispatch.md` loop `:73-119`.
+- **Change spec:**
+  - **11a finish-in-await (implement first).** `goal-await-dispatch.sh --finish
+    <req.ready>=<agent>=<rc>` (repeatable): before blocking, resolve the newest subagent
+    transcript for `<agent>` exactly as the skill's usage recipe does (`:204-228`), write
+    `out` (last assistant text; the existing stub line when lookup fails), write `usage_path`
+    (skip on ANY failure — honesty rule), then `.res` LAST. Add a transcript-schema probe that
+    logs drift to stderr and fails closed. Pump loop becomes Bash(finish+await) → Agent →
+    Bash(finish+await): ≤2.2 turns per dispatch. Skill → protocol v4.0.0, `--max-wait 590`
+    with a 600000 ms Bash timeout; keep the "restart a running pump after upgrading" rule.
+  - **11b prompt_path (default-off knob `CHAIN_PUMP_PROMPT_FILE_MIN_BYTES`, 0 = off).** Keep
+    the temp prompt file as `$req.prompt`, add `prompt_path` to both JSON builders
+    (`:347-350`, `:353-358`), the await helper prints `<req>\t<agent>\t<model|->\t<prompt_path>`,
+    the pump uses the existing wrapper sentence (skill `:101-107`). `prompt` stays in the JSON
+    (old pumps byte-equivalent). Every file-indirected prompt costs the subagent one extra Read
+    turn, so this is an EXPERIMENT: compare thresholds (today's >8 KB, 2-4 KB, universal) on
+    **pump + subagent combined** cache_read (TOKEN-12) and pick the system-wide minimum.
+  - **11c terse final reply (default-off knob `CHAIN_TERSE_FINAL_REPLY`, hygiene).** Append
+    "Final reply contract: ≤400 characters — verdict line (if any) plus artifact path(s)". Effect
+    is pump context growth (325 results × 1.75 KB), not direct output. Safe: the two-key confirm
+    reads `eval-confirm.md` (`goal-gates.sh:287-291`), not the reply.
+- **DoD / Verify (11a — protocol equivalence, not an LLM benchmark):** same agent selected, same
+  model override, same request ordering, same `.out`, valid usage whenever lookup succeeds,
+  `.res` strictly last, zero additional requeues/timeouts/missing artifacts.
+  `goal-await-dispatch.sh --self-test` gains fixtures (temp `HOME` with fake
+  `projects/<slug>/<sid>.jsonl` + `subagents/agent-x.jsonl`; missing transcript → stub out, no
+  usage, res still written); `interactive-dispatch.sh --self-test` byte-exact round-trip kept;
+  then one real session with quality gates passing and TOKEN-12 showing ≤2.2 pump turns/dispatch.
+- **Files:** `scripts/automation/goal-await-dispatch.sh`, `lib/interactive-dispatch.sh`,
+  `skills/goal-interactive-dispatch.md` (+ mirror), `docs/goal-mode-interactive.md`.
+- **Rollback:** revert the skill (pump behaviour) — `--finish` is inert when unused; 11b/11c
+  knobs 0.
+- **Stop-and-ask:** any renderer/analyzer that consumes trace `stdout_path` text beyond
+  attribution (grep the consumers first); any 11b threshold whose combined cache_read is not
+  lower than today's.
+
+### TOKEN-12 · Transcript economics analyzer (pump self-usage + subagent context composition)
+- **Priority:** P1 · **Effort:** S · **Risk:** LOW · **Status:** TODO — ships BEFORE every other
+  token item (promoted 2026-09-01): it makes the invisible half of the system measurable.
+- **Problem:** framework telemetry records subagent usage (`claude_usage`) but nothing about the
+  pump's own turns, and nothing about what fills a subagent's context (which tool results, how
+  many turns). Ad-hoc measurement 2026-09-01 (tapeology): developer 124 turns/inv, 84.5 Bash +
+  30 Read calls (324 KB) + 22 Edits per inv, 162K output/inv of which only ~45K is visible
+  content; browser-qa 13 screenshot read-backs/inv; evaluator 17 Reads/inv; pump 5.4 turns per
+  dispatch, ~508K tokens per pump turn.
+- **Change spec:** `scripts/automation/lib/analyze_transcripts.py <pump-session.jsonl> [--json]
+  [--compare A B]`. Pump side — usage-bearing turns, output/cache_read/cache_create, per-tool
+  counts + avg input/result bytes, Agent dispatches, **pump turns between consecutive Agent
+  calls**, resolved pump `message.model` per turn, compaction/summary events. Subagent side (via
+  `toolUseResult.agentType` → `<session>/subagents/agent-<id>.jsonl`, usage deduped by
+  `message.id`, keep each id's last snapshot) — invocations, turns/inv, output/inv,
+  cache_read/inv, tool-result bytes by tool with image reads counted separately (PNG bytes ≠
+  tokens), top-5 largest results with the first 80 chars of the tool input. `--compare` prints
+  deltas between two sessions. Read-only; fails closed on unknown transcript shapes.
+- **DoD / Verify:** `--self-test` on a synthetic pump+subagent fixture (wired into run-evals);
+  documented in `docs/goal-mode-telemetry.md` ("pump-side economics"); the numbers above become
+  the recorded PRE for TOKEN-11/13/15/16 and EXP-4.
+- **Files:** `scripts/automation/lib/analyze_transcripts.py`, `run-evals.sh`,
+  `docs/goal-mode-telemetry.md`. **Rollback:** none needed (read-only tool). **Stop-and-ask:** none.
+
+### TOKEN-13 · Hot/cold journey state, lossless idempotent event ledger, incremental updates
+- **Priority:** P1 · **Effort:** M · **Risk:** MED · **Status:** TODO — after EXP-4's economics
+  are recorded (promoted 2026-09-01).
+- **Problem:** `journey-history.json` is rewritten whole by the evaluator every iteration
+  (`agents/goal-evaluator/body.md:21,52-54,273`). Measured 2026-09-01 (rapid-microscope):
+  152,458 B for 12 journeys, of which `anti_goal_violations` = 52 records / 136,378 B (journey
+  notes only 6 KB) — ~38K tokens read AND ~38K output tokens written per iteration, also read by
+  the summarizer, demo-narrator (session mode) and the digest.
+- **Current state:** `goal_gate.py` `cmd_*` `:95-390`, string-dispatch `main()` `:578-634`,
+  self-test `:390-574` (`run-evals.sh:172`); `run-goal.sh` pre-snapshot `:2981` (keep), evaluator
+  dispatch `:3032-3099`, gate `:3143`, deltas `:3204`, retro collector `:1964`; methodology
+  `skills/goal-evaluation-methodology.md:26,40,103`.
+- **Change spec — durable source + projection:**
+  - `state/anti-goal-events.jsonl` is the append-only, immutable, durable history. Hot
+    `journey-history.json` becomes a bounded **projection**: `journeys` + **unresolved**
+    violations only, each `{violation_id, iter, anti_goal, severity, summary (≤400 chars,
+    derived), evidence_ref ("anti-goal-events.jsonl#<violation_id>" + artifact path/line),
+    resolved:false}`; the violation part is always recomputable (`goal_gate.py rebuild-hot`).
+    Invariants: bounded hot state; NO truncation or loss of original evidence at any point.
+  - Deterministic identities: `update_id = sha256(iter_name + canonical JSON of
+    journey-update.json)`; `violation_id = sha256[:16](iter + anti_goal + evidence)`;
+    `event_id` = `sha256(violation_id + ":created")` / `sha256(violation_id + ":resolved")`.
+    Events: `{"event":"created","event_id","update_id","violation_id","iter","anti_goal"
+    (verbatim),"severity","evidence" (FULL text),"artifacts":[…],"ts"}` and
+    `{"event":"resolved","event_id","update_id","violation_id","iter","note","ts"}`.
+  - `goal_gate.py apply-update <history> <update.json> --iter <name> [--events <path>]`
+    (idempotent, replay-safe): (1) compute `update_id` + the implied event set; (2) load the
+    ledger's `event_id`s; (3) append ONLY absent events (fsync); (4) rebuild the violation
+    projection from the ledger (unresolved = created − resolved) and apply the journey records
+    (replace-by-key, untouched carry over verbatim); (5) write hot atomically (tmp + rename) with
+    `last_update_id`. Reapplying the same update appends nothing and yields a byte-identical hot
+    file; a crash between (3) and (5) is healed by the retry. Rejects (exit 3) a journey ID
+    absent from `hash-journeys`, a record without `status`, or a `resolved` id with no `created`
+    event. `--migrate` (idempotent): existing records get deterministic ids, `created` (+
+    `resolved`) events with full existing text appended only if absent, hot re-projected.
+  - Evaluator writes `iter-<N>/journey-update.json` (never the whole file); the engine applies
+    it, or accepts a legacy full-file write (`journey_history_mode {update|legacy}` telemetry).
+  - **Explicit semantic change:** the counts at `run-goal.sh:3204` and `:1964` become
+    `active_anti_goal_violations`; `.claude/architecture/artifacts.md` documents the ledger.
+- **DoD / Verify — property/self-test cases:** A normal apply; B same update twice → zero new
+  events, byte-identical hot; C simulated crash after event append before hot write, then retry
+  → same ledger + hot as one application; D duplicate resolution retry → one `resolved` event,
+  violation absent from hot; E migration twice → identical files. Invariants: hot never holds a
+  resolved record; every hot record has a `created` event; full evidence recoverable
+  byte-for-byte; legacy-vs-new equivalence of journeys, unresolved set, `regressions` / `drift`
+  / achievement-gate answers; G9 spot-run of the evaluator judgment fixtures keeps verdict class.
+  Hypothesis to measure (TOKEN-12): evaluator cache_read −20-35%, output −30-60%.
+- **Files:** `lib/goal_gate.py`, `run-goal.sh`, `agents/goal-evaluator/body.md` (+ `agent.yaml`
+  bump), `skills/goal-evaluation-methodology.md`, `.claude/architecture/artifacts.md`,
+  `docs/goal-mode-telemetry.md`.
+- **Rollback:** `CHAIN_JOURNEY_UPDATE_MODE=legacy` (engine ignores update files; body reverted by
+  resync; the ledger is harmless when unused). **Stop-and-ask:** any consumer needing resolved
+  records hot (none found by either reviewer).
+
+_TOKEN-14 is deliberately unallocated: the token-budget rung it named was reclassified as quota
+resilience and lives as REL-15 (§10)._
+
+### TOKEN-15 · Executor turn diet, one rule at a time (two halves)
+- **Priority:** P1 · **Effort:** S per rule · **Risk:** LOW · **Status:** TODO (15a before the
+  TOKEN-11b experiment, 15b after it).
+- **Problem:** the developer averages 124 turns per invocation on a ~316K-token context
+  (39-45M cache_read/inv); browser-qa reads back ~13 of its own screenshots per invocation.
+  Each removed turn saves a whole context re-read.
+- **Change spec:** **15a developer** (`agents/developer/body.md`; coordinate with CTX-10, do not
+  duplicate): fix-mode minimal-context ordering (failure digest + implicated files first,
+  lazy-expand); **framework-appropriate quiet/bounded failure output when the test runner
+  supports it** (examples only: pytest `-q --tb=short --maxfail=N`; Jest/Vitest `--silent` / dot
+  reporter / `--bail`; Node test runner dot reporter; `cargo test -q`; `go test -failfast`);
+  combine independent **read-only** discovery commands only; Grep/Glob before opening broad
+  files; no full-file re-read after an edit when a bounded region suffices. Explicitly NOT a
+  hard "suite once per red→green cycle" rule. One rule per change, each graded by TOKEN-12.
+  **15b browser-QA** (`agents/browser-qa-agent/body.md` + `skills/browser-workflow-executor.md`):
+  acceptance state via DOM/text extraction; visual read-back only for inherently visual tests or
+  one final representative screenshot; the evaluator owns changed-journey evidence. Not a
+  blanket no-screenshot rule.
+- **DoD / Verify:** same-workload A/B per rule — no increase in reviewer FAIL, QA FAIL, fix-loop
+  count or missed seeded defects; 15b adds a visual-regression fixture (a DOM-correct but visually
+  broken state must not PASS). Target −10-20% developer turns/inv (TOKEN-12).
+- **Rollback:** revert the rule (each rule is one commit). **Stop-and-ask:** any rule whose A/B
+  shows a quality-gate regression.
+
+### TOKEN-16 · Evaluator evidence packet (deterministic evidence routing, never judgment)
+- **Priority:** P1 · **Effort:** M · **Risk:** MED · **Status:** TODO — after TOKEN-13.
+- **Problem:** the evaluator spends 17 Reads / 52 turns per invocation discovering where each
+  journey's evidence lives (results rows, screenshots, prior status) — mechanical work an
+  evaluator should not pay context for.
+- **Change spec:** `goal_gate.py evaluation-packet` → `iter-<N>/evaluation-packet.json` (+ a
+  markdown rendering from a fixed template, no free text). **Fixed schema only — no field can
+  carry a recommendation or conclusion:** per journey `journey_id`, `prior_status`,
+  `iteration_role` (`target|required_still_passing|other`), `result_row_status`
+  (`PASS|FAIL|SKIP|DEFERRED-BUDGET|absent`), `lane` (`replay|llm|none`), `screenshot_paths[]`,
+  `visual_inspection_required` (bool: status-changing, newly passing or failing); iteration-level
+  `review_verdict`, `qa_verdict`, `coherence_verdict` (verbatim enums); provenance
+  `builder_version`, `sources: {<path>: <sha256>}` for every input. Enforced with the
+  `lib/artifact_schemas.py` validator pattern; free-form string fields are a validation error.
+  **Integrity before use:** the engine recomputes every source hash immediately before the
+  evaluator dispatch; any mismatch, missing input, schema violation or missing packet → no packet
+  is offered and the evaluator keeps its source-reading path (telemetry `evaluation_packet
+  {status: ok|stale|invalid|missing}`). No mtime logic. Do not repack what is already inline
+  (digest, iter-diff, scan-report, journeys-changed, browser-infra, log tail).
+- **DoD / Verify:** the malicious fixture (result row PASS while the screenshot contradicts it)
+  must still yield non-passing/unknown in the judgment spot-run; a corrupted-hash fixture falls
+  back; target ≤10 Reads and ≤42 turns/inv (TOKEN-12).
+- **Rollback:** `CHAIN_EVAL_PACKET=0`. **Stop-and-ask:** any field request that would let the
+  builder express a judgment.
+
 ---
 
 ## 10. P1 — Reliability & weaker-model hardening
@@ -2994,6 +3181,24 @@ benchmark (or a real session's telemetry) before AND after (G8).
 - **Expected saving:** an iter-4-class infra loss becomes a ~30m screenshot-only
   make-up instead of a ~4h re-target iteration.
 
+
+### REL-15 · Token-budget rung + session token pause (quota resilience, not a saving)
+- **Priority:** P1 · **Effort:** M · **Risk:** LOW-MED · **Status:** TODO — promoted 2026-09-01
+  (was drafted as TOKEN-14; reclassified because it prevents WASTE at the quota wall rather than
+  reducing the tokens the same work needs).
+- **Problem:** the trim ladder (`lib/common.sh:1022-1078`, SPEED-15) is time-triggered only; the
+  weekly limit is token-denominated, and a limit hit mid-dispatch wastes the whole in-flight
+  dispatch (interactive: "pump unable to dispatch" → the dispatch is re-run later).
+- **Change spec:** `CHAIN_ITER_TOKEN_BUDGET` (default 0 = off) with overridable weights
+  `CHAIN_TOKEN_WEIGHTS="in=1,out=5,cache_read=0.1,cache_create=1.25"` joins the time rule in
+  `iter_budget_exceeded` (`:1046-1050`), summing `claude_usage` rows after the last `iter_start`
+  in `telemetry.jsonl` (chronological); same rungs, `iter_budget` event gains `kind` + `spent`.
+  `CHAIN_SESSION_TOKEN_BUDGET` pauses `AWAITING_TOKEN_BUDGET` at an iteration boundary
+  (resumable, like `AWAITING_DISK`). Fail-open without usage rows. Depends on TOKEN-11a for
+  reliable interactive sidecars.
+- **DoD / Verify:** self-tests for the summing, the rung trigger and the pause; run-evals green.
+- **Rollback:** both knobs 0. **Stop-and-ask:** none.
+
 ---
 
 ## 11. P1 — Security
@@ -3471,6 +3676,35 @@ this file alone.
   interactive Codex backend.
 - **Preconditions:** an actual Codex use-case from the user; otherwise this stays
   parked (letter: this deployment is claude-only).
+
+
+### EXP-6 · Light-tier pump conformance experiment (PUMP-MODEL)
+- **Priority:** P1 · **Effort:** S (operator-run) · **Risk:** LOW · **Status:** BLOCKED on
+  human sign-off (real spend) — runs immediately AFTER TOKEN-11a and BEFORE TOKEN-13 so its
+  economics are measured before the evaluator/state baseline changes.
+- **Idea:** the pump exercises no judgment ("plumbing, not a narrator") and Agent-tool subagents
+  keep their frontmatter models, so the foreground pump session's model can change without
+  touching any judge or executor. A light-tier pump has a smaller context window (its
+  auto-compaction caps context per pump turn) and a cheaper allowance class. **No
+  subagent/judge/executor frontmatter model is changed in this experiment.** Model lifecycle and
+  context-window properties are MEASURED external facts, never framework invariants.
+- **Run:** identical dispatch fixtures / replayed request files and then one live workload,
+  current pump model vs the currently available `/model haiku` light-tier candidate; record the
+  actual resolved `message.model` from the pump transcript (TOKEN-12).
+- **Strict conformance proof (deterministic pump equivalence):** same `subagent_type`; same model
+  override; exact same prompt payload; same dispatch ordering; same request/result artifact
+  protocol (`out`, `usage_path`, `.res` last); no extra retry / requeue / routing failures; no
+  missing or corrupt artifacts.
+- **Live A/B validation:** normal quality gates still pass; no new pump-induced failure mode; no
+  degradation in final task success, reviewer or QA behaviour attributable to routing.
+  Downstream verdict-class comparison is TELEMETRY only (subagent execution is stochastic even
+  when pump routing is equivalent) — not a hard equality requirement.
+- **Economics (TOKEN-12 `--compare`):** pump turns, cache_read per turn and per dispatch,
+  observed compaction frequency; report raw-token/context reduction SEPARATELY from weekly
+  subscription-allowance reduction, both observed, never assumed weighting.
+- **Tripwire / outcome:** any conformance miss → stop, keep the current pump model. Pass →
+  document "choose a light-tier pump model before `/goal`" in `docs/goal-mode-interactive.md`.
+  Fail → pump epoch rotation (fresh session every N dispatches) remains the manual fallback.
 
 ---
 
@@ -4196,6 +4430,33 @@ but appreciated.
     `timeout` or extend the `.ready` poll beyond 5s; add a telemetry-sourced
     case for `output_style_mismatch` emission; add a baseline-side (<3
     unstyled rows) cost fixture.
+
+
+### CAND-EFFORT · Interactive effort inheritance (staged — do not start)
+- **Proposed:** P2 · Effort S · Risk MED · **Status:** staged below every deterministic win.
+- **Evidence (2026-09-01):** developer 162K output tokens/inv but only ~45K tokens of visible
+  content (tool inputs 146K chars, text 3K chars) — the rest is non-persisted reasoning. Claude
+  Code has no per-subagent effort field and does not document whether Agent-tool subagents
+  inherit the pump session's `/effort` (checked by both reviewers).
+- **Sketch:** one trivial identical dispatch from pumps at `/effort medium` vs `max`; compare
+  `output_tokens`. Even if inheritance is proven, a session-wide lower effort would ALSO lower
+  the judges (goal-evaluator, reviewer, confirm) → operationally unusable unless per-dispatch
+  effort exists. Diagnostic value only; needs spend consent (G9).
+
+### CAND-EVAL-DEDUP · Evaluator body / methodology de-duplication (staged)
+- **Proposed:** P2 · Effort S · Risk LOW · **Status:** staged; CTX-9/10/11 territory.
+- **Sketch:** `agents/goal-evaluator/body.md` (24 KB) and `skills/goal-evaluation-methodology.md`
+  (13.8 KB) repeat several rules; ~8K cached tokens per evaluator turn. Hygiene after the
+  turn-count work (TOKEN-13/16), never before.
+
+### CAND-HOOK-CLEANUP · Unused project-hook infrastructure (staged — compatibility analysis first)
+- **Proposed:** P2 · Effort S · Risk MED · **Status:** staged.
+- **Sketch:** `run_project_hook` / `PROJECT_HOOK_CONTINUE` (`lib/project-gates.sh`) lost their
+  only in-repo caller when the goal-proposer's M3 runtime invocation was retired (2026-09-01).
+  The API is deliberately RETAINED: the framework is vendored into other projects that may carry
+  `project-extensions/hooks/`. Any removal or re-wiring needs an inventory of hook usage across
+  the vendored copies (tapeology, trendora) and an explicit decision on whether `post-goal`
+  should ever be re-attached to a lifecycle point. "No in-repo caller" is not sufficient.
 
 ---
 
