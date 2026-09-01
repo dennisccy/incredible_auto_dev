@@ -22,7 +22,11 @@ call still flows through the one dispatch seam (`lib/quota-retry.sh`), but the
 a file channel under `runs/goal-session-<sid>/dispatch/` and blocks. The
 foreground session — the **pump**, driven by the `/goal*` command — dispatches
 that agent as a subagent (`subagent_type` = the agent's name, prompt verbatim),
-then writes the result back. The pump protocol lives in
+then closes the dispatch with one `--finish` argument on its next await call —
+the helper writes `out`, the usage sidecar and `.res` from the pump session's own
+transcript (protocol v4, 2026-09-01: two pump turns per dispatch, requests arrive
+as JSON lines, the pump never Reads a request or re-emits a reply). The pump
+protocol lives in
 [`.claude/skills/goal-interactive-dispatch.md`](../.claude/skills/goal-interactive-dispatch.md).
 
 ---
@@ -114,8 +118,9 @@ programmatic path with an API key** (`run-goal.sh` without `--interactive`).
   `CLAUDE_CODE_SUBAGENT_MODEL` — it overrides every subagent and flattens the tiers.
 - **Fidelity gaps vs headless.** The per-agent `--effort` downgrade is **not**
   carried into interactive mode. Token-usage telemetry now *is* (pump protocol
-  v2): the pump extracts each dispatch's token counts from its own session
-  transcript and hands them back via an optional usage sidecar, so `claude_usage`
+  v2, automated in v4): the await helper's `--finish` step extracts each
+  dispatch's token counts from the pump session's transcript into the usage
+  sidecar (`lib/pump_finish.py`; v2 had the pump do this by hand), so `claude_usage`
   events appear in interactive sessions too — best-effort (a dispatch whose
   extraction fails records no event) and without `total_cost_usd` (interactive
   dispatches have no per-call USD price). Requires a pump session started AFTER

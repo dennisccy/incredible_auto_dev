@@ -2101,9 +2101,10 @@ benchmark (or a real session's telemetry) before AND after (G8).
 
 
 ### TOKEN-11 · Pump plumbing diet — three independently knobbed sub-changes
-- **Priority:** P1 · **Effort:** M · **Risk:** MED · **Status:** TODO — promoted 2026-09-01
-  (user-approved package after an adversarial second-opinion review; 11a is the FIRST real
-  token-saving implementation, 11b/11c are specs + default-off knobs).
+- **Priority:** P1 · **Effort:** M · **Risk:** MED · **Status:** IN-PROGRESS — 11a landed
+  2026-09-01 (`goal-await-dispatch.sh --finish/--print-json` + `lib/pump_finish.py`, pump skill
+  v4.0.0; real-session TOKEN-12 delta owed); 11b/11c remain specs + default-off knobs (promoted
+  2026-09-01, user-approved package after an adversarial second-opinion review).
 - **Problem:** the foreground pump session is plumbing, yet every pump turn re-reads the pump's
   whole context. Measured on the largest real tapeology session (2026-09-01, pump transcript,
   usage deduped by `message.id`): 1,751 usage-bearing pump turns, **890M cache_read

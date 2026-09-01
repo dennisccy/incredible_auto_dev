@@ -23,6 +23,8 @@
 #
 # Usage:
 #   goal-await-dispatch.sh --dispatch-dir <dir> --engine-pid <pid> [--poll <secs>]
+#                          [--max-wait <secs>] [--print-json]
+#                          [--finish <req.ready>=<agent>=<rc>]...   (protocol v4)
 #   goal-await-dispatch.sh --self-test
 set -euo pipefail
 
@@ -99,23 +101,92 @@ if [[ "${1:-}" == "--self-test" ]]; then
   fi
   rm -rf "$t7"
 
+  # ── Protocol v4 (TOKEN-11a): finish-in-await ────────────────────────────────
+  # `--finish <req.ready>=<agent>=<rc>` completes a dispatch BEFORE blocking:
+  # the subagent's final message and usage come from the pump session's own
+  # transcript (the same lookup the v2 usage recipe used), `out` and `usage_path`
+  # are written, then `.res` LAST. The pump never re-emits a prompt or a reply.
+  t8=$(mktemp -d); fh="$t8/home"; sid="sess-v4"
+  mkdir -p "$fh/.claude/projects/-slug/$sid/subagents"
+  # Pump transcript: the Agent tool_result row carrying the subagent attribution.
+  printf '%s\n' '{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"tu1","content":"done"}]},"toolUseResult":{"agentId":"x1","agentType":"developer","resolvedModel":"claude-sonnet-5","totalDurationMs":1234,"prompt":"You are the developer agent for goal-mode lean iteration."}}' \
+    > "$fh/.claude/projects/-slug/$sid.jsonl"
+  # Subagent transcript: two messages, the second repeated as a streaming
+  # snapshot (LAST row wins: output 25, not 20+25).
+  {
+    printf '%s\n' '{"type":"assistant","message":{"id":"d1","model":"claude-sonnet-5","usage":{"input_tokens":1,"output_tokens":10,"cache_read_input_tokens":100,"cache_creation_input_tokens":5},"content":[{"type":"text","text":"working"}]}}'
+    printf '%s\n' '{"type":"assistant","message":{"id":"d2","model":"claude-sonnet-5","usage":{"input_tokens":2,"output_tokens":20,"cache_read_input_tokens":200,"cache_creation_input_tokens":6},"content":[{"type":"text","text":"Handoff written to docs/handoffs/dev.md"}]}}'
+    printf '%s\n' '{"type":"assistant","message":{"id":"d2","model":"claude-sonnet-5","usage":{"input_tokens":2,"output_tokens":25,"cache_read_input_tokens":200,"cache_creation_input_tokens":6},"content":[{"type":"text","text":"Handoff written to docs/handoffs/dev.md (final)"}]}}'
+  } > "$fh/.claude/projects/-slug/$sid/subagents/agent-x1.jsonl"
+  r8="$t8/req.5-cccccc.ready"
+  printf '{"agent":"developer","prompt":"You are the developer agent for goal-mode lean iteration.","cwd":"/x","res_path":"%s","out":"%s","usage_path":"%s"}\n' \
+    "$t8/req.5-cccccc.res" "$t8/req.5-cccccc.out" "$t8/req.5-cccccc.usage" > "$r8"
+  out=$(HOME="$fh" CLAUDE_CODE_SESSION_ID="$sid" "$0" --dispatch-dir "$t8" --engine-pid "$deadpid" --poll 1 --finish "$r8=developer=0" 2>/dev/null || true)
+  if [[ "$out" == "ENGINE_DONE" ]]; then echo "  PASS finish: still awaits after finishing (ENGINE_DONE with a dead engine)"; else echo "  FAIL finish: await after finish (got '$out')"; fails=1; fi
+  if [[ "$(cat "$t8/req.5-cccccc.res" 2>/dev/null)" == "0" ]]; then echo "  PASS finish: .res written with the exit code"; else echo "  FAIL finish: .res missing/wrong ($(cat "$t8/req.5-cccccc.res" 2>/dev/null))"; fails=1; fi
+  if [[ "$(cat "$t8/req.5-cccccc.out" 2>/dev/null)" == "Handoff written to docs/handoffs/dev.md (final)" ]]; then echo "  PASS finish: out = subagent's final message from its transcript"; else echo "  FAIL finish: out content ($(cat "$t8/req.5-cccccc.out" 2>/dev/null))"; fails=1; fi
+  u8="$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); u=d["usage"]; print(d["model"], d["num_turns"], d["duration_ms"], u["input_tokens"], u["output_tokens"], u["cache_read_input_tokens"], u["cache_creation_input_tokens"])' "$t8/req.5-cccccc.usage" 2>/dev/null || true)"
+  if [[ "$u8" == "claude-sonnet-5 2 1234 3 35 300 11" ]]; then echo "  PASS finish: usage sidecar summed with snapshot dedupe (last row wins)"; else echo "  FAIL finish: usage sidecar (got '$u8')"; fails=1; fi
+  # Missing transcript → stub out, NO usage (honesty rule), .res still written (rc passthrough).
+  r9="$t8/req.5-dddddd.ready"
+  printf '{"agent":"reviewer","prompt":"p","cwd":"/x","res_path":"%s","out":"%s","usage_path":"%s"}\n' \
+    "$t8/req.5-dddddd.res" "$t8/req.5-dddddd.out" "$t8/req.5-dddddd.usage" > "$r9"
+  out=$(HOME="$fh" CLAUDE_CODE_SESSION_ID="$sid" "$0" --dispatch-dir "$t8" --engine-pid "$deadpid" --poll 1 --finish "$r9=reviewer=3" 2>/dev/null || true)
+  if [[ "$(cat "$t8/req.5-dddddd.res" 2>/dev/null)" == "3" ]]; then echo "  PASS finish: nonzero rc passed through"; else echo "  FAIL finish: rc passthrough ($(cat "$t8/req.5-dddddd.res" 2>/dev/null))"; fails=1; fi
+  if [[ -s "$t8/req.5-dddddd.out" && ! -e "$t8/req.5-dddddd.usage" ]]; then echo "  PASS finish: missing transcript → stub out, no usage sidecar"; else echo "  FAIL finish: missing-transcript handling (out=$(cat "$t8/req.5-dddddd.out" 2>/dev/null) usage_exists=$([[ -e "$t8/req.5-dddddd.usage" ]] && echo yes || echo no))"; fails=1; fi
+  # Two finishes in one call, both completed; --print-json lists a pending request as JSON.
+  ra="$t8/req.5-eeeeee.ready"; rb="$t8/req.5-ffffff.ready"; rc9="$t8/req.5-gggggg.ready"
+  for x in eeeeee ffffff; do printf '{"agent":"qa","prompt":"p","cwd":"/x","res_path":"%s","out":"%s","usage_path":"%s"}\n' "$t8/req.5-$x.res" "$t8/req.5-$x.out" "$t8/req.5-$x.usage" > "$t8/req.5-$x.ready"; done
+  printf '{"agent":"auditor","prompt":"audit it","cwd":"/x","res_path":"%s","out":"%s","usage_path":"%s","model":"claude-opus-5"}\n' "$t8/req.5-gggggg.res" "$t8/req.5-gggggg.out" "$t8/req.5-gggggg.usage" > "$rc9"
+  out=$(HOME="$fh" CLAUDE_CODE_SESSION_ID="$sid" "$0" --dispatch-dir "$t8" --engine-pid "$$" --poll 1 --max-wait 1 --print-json --finish "$ra=qa=0" --finish "$rb=qa=1" 2>/dev/null || true)
+  if [[ "$(cat "$t8/req.5-eeeeee.res" 2>/dev/null)" == "0" && "$(cat "$t8/req.5-ffffff.res" 2>/dev/null)" == "1" ]]; then echo "  PASS finish: two finishes in one call"; else echo "  FAIL finish: two finishes ($(cat "$t8/req.5-eeeeee.res" 2>/dev/null)/$(cat "$t8/req.5-ffffff.res" 2>/dev/null))"; fails=1; fi
+  pj="$(python3 -c 'import json,sys; d=json.loads(sys.argv[1]); print(d["path"], d["agent"], d["prompt"], d.get("model"))' "$out" 2>/dev/null || true)"
+  if [[ "$pj" == "$rc9 auditor audit it claude-opus-5" ]]; then echo "  PASS await: --print-json emits the request JSON plus its path"; else echo "  FAIL await: --print-json (got '$out')"; fails=1; fi
+  if [[ -f "${rc9%.ready}.started" ]]; then echo "  PASS await: --print-json still claims the request"; else echo "  FAIL await: --print-json did not claim"; fails=1; fi
+  rm -rf "$t8"
+
   rm -rf "$t"
   [[ "$fails" -eq 0 ]] && echo "goal-await-dispatch self-test: OK" || echo "goal-await-dispatch self-test: FAILED"
   exit "$fails"
 fi
 
 # ── Normal mode ───────────────────────────────────────────────────────────────
-DIR=""; PID=""; POLL=1; MAXWAIT=0
+DIR=""; PID=""; POLL=1; MAXWAIT=0; PRINT_JSON=0; FINISH=()
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --dispatch-dir) DIR="$2"; shift 2 ;;
     --engine-pid)   PID="$2"; shift 2 ;;
     --poll)         POLL="$2"; shift 2 ;;
     --max-wait)     MAXWAIT="$2"; shift 2 ;;
+    --print-json)   PRINT_JSON=1; shift ;;
+    --finish)       [[ -n "${2:-}" ]] || { echo "ERROR: --finish needs <req.ready>=<agent>=<rc>" >&2; exit 2; }
+                    FINISH+=("$2"); shift 2 ;;
     *) echo "Unknown argument: $1" >&2; exit 2 ;;
   esac
 done
 [[ -n "$DIR" ]] || { echo "ERROR: --dispatch-dir is required" >&2; exit 2; }
+
+# ── Protocol v4 (TOKEN-11a): finish the previous dispatch(es) BEFORE blocking ─
+# `--finish <req.ready>=<agent>=<rc>` replaces the pump's own out/usage/res
+# writes (three tool turns per dispatch, plus the subagent's final message
+# re-emitted as output tokens). lib/pump_finish.py takes the subagent's final
+# message and usage from the pump session's OWN transcript — the same lookup the
+# v2 usage recipe used — writes `out`, then `usage_path` (only when extraction
+# fully succeeded: the honesty rule), then `.res` LAST. Whatever happens, `.res`
+# is written so the engine never waits on a finished dispatch.
+_LIB="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib"
+for _spec in "${FINISH[@]}"; do
+  _req="${_spec%%=*}"; _rest="${_spec#*=}"; _agent="${_rest%%=*}"; _rc="${_rest#*=}"
+  [[ "$_rc" =~ ^[0-9]+$ ]] || _rc=1
+  if ! python3 "$_LIB/pump_finish.py" --request "$_req" --agent "$_agent" --rc "$_rc"; then
+    _res="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("res_path",""))' "$_req" 2>/dev/null || true)"
+    [[ -n "$_res" ]] || _res="${_req%.ready}.res"
+    _out="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("out",""))' "$_req" 2>/dev/null || true)"
+    [[ -z "$_out" || -f "$_out" ]] || printf '[interactive] subagent final message unavailable (agent=%s; finish helper failed)\n' "$_agent" > "$_out" 2>/dev/null || true
+    echo "$_rc" > "$_res" 2>/dev/null || true
+    echo "[goal-await-dispatch] finish helper failed for $_req — wrote .res=$_rc directly." >&2
+  fi
+done
 
 # ── Pump identity (REL-3, protocol v3) ───────────────────────────────────────
 # This helper is SHORT-LIVED (it exits the moment it hands work to the pump),
@@ -195,7 +266,15 @@ _claim_and_emit() {
   while IFS= read -r f; do
     [[ -n "$f" ]] || continue
     _write_ident "${f%.ready}.started"
-    printf '%s\n' "$f"
+    if (( PRINT_JSON )); then
+      # Protocol v4: hand the pump the request itself (agent, prompt, model,
+      # out/usage/res paths) plus its path, so no Read turn is needed. A
+      # request that does not parse falls back to the bare path.
+      python3 -c 'import json,sys
+d=json.load(open(sys.argv[1])); d["path"]=sys.argv[1]; print(json.dumps(d))' "$f" 2>/dev/null || printf '%s\n' "$f"
+    else
+      printf '%s\n' "$f"
+    fi
   done <<< "$1"
 }
 
