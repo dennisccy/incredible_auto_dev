@@ -3,6 +3,6 @@ description: Browser QA agent. Executes user-visible UI tests through browser au
   MCP. Tests real workflows, not just page loads. Records pass/fail with evidence. Runs after ui-test-designer
   completes.
 model_tier: standard
-version: 1.2.0
-last_updated: '2026-07-29'
+version: 1.3.0
+last_updated: '2026-09-01'
 body: body.md

@@ -314,21 +314,43 @@ an escaped browser would otherwise go unnoticed. It:
 - sweeps `.meta.json` / `.mcp.lock` files whose pid is gone, with a 30 s age
   guard so a server mid-launch is not disturbed.
 
-Engine-mode QA additionally runs the browser **headless** (`DISPLAY` and
-`WAYLAND_DISPLAY` are unset before the dispatch, which is the only signal the MCP
-uses), dropping GPU compositing and the raster thread pool. Screenshots are
-unaffected. `CHAIN_BQA_HEADED=1` restores a visible browser for debugging;
-`CHAIN_BQA_REAP=1` additionally terminates this project's QA browsers when an
-engine-mode phase finishes (default is leave-warm — a cold start costs seconds
-and an idle browser inside the mask costs nothing). Without a `host-guard.env`,
-`browser-confine.sh` skips confinement but `--reap` still runs (G8 stage 1: a
-detached QA browser from a finished session blocked the next session's lane).
+Engine-mode QA additionally runs the browser **headless**: the Chrome MCP server
+decides at *its* start — headed when a display is present, headless when
+`DISPLAY` and `WAYLAND_DISPLAY` are absent — so the lane unsets both before the
+dispatch, dropping GPU compositing and the raster thread pool. Screenshots are
+unaffected. `CHAIN_BQA_HEADED=1` restores a visible browser for debugging.
+
+**Per-dispatch teardown (default-on, 2026-09-01).** Right after every browser
+dispatch returns, the engine closes the browser the step used
+(`qa_browser_step_teardown`, `lib/common.sh`; agents never clean up themselves
+and must never call `kill_chrome`):
+
+- *headless engine* (`CHAIN_BQA_REAP`, default `1`): every page on the lane's
+  pinned CDP port is closed first (`GET /json` → `GET /json/close/<id>`) so
+  Chrome exits **cleanly** on its own — a SIGTERM'd Chrome marks its profile
+  `exit_type=Crashed` and restores the QA tabs on its next launch — and only a
+  survivor is reaped, lane-scoped (`browser-confine.sh --reap --profile <lane>`,
+  reap-only). `CHAIN_BQA_REAP=0` restores the old leave-warm behaviour.
+- *interactive pump* (`CHAIN_BQA_CLOSE_TABS`, default `1`): the pump session's
+  MCP server owns the browser, so the engine scans `*.meta.json` for live
+  browsers and closes only the tabs whose **exact normalized origin** (scheme +
+  host + effective port; `localhost` ≡ `127.0.0.1` ≡ `::1` only) equals the
+  frontend URL's, plus that browser's blank pages when an app tab matched.
+  `http://localhost:3000` never matches `http://localhost:30000`; foreign
+  origins and processes are never touched. If no page remains, headed Chrome
+  exits by itself and the MCP re-launches it on the next action.
+
+Each teardown emits one `browser_teardown` telemetry row. Without a
+`host-guard.env`, `browser-confine.sh` skips confinement but `--reap` still runs
+(G8 stage 1: a detached QA browser from a finished session blocked the next
+session's lane).
 
 | Var | Meaning | Default |
 |---|---|---|
 | `CHROME_WS_PROFILE` / `CHROME_WS_PORT` | pinned QA browser identity, per project path and lane (`iad-qa-<project>-<offset>` on `10000+offset`, the qa lane `iad-qa-<project>-<offset>-qa` on `11000+offset`; `<offset>` = the same path hash for both, so a name collision between two projects cannot split profile from port) | set by `ensure_qa_browser_env` |
 | `CHAIN_BQA_HEADED` | `1` keeps a visible browser in engine mode | `0` |
-| `CHAIN_BQA_REAP` | `1` reaps this project's QA browsers at phase end (engine mode only) | `0` |
+| `CHAIN_BQA_REAP` | `1` (default) tears the lane's QA browser down right after each browser dispatch (engine mode only): clean CDP close of every page, then a lane-scoped reap of a survivor. `0` = leave-warm | `1` |
+| `CHAIN_BQA_CLOSE_TABS` | `1` (default) on the interactive backend: after each browser dispatch the engine closes the app-origin tabs (exact normalized origin) in the pump session's live MCP browsers; foreign tabs untouched | `1` |
 | `CHAIN_BQA_REAP_ON_EXIT` | `1` (default) reaps this project's QA browsers when the headless engine exits — leave-warm is about the next dispatch of the same engine, which at exit no longer exists; never in the interactive backend, and skipped when another goal-session engine lock in this checkout names a live pid. Reap-only (passes A–C never run at exit). Costs up to ~11 s of exit latency (a `flock -w 5` wait for a concurrent confine pass, then TERM→3 s→KILL per own browser, two lanes), incurred *after* the engine lock is released so it cannot refuse a resume | `1` |
 | `HOST_GUARD_BROWSER_CONFINE` | `0` disables passes A–C; `--reap` is governed by `CHAIN_BQA_REAP` / `CHAIN_BQA_REAP_ON_EXIT` | `1` |
 

@@ -186,7 +186,9 @@ the environment (`CHROME_WS_PROFILE` / `CHROME_WS_PORT`) so the host-safety guar
 confine the browser's CPU usage. Never call `set_profile`, never pass a profile or port
 to an action, and never switch the browser to headed mode. If Chrome will not start on
 the pinned profile, record SKIPPED with the exact error rather than retrying on another
-profile — on a capped host an unconfined browser can hard-reset the machine.
+profile — on a capped host an unconfined browser can hard-reset the machine. Never call
+`kill_chrome` and do not close tabs yourself: browser teardown is engine-managed (the
+engine closes the tabs your step used as soon as your dispatch ends).
 
 **Do NOT mark FAIL just because browser checks were skipped (frontend not running).**
 Browser SKIPPED + tests passing = overall PASS is acceptable.

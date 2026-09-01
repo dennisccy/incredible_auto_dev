@@ -12,6 +12,10 @@ runs on. Never call `set_profile`, never pass a profile name or port to an actio
 never switch to a headed browser. If Chrome cannot start on the pinned profile, report
 the tests as SKIPPED with the exact error instead of retrying on a different profile.
 
+Browser lifecycle is engine-managed: the engine closes the tabs your step opened as soon
+as your dispatch ends. Do not close or count tabs yourself, and NEVER call `kill_chrome`
+— a shared browser may belong to another lane or to the operator.
+
 ## Basic Operations
 
 ### Navigate to a URL
@@ -111,3 +115,7 @@ Note it as WARN in test results. Only mark as FAIL if it prevents the test from 
 
 ### Unexpected redirect
 Note the actual URL vs expected URL. Mark as FAIL if it means the feature is not accessible.
+
+### "Tab index N out of range" on your first action
+The previous step's tabs were closed externally by the engine. Call `list_tabs`, then
+`switch_tab` 0, and continue — this is not a test failure.

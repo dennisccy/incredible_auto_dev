@@ -4933,6 +4933,32 @@ reset). The framework's job is now surface / preserve / recover / cap — HOST-2
 HOST-1 addendum above; anti-pattern 27; `docs/host-guard.md` root-cause rewrite + runbook;
 these items. **Stop-and-ask:** none (docs).
 
+### HOST-10 — DONE 2026-09-01 · P1 · S · LOW · per-dispatch QA browser teardown (engine-side)
+
+- **Problem:** every browser dispatch left its Chrome tabs/window open until engine exit;
+  on the interactive pump (headed Chrome — the MCP server goes headed whenever a display is
+  present at its start, `superpowers-chrome/mcp/src/index.ts:47-57`) nothing ever closed
+  them, and a SIGTERM'd Chrome marks its profile `exit_type=Crashed` and restores the QA
+  tabs on the next launch.
+- **Change:** `qa_browser_step_teardown <frontend-url>` (`lib/common.sh`) runs right after
+  every browser dispatch (`browser-qa-phase.sh`, `goal-iter-lean.sh` `run_browser_qa_llm`,
+  `qa-phase.sh`, `ui-audit-phase.sh`). Headless engine (`CHAIN_BQA_REAP`, default flipped
+  0→1): close every page on the lane's pinned CDP port via `lib/browser_tabs.py close-all`
+  (clean exit), then reap only a survivor with `browser-confine.sh --reap --profile <lane>`
+  (new repeatable `--profile`; a non-own name is refused). Interactive pump
+  (`CHAIN_BQA_CLOSE_TABS`, default 1): `browser_tabs.py close-origin` scans live
+  `*.meta.json` browsers and closes only tabs on the frontend's exact normalized origin
+  (scheme + host + effective port; `localhost` ≡ `127.0.0.1` ≡ `::1` only) plus that
+  browser's blank pages; foreign origins and processes untouched. Agents received safety
+  text only (never `kill_chrome`, teardown is engine-managed, out-of-range recovery) —
+  no agent-side cleanup procedure. Telemetry `browser_teardown` per browser acted on.
+- **Verify:** `tests/automation/test-host-guard-browser.sh` A9 (default-on), A9b (lane
+  scoping + refusal), B15 (stub CDP server: six origin cases, blank-page rule, no process
+  kill, telemetry; headless clean exit vs survivor reap, lane-scoped, opt-outs), wiring
+  asserts; `lib/browser_tabs.py --self-test` in run-evals.
+- **Rollback:** `CHAIN_BQA_REAP=0` (headless leave-warm), `CHAIN_BQA_CLOSE_TABS=0`
+  (interactive). **Stop-and-ask:** none.
+
 ### Known gaps — deliberately NOT fixed in this package (TODO)
 
 Each is real but none is on the path of a hardware-caused reset; fixing them alongside the

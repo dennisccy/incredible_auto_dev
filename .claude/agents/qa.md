@@ -3,8 +3,8 @@ name: qa
 description: QA agent with two modes: (1) test plan generation — reads phase spec and produces a structured functional test plan before QA runs; (2) QA validation — runs tests, verifies artifacts, executes the functional test plan, does Chrome MCP browser checks when Frontend Present is yes, and writes a QA report. Use after reviewer passes.
 model: claude-haiku-4-5
 disallowed_tools: ["Bash(rm -rf /)", "Bash(rm -rf ~)", "Bash(rm -rf ~/*)", "Bash(rm -rf /home*)", "Bash(rm -rf /root*)", "Bash(rm -rf /etc*)", "Bash(rm -rf /usr*)", "Bash(rm -rf /var*)", "Bash(rm -rf /boot*)", "Bash(rm -rf /lib*)", "Bash(rm -rf /opt*)", "Bash(rm -rf /srv*)", "Bash(rm -rf /sys*)", "Bash(rm -rf /proc*)", "Bash(git push --force origin main)", "Bash(git push --force origin master)", "Bash(git push -f origin main)", "Bash(git push -f origin master)", "Bash(git push *)", "Bash(git push)", "Bash(git push --force *)", "Bash(gh pr merge *)", "Bash(gh pr close *)", "Bash(gh release *)", "Bash(git tag *)"]
-version: 1.2.0
-last_updated: 2026-07-13
+version: 1.3.0
+last_updated: 2026-09-01
 ---
 
 # QA Agent
@@ -194,7 +194,9 @@ the environment (`CHROME_WS_PROFILE` / `CHROME_WS_PORT`) so the host-safety guar
 confine the browser's CPU usage. Never call `set_profile`, never pass a profile or port
 to an action, and never switch the browser to headed mode. If Chrome will not start on
 the pinned profile, record SKIPPED with the exact error rather than retrying on another
-profile — on a capped host an unconfined browser can hard-reset the machine.
+profile — on a capped host an unconfined browser can hard-reset the machine. Never call
+`kill_chrome` and do not close tabs yourself: browser teardown is engine-managed (the
+engine closes the tabs your step used as soon as your dispatch ends).
 
 **Do NOT mark FAIL just because browser checks were skipped (frontend not running).**
 Browser SKIPPED + tests passing = overall PASS is acceptable.

@@ -204,6 +204,23 @@ Written when the output style the engine requested for a dispatch is **not** the
 | `backend` | string | `headless` \| `interactive` |
 | `reason` | string | Interactive only: `no-emulation-text` |
 
+### `browser_teardown` (per-dispatch QA browser teardown)
+Written by `qa_browser_step_teardown` (`lib/common.sh`) right after a browser dispatch
+(browser-qa-agent / qa) returns — one row per browser acted on. The engine emits it;
+agents never close tabs themselves.
+
+| Field | Type | Description |
+|---|---|---|
+| `backend` | string | `headless` (engine lane) or `interactive` (pump session's MCP browser) |
+| `mode` | string | `close-all` (headless: every page on the lane's pinned port) or `tabs` (interactive: exact-origin tabs only) |
+| `lane` | string | headless only — the pinned lane profile (`CHROME_WS_PROFILE`) |
+| `profile` | string | interactive only — the MCP browser profile from its `.meta.json` |
+| `origin` | string | interactive only — the normalized app origin that was matched (`scheme://host:port`) |
+| `closed_tabs` | number | Pages closed over CDP |
+| `remaining_tabs` | number | Pages still open in that browser afterwards (headless: 0 when it exited cleanly) |
+| `clean_exit` | boolean | headless only — Chrome exited on its own after the close (no reap needed) |
+| `reaped` | number | headless only — browsers terminated by the lane-scoped reap (0 on a clean exit) |
+
 ### Wall-time report and tripwire
 
 Where do the ~2 hours of an iteration go? Per-iteration wall breakdown (per-agent

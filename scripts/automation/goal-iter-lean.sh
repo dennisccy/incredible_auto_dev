@@ -727,6 +727,7 @@ The report MUST contain a line at the top:
 
 Then STOP." || _rc=$?
   record_agent_invocation_end "browser-qa-agent" "$_bqa_start" "$_rc"
+  qa_browser_step_teardown "$FRONTEND_URL"   # engine-side: close the lane's tabs, reap only a survivor
   _pause_if_transport "$_rc" "browser-qa-agent"   # exits the script on a transport (70) failure
   return $_rc
 }

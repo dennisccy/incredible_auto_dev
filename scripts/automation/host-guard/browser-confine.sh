@@ -22,22 +22,31 @@
 #      confined.
 #   C. Stale files  — drop <profile>.meta.json / .mcp.lock whose pid is gone, so
 #      the next dispatch cold-starts instead of "reconnecting" to a corpse.
-#   D. Reap (--reap, opt-in) — TERM this project's own QA browsers at phase end.
+#   D. Reap (--reap, default-on per dispatch; CHAIN_BQA_REAP=0 opts out) — TERM
+#      this project's own QA browsers. `--profile <name>` (repeatable) scopes the
+#      reap to that lane's profile; a name that is not one of this project's
+#      lanes is REFUSED, never widened.
 #
 # Absent/disabled host-guard.env (or HOST_GUARD_BROWSER_CONFINE=0) ⇒ passes A-C
 # are skipped: the framework stays project-neutral. Pass D still runs — a
 # project with no host-guard still leaks a detached QA browser at engine exit.
 #
-# Usage: browser-confine.sh [--reap]
+# Usage: browser-confine.sh [--reap] [--profile <name>]...
 # Exit:  always 0 (advisory pass — never fail a QA phase over browser hygiene).
 set -uo pipefail
 
 REAP=0
-case "${1:-}" in
-  --reap) REAP=1 ;;
-  "") ;;
-  *) echo "usage: browser-confine.sh [--reap]" >&2; exit 2 ;;
-esac
+REAP_PROFILES=()
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    "") shift ;;   # tolerate an empty argument (callers pass "${flag:-}")
+    --reap) REAP=1; shift ;;
+    --profile)
+      [[ -n "${2:-}" ]] || { echo "usage: browser-confine.sh [--reap] [--profile <name>]..." >&2; exit 2; }
+      REAP_PROFILES+=("$2"); shift 2 ;;
+    *) echo "usage: browser-confine.sh [--reap] [--profile <name>]..." >&2; exit 2 ;;
+  esac
+done
 
 ROOT="${HOST_GUARD_ROOT:-$(git -C "$PWD" rev-parse --show-toplevel 2>/dev/null || pwd)}"
 ENV_FILE="$ROOT/project-extensions/host-guard/host-guard.env"
@@ -73,6 +82,22 @@ _hex="$(printf '%s' "$_proj" | sha1sum | cut -c1-4)"
 OFFSET=$(( 16#$_hex % 1000 ))
 OWN_DIRS=( "$PROFILE_ROOT/iad-qa-$BASE-$OFFSET" "$PROFILE_ROOT/iad-qa-$BASE-$OFFSET-qa" )
 UID_SELF="$(id -u)"
+# Pass D scope: every own lane by default; only the named lanes with --profile.
+# A --profile that is not one of OWN_DIRS is refused — the scoping flag exists to
+# NARROW the blast radius (one lane, the other lane may be mid-dispatch), so it
+# must never be able to widen it to another project's browser via a typo.
+REAP_DIRS=()
+if (( ${#REAP_PROFILES[@]} == 0 )); then
+  REAP_DIRS=( "${OWN_DIRS[@]}" )
+else
+  for _rp in "${REAP_PROFILES[@]}"; do
+    _rd="$PROFILE_ROOT/$_rp"; _ok=0
+    for _od in "${OWN_DIRS[@]}"; do [[ "$_rd" == "$_od" ]] && _ok=1; done
+    if (( _ok )); then REAP_DIRS+=( "$_rd" ); else
+      echo "[browser-confine] refusing to reap profile '$_rp': not one of this project's QA lanes (${OWN_DIRS[*]##*/})." >&2
+    fi
+  done
+fi
 
 # ── helpers ──────────────────────────────────────────────────────────────────
 _expand() { # "0-3,8-11" → CPU ids, one per line
@@ -126,6 +151,13 @@ _confine_tree() { # taskset pid + descendants; rc 0 when the pid ends up inside
 _owned() { # cmdline holds one of OUR pinned profile dirs (exact --user-data-dir arg)
   local cmd="$1" d
   for d in "${OWN_DIRS[@]}"; do
+    [[ "$cmd" == *"--user-data-dir=$d "* || "$cmd" == *"--user-data-dir=$d" ]] && return 0
+  done
+  return 1
+}
+_reap_target() { # cmdline holds one of the dirs pass D is scoped to (REAP_DIRS ⊆ OWN_DIRS)
+  local cmd="$1" d
+  for d in "${REAP_DIRS[@]}"; do
     [[ "$cmd" == *"--user-data-dir=$d "* || "$cmd" == *"--user-data-dir=$d" ]] && return 0
   done
   return 1
@@ -231,15 +263,18 @@ if (( CONFINE )); then
   done
 fi
 
-# ── Pass D: reap (opt-in, engine backend only) ───────────────────────────────
-if (( REAP )) && [[ "${CHAIN_BQA_REAP:-0}" == "1" && "${CHAIN_AGENT_BACKEND:-}" != "interactive" ]]; then
+# ── Pass D: reap (default-on, CHAIN_BQA_REAP=0 opts out, engine backend only) ─
+# Scoped to REAP_DIRS: all own lanes, or just the --profile lane(s) named by the
+# per-dispatch teardown (lib/common.sh qa_browser_step_teardown), which must not
+# touch the sibling lane that may still be mid-dispatch.
+if (( REAP )) && [[ "${CHAIN_BQA_REAP:-1}" == "1" && "${CHAIN_AGENT_BACKEND:-}" != "interactive" ]]; then
   for pid in $(_scan "$PROFILE_ROOT/"); do
     cmd="$(_cmdline "$pid")"
     [[ "$cmd" == *" --type="* ]] && continue
-    _owned "$cmd" || continue
+    _reap_target "$cmd" || continue
     _terminate "$pid" && n_reaped=$(( n_reaped + 1 ))
   done
-  for d in "${OWN_DIRS[@]}"; do _sweep_profile_files "$d"; done
+  for d in "${REAP_DIRS[@]}"; do _sweep_profile_files "$d"; done
 fi
 
 echo "[browser-confine] qa_browsers=$n_qa confined=$n_confined kept=$n_kept killed=$n_killed mcp=$n_mcp mcp_confined=$n_mcp_confined swept=$n_swept reaped=$n_reaped"

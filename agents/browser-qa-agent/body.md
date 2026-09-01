@@ -84,6 +84,10 @@ can find and confine the browser's CPU usage. Therefore:
 - If Chrome will not start on the pinned profile, record the affected tests as
   SKIPPED with the exact error text. Do NOT retry on a different profile —
   a SKIPPED test is honest, a hidden second browser is not.
+- NEVER call `kill_chrome`, and do not close or count tabs yourself: browser
+  teardown is engine-managed — the engine closes the tabs your step opened as
+  soon as your dispatch ends. (If your first action reports "Tab index N out of
+  range", call `list_tabs` then `switch_tab` 0 and continue.)
 
 Key operations:
 - Navigate: `{action: "navigate", url: "http://localhost:3000/path"}`

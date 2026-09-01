@@ -177,14 +177,28 @@ run_bc >/dev/null
 [[ -f "$PROOT/justborn.meta.json" ]] && assert "fresh dead-pid meta kept (mid-launch guard)" pass || assert "fresh dead-pid meta kept (mid-launch guard)" fail
 [[ -f "$PROOT/liveone.meta.json" ]]  && assert "live-pid meta kept" pass || assert "live-pid meta kept" fail
 
-# A9. Reap is opt-in, engine-mode only, and hits only our own profiles.
-run_bc -- --reap >/dev/null
-alive "$P0" && assert "reap: no-op without CHAIN_BQA_REAP" pass || assert "reap: no-op without CHAIN_BQA_REAP" fail
-run_bc CHAIN_BQA_REAP=1 CHAIN_AGENT_BACKEND=interactive -- --reap >/dev/null
+# A9. Reap is default-ON (per-dispatch teardown), engine-mode only, opt-out via
+# CHAIN_BQA_REAP=0, and hits only our own profiles.
+run_bc CHAIN_BQA_REAP=0 -- --reap >/dev/null
+alive "$P0" && assert "reap: CHAIN_BQA_REAP=0 opts out" pass || assert "reap: CHAIN_BQA_REAP=0 opts out" fail
+run_bc CHAIN_AGENT_BACKEND=interactive -- --reap >/dev/null
 alive "$P0" && assert "reap: no-op in interactive backend" pass || assert "reap: no-op in interactive backend" fail
-run_bc CHAIN_BQA_REAP=1 CHAIN_AGENT_BACKEND=headless -- --reap >/dev/null
-wait_for 8 dead "$P0" && assert "reap: own browser reaped when opted in" pass || assert "reap: own browser reaped when opted in" fail
+run_bc CHAIN_AGENT_BACKEND=headless -- --reap >/dev/null
+wait_for 8 dead "$P0" && assert "reap: own browser reaped by default (no knob needed)" pass || assert "reap: own browser reaped by default (no knob needed)" fail
 alive "$P_FGN" && assert "reap: foreign browser survives" pass || assert "reap: foreign browser survives" fail
+pkill -KILL -f "fake-chrome --user-data-dir=$PROOT" 2>/dev/null
+
+# A9b. Lane scoping: --profile <name> reaps only that own profile; a name that is
+# not one of ours is refused outright (a caller's typo must never widen the
+# blast radius to another lane or another project).
+P_L1="$(spawn "--user-data-dir=$PROOT/$OWN" --remote-debugging-port=10995)"
+P_L2="$(spawn "--user-data-dir=$PROOT/$OWN-qa" --remote-debugging-port=11995)"
+OUT="$(run_bc CHAIN_AGENT_BACKEND=headless -- --reap --profile "not-ours-42" 2>&1)"
+alive "$P_L1" && alive "$P_L2" && assert "reap --profile: a non-own profile is refused (nothing reaped)" pass || assert "reap --profile: a non-own profile is refused (nothing reaped)" fail
+[[ "$OUT" == *"refus"* ]] && assert "reap --profile: refusal is announced" pass || assert "reap --profile: refusal is announced ($OUT)" fail
+run_bc CHAIN_AGENT_BACKEND=headless -- --reap --profile "$OWN" >/dev/null 2>&1
+wait_for 8 dead "$P_L1" && assert "reap --profile: the named lane is reaped" pass || assert "reap --profile: the named lane is reaped" fail
+alive "$P_L2" && assert "reap --profile: the other own lane survives" pass || assert "reap --profile: the other own lane survives" fail
 pkill -KILL -f "fake-chrome --user-data-dir=$PROOT" 2>/dev/null
 
 echo ""
@@ -336,6 +350,157 @@ wait_for 8 dead "$P_OWN" && assert "exit hook: reaps under a guarded project too
 assert_eq "exit hook is reap-only: a foreign browser's affinity is untouched" "$BEFORE4" "$(allowed "$P_FGN4")"
 pkill -KILL -f "fake-chrome --user-data-dir=$PROOT" 2>/dev/null
 
+
+# B15. qa_browser_step_teardown (lib/common.sh): the per-dispatch, ENGINE-SIDE
+# browser teardown (agents never clean up after themselves). A stub CDP server
+# stands in for Chrome's DevTools HTTP endpoint: /json lists pages,
+# /json/close/<id> records the close and drops the page. Interactive backend:
+# close ONLY tabs on the app's exact normalized origin (plus that browser's
+# blank pages), never a foreign origin, never a prefix look-alike, never a
+# process. Headless backend: close every page on the lane's pinned port FIRST
+# (clean exit → no session restore), reap only a survivor, lane-scoped.
+cat > "$WORK/cdp_stub.py" <<'PY'
+import json, os, signal, sys, threading, time
+from http.server import BaseHTTPRequestHandler, HTTPServer
+port = int(sys.argv[1]); tabs_file = sys.argv[2]; log_file = sys.argv[3]
+kill_on_empty = int(sys.argv[4]) if len(sys.argv) > 4 and sys.argv[4] else 0
+tabs = json.load(open(tabs_file))
+class H(BaseHTTPRequestHandler):
+    def log_message(self, *a): pass
+    def _send(self, code, body):
+        self.send_response(code); self.send_header("Content-Type", "application/json")
+        self.end_headers(); self.wfile.write(body.encode())
+    def do_GET(self):
+        global tabs
+        if self.path in ("/json", "/json/list"):
+            self._send(200, json.dumps(tabs)); return
+        if self.path.startswith("/json/close/"):
+            tid = self.path.rsplit("/", 1)[1]
+            with open(log_file, "a") as f: f.write(tid + "\n")
+            tabs = [t for t in tabs if t["id"] != tid]
+            self._send(200, "Target is closing")
+            if not tabs and kill_on_empty:
+                def die():
+                    time.sleep(0.2)
+                    try: os.kill(kill_on_empty, signal.SIGKILL)
+                    except ProcessLookupError: pass
+                    os._exit(0)
+                threading.Thread(target=die, daemon=True).start()
+            return
+        if self.path == "/json/version":
+            self._send(200, json.dumps({"Browser": "stub"})); return
+        self._send(404, "{}")
+HTTPServer(("127.0.0.1", port), H).serve_forever()
+PY
+free_port() { python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1]); s.close()'; }
+start_stub() { # <port> <tabs-json> <close-log> [kill-pid] → pid of the stub
+  : > "$3"
+  setsid python3 "$WORK/cdp_stub.py" "$1" "$2" "$3" "${4:-}" >/dev/null 2>&1 &
+  local pid=$!
+  wait_for 5 python3 -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:$1/json', timeout=1)"
+  echo "$pid"
+}
+page() { printf '{"id":"%s","type":"page","url":"%s","title":"t"}' "$1" "$2"; }
+step_teardown() { # <backend> <frontend-url> [extra env...] → runs the function; telemetry lands in $SESS
+  env -u CHROME_WS_PROFILE -u CHROME_WS_PORT CHROME_PROFILE_ROOT="$PROOT" GOAL_SESSION_DIR="$SESS" \
+      HOST_GUARD_MCP_MATCH="$WORK/no-such-mcp" CHAIN_AGENT_BACKEND="$1" "${@:3}" bash -c "
+    source '$AUTO/lib/telemetry.sh' >/dev/null 2>&1
+    source '$AUTO/lib/common.sh' >/dev/null 2>&1
+    REPO_ROOT='$PROJ'
+    qa_browser_step_teardown '$2'" 2>&1 >/dev/null
+}
+SESS="$WORK/session"; mkdir -p "$SESS"
+
+# Interactive: two live MCP browsers (meta.json + stub each). Browser 1 carries
+# the six origin cases; browser 2 carries only a foreign page and a blank one.
+PORT1="$(free_port)"; PORT2="$(free_port)"
+P_B1="$(spawn "--user-data-dir=$PROOT/superpowers-chrome" --remote-debugging-port=$PORT1)"
+P_B2="$(spawn "--user-data-dir=$PROOT/superpowers-chrome-2" --remote-debugging-port=$PORT2)"
+printf '{"port":%s,"pid":%s,"headless":false,"profileName":"superpowers-chrome"}\n' "$PORT1" "$P_B1" > "$PROOT/superpowers-chrome.meta.json"
+printf '{"port":%s,"pid":%s,"headless":false,"profileName":"superpowers-chrome-2"}\n' "$PORT2" "$P_B2" > "$PROOT/superpowers-chrome-2.meta.json"
+printf '[%s,%s,%s,%s,%s,%s]\n' "$(page app1 http://localhost:3000/x)" "$(page port3001 http://localhost:3001/)" \
+  "$(page port30000 http://localhost:30000/)" "$(page foreign https://example.com/)" \
+  "$(page loop http://127.0.0.1:3000/y)" "$(page blank1 about:blank)" > "$WORK/tabs1.json"
+printf '[%s,%s]\n' "$(page foo https://foo.test/)" "$(page blank2 about:blank)" > "$WORK/tabs2.json"
+S1="$(start_stub "$PORT1" "$WORK/tabs1.json" "$WORK/close1.log")"
+S2="$(start_stub "$PORT2" "$WORK/tabs2.json" "$WORK/close2.log")"
+step_teardown interactive "http://localhost:3000"
+CLOSED1="$(sort "$WORK/close1.log" 2>/dev/null | tr '\n' ' ')"
+[[ "$CLOSED1" == *"app1"* ]] && assert "teardown/interactive: exact app-origin tab closed" pass || assert "teardown/interactive: exact app-origin tab closed ($CLOSED1)" fail
+[[ "$CLOSED1" == *"loop"* ]] && assert "teardown/interactive: 127.0.0.1 normalizes to the app origin" pass || assert "teardown/interactive: 127.0.0.1 normalizes to the app origin ($CLOSED1)" fail
+[[ "$CLOSED1" == *"blank1"* ]] && assert "teardown/interactive: blank page closed when an app tab matched" pass || assert "teardown/interactive: blank page closed when an app tab matched ($CLOSED1)" fail
+[[ "$CLOSED1" != *"port3001"* ]] && assert "teardown/interactive: same host, other port untouched" pass || assert "teardown/interactive: same host, other port untouched" fail
+[[ "$CLOSED1" != *"port30000"* ]] && assert "teardown/interactive: :3000 vs :30000 prefix look-alike untouched" pass || assert "teardown/interactive: :3000 vs :30000 prefix look-alike untouched" fail
+[[ "$CLOSED1" != *"foreign"* ]] && assert "teardown/interactive: foreign https origin untouched" pass || assert "teardown/interactive: foreign https origin untouched" fail
+[[ ! -s "$WORK/close2.log" ]] && assert "teardown/interactive: browser without app tabs untouched (its blank page kept)" pass || assert "teardown/interactive: browser without app tabs untouched ($(cat "$WORK/close2.log"))" fail
+alive "$P_B1" && alive "$P_B2" && assert "teardown/interactive: never kills a browser process" pass || assert "teardown/interactive: never kills a browser process" fail
+ROWS="$(grep -c '"event": *"browser_teardown"' "$SESS/telemetry.jsonl" 2>/dev/null || echo 0)"
+assert_eq "teardown/interactive: exactly one telemetry row (the matched browser)" "1" "$ROWS"
+grep -q '"origin": *"http://localhost:3000"' "$SESS/telemetry.jsonl" 2>/dev/null && assert "teardown/interactive: telemetry carries the normalized origin" pass || assert "teardown/interactive: telemetry carries the normalized origin" fail
+grep -q '"closed_tabs": *3' "$SESS/telemetry.jsonl" 2>/dev/null && assert "teardown/interactive: telemetry counts the 3 closed tabs" pass || assert "teardown/interactive: telemetry counts the 3 closed tabs" fail
+# Knob off → nothing closed.
+: > "$SESS/telemetry.jsonl"; printf '[%s]\n' "$(page app2 http://localhost:3000/z)" > "$WORK/tabs1.json"
+kill -KILL "$S1" 2>/dev/null; wait "$S1" 2>/dev/null; S1="$(start_stub "$PORT1" "$WORK/tabs1.json" "$WORK/close1.log")"
+step_teardown interactive "http://localhost:3000" CHAIN_BQA_CLOSE_TABS=0
+[[ ! -s "$WORK/close1.log" ]] && assert "teardown/interactive: CHAIN_BQA_CLOSE_TABS=0 opts out" pass || assert "teardown/interactive: CHAIN_BQA_CLOSE_TABS=0 opts out" fail
+kill -KILL "$S1" "$S2" 2>/dev/null; rm -f "$PROOT/superpowers-chrome.meta.json" "$PROOT/superpowers-chrome-2.meta.json"
+pkill -KILL -f "fake-chrome --user-data-dir=$PROOT" 2>/dev/null
+
+# Headless, clean exit: the lane's Chrome exits by itself once its last page is
+# closed (the stub kills the fake and quits) → nothing left to reap.
+: > "$SESS/telemetry.jsonl"
+PORT_L="$(free_port)"
+P_LANE="$(spawn "--user-data-dir=$PROOT/$OWN" --remote-debugging-port=$PORT_L)"
+P_OTHERLANE="$(spawn "--user-data-dir=$PROOT/$OWN-qa" --remote-debugging-port=11994)"
+printf '{"port":%s,"pid":%s}\n' "$PORT_L" "$P_LANE" > "$PROOT/$OWN.meta.json"
+printf '[%s,%s]\n' "$(page happ http://localhost:3000/)" "$(page hblank about:blank)" > "$WORK/tabsh.json"
+S_L="$(start_stub "$PORT_L" "$WORK/tabsh.json" "$WORK/closeh.log" "$P_LANE")"
+step_teardown claude "http://localhost:3000" CHROME_WS_PROFILE="$OWN" CHROME_WS_PORT="$PORT_L"
+wait_for 8 dead "$P_LANE" && assert "teardown/headless: lane browser gone after its pages were closed" pass || assert "teardown/headless: lane browser gone after its pages were closed" fail
+assert_eq "teardown/headless: both pages closed over CDP" "2" "$(wc -l < "$WORK/closeh.log" | tr -dc 0-9)"
+grep -q '"clean_exit": *true' "$SESS/telemetry.jsonl" 2>/dev/null && assert "teardown/headless: clean exit recorded (no reap needed)" pass || assert "teardown/headless: clean exit recorded ($(cat "$SESS/telemetry.jsonl" 2>/dev/null))" fail
+alive "$P_OTHERLANE" && assert "teardown/headless: the other lane's browser survives" pass || assert "teardown/headless: the other lane's browser survives" fail
+kill -KILL "$S_L" 2>/dev/null; wait "$S_L" 2>/dev/null
+
+# Headless, stubborn browser: pages close over CDP FIRST, the browser stays up,
+# the lane-scoped reap then terminates it — and only it.
+: > "$SESS/telemetry.jsonl"
+P_LANE="$(spawn "--user-data-dir=$PROOT/$OWN" --remote-debugging-port=$PORT_L)"
+printf '{"port":%s,"pid":%s}\n' "$PORT_L" "$P_LANE" > "$PROOT/$OWN.meta.json"
+printf '[%s]\n' "$(page happ2 http://localhost:3000/)" > "$WORK/tabsh.json"
+S_L="$(start_stub "$PORT_L" "$WORK/tabsh.json" "$WORK/closeh.log")"
+step_teardown claude "http://localhost:3000" CHROME_WS_PROFILE="$OWN" CHROME_WS_PORT="$PORT_L"
+wait_for 8 dead "$P_LANE" && assert "teardown/headless: survivor reaped after the CDP close" pass || assert "teardown/headless: survivor reaped after the CDP close" fail
+grep -q happ2 "$WORK/closeh.log" && assert "teardown/headless: CDP close ran before the reap" pass || assert "teardown/headless: CDP close ran before the reap" fail
+grep -q '"clean_exit": *false' "$SESS/telemetry.jsonl" 2>/dev/null && grep -q '"reaped": *1' "$SESS/telemetry.jsonl" 2>/dev/null && assert "teardown/headless: telemetry records the reap of a survivor" pass || assert "teardown/headless: telemetry records the reap of a survivor ($(cat "$SESS/telemetry.jsonl" 2>/dev/null))" fail
+alive "$P_OTHERLANE" && assert "teardown/headless: reap is lane-scoped (other lane alive)" pass || assert "teardown/headless: reap is lane-scoped (other lane alive)" fail
+kill -KILL "$S_L" 2>/dev/null; wait "$S_L" 2>/dev/null
+# Opt-out leaves the lane browser warm (old behaviour).
+P_LANE="$(spawn "--user-data-dir=$PROOT/$OWN" --remote-debugging-port=$PORT_L)"
+printf '{"port":%s,"pid":%s}\n' "$PORT_L" "$P_LANE" > "$PROOT/$OWN.meta.json"
+printf '[%s]\n' "$(page happ3 http://localhost:3000/)" > "$WORK/tabsh.json"
+S_L="$(start_stub "$PORT_L" "$WORK/tabsh.json" "$WORK/closeh.log")"
+step_teardown claude "http://localhost:3000" CHROME_WS_PROFILE="$OWN" CHROME_WS_PORT="$PORT_L" CHAIN_BQA_REAP=0
+alive "$P_LANE" && [[ ! -s "$WORK/closeh.log" ]] && assert "teardown/headless: CHAIN_BQA_REAP=0 leaves the lane browser warm" pass || assert "teardown/headless: CHAIN_BQA_REAP=0 leaves the lane browser warm" fail
+kill -KILL "$S_L" 2>/dev/null; rm -f "$PROOT/$OWN.meta.json"
+pkill -KILL -f "fake-chrome --user-data-dir=$PROOT" 2>/dev/null
+
+# Headless, no browser at all (the common case when the frontend was absent and
+# Chrome never started): no meta.json, no process, nothing listening — the
+# teardown must be a clean no-op under the lane scripts' `set -euo pipefail`
+# (a failing sed/pgrep pipeline here once aborted browser-qa-phase.sh with rc=2).
+: > "$SESS/telemetry.jsonl"
+OUT="$(env -u CHROME_WS_PROFILE -u CHROME_WS_PORT CHROME_PROFILE_ROOT="$PROOT" GOAL_SESSION_DIR="$SESS" \
+    HOST_GUARD_MCP_MATCH="$WORK/no-such-mcp" CHAIN_AGENT_BACKEND=claude \
+    CHROME_WS_PROFILE="$OWN" CHROME_WS_PORT="$(free_port)" bash -euo pipefail -c "
+  source '$AUTO/lib/telemetry.sh' >/dev/null 2>&1
+  source '$AUTO/lib/common.sh' >/dev/null 2>&1
+  REPO_ROOT='$PROJ'
+  qa_browser_step_teardown 'http://localhost:3000' 2>/dev/null
+  echo reached" 2>/dev/null)"
+[[ "$OUT" == *reached* ]] && assert "teardown/headless: no browser at all is a clean no-op under set -euo pipefail" pass || assert "teardown/headless: no browser at all is a clean no-op under set -euo pipefail" fail
+grep -q '"clean_exit": *true' "$SESS/telemetry.jsonl" 2>/dev/null && assert "teardown/headless: absent browser recorded as clean" pass || assert "teardown/headless: absent browser recorded as clean" fail
+
 echo ""
 echo "── C. dispatch-surface wiring ─────────────────────────────────────────"
 
@@ -343,7 +508,11 @@ for f in browser-qa-phase.sh qa-phase.sh goal-iter-lean.sh ui-audit-phase.sh; do
   grep -q 'ensure_qa_browser_env' "$AUTO/$f" && assert "$f pins the QA browser identity" pass || assert "$f pins the QA browser identity" fail
   grep -q 'strip_display_for_headless_qa' "$AUTO/$f" && assert "$f runs QA headless" pass || assert "$f runs QA headless" fail
   grep -qE 'bqa_browser_confine|browser-confine\.sh' "$AUTO/$f" && assert "$f runs the confinement pass" pass || assert "$f runs the confinement pass" fail
+  grep -q 'qa_browser_step_teardown' "$AUTO/$f" && assert "$f tears the QA browser down after its dispatch" pass || assert "$f tears the QA browser down after its dispatch" fail
 done
+# The old opt-in, all-lanes reap block is gone: teardown is default-on now and
+# lives in one place (lib/common.sh), lane-scoped.
+grep -q 'CHAIN_BQA_REAP:-0' "$AUTO/browser-qa-phase.sh" && assert "browser-qa-phase.sh dropped the old opt-in reap block" fail || assert "browser-qa-phase.sh dropped the old opt-in reap block" pass
 
 # The confinement pass must NOT be gated behind the opt-in REL-14 preflight:
 # an escaped browser is a hardware-safety problem, not a QA convenience.

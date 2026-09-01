@@ -247,6 +247,7 @@ The report MUST contain a line matching exactly:
   or
 **Verdict:** FAIL" || _agent_rc=$?
 record_agent_invocation_end qa "$_agent_t0" "$_agent_rc"
+qa_browser_step_teardown "$FRONTEND_URL"   # engine-side: close this lane's tabs before any early exit
 (( _agent_rc == 0 )) || exit "$_agent_rc"
 
 # REL-11 missing-evidence tripwire: a nonzero dispatch already dies loudly

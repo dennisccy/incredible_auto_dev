@@ -177,6 +177,12 @@ programmatic path with an API key** (`run-goal.sh` without `--interactive`).
 - **Browser tests are SKIPPED** — the Chrome MCP plugin is not available to the
   subagent. Ensure the `superpowers-chrome` plugin is enabled for the session;
   the browser agents do not restrict `tools`, so they inherit the session's MCP.
+- **The QA browser's tabs vanish after each browser step** — expected. After
+  every browser dispatch the engine closes the tabs on the app's exact origin in
+  the pump session's live Chrome (`CHAIN_BQA_CLOSE_TABS`, default on; the window
+  closes when nothing else is open and the MCP re-launches Chrome on the next
+  action). Tabs on other origins are never touched, but do not browse the app
+  itself in that Chrome during a run.
 - **A strong-tier agent fails to start on Pro** — your plan may not grant
   interactive Opus. Set an interactive tier override (see below).
 

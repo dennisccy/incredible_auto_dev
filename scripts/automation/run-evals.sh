@@ -170,6 +170,8 @@ fi
 
 # Goal-mode deterministic gates (verdict cross-checks, diff scan/bounding).
 _run_self_test scripts/automation/lib/goal_gate.py self-test
+# QA-browser teardown helper (exact-origin tab matching, CDP close-all/close-origin).
+_run_self_test scripts/automation/lib/browser_tabs.py --self-test
 _run_self_test scripts/automation/lib/goal_lint.py self-test
 _run_self_test scripts/automation/lib/scan_diff.py self-test
 _run_self_test scripts/automation/lib/diff_bound.py self-test

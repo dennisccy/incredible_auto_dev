@@ -444,11 +444,85 @@ qa_browser_reap_on_exit() {
   return 0
 }
 
-# Engine-mode QA runs the browser headless. The Chrome MCP picks headless purely
-# from the absence of DISPLAY/WAYLAND_DISPLAY, and a headed Chrome pays for GPU
-# compositing plus a full raster thread pool — the bursty all-core profile that
-# hard-resets this class of host. Screenshots are unaffected.
-# CHAIN_BQA_HEADED=1 restores a visible browser for debugging.
+# ── Per-dispatch QA browser teardown (engine-side, authoritative) ─────────────
+# qa_browser_step_teardown <frontend-url> — close the browser a browser dispatch
+# (browser-qa-agent / qa) used, the moment the dispatch has returned. Agents do
+# NOT clean up after themselves: that costs LLM + MCP turns, and on the
+# interactive backend the browser belongs to the pump session's MCP server, so
+# an agent-side kill_chrome could hit a browser that is not its own. The engine
+# does it deterministically instead:
+#   headless engine (CHAIN_BQA_REAP, default 1 — 0 restores leave-warm):
+#     1. close EVERY page on the lane's pinned CDP port (CHROME_WS_PORT) so
+#        Chrome exits cleanly on its own. A SIGTERM'd Chrome marks its profile
+#        exit_type=Crashed and RESTORES the QA tabs on the next launch (seen live
+#        2026-09-01); a clean exit does not.
+#     2. only a survivor is reaped, lane-scoped: browser-confine.sh --reap
+#        --profile "$CHROME_WS_PROFILE" (reap-only — passes A-C never run here,
+#        same form as qa_browser_reap_on_exit).
+#   interactive pump (CHAIN_BQA_CLOSE_TABS, default 1): the lane identity never
+#     reaches the pump's MCP server, so scan $CHROME_PROFILE_ROOT/*.meta.json for
+#     live browsers and close only the pages whose EXACT normalized origin
+#     (scheme + host + effective port; localhost ≡ 127.0.0.1 ≡ ::1 only) equals
+#     the frontend URL's, plus that browser's blank pages when an app tab
+#     matched. Foreign origins are never closed; no process is ever killed.
+# One browser_teardown telemetry row per browser acted on (engine-emitted; the
+# emit is guarded for processes that never sourced telemetry.sh). Always 0.
+qa_browser_step_teardown() {
+  local frontend="${1:-}" _here _bt _root _out _line
+  _here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  _bt="$_here/browser_tabs.py"
+  [[ -f "$_bt" ]] || return 0
+  _root="${CHROME_PROFILE_ROOT:-${XDG_CACHE_HOME:-$HOME/.cache}/superpowers/browser-profiles}"
+  if [[ "${CHAIN_AGENT_BACKEND:-}" == "interactive" ]]; then
+    [[ "${CHAIN_BQA_CLOSE_TABS:-1}" == "1" && -n "$frontend" ]] || return 0
+    _out="$(python3 "$_bt" close-origin --frontend "$frontend" --profile-root "$_root" 2>/dev/null)" || return 0
+    while IFS= read -r _line; do
+      [[ -n "$_line" ]] || continue
+      echo "[qa-browser] teardown (interactive): $_line" >&2
+      _qa_browser_teardown_emit "$(python3 -c 'import json,sys; d=json.loads(sys.argv[1]); d.update(backend="interactive", mode="tabs"); print(json.dumps(d))' "$_line" 2>/dev/null || echo "$_line")"
+    done <<< "$_out"
+    return 0
+  fi
+  [[ "${CHAIN_BQA_REAP:-1}" == "1" ]] || return 0
+  [[ -n "${CHROME_WS_PORT:-}" && -n "${CHROME_WS_PROFILE:-}" ]] || return 0
+  # Callers run under `set -euo pipefail`: every pipeline below must succeed
+  # even when the meta file is missing (sed exits 2) or pgrep finds nothing
+  # (exit 1) — a browser that never started is the common case, not an error.
+  local _pid="" _clean reaped=0 bc _rep _meta
+  _meta="$_root/$CHROME_WS_PROFILE.meta.json"
+  if [[ -f "$_meta" ]]; then
+    _pid="$( { sed -n 's/.*"pid"[: ]*\([0-9][0-9]*\).*/\1/p' "$_meta" 2>/dev/null || true; } | head -n 1)"
+  fi
+  [[ -n "$_pid" ]] || _pid="$( { pgrep -f -- "--user-data-dir=$_root/$CHROME_WS_PROFILE( |\$)" 2>/dev/null || true; } | head -n 1)"
+  _out="$(python3 "$_bt" close-all --port "$CHROME_WS_PORT" ${_pid:+--pid "$_pid"} --wait-exit 5 2>/dev/null)" \
+    || _out='{"closed_tabs":0,"remaining_tabs":0,"clean_exit":false}'
+  [[ -n "$_out" ]] || _out='{"closed_tabs":0,"remaining_tabs":0,"clean_exit":false}'
+  _clean="$(python3 -c 'import json,sys; print("true" if json.loads(sys.argv[1]).get("clean_exit") else "false")' "$_out" 2>/dev/null || echo false)"
+  if [[ "$_clean" != "true" ]]; then
+    bc="$_here/../host-guard/browser-confine.sh"
+    if [[ -f "$bc" ]]; then
+      _rep="$(CHAIN_BQA_REAP=1 HOST_GUARD_BROWSER_CONFINE=0 HOST_GUARD_ROOT="$REPO_ROOT" \
+        bash "$bc" --reap --profile "$CHROME_WS_PROFILE" 2>&1)" || true
+      reaped="$( { sed -n 's/.*reaped=\([0-9]*\).*/\1/p' <<<"$_rep" || true; } | tail -n 1)"; reaped="${reaped:-0}"
+    fi
+  fi
+  echo "[qa-browser] teardown (headless, lane $CHROME_WS_PROFILE): $_out reaped=$reaped" >&2
+  _qa_browser_teardown_emit "$(python3 -c 'import json,sys; d=json.loads(sys.argv[1]); d.update(backend="headless", mode="close-all", lane=sys.argv[2], reaped=int(sys.argv[3])); print(json.dumps(d))' "$_out" "$CHROME_WS_PROFILE" "$reaped" 2>/dev/null || echo "$_out")"
+  return 0
+}
+_qa_browser_teardown_emit() {
+  if declare -F record_telemetry_event >/dev/null 2>&1; then
+    record_telemetry_event browser_teardown "$1" || true
+  fi
+  return 0
+}
+
+# Engine-mode QA runs the browser headless. The Chrome MCP server decides at ITS
+# start: headed when a display is present, headless when DISPLAY/WAYLAND_DISPLAY
+# are absent (index.ts) — so the lane unsets both before the dispatch. A headed
+# Chrome pays for GPU compositing plus a full raster thread pool — the bursty
+# all-core profile that hard-resets this class of host. Screenshots are
+# unaffected. CHAIN_BQA_HEADED=1 restores a visible browser for debugging.
 strip_display_for_headless_qa() {
   [[ "${CHAIN_BQA_HEADED:-0}" == "1" ]] && return 0
   unset DISPLAY WAYLAND_DISPLAY

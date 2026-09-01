@@ -127,6 +127,7 @@ Use this format:
 
 Keep the report focused and actionable. Then STOP." || _agent_rc=$?
 record_agent_invocation_end qa "$_agent_t0" "$_agent_rc"
+qa_browser_step_teardown "$FRONTEND_URL"   # engine-side browser teardown (lib/common.sh)
 (( _agent_rc == 0 )) || exit "$_agent_rc"
 
 echo ""

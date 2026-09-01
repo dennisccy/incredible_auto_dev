@@ -440,6 +440,9 @@ The report MUST contain a line at the top:
 
 Then STOP." || _bqa_rc=$?
 record_agent_invocation_end browser-qa-agent "$_agent_t0" "$_bqa_rc"
+# Engine-side browser teardown, right after the dispatch: closes the tabs the
+# agent used (clean exit), reaps only a survivor of THIS lane. lib/common.sh.
+qa_browser_step_teardown "$FRONTEND_URL"
 fi
 
 # Signal-induced exit (Ctrl-C, SIGKILL, SIGTERM) → do NOT write SKIPPED stubs.
@@ -513,13 +516,8 @@ if [[ $_bqa_rc -ne 0 && $_bqa_rc -ne ${QUOTA_EXHAUSTED_EXIT_CODE:-75} ]]; then
   exit "$_bqa_rc"
 fi
 
-# Opt-in browser reap (CHAIN_BQA_REAP=1). Default is leave-warm: reconnecting to
-# a live browser saves a cold start per dispatch, and an idle browser inside the
-# mask costs nothing. Never in interactive mode — the pump's MCP server is still
-# alive there and would just respawn what we killed.
-if [[ "${CHAIN_BQA_REAP:-0}" == "1" && "${CHAIN_AGENT_BACKEND:-}" != "interactive" \
-      && -f "$SCRIPT_DIR/host-guard/browser-confine.sh" ]]; then
-  HOST_GUARD_ROOT="$REPO_ROOT" bash "$SCRIPT_DIR/host-guard/browser-confine.sh" --reap || true
-fi
+# The per-dispatch browser teardown ran right after the dispatch above
+# (qa_browser_step_teardown): default-on, lane-scoped, clean CDP close before any
+# reap. CHAIN_BQA_REAP=0 restores the old leave-warm behaviour.
 
 echo "[browser-qa] Done. Report: $UI_TEST_RESULTS"
