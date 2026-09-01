@@ -184,7 +184,7 @@ your-project/
     project-template.md              # Project config (you fill this in)
     anti-patterns/                   # Failure modes (README index + per-entry files)
     agents/                          # agent definitions (rendered from agents/<name>/)
-    skills/                          # 16 skills
+    skills/                          # 15 skills
     hooks/                           # 5 hooks
     architecture/                    # Framework architecture docs (incl. goal-mode.md)
   scripts/automation/                # automation scripts (incl. run-goal.sh, goal-iter-lean.sh)

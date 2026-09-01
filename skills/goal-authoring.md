@@ -93,8 +93,9 @@ Corrections → update, re-play only the changed lines, re-confirm.
 - Interview only the sections the user wants changed.
 - Playback becomes a diff: for each changed section show old → new; list unchanged
   sections by name only. Confirmation still precedes any write.
-- Never edit between `<!-- AUTO:journeys -->` and `<!-- /AUTO:journeys -->` — that
-  block is goal-proposer territory (`skills/goal-self-extension.md`). Never reuse or
+- A legacy `<!-- AUTO:journeys -->` … `<!-- /AUTO:journeys -->` block may still exist (an
+  artefact of the retired automatic goal-extension step): leave its markers untouched;
+  the journeys inside are ordinary journeys. Never reuse or
   renumber an existing `J-NN`; new journeys take the next free id at the existing
   zero-padding width.
 

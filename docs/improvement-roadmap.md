@@ -219,7 +219,7 @@ resumable pauses).
 
 ### NEED-7 — DONE 2026-07-08, archived
 
-### NEED-8 — DONE 2026-07-08, archived
+### NEED-8 — DONE 2026-07-08, archived · RETIRED 2026-09-01 (goal-proposer removed; its M3 runtime invocation removed with it; generic hook API in lib/project-gates.sh retained)
 
 ### NEED-9 — DONE 2026-07-07, archived
 
@@ -309,7 +309,7 @@ the system measures itself, and how it survives the next model change.
 - **Current state:** terminal halts are decided in the verdict/halt switch
   (`run-goal.sh:2066-2210`), but EVERY halt — terminal and resumable — funnels through
   `write_session_summary()` (`run-goal.sh:1123`), the single choke point slice (a) wired
-  (AWAITING_* pauses and the GOAL_ACHIEVED+proposer-extended `continue` never reach a
+  (AWAITING_* pauses never reach a — the GOAL_ACHIEVED+proposer-extended `continue` was retired 2026-09-01;
   terminal summary); the showcase tail is the proven non-blocking pattern (forked for
   CONTINUE `run-goal.sh:2063`, inline for halts `:1900`); wall/token aggregation exists
   (`lib/analyze_telemetry.py`, `build_wall_report` `:273`, `--json` output supported);
@@ -2070,7 +2070,7 @@ benchmark (or a real session's telemetry) before AND after (G8).
   implemented 2026-07-29 (iteration-shape package; PROMOTED from
   CAND-DEV-CONTEXT sketch (a) with the desk evidence attached: developer wall
   grew 31→77 min while feeding the full 97KB/1,150-line goal.md that the
-  proposer keeps extending); G8 certification pending.
+  proposer kept extending until its retirement on 2026-09-01 — slicing still matters for large human-authored goals); G8 certification pending.
 - **Change spec (landed):** `goal_slice_for_exec` in `lib/common.sh` wraps the
   EXISTING `goal_gate.py goal-slice` builder (unmodified) for executing agents:
   vision + anti-goals + target/failing journeys verbatim, stable passing
@@ -3409,7 +3409,7 @@ territory).
 - **Change spec:** `scripts/automation/bootstrap-project.sh <target-repo>`: copies the
   framework dirs (per the subrepo layout), instantiates `.claude/project-template.md`
   with placeholder markers, seeds `docs/goal.md` from the template with a banner
-  "run /goal-init to fill this", prints the opt-in menu (hooks, proposer, knobs) and
+  "run /goal-init to fill this", prints the opt-in menu (hooks, knobs) and
   next steps. Idempotent (refuses to clobber non-placeholder files).
 - **DoD:** bootstrap into an empty scratch repo passes `validate_goal_file` presence
   checks (structure), doctor (REL-2) if present, and prints next steps; running it

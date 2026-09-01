@@ -128,7 +128,6 @@ AGENT_TIMEOUTS_SECONDS: dict[str, int] = {
     "browser-qa-agent":      4500,   # typical ~20m; grows with journey count
     "coherence-auditor":     1200,   # typical ~4m
     "goal-evaluator":        3600,   # typical ~17m
-    "goal-proposer":         3600,
     "iteration-summarizer":  1800,
     "readme-maintainer":     1800,
     "demo-narrator":         1800,
@@ -294,7 +293,7 @@ def disallowed_for(agent: str, agents_dir: Path = DEFAULT_AGENTS_DIR) -> list[st
 # them by construction — the two-key GOAL_ACHIEVED confirm dispatches as
 # goal-evaluator, so it is covered too.
 JUDGE_AGENTS = frozenset({
-    "goal-evaluator", "goal-decomposer", "auditor", "reviewer", "goal-proposer",
+    "goal-evaluator", "goal-decomposer", "auditor", "reviewer",
 })
 
 

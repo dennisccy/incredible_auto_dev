@@ -21,12 +21,12 @@ from it). Update this table in the same commit that changes the tier map.
 
 | Tier | Claude model | Used for | Why |
 |------|--------------|----------|-----|
-| strong | `claude-opus-5` | goal-evaluator, auditor, goal-proposer, two-key confirms, escalated retries | Judgment: verdicts, scoping, skeptical audit. Mistakes here mis-certify or mis-direct whole sessions |
+| strong | `claude-opus-5` | goal-evaluator, auditor, two-key confirms, escalated retries | Judgment: verdicts, scoping, skeptical audit. Mistakes here mis-certify or mis-direct whole sessions |
 | standard | `claude-sonnet-5` | goal-decomposer (TOKEN-2 experiment 2026-07-15; effort stays max, D4 guard still covers it), developer, orchestrator, product-manager, reviewer, browser-qa, coherence-auditor, iteration-summarizer | Building and structured review. High volume — this tier dominates token spend. The summarizer deliberately STAYS here: REP-4 raised its concreteness bar, and it is the human's primary reading surface |
 | light | `claude-haiku-4-5` | qa (procedural mode), release-manager, demo-narrator + readme-maintainer (TOKEN-9 experiment 2026-07-28: schema-constrained writers with deterministic safety nets — demo JSON is linted/executed by demo_runner.py, README edits are marker-scoped; revert per-agent on lint failures or AUTO-block corruption) | Fully proceduralized tasks with exact steps and output formats |
 
 Effort: headless dispatches get `--effort` from `scripts/automation/lib/agent_permissions.py`
-(`EFFORT_DEFAULT=max`). At `max`: goal-evaluator, goal-decomposer, auditor, goal-proposer,
+(`EFFORT_DEFAULT=max`). At `max`: goal-evaluator, goal-decomposer, auditor,
 reviewer, developer, orchestrator, product-manager, browser-qa-agent, coherence-auditor, and
 the two-key confirm. At `medium` (structured/showcase): qa, release-manager,
 ui-test-designer, ui-impact-analyst, phase-closure-auditor, iteration-summarizer,

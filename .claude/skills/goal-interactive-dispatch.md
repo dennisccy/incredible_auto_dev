@@ -1,6 +1,6 @@
 # Goal Mode — Interactive Dispatch (Pump Protocol)
 
-version: 3.0.3 (protocol v3 — pump pid-liveness ident; bump with every change to this file)
+version: 3.0.4 (protocol v3 — pump pid-liveness ident; retired auto-extension agent dropped from the agent list 2026-09-01; bump with every change to this file)
 
 This skill defines how the foreground Claude Code session (the "pump") runs the
 existing goal-mode engine so that every agent executes as an interactive
@@ -123,7 +123,7 @@ calls only, no narration.
 The `agent` field is one of the goal-mode agent names, which match the
 `.claude/agents/<name>.md` filenames exactly: developer, reviewer, qa,
 browser-qa-agent, goal-decomposer, coherence-auditor, goal-evaluator,
-iteration-summarizer, readme-maintainer, goal-proposer, orchestrator, auditor, ui-impact-analyst,
+iteration-summarizer, readme-maintainer, orchestrator, auditor, ui-impact-analyst,
 ui-test-designer, ux-regression-reviewer, phase-closure-auditor, demo-narrator,
 release-manager, product-manager. Use that name as `subagent_type`.
 

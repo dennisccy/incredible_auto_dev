@@ -28,7 +28,7 @@ The framework consists of 6 component types:
 
 Markdown files that define each agent's role, inputs, outputs, and rules. Agents are invoked by automation scripts. Each agent has a model tier assignment (strong/standard/light) — `model_tier` in `agents/<name>/agent.yaml`, resolved via `config/model-tiers.yaml`.
 
-Twelve agents serve the phase pipeline (orchestrator, developer, reviewer, qa, auditor, release-manager, product-manager, ui-impact-analyst, ui-test-designer, browser-qa-agent, ux-regression-reviewer, phase-closure-auditor). Four are specific to goal mode (goal-decomposer, goal-evaluator, coherence-auditor, goal-proposer) and four are showcase/maintenance agents (iteration-summarizer, demo-narrator, readme-maintainer, retro-analyst). Goal mode reuses the twelve phase agents unchanged.
+Twelve agents serve the phase pipeline (orchestrator, developer, reviewer, qa, auditor, release-manager, product-manager, ui-impact-analyst, ui-test-designer, browser-qa-agent, ux-regression-reviewer, phase-closure-auditor). Three are specific to goal mode (goal-decomposer, goal-evaluator, coherence-auditor) and four are showcase/maintenance agents (iteration-summarizer, demo-narrator, readme-maintainer, retro-analyst). Goal mode reuses the twelve phase agents unchanged.
 
 ### 2. Skills (in `.claude/skills/`)
 
@@ -69,7 +69,7 @@ CLAUDE.md (constitution)
     |
     +-- .claude/agents/*.md (12 agent definitions)
     |       |
-    |       +-- read .claude/skills/*.md (16 skills)
+    |       +-- read .claude/skills/*.md (15 skills)
     |
     +-- .claude/hooks/*.sh (5 hooks, triggered by Claude Code)
     |

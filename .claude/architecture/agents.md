@@ -1,6 +1,6 @@
 # Agents
 
-The framework defines 20 agents in `.claude/agents/` (rendered from `agents/<name>/`). Each agent has a `model_tier` in its `agent.yaml`, resolved via `config/model-tiers.yaml`. Twelve serve the phase pipeline; four are goal-mode agents (goal-decomposer, goal-evaluator, coherence-auditor, goal-proposer); four are showcase/maintenance agents (iteration-summarizer, demo-narrator, readme-maintainer, retro-analyst — the last runs only at terminal goal-session halts, model_tier light, drafting improvement proposals from `state/retro-input.md`).
+The framework defines 19 agents in `.claude/agents/` (rendered from `agents/<name>/`). Each agent has a `model_tier` in its `agent.yaml`, resolved via `config/model-tiers.yaml`. Twelve serve the phase pipeline; three are goal-mode agents (goal-decomposer, goal-evaluator, coherence-auditor); four are showcase/maintenance agents (iteration-summarizer, demo-narrator, readme-maintainer, retro-analyst — the last runs only at terminal goal-session halts, model_tier light, drafting improvement proposals from `state/retro-input.md`).
 
 ## Model Tiers
 

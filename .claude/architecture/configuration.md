@@ -25,7 +25,7 @@ Agents reference this file for stack-specific commands (test runner, package man
 
 ## config/model-tiers.yaml (+ agents/*/agent.yaml `model_tier`)
 
-Maps each of the 20 agents to a model tier (12 phase-pipeline + 4 goal-mode + 4 showcase/maintenance).
+Maps each of the 19 agents to a model tier (12 phase-pipeline + 3 goal-mode + 4 showcase/maintenance).
 
 ```yaml
 tiers:
