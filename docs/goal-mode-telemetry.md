@@ -295,3 +295,30 @@ python3 scripts/automation/lib/analyze_telemetry.py --json runs/goal-session-<si
 The schema is additive: new event types and new fields may be introduced in future versions. Consumers should ignore unknown event types and unknown fields.
 
 The `event` field values listed above are stable — they will not be renamed or removed without a deprecation cycle.
+
+## Pump-side economics (`lib/analyze_transcripts.py`, TOKEN-12)
+
+`claude_usage` rows cover subagent dispatches only. The foreground pump's own turns — and
+what actually fills a subagent's context — are visible only in the Claude Code session
+transcript, so this read-only analyzer reads it directly:
+
+```bash
+python3 scripts/automation/lib/analyze_transcripts.py ~/.claude/projects/<slug>/<session>.jsonl [--json]
+python3 scripts/automation/lib/analyze_transcripts.py --compare <A.jsonl> <B.jsonl>      # deltas, %
+```
+
+Pump side: usage-bearing turns (deduped by `message.id`, last snapshot wins), output /
+cache_read / cache_creation / input totals, cache_read per turn (≈ the pump's context size),
+per-tool call counts with average input and result bytes, Agent dispatches, **pump turns per
+dispatch** (usage-bearing turns between consecutive Agent calls — the plumbing cost TOKEN-11a
+attacks), resolved `message.model` per turn (EXP-6 records it), compaction events.
+Subagent side (`toolUseResult.agentType` → `<session>/subagents/agent-<id>.jsonl`): invocations,
+turns per invocation, output and cache_read per invocation, tool-result bytes by tool with
+**image reads counted separately** (PNG bytes are not tokens), and the five largest tool results
+with the first 80 chars of the input that produced them. Missing subagent transcripts are
+skipped, never estimated.
+
+Recorded PRE (2026-09-01, tapeology, largest session): pump 1,751 turns, 890M cache_read
+(~508K/turn), 1.41M output, 325 dispatches, 5.4 pump turns per dispatch; developer 124
+turns/inv, 39M cache_read/inv; evaluator 52 turns/inv; browser-qa 64 turns/inv with 13
+screenshot read-backs.
