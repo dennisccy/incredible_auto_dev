@@ -475,6 +475,14 @@ qa_browser_step_teardown() {
   _root="${CHROME_PROFILE_ROOT:-${XDG_CACHE_HOME:-$HOME/.cache}/superpowers/browser-profiles}"
   if [[ "${CHAIN_AGENT_BACKEND:-}" == "interactive" ]]; then
     [[ "${CHAIN_BQA_CLOSE_TABS:-1}" == "1" && -n "$frontend" ]] || return 0
+    # Only a REAL interactive pump run may touch the pump session's browsers.
+    # The engine exports CHAIN_DISPATCH_DIR for exactly that case
+    # (run-goal.sh) and interactive-dispatch.sh refuses to dispatch without it.
+    # Unit tests and ad-hoc runs drive the lane scripts directly with no
+    # dispatch dir; there $CHROME_PROFILE_ROOT is the OPERATOR's real profile
+    # root, and closing tabs in their live Chrome would be a real-world side
+    # effect of running the test suite.
+    [[ -n "${CHAIN_DISPATCH_DIR:-}" && -d "${CHAIN_DISPATCH_DIR:-}" ]] || return 0
     _out="$(python3 "$_bt" close-origin --frontend "$frontend" --profile-root "$_root" 2>/dev/null)" || return 0
     while IFS= read -r _line; do
       [[ -n "$_line" ]] || continue
@@ -492,6 +500,13 @@ qa_browser_step_teardown() {
   _meta="$_root/$CHROME_WS_PROFILE.meta.json"
   if [[ -f "$_meta" ]]; then
     _pid="$( { sed -n 's/.*"pid"[: ]*\([0-9][0-9]*\).*/\1/p' "$_meta" 2>/dev/null || true; } | head -n 1)"
+    # A meta.json outlives the browser it describes, so its pid may since have
+    # been RECYCLED onto an unrelated process. Trust it only when the process
+    # is really this lane's browser (its cmdline carries our --user-data-dir);
+    # otherwise drop it and let the CDP port decide.
+    if [[ -n "$_pid" ]]; then
+      tr '\0' ' ' < "/proc/$_pid/cmdline" 2>/dev/null | grep -q -- "--user-data-dir=$_root/$CHROME_WS_PROFILE" || _pid=""
+    fi
   fi
   [[ -n "$_pid" ]] || _pid="$( { pgrep -f -- "--user-data-dir=$_root/$CHROME_WS_PROFILE( |\$)" 2>/dev/null || true; } | head -n 1)"
   _out="$(python3 "$_bt" close-all --port "$CHROME_WS_PORT" ${_pid:+--pid "$_pid"} --wait-exit 5 2>/dev/null)" \

@@ -127,7 +127,13 @@ def cmd_close_all(port, pid, wait_exit):
     try:
         pages = list_pages(port)
     except Exception:
-        pages = []
+        # No CDP endpoint on the lane's pinned port: the browser never started,
+        # or already exited. There is nothing to close and nothing to reap, so
+        # return at once — never wait on `pid`, which comes from a meta.json
+        # that may name a RECYCLED pid now owned by an unrelated process
+        # (that cost ~7 s of dead wait on every browser dispatch).
+        print(json.dumps({"closed_tabs": 0, "remaining_tabs": 0, "clean_exit": True}))
+        return 0
     closed = sum(1 for t in pages if close_page(port, t.get("id", "")))
     deadline = time.time() + max(0.0, wait_exit)
     clean = False
@@ -217,6 +223,17 @@ def _self_test():
                     {"id": "g", "type": "page", "url": "about:blank"}]
     assert select_targets(foreign_only, app) == [], "no app tab → blank pages are not ours"
     assert select_targets(pages, None) == [], "no target origin → nothing"
+    # close-all against a port nothing listens on must return instantly and
+    # clean, whatever pid it was handed (recycled-pid guard).
+    import io, socket, contextlib, time as _t
+    _s = socket.socket(); _s.bind(("127.0.0.1", 0)); _closed_port = _s.getsockname()[1]; _s.close()
+    _buf = io.StringIO(); _t0 = _t.time()
+    with contextlib.redirect_stdout(_buf):
+        cmd_close_all(_closed_port, os.getpid(), 5.0)
+    _elapsed = _t.time() - _t0
+    _res = json.loads(_buf.getvalue())
+    assert _res == {"closed_tabs": 0, "remaining_tabs": 0, "clean_exit": True}, _res
+    assert _elapsed < 2.0, f"closed port must not wait (took {_elapsed:.1f}s)"
     print("browser_tabs self-test: OK")
     return 0
 

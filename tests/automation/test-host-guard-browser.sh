@@ -402,14 +402,17 @@ start_stub() { # <port> <tabs-json> <close-log> [kill-pid] → pid of the stub
 }
 page() { printf '{"id":"%s","type":"page","url":"%s","title":"t"}' "$1" "$2"; }
 step_teardown() { # <backend> <frontend-url> [extra env...] → runs the function; telemetry lands in $SESS
+  # CHAIN_DISPATCH_DIR stands in for a real interactive pump run (the engine
+  # exports it); "${@:3}" comes last, so a case can override or clear it.
   env -u CHROME_WS_PROFILE -u CHROME_WS_PORT CHROME_PROFILE_ROOT="$PROOT" GOAL_SESSION_DIR="$SESS" \
-      HOST_GUARD_MCP_MATCH="$WORK/no-such-mcp" CHAIN_AGENT_BACKEND="$1" "${@:3}" bash -c "
+      HOST_GUARD_MCP_MATCH="$WORK/no-such-mcp" CHAIN_DISPATCH_DIR="$WORK/dispatch" \
+      CHAIN_AGENT_BACKEND="$1" "${@:3}" bash -c "
     source '$AUTO/lib/telemetry.sh' >/dev/null 2>&1
     source '$AUTO/lib/common.sh' >/dev/null 2>&1
     REPO_ROOT='$PROJ'
     qa_browser_step_teardown '$2'" 2>&1 >/dev/null
 }
-SESS="$WORK/session"; mkdir -p "$SESS"
+SESS="$WORK/session"; mkdir -p "$SESS" "$WORK/dispatch"
 
 # Interactive: two live MCP browsers (meta.json + stub each). Browser 1 carries
 # the six origin cases; browser 2 carries only a foreign page and a blank one.
@@ -443,6 +446,17 @@ grep -q '"closed_tabs": *3' "$SESS/telemetry.jsonl" 2>/dev/null && assert "teard
 kill -KILL "$S1" 2>/dev/null; wait "$S1" 2>/dev/null; S1="$(start_stub "$PORT1" "$WORK/tabs1.json" "$WORK/close1.log")"
 step_teardown interactive "http://localhost:3000" CHAIN_BQA_CLOSE_TABS=0
 [[ ! -s "$WORK/close1.log" ]] && assert "teardown/interactive: CHAIN_BQA_CLOSE_TABS=0 opts out" pass || assert "teardown/interactive: CHAIN_BQA_CLOSE_TABS=0 opts out" fail
+# Only a REAL interactive pump run may touch the pump session's browsers. The
+# engine exports CHAIN_DISPATCH_DIR for exactly that case; unit tests drive the
+# lane scripts directly with no dispatch dir, and there the profile root is the
+# OPERATOR's — closing tabs in their live Chrome would be a real-world side
+# effect of running the test suite.
+: > "$WORK/close1.log"
+kill -KILL "$S1" 2>/dev/null; wait "$S1" 2>/dev/null; S1="$(start_stub "$PORT1" "$WORK/tabs1.json" "$WORK/close1.log")"
+step_teardown interactive "http://localhost:3000" CHAIN_DISPATCH_DIR=""
+[[ ! -s "$WORK/close1.log" ]] && assert "teardown/interactive: inert without a pump dispatch dir (tests never touch the operator's browsers)" pass || assert "teardown/interactive: inert without a pump dispatch dir ($(cat "$WORK/close1.log"))" fail
+step_teardown interactive "http://localhost:3000"
+[[ -s "$WORK/close1.log" ]] && assert "teardown/interactive: active inside a real pump run (dispatch dir present)" pass || assert "teardown/interactive: active inside a real pump run" fail
 kill -KILL "$S1" "$S2" 2>/dev/null; rm -f "$PROOT/superpowers-chrome.meta.json" "$PROOT/superpowers-chrome-2.meta.json"
 pkill -KILL -f "fake-chrome --user-data-dir=$PROOT" 2>/dev/null
 
@@ -500,6 +514,22 @@ OUT="$(env -u CHROME_WS_PROFILE -u CHROME_WS_PORT CHROME_PROFILE_ROOT="$PROOT" G
   echo reached" 2>/dev/null)"
 [[ "$OUT" == *reached* ]] && assert "teardown/headless: no browser at all is a clean no-op under set -euo pipefail" pass || assert "teardown/headless: no browser at all is a clean no-op under set -euo pipefail" fail
 grep -q '"clean_exit": *true' "$SESS/telemetry.jsonl" 2>/dev/null && assert "teardown/headless: absent browser recorded as clean" pass || assert "teardown/headless: absent browser recorded as clean" fail
+
+# A STALE meta.json whose recorded pid was recycled onto an unrelated live
+# process must not make the teardown wait for a browser that does not exist:
+# the CDP port is closed, so there is nothing to close and nothing to reap.
+# Before the fix this cost ~7 s of dead wait on EVERY browser dispatch.
+: > "$SESS/telemetry.jsonl"
+P_UNRELATED="$(spawn "--not-a-browser=$WORK/stale")"
+PORT_CLOSED="$(free_port)"
+printf '{"port":%s,"pid":%s}\n' "$PORT_CLOSED" "$P_UNRELATED" > "$PROOT/$OWN.meta.json"
+_t0=$(date +%s)
+step_teardown claude "http://localhost:3000" CHROME_WS_PROFILE="$OWN" CHROME_WS_PORT="$PORT_CLOSED"
+_el=$(( $(date +%s) - _t0 ))
+(( _el <= 2 )) && assert "teardown/headless: stale meta pid + closed port returns fast (${_el}s)" pass || assert "teardown/headless: stale meta pid + closed port returns fast (took ${_el}s, expected <=2)" fail
+grep -q '"clean_exit": *true' "$SESS/telemetry.jsonl" 2>/dev/null && assert "teardown/headless: stale meta pid recorded as clean (no browser existed)" pass || assert "teardown/headless: stale meta pid recorded as clean ($(cat "$SESS/telemetry.jsonl" 2>/dev/null))" fail
+alive "$P_UNRELATED" && assert "teardown/headless: the unrelated process the stale pid names is never touched" pass || assert "teardown/headless: the unrelated process the stale pid names is never touched" fail
+kill -KILL "$P_UNRELATED" 2>/dev/null; rm -f "$PROOT/$OWN.meta.json"
 
 echo ""
 echo "── C. dispatch-surface wiring ─────────────────────────────────────────"
