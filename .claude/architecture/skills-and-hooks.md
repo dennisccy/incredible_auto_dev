@@ -17,7 +17,7 @@ Skills are reusable instruction files that agents read during their workflow. Th
 | Phase Closure Gate | `phase-closure-gate.md` | phase-closure-auditor | Evaluate phase completion criteria (artifact existence, quality, consistency) |
 | Architecture Doc Updater | `architecture-doc-updater.md` | update-docs.sh | Update framework or project architecture docs when source files drift |
 
-## Hooks (5 total, in `.claude/hooks/`)
+## Hooks (6 total, in `.claude/hooks/`)
 
 Hooks are shell scripts triggered by Claude Code at specific lifecycle points. They are configured in `.claude/settings.json`.
 
@@ -25,6 +25,11 @@ Hooks are shell scripts triggered by Claude Code at specific lifecycle points. T
 - **Trigger:** PreToolUse (Bash tool)
 - **Purpose:** Secondary safety layer for dangerous command patterns (rm -rf, dd, force-push main, credential reads). Primary protection is deny rules in `.claude/settings.json`.
 - **Behavior (SEC-7 two-mode):** argv mode (command as `$1` — test harness/Codex): GUARD lines on stderr + exit 1. Claude mode (PreToolUse JSON on stdin, `.tool_input.command`): emits `permissionDecision:"deny"` JSON on stdout with exit 0 — the settings wrapper is `|| true`, so the stdout JSON is the enforcement channel and the exit code carries no signal.
+
+### guard-read-path-hygiene.sh
+- **Trigger:** PreToolUse (Bash tool)
+- **Purpose:** Enforces `.claude/core.md` § "File Paths in Bash" so a dispatch never stalls on a human approval prompt it cannot get. Denies (a) a `cd` in a compound whose later segment is a CONTENT READ with a path argument, and (b) a recursive content search rooted at `.`, `~` or an absolute path. Both forms leave the search root unresolvable or unbounded, and since `Read(**/.env)` and friends are deny rules the checker cannot prove the read misses them — so it escalates to the human. Carve-outs match core.md: `cd` before a non-read (pytest/npm/tsc) and a piped read with no path argument stay legal, and redirect targets (`2>/dev/null`) are not read arguments.
+- **Behavior (SEC-7 two-mode):** same contract as `guard-dangerous-commands.sh`. Detection lives in `hooks/lib/read_path_hygiene.py`; the deny reason names the rewrite so the agent self-corrects instead of waiting. Fail-open on unparseable input or a missing `python3`.
 
 ### install-security-gate.sh
 - **Trigger:** PreToolUse (Bash tool)

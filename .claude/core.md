@@ -103,6 +103,13 @@ Why: `Read(**/.env)` and similar are deny rules, and deny beats every allow. Whe
 checker cannot prove a read misses them, it asks the human. Do not narrow those deny
 rules to silence the prompt — they keep real secrets out of agent context.
 
+ENFORCED, not advisory: `.claude/hooks/guard-read-path-hygiene.sh` (a PreToolUse Bash
+matcher) denies a `cd` followed by a content read with a path argument, and a recursive
+search rooted at `.` / `~` / an absolute path, with a message naming the rewrite. If it
+fires, rewrite the command as the message says — do not retry it verbatim and do not
+route around it. Its carve-outs match the bullets above: `cd` before a non-read
+(pytest/npm/tsc) and a piped read with no path argument both stay legal.
+
 ---
 
 ## Visual Quality Checklist

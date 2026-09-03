@@ -71,7 +71,7 @@ CLAUDE.md (constitution)
     |       |
     |       +-- read .claude/skills/*.md (15 skills)
     |
-    +-- .claude/hooks/*.sh (5 hooks, triggered by Claude Code)
+    +-- .claude/hooks/*.sh (6 hooks, triggered by Claude Code)
     |
     +-- scripts/automation/*.sh (16 scripts)
     |       |

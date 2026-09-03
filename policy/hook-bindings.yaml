@@ -10,6 +10,12 @@ guard-dangerous-commands.sh:
   codex:
   - PreToolUse
   - PermissionRequest
+guard-read-path-hygiene.sh:
+  claude:
+  - PreToolUse:Bash
+  codex:
+  - PreToolUse
+  - PermissionRequest
 post-edit-lint.sh:
   claude:
   - PostToolUse:Write|Edit

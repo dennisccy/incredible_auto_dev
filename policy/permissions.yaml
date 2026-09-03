@@ -26,6 +26,17 @@ allow:
 - Bash(./scripts/*)
 - Bash(scripts/*)
 - Bash(bash .claude/*)
+# Detach wrappers + the QA browser binary. Added in 34676ca for the goal-mode
+# detached-engine and browser lanes, which prompt without them. That commit
+# hand-edited the GENERATED .claude/settings.json and never landed here, so the
+# next sync silently dropped all six — recorded in the neutral source now so the
+# render is reproducible (.claude/maintenance-protocol.md §3).
+- Bash(setsid *)
+- Bash(nohup *)
+- Bash(disown)
+- Bash(disown *)
+- Bash(google-chrome *)
+- Bash(/usr/bin/google-chrome *)
 # Shell control flow: the evaluator segments compound commands and prefix-matches
 # each segment INCLUDING the leading keyword, so one-liner loops/conditionals
 # prompt without these (already endorsed in settings.local.json.example).
@@ -78,8 +89,9 @@ allow:
 # `timeout *` and `make *` are command wrappers / arbitrary-target runners —
 # same accepted class as `env *` and `xargs *`; the embedded deny entries below
 # and the built-in rm containment bound the damage. Deliberately excluded:
-# nc, nohup, watch, yes, bare `command *` (wrapper/exfil/interactive risk with
-# no pipeline need).
+# nc, watch, yes, bare `command *` (wrapper/exfil/interactive risk with
+# no pipeline need). `nohup` was later allowed above for the detached goal
+# engine (34676ca) — it is no longer part of this exclusion.
 - Bash(make)
 - Bash(make *)
 - Bash(timeout *)

@@ -253,6 +253,73 @@ if [[ $_g_rc -eq 0 && -z "$_g_out" ]]; then
 else
   _fail "hook: guard-dangerous-commands (stdin/Claude) noisy or non-zero on benign command (rc=$_g_rc)"
 fi
+# guard-read-path-hygiene: enforces core.md § "File Paths in Bash" so a dispatch
+# never stalls on an approval prompt it cannot get. The two DENY cases are the
+# verbatim commands that stalled goal session contract-pack-v0 iter 1 (developer)
+# and a tapeology reviewer. The ALLOW cases are the carve-outs core.md keeps
+# legal — `cd` before a non-read (pytest/npm/tsc), a piped read with no path
+# argument, and a recursive search already rooted at concrete subdirectories.
+_rp_deny=(
+  'cd /home/x/contracts && grep -rn "book_snapshot" workstation_contracts/*.py | head -30'
+  'cd /home/x/apps/backend && grep -n "PROFILE_DEFAULT" app/config.py | head -5'
+  'grep -rn PATTERN .'
+  'cd docs && sed -n "1,50p" goal.md'
+  'for d in a; do cd $d && grep -n x y.py; done'
+)
+_rp_allow=(
+  'cd apps/backend && pytest -q'
+  'cd apps/frontend && npm run build'
+  'git diff | grep foo'
+  'cd x && git diff | grep foo'
+  'grep -rn PATTERN apps/backend/app/ apps/frontend/src/'
+  'grep -n "x" apps/backend/app/main.py'
+  'cd x && ls -la'
+  # Redirections are not read arguments. `2>/dev/null` on almost every command
+  # in this repo tokenized as a path and false-positived the guard on its first
+  # live call; strip_redirects() fixes it and these lock the regression in.
+  'grep -rln PATTERN incredible_auto_dev/policy/ incredible_auto_dev/hooks/ 2>/dev/null'
+  'grep -rn PATTERN apps/ >/dev/null 2>&1'
+  'cat docs/goal.md > /tmp/copy.md'
+  'python3 x.py > /tmp/out.txt 2>&1'
+)
+_rp_bad=0
+for _c in "${_rp_deny[@]}"; do
+  bash .claude/hooks/guard-read-path-hygiene.sh "$_c" >/dev/null 2>&1 && { _rp_bad=1; echo "    missed deny: $_c"; }
+done
+if [[ $_rp_bad -eq 0 ]]; then
+  _pass "hook: guard-read-path-hygiene blocks all ${#_rp_deny[@]} approval-stalling read patterns"
+else
+  _fail "hook: guard-read-path-hygiene let an approval-stalling read through"
+fi
+_rp_bad=0
+for _c in "${_rp_allow[@]}"; do
+  bash .claude/hooks/guard-read-path-hygiene.sh "$_c" >/dev/null 2>&1 || { _rp_bad=1; echo "    false positive: $_c"; }
+done
+if [[ $_rp_bad -eq 0 ]]; then
+  _pass "hook: guard-read-path-hygiene allows all ${#_rp_allow[@]} legitimate cd/read forms"
+else
+  _fail "hook: guard-read-path-hygiene false-positives on a legitimate command"
+fi
+_rp_rc=0
+_rp_out=$(printf '%s' '{"tool_input":{"command":"cd apps/backend && grep -n \"X\" app/config.py"}}' | bash .claude/hooks/guard-read-path-hygiene.sh 2>/dev/null) || _rp_rc=$?
+if [[ $_rp_rc -eq 0 ]] && grep -q '"permissionDecision":"deny"' <<<"$_rp_out"; then
+  _pass "hook: guard-read-path-hygiene (stdin/Claude) denies cd+read via JSON, exit 0"
+else
+  _fail "hook: guard-read-path-hygiene (stdin/Claude) missing deny JSON for cd+read (rc=$_rp_rc)"
+fi
+_rp_rc=0
+_rp_out=$(printf '%s' '{"tool_input":{"command":"pytest -q apps/backend/tests/"}}' | bash .claude/hooks/guard-read-path-hygiene.sh 2>/dev/null) || _rp_rc=$?
+if [[ $_rp_rc -eq 0 && -z "$_rp_out" ]]; then
+  _pass "hook: guard-read-path-hygiene (stdin/Claude) passes a benign command silently"
+else
+  _fail "hook: guard-read-path-hygiene (stdin/Claude) noisy or non-zero on benign command (rc=$_rp_rc)"
+fi
+# Registered in settings.json — an unregistered hook enforces nothing.
+if grep -q 'guard-read-path-hygiene.sh' .claude/settings.json; then
+  _pass "hook: guard-read-path-hygiene is registered as a PreToolUse Bash matcher"
+else
+  _fail "hook: guard-read-path-hygiene exists but is NOT registered in .claude/settings.json"
+fi
 # Install gate, Claude path. NOTE: the deny case appends a real record to
 # reports/security/install-decisions.jsonl per eval run (the hook path never
 # passes --dry-run) — accepted audit-trail noise.
