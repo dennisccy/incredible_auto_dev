@@ -73,6 +73,29 @@ only removes temp dirs proven dead or stale (`.claude/anti-patterns/21-shared-tm
 
 ---
 
+## File Paths in Bash
+
+Read and search with paths the permission checker can resolve, so dispatches never
+stall waiting on a human:
+
+- NO `cd` before a read command. The Bash tool's working directory is already the
+  repo root and persists between calls. Write `grep -n "x" apps/backend/app/main.py`,
+  never `cd apps/backend && grep -n "x" app/main.py`.
+- Never root a recursive search at the repo root or an absolute machine path. Name
+  concrete subdirectories: `grep -rn PATTERN apps/backend/app/ apps/frontend/src/`,
+  not `grep -rn PATTERN .`.
+- Keep paths repo-relative. Absolute machine paths leak into committed handoffs.
+- `--exclude-dir` / `--include` do not help — the checker reads the path argument,
+  not the filter flags.
+- Commands that must run from a subdirectory (pytest, npm) may still `cd`; this rule
+  governs the path arguments to read commands (grep, cat, head, sed -n, rg).
+
+Why: `Read(**/.env)` and similar are deny rules, and deny beats every allow. When the
+checker cannot prove a read misses them, it asks the human. Do not narrow those deny
+rules to silence the prompt — they keep real secrets out of agent context.
+
+---
+
 ## Visual Quality Checklist
 
 Every UI change MUST meet all of the following (applies when `Frontend Present: yes`):
