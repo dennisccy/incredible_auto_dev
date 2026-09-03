@@ -279,6 +279,20 @@ _interactive_invoke() {
     prompt+=$'\n\n'"Environment note: this pipeline run isolates temp files. Before running tests or any command that writes temporary files, run: export TMPDIR=\"$CHAIN_TMPDIR\" TMP=\"$CHAIN_TMPDIR\" TEMP=\"$CHAIN_TMPDIR\""
   fi
 
+  # Search-path bridge (2026-09-03): interactive subagents run under the PUMP
+  # session's permission checker. There a recursive read rooted at the repo root
+  # cannot be proven to miss the `Read(**/.env)` deny rule — deny beats every
+  # allow — so the dispatch STALLS on an approval prompt only a human can clear.
+  # `.claude/core.md` § File Paths in Bash carries the full rule, but an agent
+  # only reaches that pointer near the END of its body and may never Read the
+  # file, so relay the one-line form here, where delivery is guaranteed. Gated
+  # on the agent-pointer line for the same reason as CTX-8 below: two-key
+  # confirms, ad-hoc dispatches and the self-test's byte-exact round-trips must
+  # pass through untouched.
+  if [[ "$prompt" == *"Agent instructions: .claude/agents/"* ]]; then
+    prompt+=$'\n\n'"Search-path note: root every recursive read at concrete subdirectories — \`grep -rn PATTERN docs/ contracts/\`, never \`grep -rn PATTERN .\`, an absolute machine path, or a \`cd\` first. \`--include\`/\`--exclude-dir\` do NOT help: the permission checker reads the path argument, not the filter flags. A repo-root search stalls this dispatch waiting on a human approval it cannot get. Full rule: \`.claude/core.md\` § File Paths in Bash."
+  fi
+
   # CTX-8: on this backend the subagent's system prompt IS its rendered
   # .claude/agents/<name>.md definition — stop it re-Reading its own 8-20 KB
   # file every dispatch. Conditional on the pointer line being present so
@@ -1173,6 +1187,38 @@ _interactive_dispatch_self_test() {
     echo "  FAIL interactive-dispatch: janitor (dead=$([[ -f "$d/req.5-dead01.started" ]] && echo kept || echo cleared) live=$([[ -f "$d/req.5-live02.started" ]] && echo kept || echo cleared) orph-old=$([[ -f "$d/req.5-orph01.started" ]] && echo kept || echo cleared) orph-new=$([[ -f "$d/req.5-orph02.started" ]] && echo kept || echo cleared))"; fails=1
   fi
   rm -rf "$d"
+
+  # Test 24 (2026-09-03) — search-path bridge: a prompt carrying the
+  # `Agent instructions: .claude/agents/` pointer gets the search-path note
+  # appended; every other prompt (two-key confirms, ad-hoc dispatches) passes
+  # through untouched. The note is what stops agents rooting a recursive read at
+  # the repo root, which stalls the dispatch on the `Read(**/.env)` deny rule.
+  _sp_seen() {   # round-trip one prompt, echo how many times the note appears
+    local dd pp pr; dd="$(mktemp -d)"; pr="$1"
+    export CHAIN_DISPATCH_DIR="$dd"
+    ( for _ in $(seq 1 60); do
+        local rr; rr="$(find "$dd" -maxdepth 1 -name 'req.*.ready' 2>/dev/null | head -1)"
+        if [[ -n "$rr" ]]; then
+          grep -c 'Search-path note:' "$rr" > "$dd/count" 2>/dev/null || echo 0 > "$dd/count"
+          echo 0 > "${rr%.ready}.res"; break
+        fi
+        sleep 0.1
+      done ) &
+    pp=$!
+    CHAIN_DISPATCH_POLL_SECONDS=0.2 CHAIN_PUMP_HEARTBEAT_TIMEOUT=3600 \
+      _interactive_invoke -p "$pr" >/dev/null 2>&1 || true
+    wait "$pp" 2>/dev/null || true
+    cat "$dd/count" 2>/dev/null || echo missing
+    rm -rf "$dd"
+  }
+  _sp_agent="$(_sp_seen "do the work. Agent instructions: .claude/agents/developer.md")"
+  _sp_plain="$(_sp_seen "two-key confirm: is this really GOAL_ACHIEVED?")"
+  unset -f _sp_seen
+  if [[ "$_sp_agent" == "1" && "$_sp_plain" == "0" ]]; then
+    echo "  PASS interactive-dispatch: search-path note reaches agent dispatches only (agent=$_sp_agent, plain=$_sp_plain)"
+  else
+    echo "  FAIL interactive-dispatch: search-path note (agent=$_sp_agent expected 1, plain=$_sp_plain expected 0)"; fails=1
+  fi
 
   if [[ "$fails" -eq 0 ]]; then echo "interactive-dispatch self-test: OK"; else echo "interactive-dispatch self-test: FAILED"; fi
   return "$fails"

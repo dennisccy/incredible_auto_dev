@@ -88,6 +88,28 @@ if [[ "${1:-}" == "--self-test" ]]; then
   fi
   rm -rf "$t6"
 
+  # Scenario 6b (2026-09-03): a transient shell wrapper whose CMDLINE contains
+  # 'claude' must NOT be resolved as the pump. Some harnesses run every Bash
+  # tool call as `bash -c 'source ~/.claude/shell-snapshots/snapshot-*.sh ...'`;
+  # that wrapper dies with the tool call, so resolving to it made the engine see
+  # a dead pump and fast-pause AWAITING_PUMP on the first dispatch of every run.
+  # The inner -c string below carries a `.claude` path on purpose — it is what
+  # the resolver must now decline to match.
+  t6b=$(mktemp -d)
+  r6b="$t6b/req.eeeeee.ready"; printf '{"agent":"developer","prompt":"v"}\n' > "$r6b"
+  bash -c "# ~/.claude/shell-snapshots/snapshot-bash-1788470053000-polm5i.sh
+echo \$\$ > '$t6b/wrapper.pid'
+'$0' --dispatch-dir '$t6b' --engine-pid $$ --poll 1 >/dev/null 2>&1
+:" </dev/null >/dev/null 2>&1 || true
+  _wpid="$(cat "$t6b/wrapper.pid" 2>/dev/null || echo '')"
+  _got="$(sed -n 's/^pid=//p' "${r6b%.ready}.started" 2>/dev/null || true)"
+  if [[ -f "${r6b%.ready}.started" && -n "$_wpid" && "$_got" != "$_wpid" ]]; then
+    echo "  PASS await: shell wrapper carrying 'claude' in its cmdline is not resolved as the pump"
+  else
+    echo "  FAIL await: wrapper pid '${_wpid:-unset}' resolved as pump (recorded pid='${_got:-none}')"; fails=1
+  fi
+  rm -rf "$t6b"
+
   # Scenario 7 (REL-3): resolution DISABLED (CHAIN_PUMP_PID set empty — the
   # old-format seam): claim marker and heartbeat stay contentless, exactly the
   # pre-v3 files an old engine expects.
@@ -203,11 +225,39 @@ _PUMP_PID=""
 if [[ -n "${CHAIN_PUMP_PID+set}" ]]; then
   _PUMP_PID="$(printf '%s' "$CHAIN_PUMP_PID" | tr -dc 0-9)"
 else
-  _anc="$PPID"
-  for _ in $(seq 1 15); do
-    { [[ -n "$_anc" ]] && [[ "$_anc" -gt 1 ]]; } 2>/dev/null || break
-    if grep -qa 'claude' "/proc/$_anc/cmdline" 2>/dev/null; then _PUMP_PID="$_anc"; break; fi
-    _anc="$(sed 's/.*) //' "/proc/$_anc/stat" 2>/dev/null | awk '{print $2}')"
+  # Two passes, precision first. Pass 1 matches the ancestor's EXECUTABLE name
+  # (comm / argv[0] basename); pass 2 is the historical whole-cmdline substring
+  # scan, minus shell wrappers.
+  #
+  # Why shells are excluded (2026-09-03): some harnesses run every Bash tool
+  # call as `bash -c 'source ~/.claude/shell-snapshots/snapshot-bash-*.sh ...'`.
+  # That wrapper's CMDLINE contains the substring 'claude' (from the `.claude`
+  # path) and it lives for exactly ONE tool call, so the old whole-cmdline scan
+  # resolved the pump to it. The engine then found that pid dead the instant the
+  # helper returned and fast-paused the session AWAITING_PUMP on the FIRST
+  # dispatch of every run. Match the program, never a path component.
+  #
+  # A miss is safe and is the designed fallback: _PUMP_PID stays empty, the
+  # ident files revert to the contentless protocol-v2 format, and the engine
+  # keeps both timeout nets. A false POSITIVE is not — it breaks the run.
+  for _pass in strict legacy; do
+    _anc="$PPID"
+    for _ in $(seq 1 15); do
+      { [[ -n "$_anc" ]] && [[ "$_anc" -gt 1 ]]; } 2>/dev/null || break
+      _comm="$(tr -d '\n' < "/proc/$_anc/comm" 2>/dev/null || true)"
+      _argv0="$(tr '\0' '\n' < "/proc/$_anc/cmdline" 2>/dev/null | head -1 || true)"
+      _argv0="${_argv0##*/}"
+      if [[ "$_pass" == strict ]]; then
+        if [[ "$_comm" == *claude* || "$_argv0" == *claude* ]]; then _PUMP_PID="$_anc"; break; fi
+      else
+        case "$_argv0" in
+          bash|sh|dash|zsh|ksh|busybox) ;;  # transient tool-call wrapper — never the pump
+          *) if grep -qa 'claude' "/proc/$_anc/cmdline" 2>/dev/null; then _PUMP_PID="$_anc"; break; fi ;;
+        esac
+      fi
+      _anc="$(sed 's/.*) //' "/proc/$_anc/stat" 2>/dev/null | awk '{print $2}' || true)"
+    done
+    if [[ -n "$_PUMP_PID" ]]; then break; fi
   done
 fi
 _PUMP_HOST=""; _PUMP_STT=""

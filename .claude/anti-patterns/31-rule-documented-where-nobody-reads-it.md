@@ -1,0 +1,17 @@
+## 31. A rule written where the agent never reads it
+
+**Pattern:** `.claude/core.md` § "File Paths in Bash" tells every agent never to root a recursive search at the repo root, precisely so dispatches do not stall on a human approval prompt. The rule was correct, current, and had shipped one commit earlier. The very next dispatch, the developer agent ran `grep -rl "…" --include="*.md" .` and the run stopped dead waiting on a human. The agent's body reached the rule only through one line — "Apply `.claude/core.md` strictly" — at **line 142 of 144**, and following it required a separate `Read` the agent never performed before its first search.
+
+**Why it fails:** Authoring a rule and delivering a rule are different jobs, and finishing the first feels like finishing both. A pointer to another file is a *request* that the agent spend a turn and a chunk of context to fetch guidance whose value it cannot assess before fetching — so under a token policy that says "read the curated inputs your agent file lists", skipping it is the locally rational choice. The failure is silent from the authoring side: the rule is in the repo, greppable, and reviewers confirm it exists. Worse, the cost lands on the human, not the agent: the agent blocks, and someone has to notice and click.
+
+**Prevention:** Applies to any rule whose violation blocks or corrupts a run rather than merely degrading quality.
+- Classify by consequence, not by topic. A rule that can **stall or break** a dispatch belongs in guaranteed-delivery context; a rule that shapes quality can live behind a pointer.
+- Guaranteed delivery means the text is in the prompt or the system prompt when the agent takes its first action — not one Read away. In this framework the delivery seam is the dispatch preamble built by `lib/interactive-dispatch.sh` (where the TMPDIR bridge already lives): it reaches every agent on the backend, needs no agent cooperation, and costs no prompt-cache prefix invalidation the way editing `CLAUDE.md` does.
+- Gate injected text on a marker that identifies a real agent dispatch (here: the `Agent instructions: .claude/agents/` pointer line) so two-key confirms, ad-hoc dispatches and byte-exact self-tests pass through untouched.
+- Keep both copies: the full rule stays in `core.md` as the authority, the preamble carries a one-line operational form that names it. Do not let the short form become the only statement of the rule.
+- After writing any process rule, ask the delivery question out loud: *which file is in the agent's context at the moment it would break this rule?* If the answer is "none", the rule is not deployed yet.
+
+**Example (bad):** `.claude/core.md` holds the rule; `agents/<name>/body.md` says "Apply `.claude/core.md` strictly" on its second-to-last line.
+**Example (good):** the authority stays in `core.md`, and the dispatch preamble appends `Search-path note: root every recursive read at concrete subdirectories … Full rule: .claude/core.md § File Paths in Bash.` to every agent prompt.
+
+**Detection:** An agent violates a rule that demonstrably exists in the repo, and its transcript contains no Read of the file holding it. Audit sweep: for each rule whose breach halts a run, grep the dispatch preamble and the agent's rendered `.claude/agents/*.md` frontmatter+body for the rule's own words — a hit only in `core.md` means undelivered. Regression test: `lib/interactive-dispatch.sh --self-test`, test 24.
