@@ -75,7 +75,7 @@ only removes temp dirs proven dead or stale (`.claude/anti-patterns/21-shared-tm
 
 ## File Paths in Bash
 
-Read and search with paths the permission checker can resolve, so dispatches never
+Run every command with paths the permission checker can resolve, so dispatches never
 stall waiting on a human:
 
 - NO `cd` before a read command. The Bash tool's working directory is already the
@@ -87,8 +87,17 @@ stall waiting on a human:
 - Keep paths repo-relative. Absolute machine paths leak into committed handoffs.
 - `--exclude-dir` / `--include` do not help — the checker reads the path argument,
   not the filter flags.
-- Commands that must run from a subdirectory (pytest, npm) may still `cd`; this rule
-  governs the path arguments to read commands (grep, cat, head, sed -n, rg).
+- NEVER put `cd` in a command that also writes. A compound command that both changes
+  directory and mutates a file (`sed -i`, `>`, `>>`, `tee`, `mv`, `cp`, `rm`, `mkdir`,
+  `touch`, `install`) is hard-gated — "compound command contains cd with write
+  operation ... manual approval required to prevent path resolution bypass" — and NO
+  allow rule can pre-approve it, so it always stops the run for a human. Edit files
+  with the Edit/Write tools, or run from the repo root with a repo-relative path:
+  `sed -i 's/OLD/NEW/g' apps/backend/tests/test_x.py`, never
+  `cd apps/backend/tests && sed -i 's/OLD/NEW/g' test_x.py`.
+- Commands that must run from a subdirectory (pytest, npm, tsc) may still `cd`, as
+  long as nothing in the compound mutates a file; this rule governs the path
+  arguments to read commands (grep, cat, head, sed -n, rg).
 
 Why: `Read(**/.env)` and similar are deny rules, and deny beats every allow. When the
 checker cannot prove a read misses them, it asks the human. Do not narrow those deny
