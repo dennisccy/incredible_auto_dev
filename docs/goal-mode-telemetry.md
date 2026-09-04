@@ -342,6 +342,7 @@ gap between issue and result):
 |---|---|
 | `hook_deny` (+ rule id) | `toolDenialKind == "permission-rule"` and content starts with `guard-`; rule id parsed from `guard-<name>: [<id>]`, `?` for pre-tag transcripts |
 | `settings_deny` | `toolDenialKind == "permission-rule"` and content starts with `Permission to use` |
+| `other_deny` | `toolDenialKind == "permission-rule"` but content matches neither `hook_deny` nor `settings_deny` (e.g. the install-gate's own "[install-gate] APPROVAL REQUIRED" denials) |
 | `automode_deny` | `toolDenialKind in {"automode-blocked","automode-unavailable"}` |
 | `user_deny` | `toolDenialKind == "user-rejected"` |
 | `stall` | no `toolDenialKind`, not an error, `toolUseResult` has none of `timedOutAfterMs`/`backgroundTaskId`/`interrupted`, gap ≥ 600 s (a foreground Bash call cannot legitimately run that long without a timeout marker) |
@@ -364,6 +365,11 @@ by collapsing whitespace before comparison.
 | `human_prompts` / `prompt_outcomes` | count of `permission_request` events; outcome of the matching `tool_use_id`: `user_deny`, `allowed_after_wait` (gap ≥ 120 s), `allowed_fast`, `unmatched` | hard gate (0) once the recorder is proven live |
 | `stalls`, `stall_seconds`, `ambiguous_gaps` | as classified above | hard gate (`stalls == 0`) |
 | `fail_opens` (by reason), `malformed_event_rows` | tallied from the events file | diagnostics |
+
+`analyze_pump`'s report also carries a top-level `permissions_total` dict — the pump's own
+`permissions` plus every subagent type's, summed field-by-field (`hook_denies` merged as
+counters) — so a `--compare` run and the `permission.*` metric rows reflect the whole
+session's economics, not just the pump's own turns.
 
 **The PermissionRequest recorder.** `hooks/permission-request-log.sh` is bound to Claude
 Code's `PermissionRequest` event (log-only, stage 1 — see `.claude/architecture/skills-and-hooks.md`).

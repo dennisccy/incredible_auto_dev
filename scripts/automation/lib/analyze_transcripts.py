@@ -102,8 +102,12 @@ def classify_result(block, row, gap, stall_gap=STALL_GAP_SECONDS):
     kind = row.get("toolDenialKind")
     text = block.get("content") if isinstance(block.get("content"), str) else ""
     if kind == "permission-rule":
-        m = _RULE_TAG.match(text)
-        return ("hook_deny", m.group(1) if m else "?") if text.startswith("guard-") else ("settings_deny", None)
+        if text.startswith("guard-"):
+            m = _RULE_TAG.match(text)
+            return ("hook_deny", m.group(1) if m else "?")
+        if text.startswith("Permission to use"):
+            return ("settings_deny", None)
+        return ("other_deny", None)
     if kind in ("automode-blocked", "automode-unavailable"):
         return ("automode_deny", None)
     if kind == "user-rejected":
@@ -210,9 +214,9 @@ def analyze_session(path, stall_gap=STALL_GAP_SECONDS):
     agent_ids = {}       # agentId → agentType
     agent_turn_marks = []  # index (in order) of the turn that issued each Agent call
     compactions = 0
-    # ── permission economics (Task 8) ────────────────────────────────────────
+    # ── permission economics (Task 8 + fix round 1) ──────────────────────────
     perm = {"hook_denies": Counter(), "settings_denies": 0, "automode_denies": 0, "user_denies": 0,
-            "stalls": 0, "stall_seconds": 0.0, "ambiguous_gaps": 0,
+            "other_denies": 0, "stalls": 0, "stall_seconds": 0.0, "ambiguous_gaps": 0,
             "post_denial_tool_turns": 0, "immediate_bash_retries": 0}
     use_ts, outcomes = {}, {}          # tool_use id → timestamp; tool_use id → (class, gap)
     bash_seq = []                      # (tool_use id, normalized command) in ISSUE order
@@ -221,10 +225,25 @@ def analyze_session(path, stall_gap=STALL_GAP_SECONDS):
     for row in _rows(path):
         if _is_compaction(row):
             compactions += 1
-        tur = row.get("toolUseResult")
-        if isinstance(tur, dict) and tur.get("agentId") and tur.get("agentType"):
-            agent_ids[str(tur["agentId"])] = str(tur["agentType"])
         msg = row.get("message") or {}
+        tur = row.get("toolUseResult")
+        if isinstance(tur, dict) and tur.get("agentId"):
+            atype = tur.get("agentType")
+            if not atype:
+                # Async/background dispatches often return agentId with no agentType
+                # (confirmed on real transcripts) — derive it from the dispatching
+                # Agent tool_use's own input rather than dropping the subagent.
+                for blk in _blocks(msg):
+                    if isinstance(blk, dict) and blk.get("type") == "tool_result":
+                        tu_name, tu_inp = uses.get(blk.get("tool_use_id"), ("?", ""))
+                        if tu_name == "Agent":
+                            try:
+                                atype = json.loads(tu_inp).get("subagent_type")
+                            except ValueError:
+                                atype = None
+                            break
+                atype = atype or "unknown"
+            agent_ids[str(tur["agentId"])] = str(atype)
         if row.get("type") == "assistant":
             # Permission economics: does THIS turn recover from the pending denial(s)?
             has_tool = any(isinstance(b, dict) and b.get("type") == "tool_use" for b in _blocks(msg))
@@ -378,19 +397,27 @@ def analyze_pump(path, events_path=None, stall_gap=STALL_GAP_SECONDS):
                                 "fail_opens": dict(fo), "malformed_event_rows": (ev["malformed"] if ev else None)})
     for r in [pump] + per_type_reports:
         r.pop("outcomes", None)
-    return {"pump": pump, "subagents": per_type}
+    # Session-wide totals (fix round 1, finding 3): pump + every subagent type, summed
+    # field-by-field (hook_denies merged as a Counter); human_prompts/prompt_outcomes/
+    # fail_opens/malformed_event_rows are pump-only and simply carried through, since no
+    # subagent-level `permissions` dict ever carries those keys.
+    permissions_total = dict(pump["permissions"])
+    for d in per_type_reports:
+        _merge_permissions(permissions_total, d["permissions"])
+    return {"pump": pump, "subagents": per_type, "permissions_total": permissions_total}
 
 
-def _perm_line(perm):
-    return ("  permissions: human_prompts=%s stalls>600s=%d stall_seconds=%.0f hook_denies=%s "
+def _perm_line(perm, label="permissions"):
+    return ("  %s: human_prompts=%s stalls>600s=%d stall_seconds=%.0f hook_denies=%s "
             "identical_command_retries=%d retry_loops=%d same_rule_retries=%d "
             "post_denial_tool_turns=%d immediate_bash_retries=%d settings_denies=%d "
-            "automode_denies=%d user_denies=%d fail_opens=%s malformed_event_rows=%s") % (
-        perm.get("human_prompts"), perm.get("stalls", 0), perm.get("stall_seconds", 0.0),
+            "automode_denies=%d user_denies=%d other_denies=%d fail_opens=%s malformed_event_rows=%s") % (
+        label, perm.get("human_prompts"), perm.get("stalls", 0), perm.get("stall_seconds", 0.0),
         perm.get("hook_denies", {}), perm.get("identical_command_retries", 0), perm.get("retry_loops", 0),
         perm.get("same_rule_retries", 0), perm.get("post_denial_tool_turns", 0),
         perm.get("immediate_bash_retries", 0), perm.get("settings_denies", 0), perm.get("automode_denies", 0),
-        perm.get("user_denies", 0), perm.get("fail_opens", {}), perm.get("malformed_event_rows"))
+        perm.get("user_denies", 0), perm.get("other_denies", 0), perm.get("fail_opens", {}),
+        perm.get("malformed_event_rows"))
 
 
 def render_text(rep):
@@ -412,6 +439,7 @@ def render_text(rep):
         ar = p["result_bytes"].get(name, 0) // max(1, rc)
         out.append(f"    {name:34s} {n:5d}  {ai:7d}  {ar:8d}")
     out.append(_perm_line(p.get("permissions", {})))
+    out.append(_perm_line(rep.get("permissions_total", {}), "permissions_total"))
     out.append("SUBAGENTS")
     for atype, d in sorted(rep["subagents"].items(), key=lambda kv: -kv[1]["cache_read_input_tokens"]):
         out.append(f"  {atype}: inv={d['invocations']} turns/inv={d['turns_per_inv']} "
@@ -435,7 +463,9 @@ def compare(a, b):
                "pump_output": p["usage"].get("output_tokens", 0),
                "pump_cache_read_per_dispatch": (p["usage"].get("cache_read_input_tokens", 0) // p["agent_dispatches"]) if p["agent_dispatches"] else 0,
                "compactions": p["compactions"]}
-        perm = p.get("permissions", {})
+        # Session-wide (pump + every subagent type), not pump-only — a --compare run
+        # must not miss subagent stalls/retry loops (fix round 1, finding 3).
+        perm = rep.get("permissions_total", {})
         row["permission.human_prompts"] = perm.get("human_prompts")
         row["permission.stalls"] = perm.get("stalls")
         row["permission.stall_seconds"] = perm.get("stall_seconds")
@@ -447,10 +477,13 @@ def compare(a, b):
         row["permission.immediate_bash_retries"] = perm.get("immediate_bash_retries")
         row["permission.automode_denies"] = perm.get("automode_denies")
         row["permission.user_denies"] = perm.get("user_denies")
+        row["permission.other_denies"] = perm.get("other_denies")
         for atype, d in rep["subagents"].items():
             row[f"{atype}.turns_per_inv"] = d["turns_per_inv"]
             row[f"{atype}.cache_read_per_inv"] = d["cache_read_per_inv"]
             row[f"{atype}.output_per_inv"] = d["output_per_inv"]
+            row[f"{atype}.permission.stalls"] = d.get("permissions", {}).get("stalls")
+            row[f"{atype}.permission.retry_loops"] = d.get("permissions", {}).get("retry_loops")
         return row
     ra, rb = pick(a), pick(b)
     keys = sorted(set(ra) | set(rb))
@@ -527,6 +560,22 @@ def _write_fixture(root):
                                                  "content": "guard-read-path-hygiene: [C1] denied"}]}}
     OK = lambda tid, ts: {"type": "user", "timestamp": ts, "toolUseResult": {"stdout": "", "stderr": "", "interrupted": False},
         "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": tid, "is_error": False, "content": ""}]}}
+    # Full classification coverage (fix round 1, finding 4): settings_deny, ambiguous_gap
+    # (a genuine ok result, just a slow one), automode_deny, user_deny — each its own
+    # assistant row + result, with the ok result (tu_g) sandwiched between denials so the
+    # denial run never reaches 3 (retry_loops must stay at its existing count of 1).
+    SETTINGS = lambda tid, ts: {"type": "user", "timestamp": ts, "toolDenialKind": "permission-rule",
+        "toolUseResult": "Error: Permission to use Bash with command x has been denied.",
+        "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": tid, "is_error": True,
+                                                 "content": "Permission to use Bash with command x has been denied."}]}}
+    AUTOMODE = lambda tid, ts: {"type": "user", "timestamp": ts, "toolDenialKind": "automode-blocked",
+        "toolUseResult": "Error: automode blocked this tool call.",
+        "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": tid, "is_error": True,
+                                                 "content": "Automode blocked this tool call."}]}}
+    USERREJ = lambda tid, ts: {"type": "user", "timestamp": ts, "toolDenialKind": "user-rejected",
+        "toolUseResult": "User rejected tool use",
+        "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": tid, "is_error": True,
+                                                 "content": "User rejected tool use"}]}}
     SED = "cd apps && sed -i s/a/b/ x.py"
     dev += [
         A("perm1", "2026-09-04T00:00:00.000Z", [("tu_x1", "cd apps && pytest -q"), ("tu_x2", SED)]),
@@ -538,6 +587,14 @@ def _write_fixture(root):
         D("tu_x4", "2026-09-04T00:00:05.100Z"),
         A("perm4", "2026-09-04T00:00:06.000Z", [("tu_stall", "cd apps && install -m 755 a b")]),
         OK("tu_stall", "2026-09-04T00:11:46.000Z"),      # 700 s, no marker → approval stall
+        A("perm5", "2026-09-04T00:12:00.000Z", [("tu_s", "echo settings-denied-probe")]),
+        SETTINGS("tu_s", "2026-09-04T00:12:00.100Z"),
+        A("perm6", "2026-09-04T00:12:01.000Z", [("tu_g", "echo ambiguous-gap-probe")]),
+        OK("tu_g", "2026-09-04T00:15:21.000Z"),          # 200 s later, no marker → ambiguous gap, NOT a stall
+        A("perm7", "2026-09-04T00:15:22.000Z", [("tu_a", "echo automode-probe")]),
+        AUTOMODE("tu_a", "2026-09-04T00:15:22.100Z"),
+        A("perm8", "2026-09-04T00:15:23.000Z", [("tu_u", "echo user-rejected-probe")]),
+        USERREJ("tu_u", "2026-09-04T00:15:23.100Z"),
     ]
     with open(os.path.join(sub, "agent-a1.jsonl"), "w") as fh:
         for r in dev:
@@ -574,25 +631,39 @@ def _self_test():
         assert dev["invocations"] == 1 and dev["turns"] == 3
         assert dev["output_per_inv"] == 600 and dev["cache_read_per_inv"] == 180000
         assert dev["image_results"] == 1 and dev["image_bytes"] == 4000, (dev["image_results"], dev["image_bytes"])
-        assert dev["result_bytes"] == {"Bash": 408}, dev["result_bytes"]   # image bytes kept apart; +3×36B denial text
+        # image bytes kept apart; 300 (pytest) + 3×36B guard-denial text + 54B settings-deny
+        # + 32B automode-deny + 22B user-rejected text = 408 + 108 = 516 (ambiguous-gap OK
+        # result contributes 0B, same as every other OK() in this fixture)
+        assert dev["result_bytes"] == {"Bash": 516}, dev["result_bytes"]
         assert dev["top_results"][0]["tool"] == "Read" and dev["top_results"][0]["bytes"] == 4000
         assert "reviewer" not in rep["subagents"]                         # missing transcript skipped
         # ── permission economics (Task 8): issue-order Bash retry/stall/prompt metrics ──
         perm = dev["permissions"]
-        assert perm["hook_denies"] == {"C1": 3}, perm
-        assert perm["post_denial_tool_turns"] == 3 and perm["immediate_bash_retries"] == 3, perm
+        assert perm["hook_denies"] == {"C1": 3}, perm       # unaffected by the new denial classes
+        assert perm["post_denial_tool_turns"] == 5 and perm["immediate_bash_retries"] == 5, perm
         assert perm["identical_command_retries"] == 2 and perm["same_rule_retries"] == 2, perm
         assert perm["retry_loops"] == 1, perm          # issue order: ok, deny, deny, deny; result order would say 0
         assert perm["stalls"] == 1 and perm["stall_seconds"] == 700.0, perm
+        # Full classification coverage (fix round 1, finding 4): settings/automode/user
+        # denials each their own class, other_denies untouched (no non-"guard-"/non-
+        # "Permission to use" permission-rule denial in this fixture), and the ok result
+        # between tu_s and tu_a/tu_u keeps the post-tu_x4 denial run from ever reaching 3
+        # again (retry_loops stays at 1, asserted above).
+        assert perm["settings_denies"] == 1 and perm["automode_denies"] == 1, perm
+        assert perm["user_denies"] == 1 and perm["other_denies"] == 0, perm
+        assert perm["ambiguous_gaps"] == 1, perm
         pp = p["permissions"]
         assert pp["human_prompts"] == 1 and pp["prompt_outcomes"] == {"allowed_after_wait": 1}, pp
         assert pp["malformed_event_rows"] == 1, pp
+        assert rep["permissions_total"]["stalls"] == 1, rep["permissions_total"]   # pump has 0, dev has 1
         rows = compare(rep, rep)
         assert all(r["delta_pct"] in (0.0, None) for r in rows), rows
         assert any(r["metric"] == "permission.retry_loops" for r in rows)
+        assert any(r["metric"] == "permission.stalls" and r["delta_pct"] == 0.0 for r in rows), rows
         txt = render_text(rep)
         assert "pump turns per dispatch=2.0" in txt and "developer: inv=1" in txt
         assert "permissions: human_prompts=1" in txt and "stalls>600s=1" in txt and "retry_loops=1" in txt
+        assert "permissions_total:" in txt
         json.dumps(rep)  # serialisable
     print("analyze_transcripts self-test: OK")
     return 0
