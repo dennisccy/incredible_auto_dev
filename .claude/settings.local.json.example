@@ -1,6 +1,6 @@
 {
   "_comment": "Local overrides for .claude/settings.json. Copy to settings.local.json (not committed).",
-  "_doc": "Add machine-specific permissions here (this file is gitignored). Shell control flow (for/do/...), common dev binaries, venv/pytest paths, and scoped rm -rf live in the SHARED policy now - edit policy/permissions.yaml and re-render instead of adding them here. Broad curl belongs in the user-global ~/.claude/settings.json (already set on the reference machine).",
+  "_doc": "Add machine-specific permissions here (this file is gitignored). Shell control flow (for/do/...), common dev binaries, venv/pytest paths, and scoped rm -rf live in the SHARED policy now - edit policy/permissions.yaml and re-render instead of adding them here. Broad curl belongs in the user-global ~/.claude/settings.json (already set on the reference machine). Operator-specific grants (a personal headless-Chrome debugging command; exact-match rules for detached launch strings, since prefix rules cannot approve `setsid`) belong in this gitignored local file, never in policy/permissions.yaml.",
 
   "permissions": {
     "allow": [
