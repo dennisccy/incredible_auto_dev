@@ -352,10 +352,11 @@ def head_of(segment):
 def complex_syntax(tokens):
     """Name the first construct the guard does not interpret, or None."""
     for tok in tokens:
-        if tok in GROUPING or (tok and set(tok) <= set("()")):
-            return "grouping"            # subshell, brace group, $( ), <( ), >( ), $(( )) all
-                                          # tokenize into runs of "(" / ")" (possibly multi-char,
-                                          # e.g. "((" / "))" from arithmetic expansion)
+        if tok in GROUPING:
+            return "grouping"            # subshell, brace group, $( ), <( ), >( ) all
+                                          # tokenize into single "(" or ")" tokens; (( / )) from
+                                          # arithmetic expansion are ordinary tokens — arithmetic is not
+                                          # command substitution
         if "`" in tok:
             return "backtick"
     for _start, seg in split_segments(tokens):
@@ -522,6 +523,7 @@ DENY_FIXTURES = [   # (rule, command, evidence)
     ("C1", "cd apps/backend && rmdir tmp", "bundle write table"),
     ("C1", "cd apps/backend && mkdir -p tests/fixtures", "bundle create table"),
     ("C1", "cd apps/backend && touch tests/__init__.py", "bundle create table"),
+    ("C1", "cd apps/backend && mv notes.txt notes_$((1)).txt", "arithmetic expansion must not hide a cd-then-write"),
     ("C1", "cd apps/backend && env FOO=1 nohup rm -f x.pyc", "docs: wrappers are stripped"),
     ("C2", "cd apps/backend && pytest -q > /tmp/out.log", "docs: cd with output redirect"),
     ("C2", "cd apps/backend && pytest -q >> out.log", "docs"),
@@ -605,6 +607,8 @@ ALLOW_FIXTURES = [   # (command, why the native checker does not ask)
     ("cd apps/backend && pytest -q | grep -n foo -", "'-' is stdin"),
     ("cd apps/backend && sed -e's/i/x/' /home/u/app/apps/backend/app/main.py", "attached -e script containing 'i' is not -i"),
     ("grep -rn foo apps/backend/app/ " + DEVNULL, "/dev/null is a filename-forcing idiom, not a root"),
+    ("cd apps/backend && echo $((1+2))", "arithmetic expansion is not unknown syntax"),
+    ("(( x = 1 + 2 ))", "arithmetic command, no cd"),
 ]
 UNKNOWN_FIXTURES = [   # (expected FAILOPEN reason, command)
     ("tokenize", "cd apps/backend && pytest 'unbalanced"),
@@ -616,7 +620,6 @@ UNKNOWN_FIXTURES = [   # (expected FAILOPEN reason, command)
     ("complex:backtick", "cd apps/backend && grep -n x `ls app | head -1`"),
     ("complex:control-flow", "eval \"cd apps && rm -f x\""),
     ("tokenize", "cd apps/backend && python3 - <<'PY'\ns = 'don\\'t'\nmv = 2\nPY"),
-    ("complex:grouping", "cd apps/backend && echo $((1+2))"),
 ]
 # (id, command with {SB} = sandbox root, guard expectation, note). Unique ids; every entry is
 # probed natively by scripts/automation/permission-oracle.sh and recorded in Task 10.
