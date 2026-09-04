@@ -372,6 +372,13 @@ if jq -e '.hooks.PreToolUse[] | select(.matcher=="Bash") | .hooks[] | select(.co
 else
   _fail "hook: guard-read-path-hygiene is NOT registered as PreToolUse/Bash in .claude/settings.json"
 fi
+# permission-oracle.sh must stay wired to the detector's oracle manifest (Task 1
+# --oracle-manifest is the single source; the oracle script carries no probe list of its own).
+if grep -q -- '--oracle-manifest' scripts/automation/permission-oracle.sh && [[ "$(python3 hooks/lib/read_path_hygiene.py --oracle-manifest | cut -f1 | sort | uniq -d | wc -l)" == "0" ]] && [[ "$(python3 hooks/lib/read_path_hygiene.py --oracle-manifest | wc -l)" -ge 15 ]]; then
+  _pass "oracle: permission-oracle.sh probes the detector's manifest (unique ids, >= 15 entries)"
+else
+  _fail "oracle: permission-oracle.sh and the detector's oracle manifest have drifted"
+fi
 # Install gate, Claude path. NOTE: the deny case appends a real record to
 # reports/security/install-decisions.jsonl per eval run (the hook path never
 # passes --dry-run) — accepted audit-trail noise.

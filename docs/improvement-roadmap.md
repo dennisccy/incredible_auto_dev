@@ -4459,6 +4459,156 @@ but appreciated.
   the vendored copies (tapeology, trendora) and an explicit decision on whether `post-goal`
   should ever be re-attached to a lifecycle point. "No in-repo caller" is not sufficient.
 
+### CAND-PERM-1 · Zero-human-prompt interactive goal mode (IN-PROGRESS — commits 1–6 landed, oracle + acceptance run owed)
+- **Proposed:** P1 · Effort L · Risk MED · **Status:** IN-PROGRESS on branch `perm-stall-closure`
+  (commits 1–6 of 7 landed through `c0e609c`; this entry is commit 7 — docs + operator tooling,
+  no oracle run, no deny-rule change). Task 10 (native-oracle probe, then one real interactive
+  acceptance iteration) is operator-gated — spends tokens (G9) — and not started.
+- **Problem (verified against Claude Code 2.1.260, 2,236 session transcripts, repo @ `b422b6e`):**
+  interactive goal-mode Bash dispatches occasionally reach a native approval dialog no autonomous
+  agent can answer — observed shape: `cd <dir> && \`-newline-continued `sed -i ...` then `grep`,
+  which the old tokenizer misread as one escaped word (a live tapeology stall). A hook deny
+  resolves in ~0.1s; the median human-rejection gap is 216s; 161 corpus Bash calls showed a
+  >600s tool_use→tool_result gap with no timeout/background marker (one
+  `source .venv/bin/activate` compound stalled 15,174s).
+- **Root causes:**
+
+  | # | Root cause | Closed by |
+  |---|---|---|
+  | R1 | Guard has no rule for the native cd + write / redirect / git asks | Task 1 (Rule C) |
+  | R2 | Tokenizer: `\`-newline continuation joins the next word; bare newline is whitespace; heredoc bodies parse as commands | Task 1 |
+  | R3 | Prompt note is read-only wording | Task 4 |
+  | R4 | `core.md` misdescribes the gate (lists `tee`/`install`; omits `rmdir`, redirects, git, newlines) | Task 5 |
+  | R5 | Six shared allow entries with no demonstrated effect; two provably inert; wrong-commit comment | Task 6 |
+  | R6 | No deterministic measurement of prompts/stalls/retry loops; old analyzer ignored `is_error`, `toolDenialKind`, timestamps | Tasks 7–8 |
+  | R7 | Fail-open is silent | Tasks 1–2 |
+  | R8 | `> /dev/` pattern denies `> /dev/null` | Task 3 |
+  | R9 | Rule A denied broader than the native gate and misread option values (`head -n 20`, `grep -m 1 foo`) as paths — each false deny cost a retry turn | Task 1 |
+
+- **Design decisions (one line each):**
+  - **D1** Mirror the native enforcer, tiered by evidence (observed / documented / bundle-code); unproven bundle shapes live in one oracle manifest, never enforced until probed.
+  - **D2** Rule scope tracks only the proven shape: Rule A denies a relative-path content read after `cd` for `grep/egrep/fgrep/cat/find`/read-only `sed` (per-command operand tables); Rule B keeps the unchanged b422b6e recursive-root shapes; Rule C1–C3 deny only the write/redirect/git segment that comes after the `cd`.
+  - **D3** Parser ambition is capped to `&& || ; | |& &`, bare/backslash-newline, redirects, minimal heredoc shielding, checker wrappers; everything else (subshells, loops, `eval`, backticks, substitution, unbalanced quoting) is **unknown** → bounded fail-open, pass-through to the native checker — except a coarse deny when tokenization fails and the raw text still shows `cd` then a write word (a bash syntax error regardless).
+  - **D4** Extend the existing detector/guard rather than add files; the sole new hook is the log-only PermissionRequest recorder, sharing the one event writer.
+  - **D5** The dispatch prompt note is prevention, the hook is enforcement, the log is proof — one concise rewrite, no new pump turn.
+  - **D6** Measurement is deterministic, session-scoped, private (`~/.cache/iad/hook-events/<slug>/<session-id>.jsonl`, 0700/0600, append+flock, no raw command text/hash); sequence-dependent retry metrics come from Bash **issue order**, never result-arrival order.
+  - **D7** `dontAsk` stays out entirely; the only fallback is a roadmap-only PermissionRequest deny-with-correction mode (Stage-2 below), promoted only on evidence.
+  - **D8** Evidence-only permissions: all six allow entries removed from `policy/permissions.yaml`; no deny-rule changes; operator grants go in gitignored `settings.local.json`.
+  - **D9** Acceptance gates are decoupled from stochastic thresholds: permission/reliability facts plus the normal Goal Mode quality contract are hard gates; token/turn economics are single-run warnings, budgets only after several comparable sessions.
+
+- **Guard semantics** (`hooks/lib/read_path_hygiene.py`; ids are what the guard, the events and the analyzer report):
+
+  | Rule | Denies | Notably does NOT deny | Evidence |
+  |---|---|---|---|
+  | **A** cd-compound-read | `cd`, then `grep/egrep/fgrep/cat/find`/read-only `sed` with ≥1 relative-path operand | absolute path after cd, no-path-operand reads, `ls`; `rg/head/tail/wc/awk/...` (oracle-gated) | E3 (grep); bundle `cd-compound-read` |
+  | **B** unbounded recursive root | `grep -r/-R/--recursive` or `rg`, rooted at `. ./ .. ../ ~ ~/` or a `./`, `../`, `~/`, `/` operand (b422b6e shapes, unchanged) | non-recursive/bounded-subdir searches; `ag`/`ack` | b6ae4d2 observed |
+  | **C1** cd-compound-write | `cd`, then `mkdir/touch/rm/rmdir/mv/cp` or `sed -i` | `tee`/`install` (not path-restricted); write before the cd (oracle) | E2; bundle table |
+  | **C2** cd-compound-redirect | `cd`, then a redirect whose target is not `/dev/null` | `2>/dev/null`, `>/dev/null 2>&1`, fd dups | docs; bundle |
+  | **C3** cd-git-compound | `cd`, then any `git` segment | `git -C dir ...` (no cd) | docs |
+  | **coarse** | tokenizer failure **and** raw text shows `cd` then a write word | every other tokenizer failure → fail-open | D3 |
+  | **unknown** (fail-open, logged) | — | grouping, control flow, `eval`, backticks, substitution, other tokenizer failures | D3; measured by the recorder |
+  | **oracle** (pinned, not enforced) | — | 18 boundary ids (O1…O19, `--oracle-manifest`) — the single probe list Task 9's script consumes | D1; Task 10 Step 1 |
+
+- **Six shared allow entries removed (commit 5, evidence-only — D8):**
+
+  | Entry | Transcript evidence | Why it cannot help | Disposition |
+  |---|---|---|---|
+  | `Bash(nohup *)` | 393 pipeline-agent calls, all pre-entry successes (classifier-approved) | `nohup` is stripped before rule matching (docs § Wrappers) | REMOVE |
+  | `Bash(setsid *)` | 221 pipeline-agent calls, all pre-entry successes | exec wrapper — "can't be auto-approved by a prefix rule" | REMOVE |
+  | `Bash(disown)` / `Bash(disown *)` | 284 pipeline-agent calls, all pre-entry successes | shell builtin, classifier-approved in auto mode regardless | REMOVE |
+  | `Bash(google-chrome *)` | 2 agent uses, both a `qa`-agent rule violation; Chrome is spawned only by the superpowers-chrome MCP node process | grants an unmanaged, unconfined browser outside engine teardown ownership | REMOVE (operator's own use → local `settings.local.json`) |
+  | `Bash(/usr/bin/google-chrome *)` | 0 agent uses, 1 operator use | same | REMOVE |
+
+  Deny block byte-identical before/after; `additionalDirectories` unchanged (Task 6 Step 4).
+
+- **Permission economics (commit 6 — `analyze_transcripts.py`, issue-order Bash metrics):**
+
+  Classification:
+
+  | class | rule |
+  |---|---|
+  | `hook_deny` (+rule id) | `toolDenialKind=="permission-rule"`, content starts `guard-`; id parsed from `guard-<name>: [<id>]` |
+  | `settings_deny` | same kind, content starts `Permission to use` |
+  | `automode_deny` | `toolDenialKind` in `{automode-blocked, automode-unavailable}` |
+  | `user_deny` | `toolDenialKind=="user-rejected"` |
+  | `stall` | no denial kind, not an error, no timeout/background/interrupted marker, gap ≥600s |
+  | `ambiguous_gap` | same but 120s ≤ gap < 600s (reported, never counted as a stall) |
+
+  Metrics (sequence-dependent ones from Bash **issue order**, never result-arrival order):
+
+  | metric | role |
+  |---|---|
+  | `post_denial_tool_turns` / `immediate_bash_retries` | economics — recovery vs failure |
+  | `identical_command_retries` | hard tripwire (0) |
+  | `same_rule_retries` | tripwire (warn > 0) |
+  | `retry_loops` (≥3 consecutive denied Bash uses) | hard tripwire (0) |
+  | `human_prompts` / `prompt_outcomes` | hard gate (0) once the recorder is proven |
+  | `stalls`, `stall_seconds`, `ambiguous_gaps` | hard gate (`stalls == 0`) |
+  | `fail_opens` (by reason), `malformed_event_rows` | diagnostics |
+
+- **DoD / Acceptance criteria (D9, Task 10 — the operator-gated run):**
+  - *Hard permission/reliability gates:* `human_prompts == 0` once the recorder is proven (else `stalls == 0` AND no observed dialog); `identical_command_retries == 0`; `retry_loops == 0`; no permission-induced `AWAITING_PUMP`/inflight timeout; existing reviewer/QA/closure gates pass with no failure attributable to the permission changes; `run-evals.sh` + detector/event-writer self-tests green; no security regression; no deny-rule weakening.
+  - *TOKEN-11a health:* `pump_turns_per_dispatch` does not materially regress vs the immediate PRE (`≤ 2.2` is the established target only where the compared configuration already meets it).
+  - *Reviewer/QA quality:* verdict counts are diagnostics, never PRE-equality gates. *Economics warnings (one run, not gates):* post-denial/immediate-Bash-retry rate, developer turns/inv, or cache-read materially higher (>10–15%); any `same_rule_retries`.
+
+- **Stage-2 experiment (roadmap-only — NOT implemented, D7):** if Task 10's acceptance run still
+  shows significant unpredictable prompts after the deterministic rules land,
+  `permission-request-log.sh` may gain a deny-with-correction mode read from a default-off
+  marker file `<cache>/iad/hook-events/<slug>/.deny-mode` (never `.claude/`), returning
+  `decision.behavior:"deny"` with a corrective message **only when `agent_id` is present**
+  (subagent calls — the operator's own calls still see a normal dialog). Tripwire: any
+  `identical_command_retries > 0`, `retry_loops > 0`, or post-denial activity up >15% deletes
+  the marker. Per-agent/pump-wide `dontAsk` (ignored under this host's auto-mode parent / would
+  auto-deny hundreds of classifier-approved calls) and `bypassPermissions` (no confirmation
+  ever) are explicitly rejected.
+
+- **Rollback (per commit):** each of the seven commits reverts independently with `git revert` +
+  `sync-cli-assets.py --cli claude`. Emergency: drop `guard-read-path-hygiene.sh` from
+  `policy/hook-bindings.yaml` and resync (drops Rules A–C at once), or a one-session
+  `--settings '{"disableAllHooks":true}'` (never in a pump run — also disables the security
+  gates). Commit 5 (allow-entry removal) rolls back by re-adding the six lines. The recorder is
+  log-only; a future deny mode rolls back by deleting its marker file. Vendored repos receive
+  changes only through the operator's per-file sync.
+
+- **Stop-and-ask:** (i) an oracle probe shows a guard-DENY control shape (O1/O5/O11) as
+  `native_allow` → narrow the rule, never the allowlist; (ii) an oracle shape shows `NATIVE_ASK`
+  for a path-resolution reason → extend the rule set with a fixture, never loosen the guard;
+  (iii) the recorder writes nothing on a real dialog; (iv) any need to touch a deny rule;
+  (v) `run-evals.sh` goes red.
+
+- **PRE/POST ledger template.** Kept HERE rather than in `benchmarks/experiments.md`: that file
+  is an append-only ledger whose block format is pinned by
+  `tests/automation/test-benchmark-runner.sh`, and an unfilled template committed there would
+  read as a fake entry. The operator copies this block into `benchmarks/experiments.md`, fills
+  in `<...>`, and runs Task 10:
+
+  ```markdown
+  ## PRE <session-id>
+  framework: <sha of commit 7> (clean)   fixture: <repo>/<branch> resume of <goal session>
+  hypothesis: with Rules A/B/C1–C3, newline-aware tokenization and the path-safety note, no
+    subagent Bash call reaches a human dialog; denials are corrective, not looping.
+  hard gates: permission.human_prompts == 0 (or stalls == 0 + no observed dialog if the recorder
+    is unproven); identical_command_retries == 0; retry_loops == 0; no permission-induced
+    AWAITING_PUMP or inflight timeout; the iteration completes its normal reviewer/QA/closure
+    gates with no failure attributable to permission routing; no security regression; no
+    deny-rule change.
+  TOKEN-11a health: pump_turns_per_dispatch does not materially regress vs the immediate PRE
+    (<= 2.2 is the established TOKEN-11a target only where the compared configuration already
+    meets it).
+  warnings (one-session noise, not gates): post_denial_tool_turns or immediate_bash_retries per
+    Agent dispatch > +15 % vs PRE; developer turns/inv > +15 %; pump+subagent cache_read
+    > +15 %; same_rule_retries > 0; prompt bytes per dispatch delta ~= +200 B.
+  diagnostics reported, not gated: reviewer/QA verdict counts; ambiguous_gaps; fail_opens by
+    reason.
+  baseline (historical, analyze_transcripts.py on f99ab8e4 + c6453615): <numbers from Task 8
+    Step 4 PRE baseline run>
+  oracle: <path to the permission-oracle.sh output table — one row per manifest id>
+  ```
+
+- **Verify:** `bash -n scripts/automation/permission-oracle.sh` ·
+  `python3 hooks/lib/read_path_hygiene.py --oracle-manifest | wc -l` (18) ·
+  `./scripts/automation/run-evals.sh` · `bash tests/automation/test-doc-drift.sh`.
+
 ---
 
 ## 17. Absorbed-from-README ledger (traceability)
