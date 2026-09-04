@@ -17,7 +17,7 @@ Skills are reusable instruction files that agents read during their workflow. Th
 | Phase Closure Gate | `phase-closure-gate.md` | phase-closure-auditor | Evaluate phase completion criteria (artifact existence, quality, consistency) |
 | Architecture Doc Updater | `architecture-doc-updater.md` | update-docs.sh | Update framework or project architecture docs when source files drift |
 
-## Hooks (6 total, in `.claude/hooks/`)
+## Hooks (7 total, in `.claude/hooks/`)
 
 Hooks are shell scripts triggered by Claude Code at specific lifecycle points. They are configured in `.claude/settings.json`.
 
@@ -53,3 +53,8 @@ Hooks are shell scripts triggered by Claude Code at specific lifecycle points. T
 - **Trigger:** Stop (session end)
 - **Purpose:** Reminds the operator to check artifacts if a phase run is in progress.
 - **Behavior:** Scans `runs/*/status.json` for in-progress phases and prints notices.
+
+### permission-request-log.sh
+- **Trigger:** PermissionRequest (Claude Code is about to need a human permission decision)
+- **Purpose:** Stage-1, log-only recorder for the permission-economics telemetry (TOKEN-12 extension) — records that a human prompt was about to happen so `lib/analyze_transcripts.py` can count them deterministically. A deny mode (stage 2) is a separate roadmap experiment (CAND-PERM-1), not implemented here.
+- **Behavior:** Pipes the PermissionRequest JSON on stdin into `hooks/lib/hook_events.py` (`--event permission_request`), which appends a privacy-safe event (suggestion count/types/hash only — never command or suggestion text). No stdout, no decision, exit 0 always — the native flow proceeds unchanged.

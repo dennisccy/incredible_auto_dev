@@ -31,3 +31,7 @@ on-stop-check-artifacts.sh:
   - Stop
   codex:
   - Stop
+permission-request-log.sh:
+  claude:
+  - PermissionRequest
+  codex: []

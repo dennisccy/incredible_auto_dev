@@ -324,3 +324,79 @@ Recorded PRE (2026-09-01, tapeology, largest session): pump 1,751 turns, 890M ca
 (~508K/turn), 1.41M output, 325 dispatches, 5.4 pump turns per dispatch; developer 124
 turns/inv, 39M cache_read/inv; evaluator 52 turns/inv; browser-qa 64 turns/inv with 13
 screenshot read-backs.
+
+## Permission economics (2026-09-04)
+
+Every human permission prompt is a stall the autonomous pipeline cannot resolve on its own.
+Two pieces close the loop: a log-only `PermissionRequest` recorder hook
+(`hooks/permission-request-log.sh`, stage 1 of CAND-PERM-1 — no decision, no deny mode) and
+a deterministic extension of the TOKEN-12 transcript analyzer
+(`lib/analyze_transcripts.py`) that classifies every Bash tool-use result and derives
+retry/stall/prompt metrics from it. A stage-2 deny mode is a separate, not-yet-built roadmap
+experiment.
+
+**Classification** (deterministic, from the transcript's `toolDenialKind` / `toolUseResult` /
+gap between issue and result):
+
+| class | rule |
+|---|---|
+| `hook_deny` (+ rule id) | `toolDenialKind == "permission-rule"` and content starts with `guard-`; rule id parsed from `guard-<name>: [<id>]`, `?` for pre-tag transcripts |
+| `settings_deny` | `toolDenialKind == "permission-rule"` and content starts with `Permission to use` |
+| `automode_deny` | `toolDenialKind in {"automode-blocked","automode-unavailable"}` |
+| `user_deny` | `toolDenialKind == "user-rejected"` |
+| `stall` | no `toolDenialKind`, not an error, `toolUseResult` has none of `timedOutAfterMs`/`backgroundTaskId`/`interrupted`, gap ≥ 600 s (a foreground Bash call cannot legitimately run that long without a timeout marker) |
+| `ambiguous_gap` | same shape, 120 s ≤ gap < 600 s — reported, never counted as a stall |
+
+**Metrics.** The sequence-dependent Bash metrics (`identical_command_retries`,
+`same_rule_retries`, `retry_loops`) are derived **after the whole transcript is parsed**, from
+Bash tool-uses in **issue order** (the order the assistant emitted them) joined with each
+use's final classification — never from result-arrival order, which differs whenever one
+turn issues several Bash calls or results land out of sequence. Bash commands are normalized
+by collapsing whitespace before comparison.
+
+| metric | definition | role |
+|---|---|---|
+| `post_denial_tool_turns` | denials (any class) whose next assistant row contains any tool_use | economics/behaviour only — a Read after a denied `sed` is recovery, not failure |
+| `immediate_bash_retries` | Bash denials whose next assistant row contains a Bash tool_use | economics |
+| `identical_command_retries` | denied Bash uses followed, within the next 3 Bash uses in issue order, by the identical normalized command (once per denial) | hard tripwire (0) |
+| `same_rule_retries` | hook-denied Bash uses whose next Bash use in issue order is again hook-denied with the same rule id | tripwire (warn > 0) |
+| `retry_loops` | maximal runs of ≥ 3 consecutive denied Bash uses in issue order (any denial class) | hard tripwire (0) |
+| `human_prompts` / `prompt_outcomes` | count of `permission_request` events; outcome of the matching `tool_use_id`: `user_deny`, `allowed_after_wait` (gap ≥ 120 s), `allowed_fast`, `unmatched` | hard gate (0) once the recorder is proven live |
+| `stalls`, `stall_seconds`, `ambiguous_gaps` | as classified above | hard gate (`stalls == 0`) |
+| `fail_opens` (by reason), `malformed_event_rows` | tallied from the events file | diagnostics |
+
+**The PermissionRequest recorder.** `hooks/permission-request-log.sh` is bound to Claude
+Code's `PermissionRequest` event (log-only, stage 1 — see `.claude/architecture/skills-and-hooks.md`).
+It pipes the hook's stdin JSON into `hooks/lib/hook_events.py --event permission_request`,
+which appends one line to a session-scoped events file:
+
+```
+<cache>/iad/hook-events/<project-slug>/<session-id>.jsonl
+```
+
+Directories are created `0700` and files `0600` (explicit modes, tightened best-effort if
+found wider). Each row is privacy-safe by construction: `session_id`, `agent_id`,
+`agent_type`, `tool_use_id`, `tool_name`, `permission_mode`, plus (`permission_request` rows
+only) `suggestion_count`, `suggestion_types`, and `suggestions_sha` (a hash of the raw
+suggestion list, never the list itself). **No raw command text and no command hash are ever
+recorded by default.** `IAD_HOOK_EVENTS_RAW=1` is an explicit, default-off diagnostic switch
+that additionally records `cmd_raw` (the first 2000 chars of the Bash command) — opt-in only,
+never set by the pipeline itself.
+
+The analyzer reads that same file to compute `human_prompts` and `prompt_outcomes`:
+
+```bash
+python3 scripts/automation/lib/analyze_transcripts.py <pump-session.jsonl> \
+  --events <cache>/iad/hook-events/<slug>/<session>.jsonl   # default: derived from the transcript path
+python3 scripts/automation/lib/analyze_transcripts.py <pump-session.jsonl> --stall-gap 300  # override the 600s stall floor
+```
+
+`--events` defaults to one direct `open()` of the derived path above (never a directory
+scan); a missing events file makes `human_prompts` / `malformed_event_rows` report `null`
+rather than `0`, so a PRE session recorded before the recorder existed is never mistaken for
+a session with zero prompts. `--stall-gap` overrides the 600 s `stall` floor only; the 120 s
+`ambiguous_gap` lower bound is fixed.
+
+Permission metrics are reported separately from token metrics on purpose: a session can be
+token-cheap and permission-expensive (a human sitting on a dialog) or the reverse, and
+conflating the two would hide either failure mode.

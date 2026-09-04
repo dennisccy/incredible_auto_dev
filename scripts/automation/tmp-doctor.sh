@@ -137,6 +137,11 @@ case "$MODE" in
       rm -rf -- "$RETIRED_BENCH_ROOT" 2>/dev/null || true
       echo "[tmp-doctor] purged retired root $RETIRED_BENCH_ROOT"
     fi
+    # Retention sweep for the permission-economics events ledger (see
+    # docs/goal-mode-telemetry.md "Permission economics" section): session-scoped
+    # hook-events files older than 30 days are stale by construction (the session
+    # is long over), so age them out here rather than let them accumulate forever.
+    find "${XDG_CACHE_HOME:-$HOME/.cache}/iad/hook-events" -name '*.jsonl' -mtime +30 -delete 2>/dev/null || true
     rc=0
     chain_tmp_disk_guard --enforce || rc=$?
     echo "[tmp-doctor] aggressive sweep done."

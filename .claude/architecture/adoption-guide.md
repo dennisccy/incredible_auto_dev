@@ -185,7 +185,7 @@ your-project/
     anti-patterns/                   # Failure modes (README index + per-entry files)
     agents/                          # agent definitions (rendered from agents/<name>/)
     skills/                          # 15 skills
-    hooks/                           # 6 hooks
+    hooks/                           # 7 hooks
     architecture/                    # Framework architecture docs (incl. goal-mode.md)
   scripts/automation/                # automation scripts (incl. run-goal.sh, goal-iter-lean.sh)
     lib/                             # quota-retry.sh, common.sh, telemetry.sh

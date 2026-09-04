@@ -422,6 +422,21 @@ if (cd "$(mktemp -d)" && bash "$OLDPWD/.claude/hooks/on-stop-check-artifacts.sh"
 else
   _fail "hook: on-stop-check-artifacts errored with no runs/"
 fi
+# PermissionRequest recorder (Task 7, log-only stage 1): no decision, no raw
+# command or suggestion text — just an attributed permission_request event so
+# lib/analyze_transcripts.py can count human prompts deterministically.
+_pr_rc=0
+_pr_out=$(printf '%s' '{"hook_event_name":"PermissionRequest","session_id":"evals","agent_id":"a2","agent_type":"qa","tool_use_id":"t9","tool_name":"Bash","permission_mode":"auto","tool_input":{"command":"cd apps && install -m 755 a secret-token-123"},"permission_suggestions":[{"type":"addRules","rules":[{"toolName":"Bash","ruleContent":"install *"}]}]}' | bash .claude/hooks/permission-request-log.sh 2>/dev/null) || _pr_rc=$?
+if [[ $_pr_rc -eq 0 && -z "$_pr_out" ]] && grep -q '"event":"permission_request"' "$IAD_HOOK_EVENTS_FILE" && grep -q '"agent_type":"qa"' "$IAD_HOOK_EVENTS_FILE" && grep -q '"suggestion_types":\["addRules"\]' "$IAD_HOOK_EVENTS_FILE" && ! grep -q 'secret-token-123\|ruleContent\|cmd_sha' "$IAD_HOOK_EVENTS_FILE"; then
+  _pass "hook: permission-request-log records a would-be prompt (no decision, no raw command, no raw suggestions)"
+else
+  _fail "hook: permission-request-log (rc=$_pr_rc out=${_pr_out:0:60})"
+fi
+if jq -e '.hooks.PermissionRequest[] | .hooks[] | select(.command|contains("permission-request-log.sh"))' .claude/settings.json >/dev/null 2>&1; then
+  _pass "hook: permission-request-log is registered on PermissionRequest"
+else
+  _fail "hook: permission-request-log is NOT registered on PermissionRequest"
+fi
 
 # Model config has ONE source: model_tier in agent.yaml → config/model-tiers.yaml.
 # A model_override reappearing means someone re-pinned a concrete id — allowed
