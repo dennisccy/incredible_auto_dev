@@ -232,8 +232,12 @@ def drop_heredocs(tokens):
     while i < len(tokens):
         tok = tokens[i]
         if tok in ("<<", "<<-") and i + 1 < len(tokens):
-            delim = tokens[i + 1].lstrip("-")
-            i += 2
+            if tokens[i + 1] == "-" and i + 2 < len(tokens):
+                delim = tokens[i + 2]          # `<<- DELIM` (space form): tokenizer splits the `-`
+                i += 3
+            else:
+                delim = tokens[i + 1].lstrip("-")   # `<<-DELIM` / `<< DELIM` (attached / no dash)
+                i += 2
             while i < len(tokens) and tokens[i] != "\n":   # the rest of the command line stays
                 out.append(tokens[i])
                 i += 1
@@ -470,6 +474,7 @@ DENY_FIXTURES = [   # (rule, command, evidence)
     ("C2", "cd apps/backend && pytest -q 2> err.log", "docs"),
     ("C2", "cd apps/backend && echo hi > out.txt", "docs"),
     ("C2", "cd apps/backend && cat > /tmp/x.txt <<'EOF'\nhello\nEOF", "docs; heredoc line keeps its redirect"),
+    ("C2", "cd apps/backend && cat <<- EOF > out.txt\nhello\nEOF", "space-form heredoc line keeps its redirect"),
     ("C3", "cd apps/backend && git status", "docs: cd with git"),
     ("C3", "cd apps/backend && git status >" + DEVNULL + "; true", "docs"),
     ("A", "cd apps/backend && grep -n foo app/main.py", "observed E3"),
@@ -517,6 +522,7 @@ ALLOW_FIXTURES = [   # (command, why the native checker does not ask)
     ("cd apps/backend && cat", "stdin"),
     ("cd apps/backend && python3 - <<'EOF'\nimport os\nos.remove('x')\nEOF", "heredoc body is data"),
     ("cd apps/backend && python3 - <<'EOF'\ncat = 1\nrm = 2\nEOF", "heredoc body is data"),
+    ("cd apps/backend && cat <<- EOF\nrm -f x\nEOF\npytest -q", "heredoc with a space before the delimiter is data"),
     ("cd apps/backend && python3 - <<EOF > " + DEVNULL + "\nprint(1)\nEOF", "/dev/null"),
     ("cd apps/backend && install -m 755 run.sh bin/run", "not path-restricted (prompts for lack of an allow rule, not for the cd)"),
     ("cd apps/backend && less app/main.py", "less is not path-restricted (previously over-denied)"),
