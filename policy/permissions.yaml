@@ -74,6 +74,9 @@ allow:
 - Bash(xargs *)
 - Bash(diff *)
 - Bash(test *)
+# Curated dev/read-only binaries observed prompting in goal mode. NOTE:
+# `timeout *` and `make *` are command wrappers / arbitrary-target runners —
+# same accepted class as `env *` and `xargs *`; the embedded deny entries below
 # and the built-in rm containment bound the damage. Deliberately excluded:
 # nc, nohup, setsid, disown, watch, yes, bare `command *` (wrapper/exfil/interactive
 # risk with no pipeline need — and per Claude Code's docs `nohup`/`nice`/`timeout` are

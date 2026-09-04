@@ -129,7 +129,9 @@ def operand_paths(args, value_short, value_long, pattern_short, pattern_long):
     while i < len(args):
         a = args[i]
         i += 1
-        if opts_done or a == "-" or not a.startswith("-"):
+        if a == "-":
+            continue                                    # stdin marker, never a path (like cat_paths)
+        if opts_done or not a.startswith("-"):
             paths.append(a)
             continue
         if a == "--":
@@ -209,14 +211,54 @@ ALWAYS_RECURSIVE = {"rg"}
 
 
 def normalize(cmd):
-    """Fold backslash-newline continuations: the shell joins them into one line."""
-    return cmd.replace("\\\r\n", " ").replace("\\\n", " ")
+    """Fold backslash-newline continuations (the shell joins them into one line), then blank
+    `#`-comments to end-of-line so they never reach the tokenizer."""
+    cmd = cmd.replace("\\\r\n", " ").replace("\\\n", " ")
+    return _strip_line_comments(cmd)
+
+
+def _strip_line_comments(cmd):
+    """Blank a `#...` comment to end-of-line, but keep the `\\n` itself. Only a `#` that
+    starts a word (preceded by whitespace or the start of the string) outside single/double
+    quotes is a comment marker -- `grep -n '#include' f` and `echo 'a#b' # trailing` must not
+    lose their quoted `#`. shlex's own default `commenters='#'` handling is not reused here
+    because it calls `instream.readline()`, which consumes the trailing newline TOO and
+    silently merges the next shell command into the commented-out segment (F1)."""
+    out = []
+    quote = None                      # None, "'" or '"'
+    i, n = 0, len(cmd)
+    while i < n:
+        ch = cmd[i]
+        if quote:
+            out.append(ch)
+            if quote == '"' and ch == "\\" and i + 1 < n:
+                out.append(cmd[i + 1])
+                i += 2
+                continue
+            if ch == quote:
+                quote = None
+            i += 1
+            continue
+        if ch in "'\"":
+            quote = ch
+            out.append(ch)
+            i += 1
+            continue
+        if ch == "#" and (i == 0 or cmd[i - 1] in " \t\r\n"):
+            while i < n and cmd[i] != "\n":
+                i += 1
+            continue
+        out.append(ch)
+        i += 1
+    return "".join(out)
 
 
 def tokenize(cmd):
     lexer = shlex.shlex(cmd, posix=True, punctuation_chars=PUNCT)
     lexer.whitespace = " \t\r"          # newline is a separator token, not whitespace
     lexer.whitespace_split = True
+    lexer.commenters = ""               # comments are pre-stripped by _strip_line_comments();
+                                         # shlex must never again consume a newline via '#'
     out = []
     for tok in lexer:
         if "\n" in tok and set(tok) <= set(PUNCT):   # shlex glues "&&\n" — split newlines back out
@@ -310,8 +352,10 @@ def head_of(segment):
 def complex_syntax(tokens):
     """Name the first construct the guard does not interpret, or None."""
     for tok in tokens:
-        if tok in GROUPING:
-            return "grouping"            # subshell, brace group, $( ), <( ), >( ) all tokenize into ( )
+        if tok in GROUPING or (tok and set(tok) <= set("()")):
+            return "grouping"            # subshell, brace group, $( ), <( ), >( ), $(( )) all
+                                          # tokenize into runs of "(" / ")" (possibly multi-char,
+                                          # e.g. "((" / "))" from arithmetic expansion)
         if "`" in tok:
             return "backtick"
     for _start, seg in split_segments(tokens):
@@ -327,8 +371,12 @@ def sed_writes(args):
             break
         if a.startswith("--in-place"):
             return True
-        if a.startswith("-") and not a.startswith("--") and "i" in a[1:]:
-            return True
+        if a.startswith("-") and not a.startswith("--"):
+            for ch in a[1:]:
+                if ch == "i":
+                    return True
+                if ch in "efl":          # value-taking short option: the rest of the cluster
+                    break                # is that option's value, not more flag letters
     return False
 
 
@@ -350,6 +398,8 @@ def has_recursive_flag(args):
 
 
 def is_unresolvable_root(path):          # b422b6e shapes, unchanged; shape-only, no filesystem probe
+    if path in SAFE_REDIRECT_TARGETS:    # "/dev/null" is a filename-forcing idiom, not a root
+        return False
     return (path in UNRESOLVABLE_ROOTS or path.startswith("/") or path.startswith("~")
             or path.startswith("./") or path.startswith("../"))
 
@@ -361,7 +411,12 @@ def fail_open(reason):
 
 def coarse_check(cmd):
     """Tokenizer failed (the command is a bash syntax error anyway). Deny only the one
-    unmistakable shape: `cd` followed later by a write word. Everything else fails open."""
+    unmistakable shape: `cd` followed later by a write word. Everything else fails open.
+    A heredoc body is never parsed as bash syntax, so an unbalanced quote inside one is not
+    really a syntax error, and a write word inside one (e.g. a Python `mv = 2` assignment) is
+    not really a write command -- skip the coarse deny whenever `<<` appears anywhere."""
+    if "<<" in cmd:
+        return fail_open("tokenize")
     m = COARSE_CD.search(cmd)
     if m and COARSE_WRITE.search(cmd[m.end():]):
         return Verdict("coarse", "unparsed", True, False, MSG["C1"] % "a write command")
@@ -500,6 +555,10 @@ DENY_FIXTURES = [   # (rule, command, evidence)
     ("B", "timeout 30 grep -rn foo .", "b422b6e wrapper carve-through"),
     ("coarse", "cd apps/backend && sed -i 's/a/b/ x.py", "D3: unbalanced quote + cd/write"),
     ("coarse", "cd apps/backend && rm -f 'x.pyc", "D3"),
+    ("C1", "cd apps/backend  # go\nsed -i 's/a/b/' x.py", "trailing comment must not swallow the newline"),
+    ("C3", "cd apps/backend && pytest -q # run\ngit status", "same"),
+    ("A", "cd apps/backend # x\ngrep -n foo app/main.py", "same"),
+    ("C1", "cd apps/backend && sed -ni 's/a/b/' x.py", "-i inside a cluster before a value letter is still in-place"),
 ]
 ALLOW_FIXTURES = [   # (command, why the native checker does not ask)
     ("cd apps/backend && pytest -q", "pytest is not path-restricted"),
@@ -540,6 +599,12 @@ ALLOW_FIXTURES = [   # (command, why the native checker does not ask)
     ("grep -rln PATTERN incredible_auto_dev/policy/ incredible_auto_dev/hooks/ 2>" + DEVNULL, "b422b6e regression"),
     ("python3 x.py > /tmp/out.txt 2>&1", "b422b6e regression"),
     ("ag foo .", "ag is not path-restricted (previously over-denied by Rule B)"),
+    ("pytest -q  # don't stop\ngit status", "comment with an apostrophe, no cd"),
+    ("grep -n '#include' apps/backend/app/main.c", "'#' inside quotes is not a comment"),
+    ("echo 'a#b' # trailing", "same"),
+    ("cd apps/backend && pytest -q | grep -n foo -", "'-' is stdin"),
+    ("cd apps/backend && sed -e's/i/x/' /home/u/app/apps/backend/app/main.py", "attached -e script containing 'i' is not -i"),
+    ("grep -rn foo apps/backend/app/ " + DEVNULL, "/dev/null is a filename-forcing idiom, not a root"),
 ]
 UNKNOWN_FIXTURES = [   # (expected FAILOPEN reason, command)
     ("tokenize", "cd apps/backend && pytest 'unbalanced"),
@@ -550,6 +615,8 @@ UNKNOWN_FIXTURES = [   # (expected FAILOPEN reason, command)
     ("complex:grouping", "diff <(sort a) <(sort b)"),
     ("complex:backtick", "cd apps/backend && grep -n x `ls app | head -1`"),
     ("complex:control-flow", "eval \"cd apps && rm -f x\""),
+    ("tokenize", "cd apps/backend && python3 - <<'PY'\ns = 'don\\'t'\nmv = 2\nPY"),
+    ("complex:grouping", "cd apps/backend && echo $((1+2))"),
 ]
 # (id, command with {SB} = sandbox root, guard expectation, note). Unique ids; every entry is
 # probed natively by scripts/automation/permission-oracle.sh and recorded in Task 10.

@@ -4459,11 +4459,13 @@ but appreciated.
   the vendored copies (tapeology, trendora) and an explicit decision on whether `post-goal`
   should ever be re-attached to a lifecycle point. "No in-repo caller" is not sufficient.
 
-### CAND-PERM-1 · Zero-human-prompt interactive goal mode (IN-PROGRESS — commits 1–6 landed, oracle + acceptance run owed)
+### CAND-PERM-1 · Zero-human-prompt interactive goal mode (IN-PROGRESS — commits 1–7 landed, oracle + acceptance run owed)
 - **Proposed:** P1 · Effort L · Risk MED · **Status:** IN-PROGRESS on branch `perm-stall-closure`
-  (commits 1–6 of 7 landed through `c0e609c`; this entry is commit 7 — docs + operator tooling,
-  no oracle run, no deny-rule change). Task 10 (native-oracle probe, then one real interactive
-  acceptance iteration) is operator-gated — spends tokens (G9) — and not started.
+  (commits 1–7 landed, `b422b6e..HEAD`, including the whole-branch-review fix wave — comment-safe
+  tokenizer, restored policy rationale, stall-definition docs, per-message retry counters,
+  unresolved-use diagnostic, false-deny fixes; no deny-rule change). Task 10 (native-oracle
+  probe, then one real interactive acceptance iteration) is operator-gated — spends tokens
+  (G9) — and not started; that run is still owed.
 - **Problem (verified against Claude Code 2.1.260, 2,236 session transcripts, repo @ `b422b6e`):**
   interactive goal-mode Bash dispatches occasionally reach a native approval dialog no autonomous
   agent can answer — observed shape: `cd <dir> && \`-newline-continued `sed -i ...` then `grep`,
@@ -4531,7 +4533,7 @@ but appreciated.
   | `settings_deny` | same kind, content starts `Permission to use` |
   | `automode_deny` | `toolDenialKind` in `{automode-blocked, automode-unavailable}` |
   | `user_deny` | `toolDenialKind=="user-rejected"` |
-  | `stall` | no denial kind, not an error, no timeout/background/interrupted marker, gap ≥600s |
+  | `stall` | no denial kind, `toolUseResult` has none of the timeout/background/interrupted markers, gap ≥600s (the result's error flag is irrelevant: a human-approved command that then fails is still a stall) |
   | `ambiguous_gap` | same but 120s ≤ gap < 600s (reported, never counted as a stall) |
 
   Metrics (sequence-dependent ones from Bash **issue order**, never result-arrival order):
@@ -4545,6 +4547,7 @@ but appreciated.
   | `human_prompts` / `prompt_outcomes` | hard gate (0) once the recorder is proven |
   | `stalls`, `stall_seconds`, `ambiguous_gaps` | hard gate (`stalls == 0`) |
   | `fail_opens` (by reason), `malformed_event_rows` | diagnostics |
+  | `unresolved_tool_uses` (Bash tool_use with no `tool_result` row at all) | diagnostic |
 
 - **DoD / Acceptance criteria (D9, Task 10 — the operator-gated run):**
   - *Hard permission/reliability gates:* `human_prompts == 0` once the recorder is proven (else `stalls == 0` AND no observed dialog); `identical_command_retries == 0`; `retry_loops == 0`; no permission-induced `AWAITING_PUMP`/inflight timeout; existing reviewer/QA/closure gates pass with no failure attributable to the permission changes; `run-evals.sh` + detector/event-writer self-tests green; no security regression; no deny-rule weakening.

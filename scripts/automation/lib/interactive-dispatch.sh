@@ -1178,11 +1178,12 @@ _interactive_dispatch_self_test() {
   fi
   rm -rf "$d"
 
-  # Test 24 (2026-09-03) — search-path bridge: a prompt carrying the
-  # `Agent instructions: .claude/agents/` pointer gets the search-path note
+  # Test 24 (2026-09-03) — path-safety note: a prompt carrying the
+  # `Agent instructions: .claude/agents/` pointer gets the path-safety note
   # appended; every other prompt (two-key confirms, ad-hoc dispatches) passes
-  # through untouched. The note is what stops agents rooting a recursive read at
-  # the repo root, which stalls the dispatch on the `Read(**/.env)` deny rule.
+  # through untouched. The note now covers every hook-enforced shape after a
+  # `cd`: a relative read, `sed -i`, an output redirect, and `git` -- each of
+  # which would otherwise stall the dispatch on a human approval prompt.
   _sp_seen() {   # round-trip one prompt, echo how many times the note appears
     local dd pp pr; dd="$(mktemp -d)"; pr="$1"
     export CHAIN_DISPATCH_DIR="$dd"

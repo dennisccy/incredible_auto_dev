@@ -345,7 +345,7 @@ gap between issue and result):
 | `other_deny` | `toolDenialKind == "permission-rule"` but content matches neither `hook_deny` nor `settings_deny` (e.g. the install-gate's own "[install-gate] APPROVAL REQUIRED" denials) |
 | `automode_deny` | `toolDenialKind in {"automode-blocked","automode-unavailable"}` |
 | `user_deny` | `toolDenialKind == "user-rejected"` |
-| `stall` | no `toolDenialKind`, not an error, `toolUseResult` has none of `timedOutAfterMs`/`backgroundTaskId`/`interrupted`, gap ≥ 600 s (a foreground Bash call cannot legitimately run that long without a timeout marker) |
+| `stall` | no `toolDenialKind`, `toolUseResult` has none of `timedOutAfterMs`/`backgroundTaskId`/`interrupted`, gap ≥ 600 s (the result's error flag is irrelevant: a human-approved command that then fails is still a stall) |
 | `ambiguous_gap` | same shape, 120 s ≤ gap < 600 s — reported, never counted as a stall |
 
 **Metrics.** The sequence-dependent Bash metrics (`identical_command_retries`,
@@ -357,14 +357,15 @@ by collapsing whitespace before comparison.
 
 | metric | definition | role |
 |---|---|---|
-| `post_denial_tool_turns` | denials (any class) whose next assistant row contains any tool_use | economics/behaviour only — a Read after a denied `sed` is recovery, not failure |
-| `immediate_bash_retries` | Bash denials whose next assistant row contains a Bash tool_use | economics |
+| `post_denial_tool_turns` | denials (any class) whose next COMPLETE assistant message — has_tool accumulated across every row sharing that message's `message.id`, never a single row of it (a real transcript often starts a message with a text row before its tool_use row) — contains any tool_use | economics/behaviour only — a Read after a denied `sed` is recovery, not failure |
+| `immediate_bash_retries` | Bash denials whose next complete assistant message (same accumulation) contains a Bash tool_use | economics |
 | `identical_command_retries` | denied Bash uses followed, within the next 3 Bash uses in issue order, by the identical normalized command (once per denial) | hard tripwire (0) |
 | `same_rule_retries` | hook-denied Bash uses whose next Bash use in issue order is again hook-denied with the same rule id | tripwire (warn > 0) |
 | `retry_loops` | maximal runs of ≥ 3 consecutive denied Bash uses in issue order (any denial class) | hard tripwire (0) |
 | `human_prompts` / `prompt_outcomes` | count of `permission_request` events; outcome of the matching `tool_use_id`: `user_deny`, `allowed_after_wait` (gap ≥ 120 s), `allowed_fast`, `unmatched` | hard gate (0) once the recorder is proven live |
 | `stalls`, `stall_seconds`, `ambiguous_gaps` | as classified above | hard gate (`stalls == 0`) |
 | `fail_opens` (by reason), `malformed_event_rows` | tallied from the events file | diagnostics |
+| `unresolved_tool_uses` | Bash tool_uses with no `tool_result` row at all (e.g. the session was killed on a native dialog before the result ever arrived) | diagnostic |
 
 `analyze_pump`'s report also carries a top-level `permissions_total` dict — the pump's own
 `permissions` plus every subagent type's, summed field-by-field (`hook_denies` merged as

@@ -22,6 +22,10 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$REPO_ROOT"
 
+# A __pycache__ under hooks/lib/ would be mirrored into .claude/hooks/ by
+# sync-cli-assets.py and trip the drift gate — never let a plain eval run leave one behind.
+export PYTHONDONTWRITEBYTECODE=1
+
 # Keep the suite out of the MACHINE's forensic state. Several tests drive real
 # dispatch paths, and hg_event writes to a machine-global ledger by design — so
 # an unredirected eval run buries the record of what the machine was actually

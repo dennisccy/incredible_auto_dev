@@ -10,8 +10,8 @@ Code session transcript(s) directly:
   <pump-session>/subagents/agent-<id>.jsonl every subagent it dispatched
 
 Usage:
-  analyze_transcripts.py <pump-session.jsonl> [--json]
-  analyze_transcripts.py --compare <A.jsonl> <B.jsonl> [--json]
+  analyze_transcripts.py <pump-session.jsonl> [--json] [--events <file>] [--stall-gap <seconds>]
+  analyze_transcripts.py --compare <A.jsonl> <B.jsonl> [--json] [--events <file>] [--stall-gap <seconds>]
   analyze_transcripts.py --self-test
 
 Pump side: usage-bearing turns (assistant messages carrying `usage`, deduped by
@@ -221,7 +221,13 @@ def analyze_session(path, stall_gap=STALL_GAP_SECONDS):
     use_ts, outcomes = {}, {}          # tool_use id → timestamp; tool_use id → (class, gap)
     bash_seq = []                      # (tool_use id, normalized command) in ISSUE order
     bash_verdict = {}                  # tool_use id → (class, rule) once its result is seen
-    pending = []                       # tool names of denials awaiting their "next assistant row" check
+    pending = []                       # tool names of denials awaiting the NEXT COMPLETE assistant
+                                        # message's has_tool/has_bash -- never a single row of it:
+                                        # a real transcript often splits one message (one
+                                        # message.id) across several rows, e.g. text before tool_use
+    cur_mid = None                     # message.id currently being accumulated
+    cur_has_tool = cur_has_bash = False
+    cur_open = False                   # True until `pending` has been resolved against cur_mid
     for row in _rows(path):
         if _is_compaction(row):
             compactions += 1
@@ -245,16 +251,32 @@ def analyze_session(path, stall_gap=STALL_GAP_SECONDS):
                 atype = atype or "unknown"
             agent_ids[str(tur["agentId"])] = str(atype)
         if row.get("type") == "assistant":
-            # Permission economics: does THIS turn recover from the pending denial(s)?
-            has_tool = any(isinstance(b, dict) and b.get("type") == "tool_use" for b in _blocks(msg))
-            has_bash = any(isinstance(b, dict) and b.get("type") == "tool_use" and b.get("name") == "Bash"
-                           for b in _blocks(msg))
-            for entry in pending:
-                perm["post_denial_tool_turns"] += has_tool
-                if entry == "Bash":
-                    perm["immediate_bash_retries"] += has_bash
-            pending = []
+            # Permission economics: does the NEXT COMPLETE assistant message recover from the
+            # pending denial(s)? "Complete" matters -- real transcripts write one content block
+            # per row, and a message often starts with a text row before its tool_use row (same
+            # message.id), so has_tool/has_bash must accumulate across every row of a message,
+            # never rely on a single row of it (fix round 2, finding 4).
             mid = msg.get("id")
+            row_has_tool = any(isinstance(b, dict) and b.get("type") == "tool_use" for b in _blocks(msg))
+            row_has_bash = any(isinstance(b, dict) and b.get("type") == "tool_use" and b.get("name") == "Bash"
+                                for b in _blocks(msg))
+            if mid != cur_mid:
+                # A different message.id has appeared, so cur_mid's message is now complete --
+                # resolve `pending` (denials from BEFORE cur_mid started) against its FULL
+                # accumulated flags, never a single row's. Skip if already resolved (cur_open
+                # False): that happens when a "user" row closed cur_mid first (the common case,
+                # whenever cur_mid issued at least one tool call) -- resolving again here would
+                # wrongly score cur_mid's OWN just-issued denial against cur_mid's OWN flags,
+                # which trivially always "recovers" (cur_mid obviously contains a tool_use).
+                if cur_open:
+                    for entry in pending:
+                        perm["post_denial_tool_turns"] += cur_has_tool
+                        if entry == "Bash":
+                            perm["immediate_bash_retries"] += cur_has_bash
+                    pending = []
+                cur_mid, cur_has_tool, cur_has_bash, cur_open = mid, False, False, True
+            cur_has_tool = cur_has_tool or row_has_tool
+            cur_has_bash = cur_has_bash or row_has_bash
             usage = msg.get("usage")
             if mid and isinstance(usage, dict):
                 if mid not in seen:
@@ -275,6 +297,17 @@ def analyze_session(path, stall_gap=STALL_GAP_SECONDS):
                     if name == "Agent" and mid:
                         agent_turn_marks.append(len(order) - 1 if mid in seen else len(order))
         elif row.get("type") == "user":
+            # A "user" row (a tool_result) proves cur_mid's assistant rows are done arriving --
+            # this is the earliest point cur_mid's flags are final, so resolve `pending` here
+            # too (a message with a tool call almost always gets its result before the next
+            # assistant message begins, so this fires before the mid-change branch above does).
+            if cur_open:
+                for entry in pending:
+                    perm["post_denial_tool_turns"] += cur_has_tool
+                    if entry == "Bash":
+                        perm["immediate_bash_retries"] += cur_has_bash
+                pending = []
+                cur_open = False
             for b in _blocks(msg):
                 if isinstance(b, dict) and b.get("type") == "tool_result":
                     name, inp = uses.get(b.get("tool_use_id"), ("?", ""))
@@ -310,6 +343,14 @@ def analyze_session(path, stall_gap=STALL_GAP_SECONDS):
                         res_bytes[name] += length
                         res_count[name] += 1
                     top.append((length, name, inp[:80]))
+    if cur_open:
+        # End of transcript with cur_mid's message fully accumulated but never "closed" by a
+        # user row or a later message (e.g. the transcript ends right after a multi-row message
+        # whose only tool_use sits in a later row -- see the split-message fixture below).
+        for entry in pending:
+            perm["post_denial_tool_turns"] += cur_has_tool
+            if entry == "Bash":
+                perm["immediate_bash_retries"] += cur_has_bash
     usage_tot = Counter()
     models = Counter()
     for mid in order:
@@ -323,6 +364,10 @@ def analyze_session(path, stall_gap=STALL_GAP_SECONDS):
     gaps = [b - a for a, b in zip(agent_turn_marks, agent_turn_marks[1:])]
     turns_per_dispatch = (sum(gaps) / len(gaps)) if gaps else (turns / dispatches if dispatches else 0.0)
     top.sort(key=lambda t: -t[0])
+    # Diagnostic (fix round 2, finding 5): a Bash tool_use with no tool_result row at all (the
+    # session was killed on a dialog before the result ever arrived) previously counted as
+    # nothing -- surface it instead of letting it vanish.
+    perm["unresolved_tool_uses"] = sum(1 for tid, _cmd in bash_seq if tid not in bash_verdict)
     perm.update(bash_sequence_metrics(bash_seq, bash_verdict))
     return {
         "path": path,
@@ -407,20 +452,22 @@ def analyze_pump(path, events_path=None, stall_gap=STALL_GAP_SECONDS):
     return {"pump": pump, "subagents": per_type, "permissions_total": permissions_total}
 
 
-def _perm_line(perm, label="permissions"):
-    return ("  %s: human_prompts=%s stalls>600s=%d stall_seconds=%.0f hook_denies=%s "
+def _perm_line(perm, label="permissions", stall_gap=STALL_GAP_SECONDS):
+    return ("  %s: human_prompts=%s stalls>%ds=%d stall_seconds=%.0f hook_denies=%s "
             "identical_command_retries=%d retry_loops=%d same_rule_retries=%d "
-            "post_denial_tool_turns=%d immediate_bash_retries=%d settings_denies=%d "
-            "automode_denies=%d user_denies=%d other_denies=%d fail_opens=%s malformed_event_rows=%s") % (
-        label, perm.get("human_prompts"), perm.get("stalls", 0), perm.get("stall_seconds", 0.0),
+            "post_denial_tool_turns=%d immediate_bash_retries=%d unresolved_tool_uses=%d "
+            "settings_denies=%d automode_denies=%d user_denies=%d other_denies=%d "
+            "fail_opens=%s malformed_event_rows=%s") % (
+        label, perm.get("human_prompts"), int(stall_gap), perm.get("stalls", 0), perm.get("stall_seconds", 0.0),
         perm.get("hook_denies", {}), perm.get("identical_command_retries", 0), perm.get("retry_loops", 0),
         perm.get("same_rule_retries", 0), perm.get("post_denial_tool_turns", 0),
-        perm.get("immediate_bash_retries", 0), perm.get("settings_denies", 0), perm.get("automode_denies", 0),
+        perm.get("immediate_bash_retries", 0), perm.get("unresolved_tool_uses", 0),
+        perm.get("settings_denies", 0), perm.get("automode_denies", 0),
         perm.get("user_denies", 0), perm.get("other_denies", 0), perm.get("fail_opens", {}),
         perm.get("malformed_event_rows"))
 
 
-def render_text(rep):
+def render_text(rep, stall_gap=STALL_GAP_SECONDS):
     p = rep["pump"]
     u = p["usage"]
     out = []
@@ -438,14 +485,14 @@ def render_text(rep):
         rc = p["result_count"].get(name, 0)
         ar = p["result_bytes"].get(name, 0) // max(1, rc)
         out.append(f"    {name:34s} {n:5d}  {ai:7d}  {ar:8d}")
-    out.append(_perm_line(p.get("permissions", {})))
-    out.append(_perm_line(rep.get("permissions_total", {}), "permissions_total"))
+    out.append(_perm_line(p.get("permissions", {}), stall_gap=stall_gap))
+    out.append(_perm_line(rep.get("permissions_total", {}), "permissions_total", stall_gap=stall_gap))
     out.append("SUBAGENTS")
     for atype, d in sorted(rep["subagents"].items(), key=lambda kv: -kv[1]["cache_read_input_tokens"]):
         out.append(f"  {atype}: inv={d['invocations']} turns/inv={d['turns_per_inv']} "
                    f"output/inv={d['output_per_inv']:,} cache_read/inv={d['cache_read_per_inv']:,} "
                    f"image reads={d['image_results']} ({d['image_bytes']//1024} KB)")
-        out.append(_perm_line(d.get("permissions", {})))
+        out.append(_perm_line(d.get("permissions", {}), stall_gap=stall_gap))
         tot = sum(d["result_bytes"].values()) or 1
         for name, b in sorted(d["result_bytes"].items(), key=lambda kv: -kv[1])[:6]:
             out.append(f"      {name:30s} calls/inv={d['tool_calls'].get(name,0)/d['invocations']:6.1f} "
@@ -478,6 +525,7 @@ def compare(a, b):
         row["permission.automode_denies"] = perm.get("automode_denies")
         row["permission.user_denies"] = perm.get("user_denies")
         row["permission.other_denies"] = perm.get("other_denies")
+        row["permission.unresolved_tool_uses"] = perm.get("unresolved_tool_uses")
         for atype, d in rep["subagents"].items():
             row[f"{atype}.turns_per_inv"] = d["turns_per_inv"]
             row[f"{atype}.cache_read_per_inv"] = d["cache_read_per_inv"]
@@ -576,6 +624,11 @@ def _write_fixture(root):
         "toolUseResult": "User rejected tool use",
         "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": tid, "is_error": True,
                                                  "content": "User rejected tool use"}]}}
+    # A pure-text row of an assistant message (no tool_use) -- real transcripts write one
+    # content block per row, so a message that starts with commentary before its tool_use is
+    # TWO rows sharing one message.id, not one row with two blocks (fix round 2, finding 4).
+    TXT = lambda mid, ts: {"type": "assistant", "timestamp": ts, "message": {"id": mid, "role": "assistant",
+        "content": [{"type": "text", "text": "..."}]}}
     SED = "cd apps && sed -i s/a/b/ x.py"
     dev += [
         A("perm1", "2026-09-04T00:00:00.000Z", [("tu_x1", "cd apps && pytest -q"), ("tu_x2", SED)]),
@@ -595,6 +648,18 @@ def _write_fixture(root):
         AUTOMODE("tu_a", "2026-09-04T00:15:22.100Z"),
         A("perm8", "2026-09-04T00:15:23.000Z", [("tu_u", "echo user-rejected-probe")]),
         USERREJ("tu_u", "2026-09-04T00:15:23.100Z"),
+        # Fix round 2, finding 4 (per-message accumulation) + finding 5 (unresolved diagnostic).
+        # A denial (tu_f4) is immediately followed by an assistant message ("permSplit") split
+        # across TWO rows sharing one message.id: a text row first, then the row with its Bash
+        # tool_use (tu_split) -- which is ALSO left with no result row at all (session killed on
+        # a dialog), the shape finding 5 needs. An intervening OK call (tu_f4ok) keeps this from
+        # extending the tu_a/tu_u denial run to 3 (retry_loops must stay at its existing count).
+        A("permF4ok", "2026-09-04T00:15:24.000Z", [("tu_f4ok", "echo pre-split-buffer")]),
+        OK("tu_f4ok", "2026-09-04T00:15:24.050Z"),
+        A("permF4", "2026-09-04T00:15:25.000Z", [("tu_f4", SED)]),
+        D("tu_f4", "2026-09-04T00:15:25.100Z"),
+        TXT("permSplit", "2026-09-04T00:15:26.000Z"),
+        A("permSplit", "2026-09-04T00:15:26.500Z", [("tu_split", "echo split-message-probe")]),
     ]
     with open(os.path.join(sub, "agent-a1.jsonl"), "w") as fh:
         for r in dev:
@@ -631,18 +696,31 @@ def _self_test():
         assert dev["invocations"] == 1 and dev["turns"] == 3
         assert dev["output_per_inv"] == 600 and dev["cache_read_per_inv"] == 180000
         assert dev["image_results"] == 1 and dev["image_bytes"] == 4000, (dev["image_results"], dev["image_bytes"])
-        # image bytes kept apart; 300 (pytest) + 3×36B guard-denial text + 54B settings-deny
-        # + 32B automode-deny + 22B user-rejected text = 408 + 108 = 516 (ambiguous-gap OK
-        # result contributes 0B, same as every other OK() in this fixture)
-        assert dev["result_bytes"] == {"Bash": 516}, dev["result_bytes"]
+        # image bytes kept apart; 300 (pytest) + 4×36B guard-denial text (C1×4 -- the 3
+        # original plus the new tu_f4 split-message-fixture denial) + 54B settings-deny +
+        # 32B automode-deny + 22B user-rejected text = 444 + 108 = 552 (every OK() result
+        # contributes 0B; tu_split has no result row at all, so it contributes nothing)
+        assert dev["result_bytes"] == {"Bash": 552}, dev["result_bytes"]
         assert dev["top_results"][0]["tool"] == "Read" and dev["top_results"][0]["bytes"] == 4000
         assert "reviewer" not in rep["subagents"]                         # missing transcript skipped
         # ── permission economics (Task 8): issue-order Bash retry/stall/prompt metrics ──
         perm = dev["permissions"]
-        assert perm["hook_denies"] == {"C1": 3}, perm       # unaffected by the new denial classes
-        assert perm["post_denial_tool_turns"] == 5 and perm["immediate_bash_retries"] == 5, perm
+        # 3 original C1s (tu_x2, tu_x3, tu_x4) + 1 new one (tu_f4, the split-message-fixture
+        # denial added for fix round 2, findings 4/5) = 4.
+        assert perm["hook_denies"] == {"C1": 4}, perm
+        # Baseline (single-row messages only) was 5/5: tu_x2->perm2(+1), tu_x3->perm3(+1),
+        # tu_x4->perm4(+1), tu_s->perm6(+1), tu_a->perm8(+1). Fix round 2 adds two more:
+        # tu_u->permF4ok(+1, an ordinary single-row recovery, unaffected by the split-message
+        # bug) and tu_f4->permSplit(+1, the split-message case itself: permSplit's only
+        # tool_use sits in its SECOND row; the old per-row logic would have resolved against
+        # the FIRST row alone -- text only, has_tool=False -- and wrongly scored this a miss).
+        # 5 + 1 + 1 = 7/7: the split message's own, isolated contribution is that last +1
+        # (6 -> 7), exactly the "+1 to both" the fixture requires.
+        assert perm["post_denial_tool_turns"] == 7 and perm["immediate_bash_retries"] == 7, perm
         assert perm["identical_command_retries"] == 2 and perm["same_rule_retries"] == 2, perm
-        assert perm["retry_loops"] == 1, perm          # issue order: ok, deny, deny, deny; result order would say 0
+        # issue order: ok, deny, deny, deny (retry_loops=1); tu_f4ok's intervening OK call
+        # resets the run before tu_f4's own denial, so tu_a/tu_u/tu_f4 never reaches 3 either.
+        assert perm["retry_loops"] == 1, perm
         assert perm["stalls"] == 1 and perm["stall_seconds"] == 700.0, perm
         # Full classification coverage (fix round 1, finding 4): settings/automode/user
         # denials each their own class, other_denies untouched (no non-"guard-"/non-
@@ -652,17 +730,23 @@ def _self_test():
         assert perm["settings_denies"] == 1 and perm["automode_denies"] == 1, perm
         assert perm["user_denies"] == 1 and perm["other_denies"] == 0, perm
         assert perm["ambiguous_gaps"] == 1, perm
+        # Fix round 2, finding 5: tu_split (the split message's own Bash tool_use) has no
+        # result row at all -- the one and only unresolved Bash use in this fixture.
+        assert perm["unresolved_tool_uses"] == 1, perm
         pp = p["permissions"]
         assert pp["human_prompts"] == 1 and pp["prompt_outcomes"] == {"allowed_after_wait": 1}, pp
         assert pp["malformed_event_rows"] == 1, pp
         assert rep["permissions_total"]["stalls"] == 1, rep["permissions_total"]   # pump has 0, dev has 1
+        assert rep["permissions_total"]["unresolved_tool_uses"] == 1, rep["permissions_total"]
         rows = compare(rep, rep)
         assert all(r["delta_pct"] in (0.0, None) for r in rows), rows
         assert any(r["metric"] == "permission.retry_loops" for r in rows)
         assert any(r["metric"] == "permission.stalls" and r["delta_pct"] == 0.0 for r in rows), rows
+        assert any(r["metric"] == "permission.unresolved_tool_uses" for r in rows)
         txt = render_text(rep)
         assert "pump turns per dispatch=2.0" in txt and "developer: inv=1" in txt
         assert "permissions: human_prompts=1" in txt and "stalls>600s=1" in txt and "retry_loops=1" in txt
+        assert "unresolved_tool_uses=1" in txt
         assert "permissions_total:" in txt
         json.dumps(rep)  # serialisable
     print("analyze_transcripts self-test: OK")
@@ -691,6 +775,9 @@ def main(argv):
     stall_gap = float(stall_gap_s) if stall_gap_s is not None else STALL_GAP_SECONDS
     as_json = "--json" in argv
     args = [a for a in argv if a != "--json"]
+    if not args:
+        print(__doc__)
+        return 0
     if args[0] == "--compare":
         if len(args) != 3:
             print("usage: --compare <A.jsonl> <B.jsonl>", file=sys.stderr)
@@ -700,7 +787,7 @@ def main(argv):
         print(json.dumps(rows, indent=1) if as_json else render_compare(rows))
         return 0
     rep = analyze_pump(args[0], events_path=events_path, stall_gap=stall_gap)
-    print(json.dumps(rep, indent=1) if as_json else render_text(rep))
+    print(json.dumps(rep, indent=1) if as_json else render_text(rep, stall_gap))
     return 0
 
 
