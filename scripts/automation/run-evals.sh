@@ -29,7 +29,10 @@ cd "$REPO_ROOT"
 # postmortem reader is only as useful as that ledger is honest.
 export HOST_GUARD_EVENTS_FILE="${TMPDIR:-/tmp}/iad-evals-events.$$.jsonl"
 export HOST_GUARD_POSTMORTEM_DIR="${TMPDIR:-/tmp}/iad-evals-postmortems.$$"
-trap 'rm -rf "$HOST_GUARD_EVENTS_FILE" "$HOST_GUARD_EVENTS_FILE.1" "$HOST_GUARD_POSTMORTEM_DIR" 2>/dev/null || true' EXIT
+# Same isolation for the hook-events writer (hook_events.py): a real eval run must not bury
+# per-session hygiene_deny/hygiene_fail_open records under synthetic test events either.
+export IAD_HOOK_EVENTS_FILE="${TMPDIR:-/tmp}/iad-evals-hook-events.$$.jsonl"
+trap 'rm -rf "$HOST_GUARD_EVENTS_FILE" "$HOST_GUARD_EVENTS_FILE.1" "$HOST_GUARD_POSTMORTEM_DIR" "$IAD_HOOK_EVENTS_FILE" 2>/dev/null || true' EXIT
 
 VERBOSE=false
 [[ "${1:-}" == "--verbose" ]] && VERBOSE=true
@@ -174,6 +177,10 @@ _run_self_test scripts/automation/lib/goal_gate.py self-test
 _run_self_test scripts/automation/lib/browser_tabs.py --self-test
 # Pump-side economics + subagent context composition from Claude Code transcripts (TOKEN-12).
 _run_self_test scripts/automation/lib/analyze_transcripts.py --self-test
+# Path-hygiene detector brain (Rules A/B/C, operand tables, tokenizer normalization, unknown/fail-open, oracle manifest).
+_run_self_test hooks/lib/read_path_hygiene.py --self-test
+# Session-scoped hook-event writer (privacy-safe schema, append-safe under flock, concurrent-writer stress).
+_run_self_test hooks/lib/hook_events.py --self-test
 _run_self_test scripts/automation/lib/goal_lint.py self-test
 _run_self_test scripts/automation/lib/scan_diff.py self-test
 _run_self_test scripts/automation/lib/diff_bound.py self-test
@@ -264,13 +271,20 @@ _rp_deny=(
   'cd /home/x/apps/backend && grep -n "PROFILE_DEFAULT" app/config.py | head -5'
   'grep -rn PATTERN .'
   'cd docs && sed -n "1,50p" goal.md'
-  'for d in a; do cd $d && grep -n x y.py; done'
+  $'cd /home/x/apps/backend/tests && \\\nsed -i "s/a/b/" test_x.py\ngrep -n b test_x.py'
+  'cd apps/backend && cp a.py b.py'
+  'cd apps/backend && pytest -q > /tmp/out.log'
+  'cd apps/backend && git status'
+  $'cd apps/backend\ngrep -n foo app/main.py'
+  # Rule C3 is unconditional on the git subcommand (docs: even a read-only `git
+  # diff` after `cd` can execute that directory's hooks) -- this used to allow
+  # under Rule A alone (piped read, no path operand) but now correctly denies.
+  'cd x && git diff | grep foo'
 )
 _rp_allow=(
   'cd apps/backend && pytest -q'
   'cd apps/frontend && npm run build'
   'git diff | grep foo'
-  'cd x && git diff | grep foo'
   'grep -rn PATTERN apps/backend/app/ apps/frontend/src/'
   'grep -n "x" apps/backend/app/main.py'
   'cd x && ls -la'
@@ -281,6 +295,12 @@ _rp_allow=(
   'grep -rn PATTERN apps/ >/dev/null 2>&1'
   'cat docs/goal.md > /tmp/copy.md'
   'python3 x.py > /tmp/out.txt 2>&1'
+  'cd apps/backend && pytest -q | tee /tmp/out.log'
+  'cd apps/backend && ls'
+  'cd apps/backend && grep -n foo /home/x/apps/backend/app/main.py'
+  'cd apps/backend && grep -m 1 foo'
+  'cd apps/backend && head -n 20 app/main.py'
+  $'cd apps/backend && python3 - <<\'EOF\'\nimport os\nEOF'
 )
 _rp_bad=0
 for _c in "${_rp_deny[@]}"; do
@@ -314,11 +334,33 @@ if [[ $_rp_rc -eq 0 && -z "$_rp_out" ]]; then
 else
   _fail "hook: guard-read-path-hygiene (stdin/Claude) noisy or non-zero on benign command (rc=$_rp_rc)"
 fi
-# Registered in settings.json — an unregistered hook enforces nothing.
-if grep -q 'guard-read-path-hygiene.sh' .claude/settings.json; then
+# Rule C over the stdin/Claude protocol: the deny JSON carries a rule-tagged reason.
+_rp_rc=0
+_rp_out=$(printf '%s' '{"session_id":"evals","agent_id":"a1","agent_type":"developer","tool_use_id":"t1","tool_name":"Bash","tool_input":{"command":"cd apps/backend && sed -i \"s/a/b/\" x.py"}}' | bash .claude/hooks/guard-read-path-hygiene.sh 2>/dev/null) || _rp_rc=$?
+if [[ $_rp_rc -eq 0 ]] && grep -q '"permissionDecision":"deny"' <<<"$_rp_out" && grep -q 'guard-read-path-hygiene: \[C1\]' <<<"$_rp_out"; then
+  _pass "hook: guard-read-path-hygiene (stdin/Claude) denies cd+sed -i with a rule-tagged reason"
+else
+  _fail "hook: guard-read-path-hygiene (stdin/Claude) Rule C deny JSON missing (rc=$_rp_rc out=${_rp_out:0:80})"
+fi
+# The deny is recorded as an attributed, privacy-safe hygiene_deny event (no command text, no hash).
+if [[ -s "$IAD_HOOK_EVENTS_FILE" ]] && grep -q '"event":"hygiene_deny"' "$IAD_HOOK_EVENTS_FILE" && grep -q '"agent_type":"developer"' "$IAD_HOOK_EVENTS_FILE" && grep -q '"rule":"C1"' "$IAD_HOOK_EVENTS_FILE" && ! grep -q 's/a/b/\|cmd_sha\|cmd_raw' "$IAD_HOOK_EVENTS_FILE"; then
+  _pass "hook: guard-read-path-hygiene appends an attributed hygiene_deny event without command text"
+else
+  _fail "hook: guard-read-path-hygiene hygiene_deny event missing or leaks the command ($IAD_HOOK_EVENTS_FILE)"
+fi
+# Unknown syntax fails open AND is logged: a loop passes silently with a complex:control-flow event.
+_rp_rc=0
+_rp_out=$(printf '%s' '{"session_id":"evals","tool_input":{"command":"for d in a; do cd $d && grep -n x y.py; done"}}' | bash .claude/hooks/guard-read-path-hygiene.sh 2>/dev/null) || _rp_rc=$?
+if [[ $_rp_rc -eq 0 && -z "$_rp_out" ]] && grep -q '"reason":"complex:control-flow"' "$IAD_HOOK_EVENTS_FILE"; then
+  _pass "hook: guard-read-path-hygiene passes unknown syntax to the native checker and logs hygiene_fail_open"
+else
+  _fail "hook: guard-read-path-hygiene unknown-syntax fail-open not instrumented (rc=$_rp_rc out=${_rp_out:0:60})"
+fi
+# Registration must verify EVENT and MATCHER, not just the basename.
+if jq -e '.hooks.PreToolUse[] | select(.matcher=="Bash") | .hooks[] | select(.command|contains("guard-read-path-hygiene.sh"))' .claude/settings.json >/dev/null 2>&1; then
   _pass "hook: guard-read-path-hygiene is registered as a PreToolUse Bash matcher"
 else
-  _fail "hook: guard-read-path-hygiene exists but is NOT registered in .claude/settings.json"
+  _fail "hook: guard-read-path-hygiene is NOT registered as PreToolUse/Bash in .claude/settings.json"
 fi
 # Install gate, Claude path. NOTE: the deny case appends a real record to
 # reports/security/install-decisions.jsonl per eval run (the hook path never
