@@ -279,27 +279,17 @@ _interactive_invoke() {
     prompt+=$'\n\n'"Environment note: this pipeline run isolates temp files. Before running tests or any command that writes temporary files, run: export TMPDIR=\"$CHAIN_TMPDIR\" TMP=\"$CHAIN_TMPDIR\" TEMP=\"$CHAIN_TMPDIR\""
   fi
 
-  # Search-path bridge (2026-09-03): interactive subagents run under the PUMP
-  # session's permission checker. There a recursive read rooted at the repo root
-  # cannot be proven to miss the `Read(**/.env)` deny rule — deny beats every
-  # allow — so the dispatch STALLS on an approval prompt only a human can clear.
-  # `.claude/core.md` § File Paths in Bash carries the full rule, but an agent
-  # only reaches that pointer near the END of its body and may never Read the
-  # file, so relay the one-line form here, where delivery is guaranteed. Gated
-  # on the agent-pointer line for the same reason as CTX-8 below: two-key
-  # confirms, ad-hoc dispatches and the self-test's byte-exact round-trips must
-  # pass through untouched.
+  # Path-safety bridge (2026-09-04, supersedes the 2026-09-03 search-path note):
+  # interactive subagents run under the PUMP session's permission checker, where a
+  # few command shapes escalate to a human approval nobody can answer (see
+  # .claude/core.md § File Paths in Bash and hooks/lib/read_path_hygiene.py).
+  # The hook is the deterministic backstop; this note is first-line prevention,
+  # costs no pump turn, and travels inside the prompt file on the >8 KB path.
+  # Gated on the agent-pointer line so two-key confirms, ad-hoc dispatches and
+  # the self-test's byte-exact round-trips pass through untouched. CTX-8 rides
+  # the same gate.
   if [[ "$prompt" == *"Agent instructions: .claude/agents/"* ]]; then
-    prompt+=$'\n\n'"Search-path note: root every recursive read at concrete subdirectories — \`grep -rn PATTERN docs/ contracts/\`, never \`grep -rn PATTERN .\`, an absolute machine path, or a \`cd\` first. \`--include\`/\`--exclude-dir\` do NOT help: the permission checker reads the path argument, not the filter flags. A repo-root search stalls this dispatch waiting on a human approval it cannot get. Full rule: \`.claude/core.md\` § File Paths in Bash."
-  fi
-
-  # CTX-8: on this backend the subagent's system prompt IS its rendered
-  # .claude/agents/<name>.md definition — stop it re-Reading its own 8-20 KB
-  # file every dispatch. Conditional on the pointer line being present so
-  # non-agent prompts (two-key confirms, ad-hoc dispatches — and the
-  # self-test's byte-exact round-trips) pass through untouched. Headless
-  # prompts keep the pointer as-is (there the file is NOT pre-loaded).
-  if [[ "$prompt" == *"Agent instructions: .claude/agents/"* ]]; then
+    prompt+=$'\n\n'"Path-safety note (machine-enforced — a denied command returns the rewrite; rewrite it, never retry it verbatim): use repo-relative paths from the repo root. Never root a recursive read at \`.\`, \`~\` or an absolute directory (\`grep -rn P apps/backend/app/ docs/\`, not \`grep -rn P .\`; filter flags do not help). After a \`cd\` in the same command, never read a relative path, mutate a file (\`sed -i\`/\`cp\`/\`mv\`/\`rm\`/\`mkdir\`/\`touch\`), redirect output to a file, or run \`git\`: edit files with the Edit/Write tools and run everything else from the repo root. \`cd\` only for a command that needs the cwd and does none of those (pytest/npm/tsc). Each of these shapes stalls this dispatch on a human approval it cannot get. Full rule: \`.claude/core.md\` § File Paths in Bash."
     prompt+=$'\n\n'"Note: your agent definition (the .claude/agents/*.md file named above) is already loaded as your system prompt — do not Read it again; treat its 'read this first' pointer as satisfied."
   fi
 
@@ -1199,7 +1189,10 @@ _interactive_dispatch_self_test() {
     ( for _ in $(seq 1 60); do
         local rr; rr="$(find "$dd" -maxdepth 1 -name 'req.*.ready' 2>/dev/null | head -1)"
         if [[ -n "$rr" ]]; then
-          grep -c 'Search-path note:' "$rr" > "$dd/count" 2>/dev/null || echo 0 > "$dd/count"
+          _n=$(grep -c 'Path-safety note' "$rr" 2>/dev/null)
+          if [[ "$_n" == "1" ]] && ! { grep -q 'sed -i' "$rr" && grep -q 'redirect output' "$rr" && grep -q 'relative path' "$rr"; }; then _n=incomplete; fi
+          grep -q 'Search-path note:' "$rr" 2>/dev/null && _n=stale
+          echo "$_n" > "$dd/count"
           echo 0 > "${rr%.ready}.res"; break
         fi
         sleep 0.1
@@ -1215,9 +1208,9 @@ _interactive_dispatch_self_test() {
   _sp_plain="$(_sp_seen "two-key confirm: is this really GOAL_ACHIEVED?")"
   unset -f _sp_seen
   if [[ "$_sp_agent" == "1" && "$_sp_plain" == "0" ]]; then
-    echo "  PASS interactive-dispatch: search-path note reaches agent dispatches only (agent=$_sp_agent, plain=$_sp_plain)"
+    echo "  PASS interactive-dispatch: path-safety note reaches agent dispatches only (agent=$_sp_agent, plain=$_sp_plain)"
   else
-    echo "  FAIL interactive-dispatch: search-path note (agent=$_sp_agent expected 1, plain=$_sp_plain expected 0)"; fails=1
+    echo "  FAIL interactive-dispatch: path-safety note (agent=$_sp_agent expected 1, plain=$_sp_plain expected 0)"; fails=1
   fi
 
   if [[ "$fails" -eq 0 ]]; then echo "interactive-dispatch self-test: OK"; else echo "interactive-dispatch self-test: FAILED"; fi

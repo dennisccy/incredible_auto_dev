@@ -12,6 +12,6 @@
 - After writing any process rule, ask the delivery question out loud: *which file is in the agent's context at the moment it would break this rule?* If the answer is "none", the rule is not deployed yet.
 
 **Example (bad):** `.claude/core.md` holds the rule; `agents/<name>/body.md` says "Apply `.claude/core.md` strictly" on its second-to-last line.
-**Example (good):** the authority stays in `core.md`, and the dispatch preamble appends `Search-path note: root every recursive read at concrete subdirectories … Full rule: .claude/core.md § File Paths in Bash.` to every agent prompt.
+**Example (good):** the authority stays in `core.md`, and the dispatch preamble appends `Path-safety note: root every recursive read at concrete subdirectories … Full rule: .claude/core.md § File Paths in Bash.` to every agent prompt.
 
 **Detection:** An agent violates a rule that demonstrably exists in the repo, and its transcript contains no Read of the file holding it. Audit sweep: for each rule whose breach halts a run, grep the dispatch preamble and the agent's rendered `.claude/agents/*.md` frontmatter+body for the rule's own words — a hit only in `core.md` means undelivered. Regression test: `lib/interactive-dispatch.sh --self-test`, test 24.
