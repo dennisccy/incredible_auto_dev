@@ -241,6 +241,16 @@ if bash .claude/hooks/guard-dangerous-commands.sh "for d in x; do rm -rf /tmp/ia
 else
   _fail "hook: guard-dangerous-commands wrongly blocks loop-wrapped /tmp cleanup"
 fi
+if bash .claude/hooks/guard-dangerous-commands.sh 'pytest -q > /dev/null 2>&1' >/dev/null 2>&1; then
+  _pass "hook: guard-dangerous-commands allows '> /dev/null' (space before the target)"
+else
+  _fail "hook: guard-dangerous-commands false-positives on '> /dev/null'"
+fi
+if bash .claude/hooks/guard-dangerous-commands.sh 'cat image.img > /dev/sda' >/dev/null 2>&1; then
+  _fail "hook: guard-dangerous-commands let a device write through"
+else
+  _pass "hook: guard-dangerous-commands still blocks a device write ('> /dev/sda')"
+fi
 # SEC-7 Claude-backend protocol: the command arrives as PreToolUse JSON on
 # stdin (argv empty — $CLAUDE_TOOL_INPUT_COMMAND never existed) and the
 # decision returns as hookSpecificOutput deny-JSON on stdout with exit 0.

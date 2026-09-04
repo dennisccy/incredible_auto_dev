@@ -72,7 +72,6 @@ DANGEROUS_PATTERNS=(
   "mkfs"
   "fdisk"
   "parted"
-  "> /dev/"
   # Secrets
   "cat ~/.ssh/id_rsa"
   "cat ~/.ssh/id_ed25519"
@@ -134,6 +133,9 @@ DANGEROUS_REGEXES=(
   "^(sudo )?chown .+ /(etc|usr|home|root|var|boot)"
   # docker run mounting host filesystem sensitive directories
   "docker run .*(-v|--volume) /(etc|usr|root|home|var|boot|lib|sys|proc)"
+  # Output redirection onto a device node. /dev/null, /dev/stdout, /dev/stderr and /dev/tty
+  # are the shell's ordinary sinks, not disk writes.
+  '>\s*/dev/(?!null\b|stdout\b|stderr\b|tty\b)'
 )
 
 for regex in "${DANGEROUS_REGEXES[@]}"; do
