@@ -87,28 +87,41 @@ stall waiting on a human:
 - Keep paths repo-relative. Absolute machine paths leak into committed handoffs.
 - `--exclude-dir` / `--include` do not help — the checker reads the path argument,
   not the filter flags.
-- NEVER put `cd` in a command that also writes. A compound command that both changes
-  directory and mutates a file (`sed -i`, `>`, `>>`, `tee`, `mv`, `cp`, `rm`, `mkdir`,
-  `touch`, `install`) is hard-gated — "compound command contains cd with write
-  operation ... manual approval required to prevent path resolution bypass" — and NO
-  allow rule can pre-approve it, so it always stops the run for a human. Edit files
-  with the Edit/Write tools, or run from the repo root with a repo-relative path:
-  `sed -i 's/OLD/NEW/g' apps/backend/tests/test_x.py`, never
-  `cd apps/backend/tests && sed -i 's/OLD/NEW/g' test_x.py`.
-- Commands that must run from a subdirectory (pytest, npm, tsc) may still `cd`, as
-  long as nothing in the compound mutates a file; this rule governs the path
-  arguments to read commands (grep, cat, head, sed -n, rg).
+- After a `cd` in the same command, NEVER read a relative path, mutate a file, redirect
+  output to a file, or run `git`. Claude Code hard-gates these shapes and NO allow rule can
+  pre-approve them: `cd` then `sed -i`, `cp`, `mv`, `rm`, `rmdir`, `mkdir` or `touch`
+  ("compound command contains cd with write operation — manual approval required to prevent
+  path resolution bypass"); `cd` then a redirect to any file but `/dev/null`; `cd` then `git`;
+  `cd` then a content read of a relative path (`grep`, `cat`, `find`, `sed -n`, and likewise
+  `rg`, `head`, `tail`, `wc`, `awk`). Edit files with the Edit/Write tools, or run from the
+  repo root with a repo-relative path: `sed -i 's/OLD/NEW/g' apps/backend/tests/test_x.py`,
+  never `cd apps/backend/tests && sed -i 's/OLD/NEW/g' test_x.py`. (`tee` and `install` are
+  not gated by this rule; they remain discouraged after a `cd` only because the target path is
+  unresolvable to a reader of the handoff. Prefer one `cd` per command.)
+- A backslash-newline continuation or a plain newline does not make a new command for the
+  checker: `cd x && \` on one line and `sed -i …` on the next is the gated shape.
+- Commands that must run from a subdirectory (pytest, npm, tsc) may still `cd`, as long as
+  nothing after the `cd` reads a relative path, mutates a file, redirects output to a file,
+  or runs git.
 
 Why: `Read(**/.env)` and similar are deny rules, and deny beats every allow. When the
 checker cannot prove a read misses them, it asks the human. Do not narrow those deny
 rules to silence the prompt — they keep real secrets out of agent context.
 
 ENFORCED, not advisory: `.claude/hooks/guard-read-path-hygiene.sh` (a PreToolUse Bash
-matcher) denies a `cd` followed by a content read with a path argument, and a recursive
-search rooted at `.` / `~` / an absolute path, with a message naming the rewrite. If it
-fires, rewrite the command as the message says — do not retry it verbatim and do not
-route around it. Its carve-outs match the bullets above: `cd` before a non-read
-(pytest/npm/tsc) and a piped read with no path argument both stay legal.
+matcher) denies, with a message naming the rewrite: (A) `cd` then `grep`/`cat`/`find`/read-only
+`sed` with a relative path operand — the commands whose paths can be extracted exactly and
+that appear in observed stalls; (B) a recursive `grep`/`rg` rooted at `.` / `~` / `..` / an
+absolute path; (C1) `cd` then `sed -i`/`cp`/`mv`/`rm`/`rmdir`/`mkdir`/`touch`; (C2) `cd` then
+an output redirect to a file; (C3) `cd` then `git`. If it fires, rewrite the command as the
+message says — do not retry it verbatim and do not route around it. Legal by construction:
+`cd` before a non-read that does none of those (pytest/npm/tsc), a piped read with no path,
+option values (`grep -m 1`, `head -n 20`), `cd … && ls`, absolute paths after a `cd`, heredoc
+bodies, redirects to `/dev/null`. The bullets above recommend more than the guard enforces
+(`rg`/`head`/`tail`/`wc`/`awk` after a `cd` are style, pending native-oracle evidence). The
+guard is not a shell parser: loops, conditionals, subshells, command substitution and
+unparseable quoting are passed to Claude Code's own checker unchanged and logged — a stall
+there is evidence for a new rule, not a reason to widen the allowlist.
 
 ---
 
