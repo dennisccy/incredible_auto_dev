@@ -893,7 +893,13 @@ _qa_dep_hint() {
   case "$role" in
     *frontend*)
       local fe_dir="${CHAIN_FRONTEND_DIR:-$REPO_ROOT/apps/frontend}"
-      if [[ ! -d "$fe_dir/node_modules" ]]; then
+      # Check the checkout itself before its node_modules: a project with no frontend directory at
+      # all (a backend-only project, or a documents-only phase that has not created apps/ yet) is
+      # not a missing-dependencies problem, and telling the operator to run `npm install` there
+      # would be wrong — there is nowhere to run it.
+      if [[ ! -d "$fe_dir" ]]; then
+        echo "no frontend exists at $fe_dir — this repo has no frontend checkout (expected for a backend-only project or a documents-only phase); nothing to install"
+      elif [[ ! -d "$fe_dir/node_modules" ]]; then
         echo "frontend dependencies are not installed (missing $fe_dir/node_modules) — run 'npm install' there"
       elif _next_build_is_corrupt "${QA_FRONTEND_LOG:-/dev/null}"; then
         echo "a stale/corrupt .next build (a 'next build' likely ran against the live 'next dev' .next). The harness auto-clears .next and retries; if it persists, isolate builds with NEXT_DIST_DIR (e.g. NEXT_DIST_DIR=.next-qa for build/QA commands)."
@@ -2136,6 +2142,18 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
       if _next_build_is_corrupt "$_tlog"; then _t_bad "detector: false positive on a clean log"; else _t_ok "detector: negative on a clean log"; fi
       if _next_build_is_corrupt "/nonexistent-$$-xyz"; then _t_bad "detector: claimed missing file is corrupt"; else _t_ok "detector: missing-file safe"; fi
       rm -f "$_tlog"
+
+      echo "[common.sh self-test] _qa_dep_hint: absent frontend dir vs missing node_modules"
+      _HROOT=$(mktemp -d)
+      _h=$(CHAIN_FRONTEND_DIR="$_HROOT/no-such-frontend" QA_FRONTEND_LOG=/dev/null _qa_dep_hint frontend)
+      if [[ "$_h" == *"no frontend exists at $_HROOT/no-such-frontend"* && "$_h" != *"npm install"* ]]; then _t_ok "hint: absent frontend dir is reported as absent, not as missing node_modules"; else _t_bad "hint: absent frontend dir mis-reported: $_h"; fi
+      mkdir -p "$_HROOT/fe"
+      _h=$(CHAIN_FRONTEND_DIR="$_HROOT/fe" QA_FRONTEND_LOG=/dev/null _qa_dep_hint frontend)
+      if [[ "$_h" == *"frontend dependencies are not installed"* ]]; then _t_ok "hint: present dir without node_modules still says run npm install"; else _t_bad "hint: missing node_modules not reported: $_h"; fi
+      mkdir -p "$_HROOT/fe/node_modules"
+      _h=$(CHAIN_FRONTEND_DIR="$_HROOT/fe" QA_FRONTEND_LOG=/dev/null _qa_dep_hint frontend)
+      if [[ -z "$_h" ]]; then _t_ok "hint: healthy frontend gives no hint"; else _t_bad "hint: false positive on a healthy frontend: $_h"; fi
+      rm -rf "$_HROOT"
 
       echo "[common.sh self-test] _start_service_with_retries self-heal recovery"
       _ROOT=$(mktemp -d)
