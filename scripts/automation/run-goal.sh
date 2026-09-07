@@ -96,6 +96,17 @@
 #                      --resume. Turning the arbiter off is NOT a way out: it removes the
 #                      precedence rung and the guard itself
 #
+# HARD-1 depth guards (default on; each has a rollback knob):
+#   CHAIN_EVIDENCE_WORK_GUARD=true  - the SPEED-9 lean->evidence demotion, a spec-declared
+#                      `Depth: evidence`, and the executor's own belt all consult the
+#                      deterministic content probe (lib/iter_spec.py has-implementation-work):
+#                      a spec with a concrete Backend/Frontend bullet under IN SCOPE is never
+#                      dispatched evidence-only (developer + reviewer always run). Telemetry:
+#                      depth_evidence_refused {site: backstop|spec-declared|executor-belt}.
+#   CHAIN_ESCALATE_FORCES_FULL=true - a lean/evidence spec written after a prior ESCALATE is
+#                      promoted to full before dispatch (the evaluator/decomposer contract's
+#                      MUST, enforced). Telemetry: depth_escalate_override. Iteration 0 exempt.
+#
 # Quota exhaustion is NOT a halt: claude_with_quota_retry transparently sleeps
 # until the quota resets and resumes.
 set -euo pipefail
@@ -2584,6 +2595,19 @@ Do NOT write code or implement anything. The iteration spec and any blueprint ed
     DEPTH="lean"
   fi
 
+  # HARD-1 (a): a spec that declares `Depth: evidence` yet plans implementation
+  # work under IN SCOPE (concrete Backend/Frontend bullets) is a contradiction —
+  # run it LEAN so the work is built and reviewed. Deterministic content probe
+  # (lib/iter_spec.py), never the spec's own prose (anti-pattern 25).
+  # Rollback: CHAIN_EVIDENCE_WORK_GUARD=false restores the pre-HARD-1 behaviour.
+  if [[ "$DEPTH" == "evidence" && "${CHAIN_EVIDENCE_WORK_GUARD:-true}" == "true" ]] \
+     && goal_spec_has_implementation_work "$ITER_SPEC_PATH"; then
+    _iw="$(python3 "$SCRIPT_DIR/lib/iter_spec.py" has-implementation-work "$ITER_SPEC_PATH" 2>/dev/null || echo '{}')"
+    echo "[run-goal] Depth 'evidence' declared but IN SCOPE plans implementation work ($_iw) — dispatching as LEAN (developer + reviewer WILL run). CHAIN_EVIDENCE_WORK_GUARD=false restores the pre-HARD-1 behaviour."
+    record_telemetry_event "depth_evidence_refused" "$(jq -cn --argjson iw "$_iw" '{site:"spec-declared", from:"evidence", to:"lean", implementation_work:$iw}' 2>/dev/null || printf '{"site":"spec-declared","from":"evidence","to":"lean"}')"
+    DEPTH="lean"
+  fi
+
   # Target-journey parse (SPEED-20 moved this up from below the depth blocks:
   # the arbiter's new-fullstack-journey test reads the target list, so it must
   # be available BEFORE the depth decision).
@@ -2731,6 +2755,22 @@ Do NOT write code or implement anything. The iteration spec and any blueprint ed
     fi
   fi
 
+  # HARD-1 (b) escalate promotion. The evaluator's ESCALATE is a contract ("the
+  # next iteration MUST run as full"; decomposer trigger 3 is "mandatory"). The
+  # arbiter above only PERMITS full — it enters only when the spec already says
+  # full — so a lean/evidence spec written after an ESCALATE ran shallow,
+  # silently. The prior verdict is evaluator-written and engine-parsed
+  # (anti-pattern 25 clean): promote. Iteration 0 (baseline) is exempt, like
+  # the arbiter. REGRESSION is deliberately excluded (after
+  # --acknowledge-regression a human may have fixed things by hand; the arbiter
+  # still grants full when the spec asks). Rollback: CHAIN_ESCALATE_FORCES_FULL=false.
+  if [[ "${CHAIN_ESCALATE_FORCES_FULL:-true}" == "true" && "${PRIOR_VERDICT:-}" == "ESCALATE" \
+        && $CURRENT_ITER -gt 0 && ( "$DEPTH" == "lean" || "$DEPTH" == "evidence" ) ]]; then
+    echo "[run-goal] Escalate promotion: prior verdict ESCALATE requires FULL but the spec asked '$DEPTH' — overriding depth $DEPTH → full (CHAIN_ESCALATE_FORCES_FULL=false restores permit-only)."
+    record_telemetry_event "depth_escalate_override" "$(jq -cn --arg f "$DEPTH" '{from:$f, to:"full", prior_verdict:"ESCALATE"}' 2>/dev/null || printf '{"from":"%s","to":"full","prior_verdict":"ESCALATE"}' "$DEPTH")"
+    DEPTH="full"
+  fi
+
   # SPEED-4 hardening-cadence backstop: a K-long lean streak forces a full
   # hardening pass even when the spec says lean. The spec text stays as
   # written; dispatch + telemetry carry the effective depth. Suppressed when
@@ -2743,11 +2783,15 @@ Do NOT write code or implement anything. The iteration spec and any blueprint ed
   fi
 
   # SPEED-9 evidence backstop: a lean dispatch whose Target journeys are ALL
-  # already recorded passing (and none pending-infra) has no build work — the
-  # deliverable can only be evidence. Demote lean → evidence so developer and
-  # reviewer are not dispatched against a no-op. Never touches full.
+  # already recorded passing (and none pending-infra) MAY have no build work —
+  # but journey status is a proxy, not the fact (TenSteps iter-7: every target
+  # passing, two concrete Backend bullets, demoted to evidence, fix never
+  # happened). HARD-1: the demotion is granted only when the deterministic
+  # content probe (goal_spec_has_implementation_work) also finds no
+  # Backend/Frontend work under IN SCOPE. A prior ESCALATE no longer arms this
+  # backstop (the escalate promotion above owns that verdict). Never touches full.
   if [[ "$DEPTH" == "lean" && "${CHAIN_EVIDENCE_MICRO_PATH:-true}" == "true" && -n "$TARGET_JOURNEYS" ]] \
-     && { [[ "${PRIOR_VERDICT:-}" == "CONTINUE" || "${PRIOR_VERDICT:-}" == "ESCALATE" ]]; } \
+     && [[ "${PRIOR_VERDICT:-}" == "CONTINUE" ]] \
      && python3 - "$JOURNEY_HISTORY" "$TARGET_JOURNEYS" <<'PYEOF'
 import json, re, sys
 try:
@@ -2769,9 +2813,15 @@ for jid in ids:
 sys.exit(0)
 PYEOF
   then
-    echo "[run-goal] Evidence backstop: every target journey (${TARGET_JOURNEYS}) is already recorded passing — demoting depth lean → evidence (set CHAIN_EVIDENCE_MICRO_PATH=false to disable)."
-    DEPTH="evidence"
-    record_telemetry_event "depth_evidence_override" "$(jq -cn --arg tj "$TARGET_JOURNEYS" '{from:"lean", to:"evidence", target_journeys:$tj}' 2>/dev/null || printf '{"from":"lean","to":"evidence"}')"
+    if [[ "${CHAIN_EVIDENCE_WORK_GUARD:-true}" == "true" ]] && goal_spec_has_implementation_work "$ITER_SPEC_PATH"; then
+      _iw="$(python3 "$SCRIPT_DIR/lib/iter_spec.py" has-implementation-work "$ITER_SPEC_PATH" 2>/dev/null || echo '{}')"
+      echo "[run-goal] Evidence backstop REFUSED: every target journey (${TARGET_JOURNEYS}) is already recorded passing, but IN SCOPE plans implementation work ($_iw) — keeping depth LEAN (developer + reviewer WILL run; HARD-1)."
+      record_telemetry_event "depth_evidence_refused" "$(jq -cn --arg tj "$TARGET_JOURNEYS" --argjson iw "$_iw" '{site:"backstop", from:"lean", to:"lean", target_journeys:$tj, implementation_work:$iw}' 2>/dev/null || printf '{"site":"backstop","from":"lean","to":"lean"}')"
+    else
+      echo "[run-goal] Evidence backstop: every target journey (${TARGET_JOURNEYS}) is already recorded passing and IN SCOPE plans no Backend/Frontend work — demoting depth lean → evidence (set CHAIN_EVIDENCE_MICRO_PATH=false to disable)."
+      DEPTH="evidence"
+      record_telemetry_event "depth_evidence_override" "$(jq -cn --arg tj "$TARGET_JOURNEYS" --arg g "${CHAIN_EVIDENCE_WORK_GUARD:-true}" '{from:"lean", to:"evidence", target_journeys:$tj, work_guard:$g}' 2>/dev/null || printf '{"from":"lean","to":"evidence"}')"
+    fi
   fi
 
   echo "[run-goal] Iter spec depth: $DEPTH"
@@ -2884,6 +2934,24 @@ PYEOF
   else
     echo "[run-goal] Dispatching LEAN pipeline via goal-iter-lean.sh ..."
     printf 'lean' > "$ITER_DIR/depth-dispatched"
+    _engine_step_begin "lean-pipeline"
+    bash "$SCRIPT_DIR/goal-iter-lean.sh" "$ITER_NAME" || _exec_rc=$?
+    _engine_step_done
+  fi
+
+  # HARD-1 (d): the executor's own belt refused an EVIDENCE dispatch because the
+  # spec plans implementation work (goal-iter-lean.sh exits
+  # EVIDENCE_MODE_REFUSED_EXIT_CODE before writing any artifact). The engine
+  # knows the correct answer — the spec's own depth — so re-dispatch this
+  # iteration LEAN. Under normal operation the engine-side guards above prevent
+  # this; the telemetry site "executor-belt" is the tripwire that they were
+  # bypassed. The re-dispatch's own rc flows through the transport check below.
+  if [[ "$_exec_rc" -eq "${EVIDENCE_MODE_REFUSED_EXIT_CODE:-76}" ]]; then
+    echo "[run-goal] Executor REFUSED the evidence dispatch (belt: spec plans implementation work) — re-dispatching iteration $CURRENT_ITER at LEAN depth." >&2
+    record_telemetry_event "depth_evidence_refused" '{"site":"executor-belt","from":"evidence","to":"lean"}'
+    DEPTH="lean"
+    printf 'lean' > "$ITER_DIR/depth-dispatched"
+    _exec_rc=0
     _engine_step_begin "lean-pipeline"
     bash "$SCRIPT_DIR/goal-iter-lean.sh" "$ITER_NAME" || _exec_rc=$?
     _engine_step_done

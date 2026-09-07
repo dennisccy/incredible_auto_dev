@@ -81,6 +81,26 @@ if [[ ! -f "$GOAL_FILE" ]]; then
   exit 1
 fi
 
+# ── HARD-1 belt: evidence mode may only run for a spec that plans NO
+# implementation work. Refuse BEFORE any normal iteration/developer/reviewer/
+# browser artifact exists — no stub handoff, no review status file, no
+# dispatch. (Creating the iteration directory solely to record the marker is
+# allowed.) The engine's depth block is the primary guard; this belt makes the
+# invariant hold even when the executor is invoked directly. The probe is a
+# deterministic content check (lib/iter_spec.py), never the spec's own prose.
+if [[ "${CHAIN_LEAN_EVIDENCE_ONLY:-false}" == "true" && "${CHAIN_EVIDENCE_WORK_GUARD:-true}" == "true" ]] \
+   && goal_spec_has_implementation_work "$SPEC"; then
+  _iw="$(python3 "$SCRIPT_DIR/lib/iter_spec.py" has-implementation-work "$SPEC" 2>/dev/null || echo '{}')"
+  echo "[goal-iter-lean] EVIDENCE mode REFUSED: $SPEC plans implementation work under IN SCOPE ($_iw) — an evidence-only dispatch would skip the developer and leave the work undone. Exiting ${EVIDENCE_MODE_REFUSED_EXIT_CODE:-76} (the engine re-dispatches at LEAN depth)." >&2
+  _rd="$(goal_iter_dir "$ITER_NAME" 2>/dev/null || true)"
+  if [[ -n "$_rd" ]]; then
+    mkdir -p "$_rd"
+    printf 'reason=implementation-work-in-spec\nspec=%s\nwork=%s\n' "$SPEC" "$_iw" > "$_rd/evidence-mode-refused"
+  fi
+  record_telemetry_event "evidence_mode_refused" "$(jq -cn --arg n "$ITER_NAME" --argjson iw "$_iw" '{iter_name:$n, reason:"implementation-work-in-spec", implementation_work:$iw}' 2>/dev/null || printf '{"iter_name":"%s","reason":"implementation-work-in-spec"}' "$ITER_NAME")"
+  exit "${EVIDENCE_MODE_REFUSED_EXIT_CODE:-76}"
+fi
+
 DEV_HANDOFF="$REPO_ROOT/docs/handoffs/${ITER_NAME}-dev.md"
 REVIEW_REPORT="$REPO_ROOT/reports/reviews/${ITER_NAME}-review.md"
 UI_TEST_RESULTS="$REPO_ROOT/reports/phase-${ITER_NAME}-ui-test-results.md"
@@ -118,13 +138,38 @@ _build_review_packet_or_degrade() {
 
 _review_parses() { grep -qE '^\*\*Verdict:\*\*[[:space:]]*(PASS_WITH_NOTES|PASS|FAIL)[[:space:]]*$' "$REVIEW_REPORT" 2>/dev/null; }
 _review_verdict() { grep -m1 -E '^\*\*Verdict:\*\*' "$REVIEW_REPORT" 2>/dev/null | grep -oE 'PASS_WITH_NOTES|PASS|FAIL' | head -1; }
+# _step_skipped_event <step> [reason]  — reason defaults to `checkpoint` (a resume
+# reused a completed step); the evidence micro-path passes `evidence-mode` so
+# telemetry never mislabels a deliberate non-dispatch as a resume skip (HARD-1).
 _step_skipped_event() {
-  echo "[goal-iter-lean] Resume: $1 already completed for this iteration (checkpoint verified) — skipping."
-  record_telemetry_event "step_skipped" "$(jq -cn --arg s "$1" --arg n "$ITER_NAME" '{step:$s, iter_name:$n, reason:"checkpoint"}' 2>/dev/null || printf '{"step":"%s","iter_name":"%s"}' "$1" "$ITER_NAME")"
+  local _r="${2:-checkpoint}"
+  if [[ "$_r" == "checkpoint" ]]; then
+    echo "[goal-iter-lean] Resume: $1 already completed for this iteration (checkpoint verified) — skipping."
+  else
+    echo "[goal-iter-lean] $1 NOT dispatched (reason: $_r)."
+  fi
+  record_telemetry_event "step_skipped" "$(jq -cn --arg s "$1" --arg n "$ITER_NAME" --arg r "$_r" '{step:$s, iter_name:$n, reason:$r}' 2>/dev/null || printf '{"step":"%s","iter_name":"%s","reason":"%s"}' "$1" "$ITER_NAME" "$_r")"
+}
+
+# HARD-1: the evidence-only review STATUS artifact (engine-generated, verdict-
+# free) is a legal reason to skip verdict handling ONLY on the engine's evidence
+# dispatch AND when the file is exactly the engine's artifact. It is never a
+# general reviewer-verdict bypass: in a normal lean iteration a verdict-less
+# file carrying this line is a review failure and takes the existing fix-mode
+# path (`verdict_passes` false), records an empty review_verdict, and never
+# marks the review checkpoint.
+_review_not_dispatched() {
+  [[ "${CHAIN_LEAN_EVIDENCE_ONLY:-false}" == "true" ]] || return 1
+  [[ -f "$REVIEW_REPORT" ]] || return 1
+  grep -qE '^\*\*Review status:\*\* NOT_DISPATCHED[[:space:]]*$' "$REVIEW_REPORT" \
+    && grep -qE '^\*\*Reason:\*\* evidence-only iteration; no product implementation was dispatched' "$REVIEW_REPORT" \
+    && grep -qE '^\*\*Engine check:\*\* goal_spec_has_implementation_work=none' "$REVIEW_REPORT" \
+    && ! grep -qE '^\*\*Verdict:\*\*' "$REVIEW_REPORT"
 }
 
 echo "[goal-iter-lean] Iteration: $ITER_NAME"
-record_telemetry_event "iter_dispatch" "$(jq -cn --arg n "$ITER_NAME" --arg d "lean" '{iter_name:$n, depth:$d}' 2>/dev/null || printf '{"iter_name":"%s","depth":"lean"}' "$ITER_NAME")"
+_dispatch_depth="lean"; [[ "${CHAIN_LEAN_EVIDENCE_ONLY:-false}" == "true" ]] && _dispatch_depth="evidence"
+record_telemetry_event "iter_dispatch" "$(jq -cn --arg n "$ITER_NAME" --arg d "$_dispatch_depth" '{iter_name:$n, depth:$d}' 2>/dev/null || printf '{"iter_name":"%s","depth":"%s"}' "$ITER_NAME" "$_dispatch_depth")"
 
 ensure_phase_ports
 
@@ -990,13 +1035,15 @@ The report MUST start with a line matching exactly:
 # left it → the ~41-min build is already done, don't redo it.
 if [[ "${CHAIN_LEAN_EVIDENCE_ONLY:-false}" == "true" ]]; then
   # SPEED-9 evidence micro-path: the spec's only deliverable is visual evidence
-  # for already-working journeys — no build work. Stub the dev handoff so the
-  # evaluator's input set stays complete; re-runs are idempotent (no checkpoint).
-  echo "[goal-iter-lean] EVIDENCE mode: skipping developer (no code changes planned)."
-  if [[ ! -s "$DEV_HANDOFF" ]]; then
-    printf '# Dev Handoff — %s\n\nEvidence-only iteration: no code changes were planned or made.\nThe pipeline captured fresh visual evidence for the Target journeys instead;\nsee the browser test results and this iteration'"'"'s demo recording.\n' "$ITER_NAME" > "$DEV_HANDOFF"
+  # for already-working journeys — no build work (HARD-1: proven by the
+  # deterministic probe before this point, never assumed). Write an honest
+  # status handoff so the evaluator's input set stays complete; re-runs are
+  # idempotent (no checkpoint).
+  echo "[goal-iter-lean] EVIDENCE mode: skipping developer (no code changes planned — spec plans no Backend/Frontend work)."
+  if ! grep -q 'NOT_DISPATCHED' "$DEV_HANDOFF" 2>/dev/null; then
+    printf '# Dev Handoff — %s\n\n**Developer status:** NOT_DISPATCHED (evidence-only iteration)\n**Engine check:** goal_spec_has_implementation_work=none — no concrete Backend/Frontend bullet under IN SCOPE (HARD-1)\n\nEvidence-only iteration: no code changes were planned or made.\nThe pipeline captured fresh visual evidence for the Target journeys instead;\nsee the browser test results and this iteration'"'"'s demo recording.\n' "$ITER_NAME" > "$DEV_HANDOFF"
   fi
-  _step_skipped_event "developer"
+  _step_skipped_event "developer" "evidence-mode"
 elif step_done_valid developer --verify-tree --dir "$ITER_DIR" "$DEV_HANDOFF"; then
   _step_skipped_event "developer"
 else
@@ -1096,13 +1143,15 @@ fi
 # as a freshly written FAIL would).
 if [[ "${CHAIN_LEAN_EVIDENCE_ONLY:-false}" == "true" ]]; then
   # SPEED-9 evidence micro-path: nothing was built, so there is nothing to
-  # review. The stub's PASS verdict line keeps every parser downstream honest
-  # about the shape while the body states no review occurred.
-  echo "[goal-iter-lean] EVIDENCE mode: skipping reviewer (no code changes to review)."
-  if [[ ! -s "$REVIEW_REPORT" ]]; then
-    printf '**Verdict:** PASS\n\nEvidence-only iteration: no code changes were made, so developer and reviewer were not dispatched. Nothing to review.\n' > "$REVIEW_REPORT"
+  # review. HARD-1: a reviewer that did not run emits NO verdict — the artifact
+  # is an explicit, engine-generated STATUS file (`_review_not_dispatched`
+  # recognises exactly this shape, and only on an evidence dispatch), so no
+  # downstream reader can mistake a non-review for a PASS.
+  echo "[goal-iter-lean] EVIDENCE mode: skipping reviewer (no code changes to review — no verdict is recorded)."
+  if ! _review_not_dispatched; then
+    printf '**Review status:** NOT_DISPATCHED\n**Reason:** evidence-only iteration; no product implementation was dispatched\n**Engine check:** goal_spec_has_implementation_work=none — no concrete Backend/Frontend bullet under IN SCOPE (HARD-1)\n\nNo reviewer ran and no review verdict exists for this iteration: nothing was built, so there was nothing to review. This is an engine-generated status artifact, not a review.\n' > "$REVIEW_REPORT"
   fi
-  _step_skipped_event "reviewer"
+  _step_skipped_event "reviewer" "evidence-mode"
 elif { step_done_valid review-1 --dir "$ITER_DIR" "$REVIEW_REPORT" \
      || step_done_valid review-2 --dir "$ITER_DIR" "$REVIEW_REPORT"; } && _review_parses; then
   _step_skipped_event "reviewer"
@@ -1117,8 +1166,11 @@ else
   fi
 fi
 
-# Retry once if reviewer FAILed
-if [[ -f "$REVIEW_REPORT" ]] && ! verdict_passes "$REVIEW_REPORT"; then
+# Retry once if reviewer FAILed. HARD-1: the evidence-only status artifact is
+# not a FAIL — nothing ran — and is exempt ONLY through _review_not_dispatched
+# (evidence dispatch + the exact engine artifact); any other verdict-less file
+# still takes this path.
+if [[ -f "$REVIEW_REPORT" ]] && ! _review_not_dispatched && ! verdict_passes "$REVIEW_REPORT"; then
   echo "[goal-iter-lean] Review FAIL — running developer in fix mode (1 retry allowed)..."
   # SPEED-2/SPEED-3 CRITICAL ORDERING: kill+wait whichever fork is running and
   # discard its lane files BEFORE any step_invalidate_from below — post-fix
@@ -1163,7 +1215,7 @@ Review report path: $REVIEW_REPORT
   fi
 fi
 
-if [[ -f "$REVIEW_REPORT" ]] && ! verdict_passes "$REVIEW_REPORT"; then
+if [[ -f "$REVIEW_REPORT" ]] && ! _review_not_dispatched && ! verdict_passes "$REVIEW_REPORT"; then
   echo "[goal-iter-lean] Review still FAIL after retry — proceeding to browser-qa anyway."
   echo "[goal-iter-lean] The goal-evaluator will likely emit ESCALATE for the next iteration."
 fi

@@ -1473,6 +1473,27 @@ sys.exit(1)
 PYEOF
 }
 
+# ── HARD-1: deterministic implementation-work probe ───────────────────────────
+# 0 = the spec plans implementation work OR is unreadable/unparseable (fail
+#     closed: a parse failure must never be the reason developer + reviewer are
+#     skipped); 1 = provably none (no concrete Backend/Frontend bullet under
+#     `## IN SCOPE`). Single implementation: lib/iter_spec.py has-implementation-work.
+# Consumers: run-goal.sh's evidence backstop + spec-declared evidence guard, and
+# goal-iter-lean.sh's evidence-mode self-refusal (the belt).
+goal_spec_has_implementation_work() {
+  local rc=0
+  python3 "$(dirname "${BASH_SOURCE[0]}")/iter_spec.py" has-implementation-work "$1" >/dev/null 2>&1 || rc=$?
+  [[ "$rc" -eq 1 ]] && return 1
+  return 0
+}
+# Executor self-refusal code for an EVIDENCE dispatch of a spec that plans
+# implementation work (goal-iter-lean.sh exits with it BEFORE writing any
+# artifact; run-goal.sh re-dispatches the iteration lean). 70 (dispatch
+# unavailable) and 75 (quota) are taken in lib/quota-retry.sh; 86 is the
+# engine-lock refusal.
+: "${EVIDENCE_MODE_REFUSED_EXIT_CODE:=76}"
+export EVIDENCE_MODE_REFUSED_EXIT_CODE
+
 # ── Idempotent service bootstrap (shared by qa-phase.sh and browser-qa-phase.sh) ──
 #
 # Starts the backend (and optionally frontend) if they are not already running.

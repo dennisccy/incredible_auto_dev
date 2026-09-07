@@ -49,6 +49,15 @@ class ArtifactSchema:
     # Hard line cap; exceeding it is a validation issue (REL-6: the ≤40-line
     # iteration-state cap must be validator-enforced, not advisory prose).
     max_lines: Optional[int] = None
+    # HARD-1: explicit NON-verdict status lines that satisfy the verdict
+    # requirement for this artifact type. Deliberately narrow — the only entry
+    # today is the engine-generated evidence-only review status
+    # (`**Review status:** NOT_DISPATCHED`), written when no reviewer ran so no
+    # fake verdict has to be fabricated. The schema recognises the SHAPE only;
+    # runtime acceptance stays evidence-mode-specific (goal-iter-lean.sh
+    # `_review_not_dispatched`) — in a normal iteration such a file is a review
+    # failure.
+    status_alternatives: tuple[str, ...] = ()
 
 
 SCHEMAS: tuple[ArtifactSchema, ...] = (
@@ -57,7 +66,8 @@ SCHEMAS: tuple[ArtifactSchema, ...] = (
         path_pattern=re.compile(r"reports/reviews/.+-review\.md$"),
         verdict_enum=Verdict,
         required_h2=(),
-        description="Reviewer report — reports/reviews/<phase>-review.md (bold `**Verdict:**` line contract, no required H2)",
+        description="Reviewer report — reports/reviews/<phase>-review.md (bold `**Verdict:**` line contract, no required H2; an evidence-only iteration writes `**Review status:** NOT_DISPATCHED` instead of a verdict)",
+        status_alternatives=(r"^\*\*Review status:\*\* NOT_DISPATCHED\s*$",),
     ),
     ArtifactSchema(
         artifact_type="qa",
@@ -198,10 +208,19 @@ def validate_path(path: str) -> ValidationResult:
 
     issues: list[str] = []
     verdict: Optional[str] = None
+    status: Optional[str] = None
     if schema.verdict_enum is not None:
         allowed = {v.value for v in schema.verdict_enum}
         verdict = find_verdict(content, allowed)
         if verdict is None:
+            # HARD-1: an explicit non-verdict status line (evidence-only review
+            # artifact) satisfies the requirement for the types that declare it.
+            for pattern in schema.status_alternatives:
+                m = re.search(pattern, content, re.MULTILINE)
+                if m:
+                    status = m.group(0).strip()
+                    break
+        if verdict is None and status is None:
             issues.append(
                 f"missing or invalid verdict line; expected one of: "
                 f"{sorted(allowed)}"
@@ -278,6 +297,16 @@ _FIXTURES = {
     "review_missing_verdict": (
         "reports/reviews/phase-1-review.md",
         "# Code Review Report\n\nLooks good.\n",
+        False,
+    ),
+    "review_evidence_only_status_is_valid_without_a_verdict": (
+        "reports/reviews/goal-demo-iter-9-review.md",
+        "**Review status:** NOT_DISPATCHED\n**Reason:** evidence-only iteration; no product implementation was dispatched\n\nNo reviewer ran.\n",
+        True,  # HARD-1: an explicit status, never a fabricated PASS
+    ),
+    "review_status_prose_without_the_bold_line_is_not_a_status": (
+        "reports/reviews/goal-demo-iter-9-review.md",
+        "Review status: NOT_DISPATCHED (plain text, not the bold contract line)\n",
         False,
     ),
     "review_invalid_verdict": (
