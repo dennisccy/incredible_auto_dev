@@ -1473,6 +1473,43 @@ sys.exit(1)
 PYEOF
 }
 
+# ── HARD-1: deterministic implementation-work probe ───────────────────────────
+# 0 = the spec plans implementation work OR is unreadable/unparseable (fail
+#     closed: a parse failure must never be the reason developer + reviewer are
+#     skipped); 1 = provably none (no concrete Backend/Frontend bullet under
+#     `## IN SCOPE`). Single implementation: lib/iter_spec.py has-implementation-work.
+# Consumers: run-goal.sh's evidence backstop + spec-declared evidence guard, and
+# goal-iter-lean.sh's evidence-mode self-refusal (the belt).
+# Runs the probe ONCE and publishes its result to the caller:
+#   GOAL_SPEC_WORK_JSON  exactly ONE valid JSON object, on every path — the value
+#                        consumers hand to `jq --argjson` and write into the
+#                        `work=` line of the evidence-mode-refused marker.
+#   GOAL_SPEC_WORK_RC    the raw probe exit code (0 work / 1 none / 2 unreadable).
+# The probe prints one JSON object on ALL of its paths, including both exit-2
+# ones, so a caller must never append its own `|| echo {}` fallback: that would
+# concatenate two JSON documents and make `jq --argjson` reject the payload.
+goal_spec_has_implementation_work() {
+  local _out rc=0
+  _out="$(python3 "$(dirname "${BASH_SOURCE[0]}")/iter_spec.py" has-implementation-work "$1" 2>/dev/null)" || rc=$?
+  _out="${_out%%$'\n'*}"   # the probe prints exactly one line; never concatenate
+  case "$_out" in
+    '{'*'}') GOAL_SPEC_WORK_JSON="$_out" ;;
+    # No parseable stdout at all (interpreter missing, killed mid-write): still
+    # exactly one valid JSON object, so telemetry and the marker stay readable.
+    *)       GOAL_SPEC_WORK_JSON="$(printf '{"probe_rc":%d,"probe_output":"unavailable"}' "$rc")" ;;
+  esac
+  GOAL_SPEC_WORK_RC="$rc"
+  [[ "$rc" -eq 1 ]] && return 1
+  return 0
+}
+# Executor self-refusal code for an EVIDENCE dispatch of a spec that plans
+# implementation work (goal-iter-lean.sh exits with it BEFORE writing any
+# artifact; run-goal.sh re-dispatches the iteration lean). 70 (dispatch
+# unavailable) and 75 (quota) are taken in lib/quota-retry.sh; 86 is the
+# engine-lock refusal.
+: "${EVIDENCE_MODE_REFUSED_EXIT_CODE:=76}"
+export EVIDENCE_MODE_REFUSED_EXIT_CODE
+
 # ── Idempotent service bootstrap (shared by qa-phase.sh and browser-qa-phase.sh) ──
 #
 # Starts the backend (and optionally frontend) if they are not already running.

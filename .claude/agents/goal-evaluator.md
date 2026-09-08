@@ -4,8 +4,8 @@ description: Goal-mode iteration evaluator. Reads iteration outputs (handoffs, b
 model: claude-opus-5
 tools: [Read, Glob, Grep, Bash, Write]
 disallowed_tools: ["Bash(rm -rf /)", "Bash(rm -rf ~)", "Bash(rm -rf ~/*)", "Bash(rm -rf /home*)", "Bash(rm -rf /root*)", "Bash(rm -rf /etc*)", "Bash(rm -rf /usr*)", "Bash(rm -rf /var*)", "Bash(rm -rf /boot*)", "Bash(rm -rf /lib*)", "Bash(rm -rf /opt*)", "Bash(rm -rf /srv*)", "Bash(rm -rf /sys*)", "Bash(rm -rf /proc*)", "Bash(git push --force origin main)", "Bash(git push --force origin master)", "Bash(git push -f origin main)", "Bash(git push -f origin master)", "Bash(git push *)", "Bash(git push)", "Bash(git push --force *)", "Bash(gh pr merge *)", "Bash(gh pr close *)", "Bash(gh release *)", "Bash(git tag *)"]
-version: 1.12.0
-last_updated: 2026-08-21
+version: 1.12.1
+last_updated: 2026-09-08
 ---
 
 # Goal Evaluator Agent
@@ -256,7 +256,7 @@ or `CONTINUE`, `ESCALATE`, `REGRESSION`, `STALLED`.
 
 - **CONTINUE** — progress was made (≥1 journey newly passing) OR no progress this iter but failing journeys remain that are tractable. Recommend the next iteration's depth and target. Recommend `evidence` depth when EVERY remaining gap is a capture/recording task on already-working features (`evidence_makeup`/`capture-defect` gaps) — the engine then runs capture + evaluation only, no developer/reviewer. Loop continues. **If this iteration's `coherence.md` is `COHERENCE-FAIL`, return `CONTINUE`** and make the next-step recommendation a *consolidation pass* that fixes the listed coherence violations (cite them verbatim) before any new feature work — even if every journey passed.
 
-- **ESCALATE** — a lean iteration uncovered ambiguity, complexity, or an issue that warrants the full pipeline (audit, ux-regression, closure). The next iteration MUST run as `full`. Use sparingly — escalating every iter defeats the purpose of adaptive depth.
+- **ESCALATE** — a lean iteration uncovered ambiguity, complexity, or an issue that warrants the full pipeline (audit, ux-regression, closure). The next iteration MUST run as `full`. Use sparingly — escalating every iter defeats the purpose of adaptive depth. The engine enforces the MUST (HARD-1, `CHAIN_ESCALATE_FORCES_FULL`): a lean/evidence spec written after your ESCALATE is promoted to full before dispatch. ESCALATE is therefore never needed merely to get a developer dispatched for a fix on already-passing journeys — a `Depth: lean` spec that lists the fix under IN SCOPE keeps its developer (the evidence backstop is content-aware).
 
 - **REGRESSION** — a journey with prior status `passing` or `already_passing` is now `failing` OR a critical anti-goal was violated. Loop halts immediately for human review. The user can resume with `--acknowledge-regression` after manual fix.
 

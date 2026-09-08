@@ -154,6 +154,7 @@ Also included as a section inside `reports/qa/<phase>-qa.md` when `Frontend Pres
 | Coherence blueprint (goal mode) | `runs/goal-session-<sid>/state/blueprint.md` |
 | Coherence audit per iter (goal mode) | `runs/goal-session-<sid>/iter-<N>/coherence.md` |
 | Goal-edit drift note (goal mode) | `runs/goal-session-<sid>/iter-<N>/journeys-changed.md` |
+| Evidence-mode refusal marker (goal mode, HARD-1) | `runs/goal-session-<sid>/iter-<N>/evidence-mode-refused` — written by `goal-iter-lean.sh` when an evidence-only dispatch was refused because the spec plans implementation work (`reason=`, `spec=`, `work=`); the engine re-dispatches the iteration lean. On the evidence micro-path the dev handoff carries `**Developer status:** NOT_DISPATCHED` and the review file carries `**Review status:** NOT_DISPATCHED` (no verdict line) |
 | GOAL_ACHIEVED delivered wrap (MD) | `reports/goal-session-<sid>-delivered.md` |
 | GOAL_ACHIEVED delivered wrap (HTML) | `reports/goal-session-<sid>-delivered.html` |
 

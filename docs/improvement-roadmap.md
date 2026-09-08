@@ -1185,6 +1185,14 @@ benchmark (or a real session's telemetry) before AND after (G8).
 - **Rollback:** `CHAIN_EVIDENCE_MICRO_PATH=false` (engine); body reverts + version.
 - **Stop-and-ask:** any evaluator golden verdict-class flip (drift-beats-durability
   case-04 above all); a demo-less project needing more than the SKIPPED-stub path.
+- **AMENDED 2026-09-08 (HARD-1, §21):** the engine backstop that demoted lean→evidence on
+  journey status alone silently lost a real fix (TenSteps `policy-state-core-v1` iter-7). It
+  is now content-aware — the demotion is granted only when `lib/iter_spec.py
+  has-implementation-work` finds no concrete Backend/Frontend bullet under `## IN SCOPE`;
+  the executor refuses an evidence dispatch of such a spec (exit 76) and the engine
+  re-dispatches lean; the evidence-mode review artifact carries `**Review status:**
+  NOT_DISPATCHED` instead of a fabricated PASS; a lean/evidence spec after ESCALATE is
+  promoted to full. Knobs: `CHAIN_EVIDENCE_WORK_GUARD`, `CHAIN_ESCALATE_FORCES_FULL`.
 
 ### SPEED-10 · Depth discipline — full-trigger allowlist + cadence 4→6
 - **Priority:** P0 · **Effort:** M · **Risk:** LOW-MED · **Status:** IN-PROGRESS —
@@ -5407,3 +5415,185 @@ forensics work would have blurred what this package is for.
     isolation port touched that file (a fail-closed guard at
     `replay_lane_partition_and_verify`) but deliberately took no other trendora hunk;
     `grep -c TARGET_JOURNEYS scripts/automation/lib/replay-lane.sh` is still 0.
+
+## 21. P0/P1 — Goal Mode hardening after TenSteps `policy-state-core-v1` (HARD-*, promoted 2026-09-08)
+
+Source: the planning-only hardening review of 2026-09-07/08, owner-approved with recorded
+decisions. The full mini-spec for every item (15 fields each, the test matrix, compatibility
+and rollout) is `docs/superpowers/plans/2026-09-08-goal-mode-hardening.md` — the blocks below
+are the roadmap-format digests; executors read the plan doc section named in each block
+BEFORE touching code (§3 G1). Evidence: `~/Git/tensteps/runs/goal-session-policy-state-core-v1/`.
+Four root causes: governors read proxies instead of facts (HARD-1..3); ownership is implicit
+(HARD-4A/4B/4C, 5, 6, 7); halt writes without resume readers (HARD-8); decisions are prose
+(HARD-9, 10); sustainment (HARD-11). Order: HARD-1 → 2 → 3 → 4A → 5 → 6 → 4B → 4C → 7 → 8 →
+9 → 10 → 11. One item per session (G6); M-effort items need a fresh-session certification (G8).
+
+### HARD-1 · Deterministic implementation-work guard for the evidence path
+- **Priority:** P0 · **Effort:** S-M · **Risk:** MED · **Status:** IN-PROGRESS — implemented
+  2026-09-08 on branch `hard-1-evidence-work-guard` (this session); G8 fresh-session
+  certification + one real-session telemetry read pending.
+- **Problem:** the SPEED-9 evidence backstop demoted a `Depth: lean` spec to `evidence`
+  because its target journeys were recorded passing, ignoring the spec's own `## IN SCOPE →
+  ### Backend` bullets; the executor skipped developer+reviewer, wrote a stub handoff and a
+  FABRICATED `**Verdict:** PASS`, and labelled the skips `reason:"checkpoint"` (TenSteps
+  iter-7; the fix landed only via ESCALATE + a full iter-8). ESCALATE was never engine-enforced.
+- **Current state (before):** `run-goal.sh` backstop read journey status only; `goal-iter-lean.sh`
+  evidence stubs; `_step_skipped_event` hard-coded `checkpoint`; arbiter only PERMITS full.
+- **Change spec (landed):** `lib/iter_spec.py has-implementation-work` (content probe; exit 2
+  = unparseable ⇒ treated as work); `goal_spec_has_implementation_work` +
+  `EVIDENCE_MODE_REFUSED_EXIT_CODE=76` (`lib/common.sh`); engine: spec-declared evidence with
+  work ⇒ lean, prior ESCALATE ⇒ full (`CHAIN_ESCALATE_FORCES_FULL`), backstop demotes only
+  when the probe finds no work (`CHAIN_EVIDENCE_WORK_GUARD`), exit-76 belt re-dispatch lean;
+  executor: self-refusal before any artifact, honest `NOT_DISPATCHED` status artifacts (the
+  review file carries NO verdict; `_review_not_dispatched` accepts it ONLY on the evidence
+  dispatch), `step_skipped reason=evidence-mode`, `iter_dispatch depth=evidence`; schema:
+  review artifacts accept `**Review status:** NOT_DISPATCHED`; contracts: decomposer 2.6.1,
+  evaluator 1.12.1. Plan doc: "WP1 / HARD-1".
+- **DoD:** `tests/automation/test-evidence-work-guard.sh` green (52 cases: probe, real depth
+  block, wiring, real executor incl. normal-mode non-bypass); neighbours green
+  (`test-evidence-depth.sh`, `test-depth-arbiter.sh`, `test-goal-checkpoints.sh`,
+  `test-full-depth-required.sh`, `test-goal-parallel-bqa.sh`, `test-review-verdict-event.sh`);
+  `run-evals.sh` green; a real session shows no `depth_evidence_refused site=executor-belt`.
+- **Verify:** `bash tests/automation/test-evidence-work-guard.sh` · `python3
+  scripts/automation/lib/iter_spec.py self-test` · `./scripts/automation/run-evals.sh`.
+- **Files:** `scripts/automation/lib/iter_spec.py` (new), `lib/common.sh`, `run-goal.sh`,
+  `goal-iter-lean.sh`, `lib/artifact_schemas.py`, `agents/goal-decomposer/*`,
+  `agents/goal-evaluator/*` + mirrors, `tests/automation/test-evidence-work-guard.sh`,
+  `run-evals.sh`, `docs/goal-mode-telemetry.md`, `runs/SCHEMA.md`, `.claude/architecture/goal-mode.md`.
+- **Rollback:** `CHAIN_EVIDENCE_WORK_GUARD=false` (pre-HARD-1 demotion + belt disarmed),
+  `CHAIN_ESCALATE_FORCES_FULL=false` (permit-only).
+- **Stop-and-ask:** any `depth_evidence_refused site=executor-belt` in a real session; more
+  than 2 refused demotions per session whose coherence step logged `zero-change`.
+
+### HARD-2 · Iteration-spec fields + schema + built-in lint with one automatic re-plan
+- **Priority:** P0 · **Effort:** M · **Risk:** MED · **Status:** TODO (after HARD-1).
+- **Problem:** spec intent (`Work kind`, `Side-effect policy`) is prose; contradictions
+  (evidence + Backend bullets; plain-form `Target journeys:` parsing empty; evidence after
+  ESCALATE) surface only when an agent misbehaves; no iteration-spec schema.
+- **Change spec:** `iter_spec.py metadata|lint` (+ optional consolidation of
+  `goal_new_fullstack_journey`'s parser in its own commit); `Work kind:` / `Side-effect
+  policy:` metadata lines; `iteration-spec` schema entry; engine lint loop after the decomposer
+  checkpoint and before the project post-decompose gate, ONE automatic re-plan with the exact
+  errors, then `GATE_BLOCKED` (`GATE_BLOCKED_SPEC_LINT`); linter crash/unreadable spec fails
+  CLOSED in `block` mode; plain-form `Target journeys:` fallback; fields are
+  necessary-not-sufficient (anti-pattern 25). Plan doc: "WP2 / HARD-2".
+- **DoD/Verify:** `tests/automation/test-spec-lint.sh` (per-rule fixtures, re-plan bound,
+  crash fail-closed); decomposer 2.7.0. **Rollback:** `CHAIN_SPEC_LINT=warn|off`.
+- **Stop-and-ask:** `spec_replan` > 1 in 5 iterations.
+
+### HARD-3 · Journey side-effect model + contradiction preflight
+- **Priority:** P0 · **Effort:** M-L · **Risk:** MED · **Status:** TODO (after HARD-2; schema
+  owner-approved 2026-09-07: `Side effects: none | mutating — <note>`, absent = unknown).
+- **Problem:** a confirm-only spec forbade "new run / ledger write" while target J-04's own
+  step 1 launches a run (TenSteps iter-9); nothing structural represents mutations.
+- **Change spec:** goal.md optional per-journey line (journey-hash-neutral; separate
+  `declaration_digest` keeps changes provenance-visible); replay-lane request observer with an
+  owner-authored, digest-tracked `project-extensions/side-effects/read-only-endpoints.txt`
+  (observation > declaration, always); preflight rules E13 (policy `none` vs mutating),
+  E15 (policy `none` but ledger unavailable ⇒ fail closed), E16 (explicit prohibition vs a
+  known-mutating journey, policy-independent), W10 (prohibition + unknown journeys); prompt
+  lines for both lanes + evaluator; contracts decomposer 2.8.0 / evaluator 1.13.0 /
+  browser-qa-agent 1.4.0. Plan doc: "WP3 / HARD-3".
+- **DoD/Verify:** `tests/automation/test-side-effects.sh` (classifier matrix incl. read-only
+  POST, digest sensitivity, E13/E15/E16/W10, prompt capture). **Rollback:**
+  `CHAIN_SIDE_EFFECT_PREFLIGHT=false`, `CHAIN_SIDE_EFFECT_OBSERVER=false`.
+- **Stop-and-ask:** the `_normalize_block` hash exclusion (certification path) needs reviewer
+  sign-off; an E13 re-plan that flips `none`→`allowed` without E16 blocking is a framework bug.
+
+### HARD-4A · Engine identity token + lock-before-mutation ordering + owner-guarded `engine.pid`
+- **Priority:** P1 · **Effort:** M · **Risk:** MED · **Status:** TODO.
+- **Problem:** a second engine start mutates live state (`--reset`, dispatch wipe, port reclaim)
+  BEFORE the lock can refuse it; a refused start deletes the live engine's `engine.pid`; no
+  child carries an engine identity.
+- **Change spec:** `lib/engine-identity.sh` (`CHAIN_ENGINE_TOKEN=<pid>.<starttime>.<boot8>`,
+  `engine_token_alive`), lock `token` file, prologue reorder (traps → lock → pid → sweep call
+  site → the rest), owner-guarded pid removal, `--reset` preserves this engine's runtime files.
+  Invariants recorded by the owner (2026-09-08): a takeover's ONLY authority is the lock's
+  recorded owner identity (a bare `engine.pid` never authorizes terminating another engine),
+  no channel/session/port mutation before the new engine owns the lock, and identity is
+  revalidated immediately before EVERY signal (TERM and KILL) — pid, boot id and proc
+  starttime must still match, else do not signal. Plan doc: "WP4A / HARD-4A".
+- **DoD/Verify:** `tests/automation/test-engine-identity.sh` (A1–A4, A2b, A2c);
+  `test-engine-lock.sh` unchanged. **Rollback:** none (a refused start touching nothing is not optional).
+
+### HARD-5 · Service ownership registry + ownership-aware kills + demo trap
+- **Priority:** P1 · **Effort:** M · **Risk:** MED · **Status:** TODO (after HARD-4A).
+- **Problem:** every service teardown is port/pattern-scoped and owner-blind (an orphaned
+  executor's EXIT trap killed the live engine's services, TenSteps 00:08:53).
+- **Change spec:** `lib/service-owner.sh` registry outside the repo; states `NO_RECORD | MINE |
+  DEAD | FOREIGN | GRACE | REGISTRY_ERROR` (NO_RECORD ≠ REGISTRY_ERROR; every registry failure
+  fails safe); gated kill sites; `demo-phase.sh` trap; doctor row. Owner-confirmed rollout:
+  `CHAIN_SERVICE_OWNERSHIP=warn` for one real session, then a separate flip to `enforce`. At
+  that flip, decide explicitly whether `NO_RECORD` becomes fail-safe/refuse unless
+  process-level evidence proves MINE/DEAD (legacy blind-kill semantics must not be carried
+  forever). Plan doc: "WP5 / HARD-5".
+- **DoD/Verify:** `tests/automation/test-service-ownership.sh` (B1–B11 incl. the required
+  orphan regression B2 with HARD-4C/6 disabled). **Rollback:** `CHAIN_SERVICE_OWNERSHIP=off`.
+
+### HARD-6 · Dispatch channel identity + pump claim guard + waiter self-check
+- **Priority:** P1 · **Effort:** M · **Risk:** MED · **Status:** TODO (after HARD-4A).
+- **Change spec:** engine token in request JSON / `.started` / `.pump-alive` /
+  `.awaiting-pump`; the pump helper checks engine liveness BEFORE claiming and drops
+  provably-dead requests; the waiter aborts within one poll when its own engine is dead
+  (exit 70, no marker, no port sweep — `CHAIN_EXECUTOR_ORPHANED`). Plan doc: "WP6 / HARD-6".
+- **DoD/Verify:** dispatch self-tests 25–28 / 8–10, `tests/automation/test-dispatch-identity.sh`.
+  **Rollback:** `CHAIN_DISPATCH_ENGINE_CHECK=false`.
+
+### HARD-4B · Signal forwarding + executor lifecycle
+- **Priority:** P1 · **Effort:** M · **Risk:** MED · **Status:** TODO (after HARD-4A).
+- **Change spec:** executors run as background children with `wait`; `on_abort` forwards
+  TERM/INT to the executor tree with a bounded grace (`CHAIN_ENGINE_CHILD_GRACE_SECONDS`), so
+  `/goal-pause` never needs SIGKILL and leaves zero descendants. Plan doc: "WP4B / HARD-4B".
+- **DoD/Verify:** `tests/automation/test-engine-signals.sh` (A5, A5b, A5c).
+
+### HARD-4C · Orphan detection and sweep
+- **Priority:** P1 · **Effort:** M · **Risk:** MED · **Status:** TODO (after HARD-5, HARD-6).
+- **Change spec:** at lock acquisition, kill only processes whose `GOAL_SESSION_DIR` resolves
+  to THIS session AND whose `CHAIN_ENGINE_TOKEN` is provably dead; other sessions/checkouts
+  or missing/ambiguous attribution are reported, never killed; legacy env/cmdline heuristics
+  report-only (`CHAIN_ORPHAN_SWEEP_LEGACY=report`). Plan doc: "WP4C / HARD-4C".
+- **DoD/Verify:** `tests/automation/test-orphan-sweep.sh` (A6, A6b–A6f predicate matrix).
+  **Rollback:** `CHAIN_ORPHAN_SWEEP=false`.
+
+### HARD-7 · Session git hygiene
+- **Priority:** P1 · **Effort:** S · **Risk:** LOW · **Status:** TODO.
+- **Change spec:** `templates/goal-session.gitignore` copied into each session (engine.pid,
+  .engine.lock/, dispatch/, trace/.lock, iter-*/.bqa-*, …); automatic index-only untracking
+  of already-tracked runtime files (loud; `CHAIN_SESSION_UNTRACK_RUNTIME`); doctor row.
+  Plan doc: "WP7 / HARD-7".
+- **DoD/Verify:** `tests/automation/test-session-gitignore.sh` (D1–D4).
+
+### HARD-8 · STALLED parked-WIP protocol
+- **Priority:** P1 · **Effort:** M · **Risk:** MED · **Status:** TODO (after HARD-7).
+- **Change spec:** structured `session.json.parked_wip` + `refs/goal-parked/<sid>/iter-N`;
+  halt bookkeeping commit after the park (clean tree at halt); resume preflight in three
+  stages — structural verification (C1–C7), publication authorization (`--accept-parked`;
+  `--acknowledge-regression` for REGRESSION-parked work; after HARD-9 a resolved matching
+  decision with `parked_wip_disposition: accept`), publication by fast-forward — unauthorized
+  parked WIP refuses resume even with `--no-push-per-iter`; `--accept-parked-extra-commits`
+  is a separate flag; documented discard/recovery path; terminal statuses reset on resume;
+  `stall_window` tristate + stall acknowledgement. Plan doc: "WP8 / HARD-8".
+- **DoD/Verify:** `tests/automation/test-parked-wip.sh` (E1–E17).
+
+### HARD-9 · Owner-decision registry, binding-block hashing, single-blocker dedup, explicit resolution
+- **Priority:** P1 · **Effort:** M · **Risk:** MED · **Status:** TODO (after HARD-8; owner-confirmed shadow-first).
+- **Change spec:** `## Owner decision required` block (ID, Class, Question, Options, Inputs,
+  Sole blocker); `state/owner-decisions.json` (`open | resolved | needs_recheck`); full-span
+  material-input hashing (an anti-goal's span includes its nested amendments); resolution only
+  via `goal-decide.sh` (with `--parked-wip accept|reject|unrelated`) or a dated goal.md
+  amendment naming the id; dedup eligibility requires a single blocker; engine demotion stays
+  behind `CHAIN_OWNER_DECISION_DEDUP=false` (shadow telemetry) until a separate flip.
+  Plan doc: "WP9 / HARD-9".
+- **DoD/Verify:** `tests/automation/test-owner-decisions.sh` (F1–F14).
+
+### HARD-10 · Pump self-service for operational pauses
+- **Priority:** P1 · **Effort:** S · **Risk:** LOW · **Status:** TODO (after HARD-6).
+- **Change spec:** `--pump-auto-resume` (once per iteration, allowlisted pump-loss reasons
+  only); BUDGET_EXHAUSTED wording distinguishes operator-set from default caps.
+  Plan doc: "WP10 / HARD-10". **DoD/Verify:** `tests/automation/test-pump-auto-resume.sh`.
+
+### HARD-11 · Sustainment
+- **Priority:** P1 · **Effort:** S · **Risk:** LOW · **Status:** TODO (after HARD-4A–4C, 5, 6).
+- **Change spec:** anti-patterns 33–35 (governor reads a proxy; implicit ownership; halt write
+  without a resume reader); `tests/automation/test-ownership-lint.sh` + kill-site allowlist;
+  analyzer/retro tripwire block. Plan doc: "WP11 / HARD-11".

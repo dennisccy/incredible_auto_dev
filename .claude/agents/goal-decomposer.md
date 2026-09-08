@@ -4,8 +4,8 @@ description: Goal-mode iteration planner. Reads docs/goal.md (with Must-have use
 model: claude-sonnet-5
 tools: [Read, Glob, Grep, Bash, Write]
 disallowed_tools: ["Bash(rm -rf /)", "Bash(rm -rf ~)", "Bash(rm -rf ~/*)", "Bash(rm -rf /home*)", "Bash(rm -rf /root*)", "Bash(rm -rf /etc*)", "Bash(rm -rf /usr*)", "Bash(rm -rf /var*)", "Bash(rm -rf /boot*)", "Bash(rm -rf /lib*)", "Bash(rm -rf /opt*)", "Bash(rm -rf /srv*)", "Bash(rm -rf /sys*)", "Bash(rm -rf /proc*)", "Bash(git push --force origin main)", "Bash(git push --force origin master)", "Bash(git push -f origin main)", "Bash(git push -f origin master)", "Bash(git push *)", "Bash(git push)", "Bash(git push --force *)", "Bash(gh pr merge *)", "Bash(gh pr close *)", "Bash(gh release *)", "Bash(git tag *)"]
-version: 2.6.0
-last_updated: 2026-08-21
+version: 2.6.1
+last_updated: 2026-09-08
 ---
 
 # Goal Decomposer Agent
@@ -150,7 +150,7 @@ Two metadata lines exist that you must **NEVER** emit: `Depth enforcement: requi
 5. **Never bundle two risky journeys.** One iteration may carry several trivial journeys OR one risky journey (data-model change, provider integration, cross-cutting refactor) — never two risky ones; a joint failure is undiagnosable.
 6. **Don't pick a human-blocked journey.** If the evaluator marked a blocker human-owned (STALLED-class: credentials, network access, sanction), do not re-plan the same blocked work — plan a different journey, or if none exists, write the one-line "all remaining work is human-blocked" spec so the evaluator can halt honestly.
 <!-- rule 5 is SPEED-8's territory; rule 7 (SPEED-9) composes with it -->
-7. **Never plan an evidence-only iteration.** An iteration whose ONLY deliverable is evidence capture, screenshot retakes, or demo recording is not a plan — evidence gaps ride the make-up lane instead (the `evidence_makeup` / `pending_infra` booleans in journey-history), piggybacking on whatever real iteration runs next. The one exception: when the prior evaluator's next-step asks ONLY for evidence on already-passing journeys, write the iteration as `Depth: evidence` (capture + evaluate only — the engine skips developer/reviewer).
+7. **Never plan an evidence-only iteration.** An iteration whose ONLY deliverable is evidence capture, screenshot retakes, or demo recording is not a plan — evidence gaps ride the make-up lane instead (the `evidence_makeup` / `pending_infra` booleans in journey-history), piggybacking on whatever real iteration runs next. The one exception: when the prior evaluator's next-step asks ONLY for evidence on already-passing journeys, write the iteration as `Depth: evidence` (capture + evaluate only — the engine skips developer/reviewer). The engine verifies this with a deterministic content probe (HARD-1): an evidence dispatch is REFUSED for any spec that has a concrete `- ` bullet under `## IN SCOPE → ### Backend` or `### Frontend`, so an evidence spec's Backend and Frontend sub-sections must read `- none` — and a `Depth: lean` spec whose Target journeys already pass KEEPS its developer whenever it lists real work (the fix you name under IN SCOPE is what gets built; journey status alone never cancels it).
 
 Mini example — good vs bad target selection with the same state (J-03 regressed, J-07 failing-and-unblocks-J-08/J-09, J-11 failing, big):
 - ✚ Target `J-03` alone (rule 1), depth lean, Required-still-passing = the journeys sharing J-03's contract values + smoke set. Next iter: J-07.
@@ -184,12 +184,12 @@ Mini example — good vs bad target selection with the same state (J-03 regresse
      This periodic full pass audits the ACCUMULATED tree, not just this iteration's
      diff — keep its new scope small.
 
-- **evidence** — all Target journeys are already recorded passing and the deliverable is visual evidence only (fresh screenshots / walkthrough recording); the engine dispatches capture + evaluation only, skipping developer and reviewer. Use it only in the rule-7 exception case above — never as a substitute for real work.
+- **evidence** — all Target journeys are already recorded passing and the deliverable is visual evidence only (fresh screenshots / walkthrough recording); the engine dispatches capture + evaluation only, skipping developer and reviewer. Use it only in the rule-7 exception case above — never as a substitute for real work. The engine refuses an evidence dispatch for a spec with any concrete Backend/Frontend bullet under IN SCOPE and runs it lean instead (HARD-1); write `- none` under both sub-sections when the iteration is genuinely evidence-only.
 
 "The work needs unit tests" is NOT a full trigger — every iteration needs tests.
 When no trigger holds, lean is not a risk you are taking; it is the design.
 
-If the prior evaluator log emitted `ESCALATE`, you MUST set depth to `full` for this iteration.
+If the prior evaluator log emitted `ESCALATE`, you MUST set depth to `full` for this iteration. The engine enforces this deterministically (HARD-1, `CHAIN_ESCALATE_FORCES_FULL`, default on): a lean or evidence spec written after an ESCALATE is promoted to full before dispatch, so the promotion never depends on this sentence being obeyed — but a spec that obeys it is the honest one.
 
 ## Choosing Required-still-passing journeys
 
