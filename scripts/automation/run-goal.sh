@@ -2602,7 +2602,7 @@ Do NOT write code or implement anything. The iteration spec and any blueprint ed
   # Rollback: CHAIN_EVIDENCE_WORK_GUARD=false restores the pre-HARD-1 behaviour.
   if [[ "$DEPTH" == "evidence" && "${CHAIN_EVIDENCE_WORK_GUARD:-true}" == "true" ]] \
      && goal_spec_has_implementation_work "$ITER_SPEC_PATH"; then
-    _iw="$(python3 "$SCRIPT_DIR/lib/iter_spec.py" has-implementation-work "$ITER_SPEC_PATH" 2>/dev/null || echo '{}')"
+    _iw="$GOAL_SPEC_WORK_JSON"   # captured by the probe above; never re-run it
     echo "[run-goal] Depth 'evidence' declared but IN SCOPE plans implementation work ($_iw) — dispatching as LEAN (developer + reviewer WILL run). CHAIN_EVIDENCE_WORK_GUARD=false restores the pre-HARD-1 behaviour."
     record_telemetry_event "depth_evidence_refused" "$(jq -cn --argjson iw "$_iw" '{site:"spec-declared", from:"evidence", to:"lean", implementation_work:$iw}' 2>/dev/null || printf '{"site":"spec-declared","from":"evidence","to":"lean"}')"
     DEPTH="lean"
@@ -2814,7 +2814,7 @@ sys.exit(0)
 PYEOF
   then
     if [[ "${CHAIN_EVIDENCE_WORK_GUARD:-true}" == "true" ]] && goal_spec_has_implementation_work "$ITER_SPEC_PATH"; then
-      _iw="$(python3 "$SCRIPT_DIR/lib/iter_spec.py" has-implementation-work "$ITER_SPEC_PATH" 2>/dev/null || echo '{}')"
+      _iw="$GOAL_SPEC_WORK_JSON"   # captured by the probe above; never re-run it
       echo "[run-goal] Evidence backstop REFUSED: every target journey (${TARGET_JOURNEYS}) is already recorded passing, but IN SCOPE plans implementation work ($_iw) — keeping depth LEAN (developer + reviewer WILL run; HARD-1)."
       record_telemetry_event "depth_evidence_refused" "$(jq -cn --arg tj "$TARGET_JOURNEYS" --argjson iw "$_iw" '{site:"backstop", from:"lean", to:"lean", target_journeys:$tj, implementation_work:$iw}' 2>/dev/null || printf '{"site":"backstop","from":"lean","to":"lean"}')"
     else

@@ -81,6 +81,10 @@ _run_self_test() {
 }
 
 _run_self_test scripts/automation/lib/artifact_schemas.py self-test
+# HARD-1 implementation-work probe: the guard that keeps a spec with real
+# Backend/Frontend work out of an evidence-only dispatch. Its own fixtures
+# must run under the standard offline gate, not only inside the behavioural suite.
+_run_self_test scripts/automation/lib/iter_spec.py self-test
 _run_self_test scripts/automation/lib/analyze_telemetry.py --self-test
 _run_self_test scripts/automation/lib/replay_trace.py self-test
 _run_self_test scripts/automation/lib/agent_permissions.py self-test

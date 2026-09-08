@@ -301,6 +301,41 @@ grep -q 'def has_bullet' "$ENGINE_ROOT/scripts/automation/lib/common.sh" \
   && assert "P11: goal_new_fullstack_journey's parser is untouched (still inline in common.sh — consolidation is HARD-2)" "pass" \
   || assert "P11: goal_new_fullstack_journey's parser is untouched" "fail"
 
+# ── P12-P15: the probe is executed ONCE and publishes exactly one valid JSON
+# value on every path. The probe prints a JSON object even when it exits 2, so a
+# caller that appends its own `|| echo {}` fallback would emit TWO concatenated
+# documents and `jq --argjson` would reject the whole telemetry payload, silently
+# dropping implementation_work from depth_evidence_refused / evidence_mode_refused
+# and corrupting the evidence-mode-refused marker's `work=` line.
+( source "$ENGINE_ROOT/scripts/automation/lib/common.sh" 2>/dev/null
+  for _f in iter7.md iter9.md sentinel.md does-not-exist.md; do
+    GOAL_SPEC_WORK_JSON=""; GOAL_SPEC_WORK_RC=""
+    _r=0; goal_spec_has_implementation_work "$SPECS/$_f" || _r=$?
+    _lines=$(printf '%s\n' "$GOAL_SPEC_WORK_JSON" | wc -l)
+    _valid=no
+    printf '%s' "$GOAL_SPEC_WORK_JSON" | python3 -c 'import json,sys; json.load(sys.stdin)' 2>/dev/null && _valid=yes
+    _jq=no
+    jq -cn --argjson iw "$GOAL_SPEC_WORK_JSON" '{implementation_work:$iw}' >/dev/null 2>&1 && _jq=yes
+    echo "$_f wrapper_rc=$_r probe_rc=$GOAL_SPEC_WORK_RC lines=$_lines valid=$_valid jq=$_jq"
+  done
+) > "$WORK/probe-json.out" 2>/dev/null
+_bad=$(grep -cv 'lines=1 valid=yes jq=yes$' "$WORK/probe-json.out" || true)
+[[ "$(wc -l < "$WORK/probe-json.out")" == "4" && "$_bad" == "0" ]] \
+  && assert "P12: every probe path publishes exactly ONE valid JSON value (jq --argjson accepts it) — including both exit-2 paths" "pass" \
+  || assert "P12: single valid JSON on every probe path (got: $(tr '\n' '; ' < "$WORK/probe-json.out"))" "fail"
+grep -q '^sentinel.md wrapper_rc=0 probe_rc=2 ' "$WORK/probe-json.out" \
+  && assert "P13: an unparseable spec (no IN SCOPE) still reports probe_rc=2 and fails closed to 'has work'" "pass" \
+  || assert "P13: unparseable spec reports probe_rc=2 and fails closed" "fail"
+grep -q '^does-not-exist.md wrapper_rc=0 probe_rc=2 ' "$WORK/probe-json.out" \
+  && assert "P14: an unreadable spec still reports probe_rc=2 and fails closed to 'has work'" "pass" \
+  || assert "P14: unreadable spec reports probe_rc=2 and fails closed" "fail"
+# The engine and the executor must never invoke the probe a second time just to
+# build the diagnostic — one execution, one captured value, rc captured separately.
+_dbl=$( { grep -c 'iter_spec.py" has-implementation-work' "$RG" || true; } ; { grep -c 'iter_spec.py" has-implementation-work' "$LEAN" || true; } )
+[[ "$(printf '%s' "$_dbl" | tr -d '[:space:]')" == "00" ]] \
+  && assert "P15: neither run-goal.sh nor goal-iter-lean.sh re-invokes the probe for diagnostics (single execution via the wrapper)" "pass" \
+  || assert "P15: probe re-invoked outside lib/common.sh (counts: $(printf '%s' "$_dbl" | tr '\n' '/'))" "fail"
+
 # ── Part D: the REAL depth block, extracted and driven ────────────────────────
 echo "== D. depth block"
 # Boundaries: the two stable engine comments/log lines. The block covers the
@@ -564,6 +599,31 @@ rc=0; run_lean "$WORK/x1.log" CHAIN_LEAN_EVIDENCE_ONLY=true || rc=$?
 grep -q '"event": *"evidence_mode_refused"' "$GOAL_SESSION_DIR/telemetry.jsonl" 2>/dev/null \
   && assert "X1e: telemetry evidence_mode_refused emitted" "pass" \
   || assert "X1e: telemetry evidence_mode_refused emitted" "fail"
+# X1f/X1g — the refusal diagnostics survive the probe's exit-2 paths. An
+# UNPARSEABLE spec (no `## IN SCOPE`) fails closed to "has work", so the belt
+# fires; the marker's `work=` must stay a single readable line holding ONE valid
+# JSON value, and the telemetry payload must still carry implementation_work.
+write_sentinel_spec() { printf '# Sentinel — %s\n\nAll remaining work is human-blocked.\n' "$ITER" > "$1"; }
+set_iter 11 write_sentinel_spec
+rc=0; run_lean "$WORK/x1f.log" CHAIN_LEAN_EVIDENCE_ONLY=true || rc=$?
+_wl=$(grep -c '^work=' "$ITER_DIR/evidence-mode-refused" 2>/dev/null || echo 0)
+_ml=$(wc -l < "$ITER_DIR/evidence-mode-refused" 2>/dev/null || echo 0)
+_wv=no
+sed -n 's/^work=//p' "$ITER_DIR/evidence-mode-refused" 2>/dev/null \
+  | python3 -c 'import json,sys; json.load(sys.stdin)' 2>/dev/null && _wv=yes
+[[ "$rc" -eq 76 && "$_wl" == "1" && "$_ml" == "3" && "$_wv" == "yes" ]] \
+  && assert "X1f: an unparseable spec still refuses (76) and writes a 3-line marker whose single work= line is ONE valid JSON value" "pass" \
+  || assert "X1f: marker readable on the probe's exit-2 path (rc=$rc work_lines=$_wl marker_lines=$_ml valid=$_wv; $(tr '\n' '|' < "$ITER_DIR/evidence-mode-refused" 2>/dev/null | cut -c1-200))" "fail"
+python3 - "$GOAL_SESSION_DIR/telemetry.jsonl" <<'PYX' && assert "X1g: evidence_mode_refused telemetry still carries implementation_work on the exit-2 path" "pass" || assert "X1g: evidence_mode_refused carries implementation_work on the exit-2 path" "fail"
+import json, sys
+for line in open(sys.argv[1]):
+    try: e = json.loads(line)
+    except Exception: continue
+    if e.get("event") == "evidence_mode_refused":
+        d = e.get("data") if isinstance(e.get("data"), dict) else e
+        sys.exit(0 if isinstance(d.get("implementation_work"), dict) else 1)
+sys.exit(1)
+PYX
 
 # X2 — a genuine evidence-only iteration runs capture-only with honest artifacts.
 set_iter 9 write_iter9_spec evidence

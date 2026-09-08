@@ -1480,9 +1480,25 @@ PYEOF
 #     `## IN SCOPE`). Single implementation: lib/iter_spec.py has-implementation-work.
 # Consumers: run-goal.sh's evidence backstop + spec-declared evidence guard, and
 # goal-iter-lean.sh's evidence-mode self-refusal (the belt).
+# Runs the probe ONCE and publishes its result to the caller:
+#   GOAL_SPEC_WORK_JSON  exactly ONE valid JSON object, on every path — the value
+#                        consumers hand to `jq --argjson` and write into the
+#                        `work=` line of the evidence-mode-refused marker.
+#   GOAL_SPEC_WORK_RC    the raw probe exit code (0 work / 1 none / 2 unreadable).
+# The probe prints one JSON object on ALL of its paths, including both exit-2
+# ones, so a caller must never append its own `|| echo {}` fallback: that would
+# concatenate two JSON documents and make `jq --argjson` reject the payload.
 goal_spec_has_implementation_work() {
-  local rc=0
-  python3 "$(dirname "${BASH_SOURCE[0]}")/iter_spec.py" has-implementation-work "$1" >/dev/null 2>&1 || rc=$?
+  local _out rc=0
+  _out="$(python3 "$(dirname "${BASH_SOURCE[0]}")/iter_spec.py" has-implementation-work "$1" 2>/dev/null)" || rc=$?
+  _out="${_out%%$'\n'*}"   # the probe prints exactly one line; never concatenate
+  case "$_out" in
+    '{'*'}') GOAL_SPEC_WORK_JSON="$_out" ;;
+    # No parseable stdout at all (interpreter missing, killed mid-write): still
+    # exactly one valid JSON object, so telemetry and the marker stay readable.
+    *)       GOAL_SPEC_WORK_JSON="$(printf '{"probe_rc":%d,"probe_output":"unavailable"}' "$rc")" ;;
+  esac
+  GOAL_SPEC_WORK_RC="$rc"
   [[ "$rc" -eq 1 ]] && return 1
   return 0
 }

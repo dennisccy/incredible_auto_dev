@@ -90,7 +90,7 @@ fi
 # deterministic content check (lib/iter_spec.py), never the spec's own prose.
 if [[ "${CHAIN_LEAN_EVIDENCE_ONLY:-false}" == "true" && "${CHAIN_EVIDENCE_WORK_GUARD:-true}" == "true" ]] \
    && goal_spec_has_implementation_work "$SPEC"; then
-  _iw="$(python3 "$SCRIPT_DIR/lib/iter_spec.py" has-implementation-work "$SPEC" 2>/dev/null || echo '{}')"
+  _iw="$GOAL_SPEC_WORK_JSON"   # captured by the probe above; never re-run it
   echo "[goal-iter-lean] EVIDENCE mode REFUSED: $SPEC plans implementation work under IN SCOPE ($_iw) — an evidence-only dispatch would skip the developer and leave the work undone. Exiting ${EVIDENCE_MODE_REFUSED_EXIT_CODE:-76} (the engine re-dispatches at LEAN depth)." >&2
   _rd="$(goal_iter_dir "$ITER_NAME" 2>/dev/null || true)"
   if [[ -n "$_rd" ]]; then
