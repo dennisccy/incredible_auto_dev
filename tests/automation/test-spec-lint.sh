@@ -285,6 +285,7 @@ if [[ "$agent" == "goal-decomposer" ]]; then
       badenum)     echo "- **Depth:** deep"; echo "- **Target journeys:** J-01" ;;
       baselinework) echo "- **Depth:** lean"; echo "- **Target journeys:** J-01" ;;
       badmode)     echo "- **Depth:** deep"; echo "- **Target journeys:** J-01" ;;
+      full78)      echo "- **Depth:** full"; echo "- **Full trigger:** 1 - new journey"; echo "- **Target journeys:** J-01" ;;
       evidence)    echo "- **Depth:** evidence"; echo "- **Target journeys:** J-01" ;;
       outsidefield) echo "- **Target journeys:** J-01" ;;
     esac
@@ -918,6 +919,117 @@ done
 [[ "$_lw_unchanged" == "yes" ]] \
   && assert "LW6: HARD-1's has-implementation-work still counts every one of these loose bullets as work (unchanged)" "pass" \
   || assert "LW6: HARD-1 probe unchanged across the LW cases" "fail"
+
+# ── Part P78: rc 78 stays safety-fatal through run-phase.sh ─────────────────
+echo "== P78. run-phase fatal propagation"
+RP="$ENGINE_ROOT/scripts/automation/run-phase.sh"
+# Drive the REAL guard: extract it plus its two predicates and the new one.
+{ sed -n '/^_is_signal_exit()/,/^}/p' "$RP"
+  sed -n '/^_is_transport_failure()/,/^}/p' "$RP"
+  sed -n '/^_is_spec_field_unavailable()/,/^}/p' "$RP"
+  echo 'log() { echo "$*"; }'
+  sed -n '/^_guard_step_rc()/,/^}/p' "$RP"; } > "$WORK/guard.sh"
+guard_rc() {  # guard_rc <rc> -> exit code of the guard (0 = fell through)
+  local _g=0
+  ( set +e; # shellcheck disable=SC1090
+    . "$WORK/guard.sh"; _guard_step_rc "$1" "Step 6 (browser-qa)" ) > "$WORK/guard.out" 2>&1 || _g=$?
+  echo "$_g"
+}
+[[ "$(guard_rc 78)" == "78" ]] \
+  && assert "P78-1: _guard_step_rc exits 78 for a canonical spec-field failure (never falls through to the caller's warning)" "pass" \
+  || assert "P78-1: guard exits 78 (got $(guard_rc 78))" "fail"
+grep -qi 'canonical Goal Mode Metadata field lookup UNAVAILABLE' "$WORK/guard.out" \
+  && assert "P78-1b: it says WHY, naming the canonical metadata lookup rather than an agent-quality failure" "pass" \
+  || assert "P78-1b: explicit diagnostic ($(head -c 90 "$WORK/guard.out"))" "fail"
+# The guard runs BEFORE the warn-and-continue at both the sequential browser-QA
+# site and the post-dev fanout site, so neither can convert 78 into a retry.
+_bqa_guard=$(grep -n '_guard_step_rc "$bqa_rc"' "$RP" | head -1 | cut -d: -f1)
+_bqa_warn=$(grep -n 'Warning: browser-qa-phase.sh exited with error' "$RP" | head -1 | cut -d: -f1)
+[[ -n "$_bqa_guard" && -n "$_bqa_warn" && "$_bqa_guard" -lt "$_bqa_warn" ]] \
+  && assert "P78-1c: the sequential browser-QA guard precedes 'Warning: ... continuing'" "pass" \
+  || assert "P78-1c: guard precedes the bqa warning (guard=$_bqa_guard warn=$_bqa_warn)" "fail"
+_fan_guard=$(grep -n '_guard_step_rc "$fanout_rc"' "$RP" | head -1 | cut -d: -f1)
+_fan_warn=$(grep -n 'sequential retry will pick up any failed step' "$RP" | head -1 | cut -d: -f1)
+[[ -n "$_fan_guard" && -n "$_fan_warn" && "$_fan_guard" -lt "$_fan_warn" ]] \
+  && assert "P78-2: the post-dev FANOUT guard precedes 'sequential retry will pick up any failed step'" "pass" \
+  || assert "P78-2: fanout guard precedes sequential recovery (guard=$_fan_guard warn=$_fan_warn)" "fail"
+grep -q 'return "$_rc"' "$RP" && grep -q 'browser-qa-phase.sh.*aborting chain' "$RP" \
+  && assert "P78-2b: the fanout branch propagates the browser-QA rc out of the fork rather than swallowing it" "pass" \
+  || assert "P78-2b: fanout branch propagates rc" "fail"
+_t70="$(guard_rc 70)"; _t75="$(guard_rc 75)"; _t130="$(guard_rc 130)"; _t143="$(guard_rc 143)"; _t1="$(guard_rc 1)"
+[[ "$_t70" == "70" && "$_t130" == "130" && "$_t143" == "143" && "$_t75" == "0" && "$_t1" == "0" ]] \
+  && assert "P78-3: rc 70 transport, 130/143 signals stay fatal; rc 75 quota and rc 1 still fall through unchanged" "pass" \
+  || assert "P78-3: existing rc semantics unchanged (70=$_t70 75=$_t75 130=$_t130 143=$_t143 1=$_t1)" "fail"
+
+# ── Part G78: rc 78 halts the top-level engine on BOTH depth paths ───────────
+echo "== G78. engine-level fatal propagation"
+cp "$SBX/scripts/automation/goal-iter-lean.sh" "$WORK/lean.real"
+cp "$SBX/scripts/automation/run-phase.sh" "$WORK/phase.real"
+printf '#!/usr/bin/env bash\nexit 78\n' > "$WORK/exit78.sh"
+
+cp "$WORK/exit78.sh" "$SBX/scripts/automation/goal-iter-lean.sh"
+run_engine good
+cp "$WORK/lean.real" "$SBX/scripts/automation/goal-iter-lean.sh"
+_g78_session="$ENG_SESSION"; _g78_sid="$ENG_SID"
+[[ "$(eng_status)" == "GATE_BLOCKED" ]] \
+  && assert "G78-1: a LEAN executor exiting 78 halts the engine GATE_BLOCKED" "pass" \
+  || assert "G78-1: lean rc78 -> GATE_BLOCKED (got '$(eng_status)')" "fail"
+grep -q '"reason": *"GATE_BLOCKED_SPEC_FIELD_UNAVAILABLE"' "$ENG_SESSION/telemetry.jsonl" 2>/dev/null \
+  && grep -q '"detected_at_step": *"executor-spec-field"' "$ENG_SESSION/telemetry.jsonl" 2>/dev/null \
+  && assert "G78-1b: halt telemetry carries GATE_BLOCKED_SPEC_FIELD_UNAVAILABLE at step executor-spec-field" "pass" \
+  || assert "G78-1b: halt telemetry reason/step" "fail"
+[[ "$(eng_dispatched coherence-auditor)" == "0" && "$(eng_dispatched goal-evaluator)" == "0" ]] \
+  && assert "G78-1c: neither the coherence auditor nor the goal-evaluator ran on the un-evaluated iteration" "pass" \
+  || assert "G78-1c: no coherence/evaluator after rc78 (canary: $(tr '\n' ' ' < "$CANARY"))" "fail"
+_ci="$(python3 -c "
+import json
+try: print(json.load(open('$ENG_SESSION/session.json')).get('current_iter','?'))
+except Exception: print('?')" 2>/dev/null)"
+[[ "$_ci" == "0" ]] \
+  && assert "G78-1d: current_iter was NOT advanced (still 0)" "pass" \
+  || assert "G78-1d: current_iter unchanged (got '$_ci')" "fail"
+[[ -f "$ENG_SESSION/iter-0/spec-field-unavailable" ]] \
+  && grep -q 'reason=canonical-spec-field-unavailable' "$ENG_SESSION/iter-0/spec-field-unavailable" \
+  && assert "G78-1e: a durable iter-0/spec-field-unavailable artifact records the reason and rc" "pass" \
+  || assert "G78-1e: durable halt artifact" "fail"
+grep -q 'refused to report an empty journey set\|refused to fall back' "$ENG_LOG" \
+  && assert "G78-1f: the operator message says the legacy fallback was deliberately refused" "pass" \
+  || assert "G78-1f: operator message explains the refusal" "fail"
+
+# Full path: the engine dispatches run-phase.sh, which exits 78.
+printf '#!/usr/bin/env bash\n# --no-finalize\nexit 78\n' > "$SBX/scripts/automation/run-phase.sh"
+run_engine full78 CHAIN_DEPTH_ARBITER=false
+cp "$WORK/phase.real" "$SBX/scripts/automation/run-phase.sh"
+_fd="$(cat "$ENG_SESSION/iter-0/depth-dispatched" 2>/dev/null)"
+[[ "$(eng_status)" == "GATE_BLOCKED" ]] && [[ "$_fd" == "full" ]] \
+  && assert "G78-2: the FULL pipeline exiting 78 reaches the identical top-level GATE_BLOCKED halt" "pass" \
+  || assert "G78-2: full rc78 -> GATE_BLOCKED (status='$(eng_status)' depth='$_fd')" "fail"
+[[ "$(eng_dispatched goal-evaluator)" == "0" ]] \
+  && assert "G78-2b: the full path also stops before the evaluator (lean and full do not diverge)" "pass" \
+  || assert "G78-2b: no evaluator on the full path" "fail"
+
+# Resume: fix the fault, resume, and the SAME iteration re-runs with the checks.
+CANARY="$WORK/canary-g78resume.log"; : > "$CANARY"; export CANARY
+( cd "$SBX" && env "PATH=$STUB_DIR:$PATH" CANARY="$CANARY" STUB_SPEC_KIND=good \
+    CHAIN_DOCTOR=false CHAIN_GOAL_LINT=false CHAIN_SESSION_RETRO=false \
+    CHAIN_TMP_ROOT="$TMPROOT" CHAIN_TMP_LEGACY_ROOTS="" \
+    CHAIN_BACKEND_PORT=48731 CHAIN_FRONTEND_PORT=48732 CHAIN_SKIP_GITHUB_PREFLIGHT=true \
+    timeout 240 bash scripts/automation/run-goal.sh --session-id "$_g78_sid" --resume --max-iter 1 --no-push-per-iter \
+) > "$WORK/g78-resume.log" 2>&1 || true
+_rci="$(python3 -c "
+import json
+try:
+    d=json.load(open('$_g78_session/session.json')); print(d.get('current_iter','?'), d.get('status','?'))
+except Exception: print('? ?')" 2>/dev/null)"
+grep -q '^developer$' "$CANARY" \
+  && assert "G78-3: after fixing the fault, resume re-runs the SAME iteration and dispatches the developer" "pass" \
+  || assert "G78-3: resume re-runs the iteration (canary: $(tr '\n' ' ' < "$CANARY"))" "fail"
+grep -q 'spec_lint' "$_g78_session/telemetry.jsonl" 2>/dev/null \
+  && assert "G78-3b: resume re-runs the deterministic spec lint (the halt was never treated as approval)" "pass" \
+  || assert "G78-3b: resume re-lints" "fail"
+[[ "${_rci%% *}" == "0" ]] \
+  && assert "G78-3c: the iteration index did not advance across the halt and the resume" "pass" \
+  || assert "G78-3c: iteration index unchanged (got '$_rci')" "fail"
 
 # ── Part R: HARD-1 and HARD-3 boundaries ─────────────────────────────────────
 echo "== R. HARD-1 regressions and scope"

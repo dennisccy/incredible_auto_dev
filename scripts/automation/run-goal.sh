@@ -3120,6 +3120,37 @@ PYEOF
     _engine_step_done
   fi
 
+  # HARD-2: the executor could not read a canonical machine field from the spec's
+  # `## Goal Mode Metadata` section (lib/replay-lane.sh refused both the legacy
+  # whole-document fallback and an empty journey set). The spec lint may well
+  # have PASSED earlier — this is a later runtime access failure, so it is not a
+  # spec_lint_crash — and it is not transport, so it is not AWAITING_PUMP.
+  # Halting here means the coherence auditor and the goal-evaluator never run on
+  # an iteration whose journey set was never established, current_iter is not
+  # advanced (it only moves after the evaluator), and nothing is pushed as a
+  # successful iteration. `--resume` re-runs THIS iteration from the decomposer
+  # checkpoint, which re-lints the spec and re-reads the canonical fields: the
+  # halt is never treated as approval.
+  if [[ "$_exec_rc" -eq "${SPEC_FIELD_UNAVAILABLE_EXIT_CODE:-78}" ]]; then
+    echo "[run-goal] Canonical spec-field lookup UNAVAILABLE during iteration $CURRENT_ITER (executor exit $_exec_rc) — halting." >&2
+    echo "[run-goal]   A machine field (target / required journeys) could not be read from '## Goal Mode Metadata'" >&2
+    echo "[run-goal]   in $ITER_SPEC_PATH. The deterministic reader REFUSED to fall back to whole-document parsing" >&2
+    echo "[run-goal]   (that is the split brain HARD-2 closes) and refused to report an empty journey set." >&2
+    echo "[run-goal]   Nothing was evaluated and iteration $CURRENT_ITER was not advanced." >&2
+    echo "[run-goal]   Reproduce:  python3 scripts/automation/lib/iter_spec.py field $ITER_SPEC_PATH target_journeys" >&2
+    echo "[run-goal]   Fix the spec's metadata section (or the accessor/runtime fault), then:  /goal-resume $SESSION_ID" >&2
+    echo "[run-goal]   Resuming re-runs THIS iteration and re-checks the spec — it is not an approval." >&2
+    mkdir -p "$ITER_DIR" 2>/dev/null || true
+    printf 'reason=canonical-spec-field-unavailable\nrc=%s\nspec=%s\niter=%s\ndetected_at_step=executor-spec-field\n' \
+      "$_exec_rc" "$ITER_SPEC_PATH" "$CURRENT_ITER" > "$ITER_DIR/spec-field-unavailable" 2>/dev/null || true
+    record_telemetry_event "halt" "$(jq -cn --arg n "$ITER_NAME" --arg rc "$_exec_rc" \
+      '{reason:"GATE_BLOCKED_SPEC_FIELD_UNAVAILABLE", detected_at_step:"executor-spec-field", rc:($rc|tonumber), iter_name:$n}' \
+      2>/dev/null || printf '{"reason":"GATE_BLOCKED_SPEC_FIELD_UNAVAILABLE","detected_at_step":"executor-spec-field","rc":%s}' "$_exec_rc")"
+    write_session_summary "GATE_BLOCKED" "$CURRENT_ITER"
+    explain_goal_status "GATE_BLOCKED" "$SESSION_ID" "$REPO_ROOT" >&2
+    exit 0
+  fi
+
   # Transport/dispatch-unavailable (exit 70) from the interactive backend: the
   # pump/session went away mid-iteration. This is infrastructure, not agent
   # quality — pause cleanly and resumably instead of running the coherence-auditor
