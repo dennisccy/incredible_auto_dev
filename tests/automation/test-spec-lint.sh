@@ -263,6 +263,9 @@ if [[ "$agent" == "goal-decomposer" ]]; then
   iter="$(printf '%s\n' "$*" | sed -n 's/^Iter name: //p' | head -1)"
   [[ -n "$iter" ]] || exit 64
   n=$(grep -c '^goal-decomposer$' "$CANARY")
+  # transport loss on the RE-PLAN dispatch (exit 70) must pause, not be
+  # recorded as a spec-lint failure.
+  [[ -n "${STUB_DECOMP_70_ON_ATTEMPT:-}" && "$n" == "$STUB_DECOMP_70_ON_ATTEMPT" ]] && exit 70
   kind="$STUB_SPEC_KIND"
   [[ "$n" -ge 2 && -n "${STUB_SPEC_KIND_2:-}" ]] && kind="$STUB_SPEC_KIND_2"
   printf '%s\n' "$*" > "$CANARY.prompt-$n"
@@ -281,6 +284,9 @@ if [[ "$agent" == "goal-decomposer" ]]; then
       plaintarget) echo "- **Depth:** lean"; echo "Target journeys: J-01" ;;
       badenum)     echo "- **Depth:** deep"; echo "- **Target journeys:** J-01" ;;
       baselinework) echo "- **Depth:** lean"; echo "- **Target journeys:** J-01" ;;
+      badmode)     echo "- **Depth:** deep"; echo "- **Target journeys:** J-01" ;;
+      evidence)    echo "- **Depth:** evidence"; echo "- **Target journeys:** J-01" ;;
+      outsidefield) echo "- **Target journeys:** J-01" ;;
     esac
     echo "- **Work kind:** verify-only"
     echo "- **Required-still-passing journeys:** J-02"
@@ -290,7 +296,15 @@ if [[ "$agent" == "goal-decomposer" ]]; then
     echo; echo "## OUT OF SCOPE"; echo "- x"
     echo; echo "## DEFINITION OF DONE"; echo "- [ ] done"
     echo; echo "## TESTING REQUIREMENTS"; echo "- TC-1: given x, when y, then z"
+    if [[ "$kind" == "outsidefield" ]]; then
+      # the machine field exists, but as PROSE outside the metadata section
+      printf '\n## NOTES\n\n- **Depth:** lean\n' >> "$out"
+    fi
   } > "$out"
+  if [[ -n "${STUB_CORRUPT_HISTORY:-}" ]]; then
+    sid="$(printf '%s' "$iter" | sed -E 's/^goal-(.*)-iter-[0-9]+$/\1/')"
+    printf '{ not json at all' > "runs/goal-session-$sid/state/journey-history.json"
+  fi
   exit 0
 fi
 exit 70
@@ -457,6 +471,213 @@ run_engine baselinework
   && grep -q 'E09' "$ENG_SESSION/iter-0/spec-lint.txt" 2>/dev/null \
   && assert "E9: a baseline spec that plans implementation work is blocked by E09 (engine fact beats spec prose)" "pass" \
   || assert "E9: E09 blocks a baseline spec with work (status=$(eng_status) dev=$(eng_dispatched developer))" "fail"
+
+# ── Part G: G8 verification fixes ────────────────────────────────────────────
+echo "== G. G8 verification fixes"
+
+# G-A: machine metadata is scoped to the canonical section.
+ga() { md "$1" "${2:-lean}" "${3:-implementation}"; }
+ga "$SPECS/ga1.md" lean implementation
+sed -i '/- \*\*Depth:\*\* lean/d' "$SPECS/ga1.md"
+add_work "$SPECS/ga1.md"; printf '\n## OUT OF SCOPE\n\n- **Depth:** lean\n' >> "$SPECS/ga1.md"
+lint "$SPECS/ga1.md"
+dep=$(python3 "$PROBE" metadata "$SPECS/ga1.md" | python3 -c 'import json,sys;print(json.load(sys.stdin)["depth"])')
+[[ "$LINT_RC" == "1" ]] && has_rule E01 && [[ "$dep" == "None" ]] \
+  && assert "GA1: a bold Depth line under OUT OF SCOPE does NOT satisfy the machine field (E01, depth=None)" "pass" \
+  || assert "GA1: field outside metadata never satisfies it (rc=$LINT_RC depth=$dep)" "fail"
+
+ga "$SPECS/ga2.md" lean implementation
+sed -i 's/- \*\*Target journeys:\*\* J-01, J-02/Target journeys: J-01/' "$SPECS/ga2.md"
+add_work "$SPECS/ga2.md"; printf '\n## NOTES\n\n- **Target journeys:** J-99\n' >> "$SPECS/ga2.md"
+lint "$SPECS/ga2.md"
+tj=$(python3 "$PROBE" metadata "$SPECS/ga2.md" | python3 -c 'import json,sys;d=json.load(sys.stdin);print(",".join(d["target_journeys"]),d["bold"]["target_journeys"])')
+[[ "$tj" == "J-01 False" ]] && has_rule E02 \
+  && assert "GA2: plain form inside metadata wins over a bold J-99 outside; E02 still fires; J-99 has no influence" "pass" \
+  || assert "GA2: metadata-scoped precedence (parsed='$tj' rc=$LINT_RC)" "fail"
+
+ga "$SPECS/ga3.md" lean implementation
+sed -i 's/- \*\*Depth:\*\* lean/- **Depth:** lean\n- **Depth:** evidence/' "$SPECS/ga3.md"
+add_work "$SPECS/ga3.md"
+lint "$SPECS/ga3.md"
+[[ "$LINT_RC" == "1" ]] && has_rule E12 \
+  && assert "GA3: two conflicting Depth values INSIDE metadata -> E12, never resolved by regex order" "pass" \
+  || assert "GA3: E12 duplicate/conflict (rc=$LINT_RC; $LINT_OUT)" "fail"
+
+ga "$SPECS/ga3b.md" lean implementation
+sed -i 's/- \*\*Depth:\*\* lean/- **Depth:** lean\n- **Depth:** lean/' "$SPECS/ga3b.md"
+add_work "$SPECS/ga3b.md"
+lint "$SPECS/ga3b.md"
+[[ "$LINT_RC" == "0" ]] && ! has_rule E12 \
+  && assert "GA3b: a repeated field with the SAME value is not a conflict" "pass" \
+  || assert "GA3b: identical repeat is not E12 (rc=$LINT_RC)" "fail"
+
+# G-B: an unverifiable independent history is never "all targets passing".
+cat > "$WORK/h-malformed.json" <<'EOF5'
+{ not json at all
+EOF5
+echo '{"journeys": []}' > "$WORK/h-shape.json"
+echo '{"journeys": {"J-01": "passing", "J-02": 42}}' > "$WORK/h-rec.json"
+gb_rc() { python3 "$PROBE" lint "$SPECS/evidence.md" --journey-history "$1" >/dev/null 2>&1; echo $?; }
+[[ "$(gb_rc "$WORK/h-malformed.json")" == "2" ]] \
+  && assert "GB1: malformed journey-history JSON -> rc 2 INPUT failure (never a clean evidence spec)" "pass" \
+  || assert "GB1: malformed history -> rc 2 (got $(gb_rc "$WORK/h-malformed.json"))" "fail"
+[[ "$(gb_rc "$WORK/h-shape.json")" == "2" ]] \
+  && assert "GB2: wrongly-shaped journey-history ('journeys' not an object) -> rc 2" "pass" \
+  || assert "GB2: wrong shape -> rc 2" "fail"
+[[ "$(gb_rc "$WORK/h-rec.json")" == "2" ]] \
+  && assert "GB2b: a journey record with no usable status -> rc 2" "pass" \
+  || assert "GB2b: unusable record -> rc 2" "fail"
+[[ "$(gb_rc "$WORK/hist-bad.json")" == "1" ]] \
+  && assert "GB3: a valid history with a failing target still gives E11 (rc 1), unchanged" "pass" \
+  || assert "GB3: valid history + failing target -> E11" "fail"
+[[ "$(gb_rc "$WORK/hist-ok.json")" == "0" ]] \
+  && assert "GB4: a valid history with every target passing lints clean" "pass" \
+  || assert "GB4: all passing -> clean" "fail"
+python3 "$PROBE" lint "$SPECS/evidence.md" >/dev/null 2>&1 \
+  && assert "GB5: no --journey-history supplied -> E11 skipped (backward compatibility preserved)" "pass" \
+  || assert "GB5: history not supplied -> skip" "fail"
+chmod 000 "$WORK/hist-ok.json"
+[[ "$(gb_rc "$WORK/hist-ok.json")" == "2" ]] \
+  && assert "GB1b: an unreadable journey-history file -> rc 2, not silently 'all passing'" "pass" \
+  || assert "GB1b: unreadable history -> rc 2" "fail"
+chmod 644 "$WORK/hist-ok.json"
+
+# G-B end-to-end: corruption during the session must halt before dispatch.
+run_engine evidence STUB_CORRUPT_HISTORY=1
+[[ "$(eng_status)" == "GATE_BLOCKED" && "$(eng_dispatched developer)" == "0" && "$(eng_dispatched browser-qa-agent)" == "0" ]] \
+  && assert "GB6: a corrupt journey-history at lint time halts GATE_BLOCKED with zero developer/browser dispatch" "pass" \
+  || assert "GB6: corrupt history blocks end-to-end (status=$(eng_status) dev=$(eng_dispatched developer))" "fail"
+grep -q 'INPUT-FAILURE' "$ENG_SESSION/iter-0/spec-lint.txt" 2>/dev/null \
+  && assert "GB6b: the durable diagnostic records the INPUT-FAILURE rather than a lint verdict" "pass" \
+  || assert "GB6b: diagnostic records INPUT-FAILURE" "fail"
+[[ "$(eng_dispatched goal-decomposer)" == "1" ]] \
+  && assert "GB6c: an input-verification failure is never re-planned" "pass" \
+  || assert "GB6c: input failure not re-planned (decomp=$(eng_dispatched goal-decomposer))" "fail"
+
+# G-C: an invalid CHAIN_SPEC_LINT never degrades to warn.
+run_engine badmode CHAIN_SPEC_LINT=blok
+[[ "$(eng_status)" == "GATE_BLOCKED" ]] \
+  && assert "GC1: CHAIN_SPEC_LINT=blok is REFUSED (GATE_BLOCKED), never interpreted as warn" "pass" \
+  || assert "GC1: invalid mode refused (status=$(eng_status))" "fail"
+[[ "$(eng_dispatched developer)" == "0" && "$(eng_dispatched browser-qa-agent)" == "0" ]] \
+  && assert "GC1b: an invalid mode dispatches no developer and no browser lane" "pass" \
+  || assert "GC1b: invalid mode -> zero dispatch (canary: $(tr '\n' ' ' < "$CANARY"))" "fail"
+grep -q "is not a valid mode" "$ENG_LOG" && grep -q "NOT treated as 'warn'" "$ENG_LOG" \
+  && assert "GC1c: the engine prints an explicit invalid-config diagnostic naming the valid values" "pass" \
+  || assert "GC1c: explicit invalid-config diagnostic" "fail"
+eng_has_event spec_lint_config_invalid && grep -q '"detected_at_step": *"spec-lint-config"' "$ENG_SESSION/telemetry.jsonl" \
+  && assert "GC1d: telemetry spec_lint_config_invalid + halt step spec-lint-config" "pass" \
+  || assert "GC1d: config-invalid telemetry" "fail"
+! eng_has_event spec_lint \
+  && assert "GC1e: the lint never ran under an invalid mode (no spec_lint event) — no warn-style continuation" "pass" \
+  || assert "GC1e: no lint run under an invalid mode" "fail"
+
+# G-D: loose IN SCOPE bullets.
+md "$SPECS/gd1.md" lean verify-only "" baseline
+printf '\n## IN SCOPE\n\n- verify-only baseline\n' >> "$SPECS/gd1.md"
+lint "$SPECS/gd1.md" --mode-expected baseline
+[[ "$LINT_RC" == "0" ]] && has_rule W06 && ! has_rule E09 \
+  && assert "GD1: a harmless descriptive loose bullet stays W06 — no false blocking contradiction" "pass" \
+  || assert "GD1: descriptive loose bullet not blocking (rc=$LINT_RC; $LINT_OUT)" "fail"
+md "$SPECS/gd2.md" lean verify-only "" baseline
+printf '\n## IN SCOPE\n\n- change users.py so login persists the token\n' >> "$SPECS/gd2.md"
+lint "$SPECS/gd2.md" --mode-expected baseline
+[[ "$LINT_RC" == "1" ]] && has_rule E09 && has_rule E08 \
+  && assert "GD2: an ACTIONABLE loose bullet cannot smuggle real work past a verify-only baseline (E08+E09)" "pass" \
+  || assert "GD2: actionable loose bullet blocks (rc=$LINT_RC; $LINT_OUT)" "fail"
+md "$SPECS/gd3.md" evidence evidence-only
+printf '\n## IN SCOPE\n\n- add the export endpoint\n' >> "$SPECS/gd3.md"
+lint "$SPECS/gd3.md"
+[[ "$LINT_RC" == "1" ]] && has_rule E07 \
+  && assert "GD3: an actionable loose bullet also blocks an evidence spec (E07)" "pass" \
+  || assert "GD3: actionable loose bullet blocks evidence (rc=$LINT_RC)" "fail"
+md "$SPECS/gd4.md" lean implementation
+printf '\n## IN SCOPE\n\n- add the export endpoint\n' >> "$SPECS/gd4.md"
+lint "$SPECS/gd4.md"
+[[ "$LINT_RC" == "0" ]] && has_rule W06 \
+  && assert "GD4: the same bullet in a plain lean implementation spec is only W06 (no new false block)" "pass" \
+  || assert "GD4: lean spec unaffected (rc=$LINT_RC; $LINT_OUT)" "fail"
+python3 "$PROBE" has-implementation-work "$SPECS/gd2.md" >/dev/null 2>&1
+[[ "$?" == "0" ]] \
+  && assert "GD5: HARD-1's probe still counts loose bullets conservatively (unchanged, fails toward running the developer)" "pass" \
+  || assert "GD5: HARD-1 probe unchanged on loose bullets" "fail"
+
+# G-E: the engine's plain-form target fallback is section-scoped.
+run_engine outsidefield
+grep -q 'E01' "$ENG_SESSION/iter-0/spec-lint.txt" 2>/dev/null && [[ "$(eng_status)" == "GATE_BLOCKED" ]] \
+  && assert "GE1: a Depth line living only outside Goal Mode Metadata blocks end-to-end (E01)" "pass" \
+  || assert "GE1: misplaced field blocks end-to-end (status=$(eng_status))" "fail"
+grep -q 'iter_spec' <(sed -n '/HARD-2: plain-form fallback/,/^  fi$/p' "$RG") \
+  && assert "GE2: the engine's plain-form Target-journeys fallback goes through the canonical section-scoped parser, not a second grep" "pass" \
+  || assert "GE2: fallback uses the canonical parser" "fail"
+
+# G-T: telemetry counts must be truthful on the CLEAN path (zero errors).
+run_engine good
+python3 - "$ENG_SESSION/telemetry.jsonl" <<'PYT' && assert "GT1: the clean-path spec_lint event carries truthful attempt/rc/errors/warnings/mode (no jq degradation on a zero count)" "pass" || assert "GT1: spec_lint event is complete on the clean path" "fail"
+import json, sys
+ev = None
+for line in open(sys.argv[1]):
+    try: e = json.loads(line)
+    except Exception: continue
+    if e.get("event") == "spec_lint":
+        ev = e.get("data") if isinstance(e.get("data"), dict) else e
+if ev is None:
+    sys.exit(1)
+missing = [k for k in ("attempt", "rc", "errors", "warnings", "mode") if k not in ev]
+if missing:
+    print("missing keys:", missing, file=sys.stderr); sys.exit(1)
+if ev["rc"] != 0 or ev["errors"] != 0 or ev["attempt"] != 1 or ev["mode"] != "block":
+    print("unexpected values:", ev, file=sys.stderr); sys.exit(1)
+sys.exit(0)
+PYT
+
+# G-G: resume after a spec-lint GATE_BLOCKED (F5).
+run_engine badenum
+[[ "$(eng_status)" == "GATE_BLOCKED" ]] || assert "GG0: precondition — badenum halted" "fail"
+BLOCKED_SESSION="$ENG_SESSION"; BLOCKED_SPEC="$SBX/docs/phases/goal-$ENG_SID-iter-0.md"
+BLOCKED_SID="$ENG_SID"
+# The human fixes the spec by hand. Resume must RE-LINT it, not treat the block
+# as approval, and must not re-run the decomposer while the spec still parses.
+sed -i 's/- \*\*Depth:\*\* deep/- **Depth:** lean/' "$BLOCKED_SPEC"
+CANARY="$WORK/canary-resume.log"; : > "$CANARY"; export CANARY
+RES_RC=0
+( cd "$SBX" && env "PATH=$STUB_DIR:$PATH" CANARY="$CANARY" STUB_SPEC_KIND=good \
+    CHAIN_DOCTOR=false CHAIN_GOAL_LINT=false CHAIN_SESSION_RETRO=false \
+    CHAIN_TMP_ROOT="$TMPROOT" CHAIN_TMP_LEGACY_ROOTS="" \
+    CHAIN_BACKEND_PORT=48731 CHAIN_FRONTEND_PORT=48732 CHAIN_SKIP_GITHUB_PREFLIGHT=true \
+    timeout 240 bash scripts/automation/run-goal.sh --session-id "$BLOCKED_SID" --resume --max-iter 1 --no-push-per-iter \
+) > "$WORK/resume.log" 2>&1 || RES_RC=$?
+_rst="$(python3 -c "
+import json
+try: print(json.load(open('$BLOCKED_SESSION/session.json')).get('status','?'))
+except Exception: print('?')" 2>/dev/null)"
+_rdc="$(grep -c '^goal-decomposer$' "$CANARY" 2>/dev/null)"; _rdc="${_rdc:-0}"
+[[ "$_rdc" == "0" ]] \
+  && assert "GG1: resume does NOT re-dispatch the decomposer while the hand-fixed spec still parses" "pass" \
+  || assert "GG1: no decomposer re-dispatch on resume (count=$_rdc canary: $(tr '\n' ' ' < "$CANARY"))" "fail"
+grep -q 'spec-lint' "$WORK/resume.log" || grep -q 'spec_lint' "$BLOCKED_SESSION/telemetry.jsonl" \
+  && assert "GG2: resume RE-LINTS the hand-fixed spec rather than treating the block as approval" "pass" \
+  || assert "GG2: resume re-lints the spec" "fail"
+_rdev="$(grep -c '^developer$' "$CANARY" 2>/dev/null)"; _rdev="${_rdev:-0}"
+[[ "$_rst" != "GATE_BLOCKED" && "$_rdev" -ge 1 ]] \
+  && assert "GG3: the corrected spec then passes the gate and the iteration dispatches" "pass" \
+  || assert "GG3: corrected spec dispatches (status=$_rst canary=$(tr '\n' ' ' < "$CANARY"))" "fail"
+
+# G-H: transport loss during the automatic re-plan (F6).
+run_engine badenum STUB_DECOMP_70_ON_ATTEMPT=2
+[[ "$(eng_status)" == "AWAITING_PUMP" ]] \
+  && assert "GH1: transport loss (exit 70) on the re-plan dispatch pauses AWAITING_PUMP, not GATE_BLOCKED" "pass" \
+  || assert "GH1: re-plan transport loss pauses (status=$(eng_status))" "fail"
+[[ "$(eng_dispatched developer)" == "0" ]] \
+  && assert "GH2: a transport pause during the re-plan dispatches no developer" "pass" \
+  || assert "GH2: no developer on a re-plan transport pause" "fail"
+
+# G-F: quickstart recovery documentation.
+grep -q 'GATE_BLOCKED. (spec lint)' "$ENGINE_ROOT/docs/goal-mode-quickstart.md" \
+  && grep -q 'spec-lint.txt' "$ENGINE_ROOT/docs/goal-mode-quickstart.md" \
+  && grep -q 'goal-resume' "$ENGINE_ROOT/docs/goal-mode-quickstart.md" \
+  && assert "GF1: goal-mode-quickstart.md documents the spec-lint GATE_BLOCKED recovery path" "pass" \
+  || assert "GF1: quickstart recovery note present" "fail"
 
 # ── Part W: wiring ───────────────────────────────────────────────────────────
 echo "== W. wiring"

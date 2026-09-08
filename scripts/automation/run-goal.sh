@@ -117,8 +117,14 @@
 #                      unreadable spec (exit 2) is NEVER re-planned and fails closed in block
 #                      mode — a safety layer must not disappear because its own probe broke.
 #                      `warn` logs everything and dispatches anyway (the rollback); `off` is
-#                      the escape hatch. Artifacts: iter-<N>/spec-lint.{txt,json}. Telemetry:
-#                      spec_lint, spec_replan, spec_lint_crash.
+#                      the escape hatch. The enum is CLOSED: any other value is refused
+#                      (GATE_BLOCKED, detected_at_step spec-lint-config, telemetry
+#                      spec_lint_config_invalid) and is never interpreted as `warn`.
+#                      An unverifiable independent input (a corrupt journey-history) is an
+#                      exit-2 INPUT-FAILURE, so it fails closed exactly like a crash and is
+#                      never read as "every target journey passes".
+#                      Artifacts: iter-<N>/spec-lint.{txt,json}. Telemetry:
+#                      spec_lint, spec_replan, spec_lint_crash, spec_lint_config_invalid.
 #
 # Quota exhaustion is NOT a halt: claude_with_quota_retry transparently sleeps
 # until the quota resets and resumes.
@@ -2569,6 +2575,24 @@ Do NOT write code or implement anything. The iteration spec and any blueprint ed
   # dispatch. There is deliberately no "crashed -> warn -> continue" path in
   # block mode — a safety layer must not vanish because its own probe broke.
   _SPEC_LINT_MODE="${CHAIN_SPEC_LINT:-block}"
+  # A malformed safety-governor configuration must not weaken the governor. The
+  # enum is closed: anything else (a typo like `blok`) previously fell through
+  # both the `!= off` and the `== block` tests and silently behaved as `warn`.
+  # Refuse deterministically instead — never guess, never normalise.
+  case "$_SPEC_LINT_MODE" in
+    block|warn|off) ;;
+    *)
+      echo "[run-goal] CHAIN_SPEC_LINT='$_SPEC_LINT_MODE' is not a valid mode. Valid values: block (default), warn, off." >&2
+      echo "[run-goal]   A malformed spec-lint configuration is refused rather than interpreted — it is NOT treated as 'warn'." >&2
+      echo "[run-goal]   Fix the value, then:  /goal-resume $SESSION_ID" >&2
+      record_telemetry_event "spec_lint_config_invalid" "$(jq -cn --arg n "$ITER_NAME" --arg m "$_SPEC_LINT_MODE" \
+        '{iter_name:$n, value:$m, valid:["block","warn","off"]}' 2>/dev/null \
+        || printf '{"iter_name":"%s","value":"%s"}' "$ITER_NAME" "$_SPEC_LINT_MODE")"
+      record_telemetry_event "halt" '{"reason":"GATE_BLOCKED_SPEC_LINT","detected_at_step":"spec-lint-config"}'
+      write_session_summary "GATE_BLOCKED" "$CURRENT_ITER"
+      explain_goal_status "GATE_BLOCKED" "$SESSION_ID" "$REPO_ROOT" >&2
+      exit 0 ;;
+  esac
   if [[ "$_SPEC_LINT_MODE" != "off" ]]; then
     mkdir -p "$ITER_DIR"
     _lint_txt="$ITER_DIR/spec-lint.txt"; _lint_json="$ITER_DIR/spec-lint.json"
@@ -2579,8 +2603,17 @@ Do NOT write code or implement anything. The iteration spec and any blueprint ed
     _lint_rc=0
     python3 "$SCRIPT_DIR/lib/iter_spec.py" lint "$ITER_SPEC_PATH" "${_lint_args[@]}" \
       > "$_lint_txt" 2>"$ITER_DIR/spec-lint.stderr" || _lint_rc=$?
-    _lint_errs="$(grep -c '^\[spec-lint\] ERROR' "$_lint_txt" 2>/dev/null || echo 0)"
-    _lint_warns="$(grep -c '^\[spec-lint\] WARN' "$_lint_txt" 2>/dev/null || echo 0)"
+    # `grep -c` PRINTS 0 and EXITS 1 when nothing matches, so a `|| echo 0`
+    # fallback would append a second line and the count would arrive as "0\n0" —
+    # jq then rejects the whole payload and the spec_lint event silently degrades
+    # to a stub on the CLEAN path, which is where truthful counts matter most.
+    # `grep -c` PRINTS 0 and EXITS 1 when nothing matches. `|| echo 0` would
+    # append a SECOND line, so the count arrived as "0\n0", jq rejected the whole
+    # payload, and the spec_lint event silently degraded to a stub on the CLEAN
+    # path — exactly where truthful counts matter most. `|| true` keeps grep's
+    # own "0" and only neutralises its exit status for `set -e`.
+    _lint_errs="$(grep -c '^\[spec-lint\] ERROR' "$_lint_txt" 2>/dev/null || true)"; _lint_errs="${_lint_errs:-0}"
+    _lint_warns="$(grep -c '^\[spec-lint\] WARN' "$_lint_txt" 2>/dev/null || true)"; _lint_warns="${_lint_warns:-0}"
     record_telemetry_event "spec_lint" "$(jq -cn --arg n "$ITER_NAME" --arg a "$_spec_attempt" \
       --arg rc "$_lint_rc" --arg e "$_lint_errs" --arg w "$_lint_warns" --arg m "$_SPEC_LINT_MODE" \
       '{iter_name:$n, attempt:($a|tonumber), rc:($rc|tonumber), errors:($e|tonumber), warnings:($w|tonumber), mode:$m}' \
@@ -2718,12 +2751,23 @@ $(cat "$_lint_txt")"
   # HARD-2: plain-form fallback, mirroring the `Depth:` fallback above. A
   # plain-form target line used to parse EMPTY here, silently disarming both the
   # evidence backstop and the browser lane. The bold grep stays FIRST so the
-  # canonical form always wins (test-depth-arbiter.sh pins that precedence);
-  # the spec lint still reports the plain form as E02.
+  # canonical form always wins (test-depth-arbiter.sh pins that precedence).
+  # The fallback goes through the CANONICAL parser, not a second grep, so it is
+  # section-scoped: a `Target journeys:` line under OUT OF SCOPE or NOTES is
+  # prose and can never become the engine's target list. The spec lint still
+  # reports the plain form as E02.
   if [[ -z "$TARGET_JOURNEYS" ]]; then
-    TARGET_JOURNEYS=$(grep -m1 -E '^[[:space:]]*-?[[:space:]]*Target journeys:' "$ITER_SPEC_PATH" \
-                        | sed -E 's/.*Target journeys:[[:space:]]*//' || echo "")
-    [[ -n "$TARGET_JOURNEYS" ]] && echo "[run-goal] NOTE: 'Target journeys:' was written in plain (non-bold) form — parsed via the HARD-2 fallback."
+    TARGET_JOURNEYS=$(python3 -c '
+import sys
+sys.path.insert(0, sys.argv[1])
+import iter_spec
+try:
+    text = open(sys.argv[2], encoding="utf-8", errors="replace").read()
+except OSError:
+    sys.exit(0)
+print(", ".join(iter_spec.read_metadata(text)["target_journeys"]))
+' "$SCRIPT_DIR/lib" "$ITER_SPEC_PATH" 2>/dev/null || echo "")
+    [[ -n "$TARGET_JOURNEYS" ]] && echo "[run-goal] NOTE: 'Target journeys:' was written in plain (non-bold) form inside Goal Mode Metadata — parsed via the HARD-2 canonical fallback."
   fi
 
   # SPEED-20 deterministic depth arbiter: the SPEED-10 allowlist trusted the

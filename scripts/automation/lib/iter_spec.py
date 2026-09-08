@@ -181,23 +181,57 @@ def _field_patterns(label: str) -> tuple[re.Pattern[str], re.Pattern[str]]:
     return bold, plain
 
 
+# The canonical metadata section, bounded by the next H2 or EOF. A machine field
+# counts ONLY inside it: a `- **Depth:** lean` line under OUT OF SCOPE, NOTES, a
+# DoD item or a TC example is prose about the iteration, not machine state, and
+# the governed document must not be able to satisfy or override a machine field
+# by repeating it elsewhere (anti-pattern 25).
+_H2_BLOCK_RE = re.compile(r"^##\s+(?P<title>.*?)[ \t]*$(?P<body>.*?)(?=^##\s|\Z)", re.S | re.M)
+
+
+def metadata_section(spec_text: str) -> tuple[str, int]:
+    """(body of the canonical metadata section, how many such sections exist)."""
+    bodies = [m.group("body") for m in _H2_BLOCK_RE.finditer(spec_text)
+              if m.group("title").strip().lower() == _METADATA_H2]
+    return (bodies[0] if bodies else ""), len(bodies)
+
+
 def read_metadata(spec_text: str) -> dict:
     """Deterministic read of the spec's machine fields. Never raises."""
     h2s = [m.group(1).strip() for m in _H2_LINE_RE.finditer(spec_text)]
+    section, section_count = metadata_section(spec_text)
     values: dict[str, str | None] = {}
     bold: dict[str, bool] = {}
     present: dict[str, bool] = {}
+    # Per field: every occurrence INSIDE the metadata section, bold and plain.
+    # More than one distinct value is a conflict the engine refuses to resolve
+    # by regex order (E12); the parsed value stays deterministic (bold first,
+    # then first occurrence) so the report is reproducible.
+    conflicts: dict[str, list[str]] = {}
+    misplaced: list[str] = []
     for key, label in _FIELDS.items():
         b_re, p_re = _field_patterns(label)
-        m = b_re.search(spec_text)
-        if m:
-            values[key], bold[key], present[key] = m.group(1).strip(), True, True
-            continue
-        m = p_re.search(spec_text)
-        if m:
-            values[key], bold[key], present[key] = m.group(1).strip(), False, True
+        b_hits = [m.group(1).strip() for m in b_re.finditer(section)]
+        p_hits = [m.group(1).strip() for m in p_re.finditer(section)]
+        distinct = []
+        for v in b_hits + p_hits:
+            n = v.strip().strip("*").strip().lower()
+            if n not in distinct:
+                distinct.append(n)
+        if len(distinct) > 1:
+            conflicts[key] = distinct
+        if b_hits:
+            values[key], bold[key], present[key] = b_hits[0], True, True
+        elif p_hits:
+            values[key], bold[key], present[key] = p_hits[0], False, True
         else:
             values[key], bold[key], present[key] = None, False, False
+            # A machine field that exists ONLY outside the canonical section is
+            # MISPLACED, not absent — say so, so the author is not told to add a
+            # line the document already contains.
+            outside = spec_text.replace(section, "\n") if section else spec_text
+            if b_re.search(outside) or p_re.search(outside):
+                misplaced.append(key)
 
     def _norm(v: str | None) -> str | None:
         return v.strip().strip("*").strip().lower() if v else None
@@ -212,7 +246,10 @@ def read_metadata(spec_text: str) -> dict:
 
     fp = _norm(values.get("frontend_present"))
     return {
-        "metadata_section_present": any(h.lower() == _METADATA_H2 for h in h2s),
+        "metadata_section_present": section_count > 0,
+        "metadata_section_count": section_count,
+        "field_conflicts": conflicts,
+        "fields_outside_section": misplaced,
         "h2_sections": h2s,
         "mode": _norm(values.get("mode")),
         "depth": _norm(values.get("depth")),
@@ -241,11 +278,13 @@ _RULE_TEXT = {
     "E04": "targets-empty",
     "E05": "workkind-invalid",
     # E06 (policy-invalid) is RESERVED for HARD-3's `Side-effect policy` field.
+    # E12 sits BELOW HARD-3's reserved E13-E16 block, so HARD-3 needs no renumbering.
     "E07": "evidence-with-implementation",
     "E08": "verify-only-with-implementation",
     "E09": "baseline-with-implementation",
     "E10": "evidence-after-escalate",
     "E11": "evidence-target-not-passing",
+    "E12": "metadata-field-conflict",
     "W01": "workkind-missing",
     # W02 (policy-missing) is RESERVED for HARD-3.
     "W03": "targets-line-absent",
@@ -256,21 +295,81 @@ _RULE_TEXT = {
     "W08": "full-without-trigger",
 }
 
+# A loose bullet directly under `## IN SCOPE` is ambiguous: legacy baseline specs
+# describe themselves there ("- verify-only baseline"), while an actionable
+# instruction ("- change users.py so login persists the token") is real work that
+# a baseline / verify-only / evidence spec must not smuggle past the halting
+# rules. The allowlist is anchored, small and closed: a bullet is DESCRIPTIVE
+# only if it opens with iteration-meta vocabulary AND carries no code marker.
+# Anything else counts as work — unknown text is treated as actionable, so the
+# governor is never widened by a phrasing it has not seen.
+_DESCRIPTIVE_LOOSE_RE = re.compile(
+    r"""^[("'`*\[]*\s*(verify|verification|verify-only|evidence|evidence-only|baseline"""
+    r"""|capture|capturing|record|recording|re-?record|screenshot|screenshots|demo"""
+    r"""|walkthrough|confirm|confirmation|observe|observation|smoke|sanity|read-only"""
+    r"""|no-op|noop|inspect|review|report|document|documentation)\b""",
+    re.I,
+)
+_CODE_MARKER_RE = re.compile(r"[`/]|\b\w+\.(py|ts|tsx|js|jsx|sh|json|md|sql|ya?ml|css|html)\b|::")
+
+
+def _actionable_loose_bullets(spec_text: str) -> list[str]:
+    """Loose `## IN SCOPE` bullets that read as construction, not description."""
+    m = _IN_SCOPE_RE.search(spec_text)
+    if not m:
+        return []
+    out = []
+    for line in m.group(1).splitlines():
+        if _H3_RE.match(line):
+            break                     # loose region ends at the first sub-heading
+        if not _is_concrete_bullet(line):
+            continue
+        txt = _BULLET_RE.match(line).group(1).strip()
+        if _DESCRIPTIVE_LOOSE_RE.match(txt) and not _CODE_MARKER_RE.search(txt):
+            continue
+        out.append(txt)
+    return out
+
+
 _DATA_CONTRACT_RE = re.compile(r"^###\s+Data-contract additions\s*$(.*?)(?=^###\s|^##\s|\Z)", re.S | re.M | re.I)
 
 
+class HistoryUnusable(Exception):
+    """The independent journey-history input could not be verified.
+
+    NEVER conflated with "no failing target": an empty result means every target
+    is recorded passing, so a corrupt, unreadable or wrongly-shaped history must
+    raise instead of returning []. Callers turn this into an input/runtime
+    verification failure (exit 2), which CHAIN_SPEC_LINT=block fails closed on
+    before any dispatch — not into a clean lint.
+    """
+
+
 def _passing_targets(history_path: str, targets: list[str]) -> list[str]:
-    """Target ids NOT recorded passing. Empty list when history is unusable."""
+    """Target ids NOT recorded passing. Raises HistoryUnusable if it cannot tell."""
     try:
         with open(history_path, encoding="utf-8") as fh:
             hist = json.load(fh)
-    except Exception:
-        return []
-    journeys = hist.get("journeys") or {}
+    except OSError as exc:
+        raise HistoryUnusable(f"cannot read {history_path}: {exc}") from exc
+    except ValueError as exc:
+        raise HistoryUnusable(f"{history_path} is not valid JSON: {exc}") from exc
+    if not isinstance(hist, dict):
+        raise HistoryUnusable(f"{history_path}: top level is {type(hist).__name__}, expected an object")
+    journeys = hist.get("journeys")
+    if not isinstance(journeys, dict):
+        raise HistoryUnusable(
+            f"{history_path}: 'journeys' is {type(journeys).__name__}, expected an object")
     bad = []
     for jid in targets:
         j = journeys.get(jid)
-        if not isinstance(j, dict) or j.get("status") not in ("passing", "already_passing"):
+        if j is None:
+            bad.append(jid)          # absent = not recorded passing (a real contradiction)
+            continue
+        if not isinstance(j, dict) or not isinstance(j.get("status"), str):
+            raise HistoryUnusable(
+                f"{history_path}: journey {jid} has no usable status field")
+        if j["status"] not in ("passing", "already_passing"):
             bad.append(jid)
     return bad
 
@@ -296,6 +395,20 @@ def lint_spec(
 
     if not md["metadata_section_present"]:
         err("E01", "no '## Goal Mode Metadata' section — the engine cannot read this spec's machine fields")
+    else:
+        if not md["present"].get("depth"):
+            err("E01", "no 'Depth:' field inside '## Goal Mode Metadata' — the engine's depth decision "
+                       "has no declared input")
+        for key in md["fields_outside_section"]:
+            err("E01", f"'{_FIELDS[key]}:' appears in the document but NOT inside "
+                       f"'## Goal Mode Metadata'. A field outside that section is prose, not machine "
+                       f"state, and never satisfies the machine field — move it into the metadata section")
+    if md["metadata_section_count"] > 1:
+        err("E12", f"{md['metadata_section_count']} '## Goal Mode Metadata' sections — exactly one is canonical")
+    for key, vals in sorted(md["field_conflicts"].items()):
+        err("E12", f"'{_FIELDS[key]}:' is declared more than once inside the metadata section with "
+                   f"conflicting values ({', '.join(repr(v) for v in vals)}) — the engine refuses to pick "
+                   f"one by document order; keep exactly one line")
 
     for key in _BOLD_ENFORCED:
         if md["present"].get(key) and not md["bold"].get(key):
@@ -326,7 +439,15 @@ def lint_spec(
     # still refuses an evidence dispatch for such a spec and runs it lean —
     # failing closed toward RUNNING the developer, never toward halting.
     structured_work = (scope["backend_bullets"] + scope["frontend_bullets"]) > 0
-    if structured_work:
+    # ...plus loose bullets that read as construction rather than description.
+    # A descriptive loose bullet ("- verify-only baseline") is compatibility
+    # surface and stays W06; an actionable one ("- change users.py ...") is real
+    # work and must not slip past a baseline/verify-only/evidence declaration
+    # just because it carries no `### Backend` heading.
+    actionable_loose = _actionable_loose_bullets(spec_text)
+    if actionable_loose:
+        n += f"; actionable loose bullet: {actionable_loose[0][:70]!r}"
+    if structured_work or actionable_loose:
         if md["depth"] == "evidence" or md["work_kind"] == "evidence-only":
             which = "Depth: evidence" if md["depth"] == "evidence" else "Work kind: evidence-only"
             err("E07", f"{which} but IN SCOPE plans implementation work ({n} concrete bullet(s)) — "
@@ -345,8 +466,16 @@ def lint_spec(
             warn("W04", "the prior verdict was ESCALATE, which requires full; this spec asks for lean "
                         "(the engine promotes it — CHAIN_ESCALATE_FORCES_FULL)")
 
+    input_error: str | None = None
     if md["depth"] == "evidence" and journey_history and md["target_journeys"]:
-        bad = _passing_targets(journey_history, md["target_journeys"])
+        try:
+            bad = _passing_targets(journey_history, md["target_journeys"])
+        except HistoryUnusable as exc:
+            # The independent evidence input could not be verified. This is NOT a
+            # product contradiction and must never read as "every target passes":
+            # the caller turns it into exit 2, which block mode fails closed on.
+            input_error = str(exc)
+            bad = []
         if bad:
             err("E11", f"Depth: evidence requires every target journey to be recorded passing; "
                        f"not passing: {', '.join(bad)}")
@@ -365,7 +494,7 @@ def lint_spec(
         warn("W08", "Depth: full without a 'Full trigger:' line naming which numbered trigger applies")
 
     return {"errors": errors, "warnings": warnings, "metadata": md,
-            "work_kind_derived": md["work_kind_derived"]}
+            "work_kind_derived": md["work_kind_derived"], "input_error": input_error}
 
 
 def _read_spec(path: str) -> str:
@@ -408,13 +537,23 @@ def cmd_lint(argv: list[str]) -> int:
         print(f"[spec-lint] ERROR {f['rule']} {f['name']}: {f['msg']}")
     for f in res["warnings"]:
         print(f"[spec-lint] WARN {f['rule']} {f['name']}: {f['msg']}")
+    if res["input_error"]:
+        # Printed on BOTH streams: stdout so the durable spec-lint.txt records it,
+        # stderr so the engine's crash tail (spec_lint_crash) samples it too.
+        line = f"[spec-lint] INPUT-FAILURE journey-history: {res['input_error']}"
+        print(line)
+        print(line, file=sys.stderr)
     out = opts.get("--json-out")
     if out:
         try:
             with open(out, "w", encoding="utf-8") as fh:
                 json.dump(res, fh, sort_keys=True, indent=2)
         except OSError as exc:
+            # The findings above already reached stdout/stderr; losing the JSON
+            # sidecar must not change the verdict, only be said out loud.
             print(f"[spec-lint] WARN json-out: could not write {out}: {exc}", file=sys.stderr)
+    if res["input_error"]:
+        return 2
     return 1 if res["errors"] else 0
 
 
@@ -519,8 +658,50 @@ _LINT_FIXTURES: dict[str, tuple[str, dict, int, tuple[str, ...], tuple[str, ...]
     "W05 contract additions with no bullets": (
         _md("lean", "evidence-only") + _NOWORK
         + "### Data-contract additions\n- [ ] `GET /api/x` returns `total`\n", {}, 0, ("W05",), ()),
+    # G8 blocker A — metadata is section-scoped.
+    "E01 a machine field outside the metadata section never satisfies it": (
+        _md("lean", "implementation").replace("- **Depth:** lean\n", "")
+        + "\n## OUT OF SCOPE\n- **Depth:** lean\n" + _WORK, {}, 1, ("E01",), ()),
+    "E01 a misplaced field is reported as misplaced, not merely absent": (
+        _md("lean", "implementation").replace("- **Target journeys:** J-01, J-02\n", "")
+        + "\n## NOTES\n- **Target journeys:** J-99\n" + _WORK, {}, 1, ("E01",), ()),
+    "E12 conflicting duplicate field inside the metadata section": (
+        _md("lean", "implementation").replace("- **Depth:** lean\n",
+                                              "- **Depth:** lean\n- **Depth:** evidence\n")
+        + _WORK, {}, 1, ("E12",), ()),
+    "E12 two metadata sections": (
+        _md("lean", "implementation") + "\n## Goal Mode Metadata\n\n- **Depth:** full\n" + _WORK,
+        {}, 1, ("E12",), ()),
+    "a repeated field with the SAME value is not a conflict": (
+        _md("lean", "implementation").replace("- **Depth:** lean\n", "- **Depth:** lean\n- **Depth:** lean\n")
+        + _WORK, {}, 0, (), ("E12",)),
+    # G8 blocker D — loose IN SCOPE bullets.
+    "a descriptive loose bullet stays compatibility surface": (
+        _md("lean", "verify-only", mode="baseline")
+        + "\n## IN SCOPE\n- verify-only baseline (iteration-state wiring test)\n",
+        {"mode_expected": "baseline"}, 0, ("W06",), ("E07", "E08", "E09")),
+    "an ACTIONABLE loose bullet is implementation work in a baseline spec": (
+        _md("lean", "verify-only", mode="baseline")
+        + "\n## IN SCOPE\n- change users.py so login persists the token\n",
+        {"mode_expected": "baseline"}, 1, ("E08", "E09"), ()),
+    "an ACTIONABLE loose bullet blocks an evidence spec too": (
+        _md("evidence", "evidence-only")
+        + "\n## IN SCOPE\n- add the export endpoint\n", {}, 1, ("E07",), ()),
+    "an actionable loose bullet in a plain lean spec is only W06": (
+        _md("lean", "implementation") + "\n## IN SCOPE\n- add the export endpoint\n",
+        {}, 0, ("W06",), ("E07", "E08", "E09")),
     "E11 evidence target not recorded passing": (
         _md("evidence", "evidence-only") + _NOWORK, {"journey_history": "@HIST_BAD@"}, 1, ("E11",), ()),
+    # G8 blocker B — an unverifiable independent input is never "all passing".
+    "corrupt journey-history is an INPUT failure, never a clean evidence spec": (
+        _md("evidence", "evidence-only") + _NOWORK, {"journey_history": "@HIST_BAD_JSON@"},
+        2, ("INPUT",), ("E11",)),
+    "wrongly-shaped journey-history is an INPUT failure": (
+        _md("evidence", "evidence-only") + _NOWORK, {"journey_history": "@HIST_SHAPE@"},
+        2, ("INPUT",), ()),
+    "a journey record with no usable status is an INPUT failure": (
+        _md("evidence", "evidence-only") + _NOWORK, {"journey_history": "@HIST_REC@"},
+        2, ("INPUT",), ()),
     "E11 clean when every target passes": (
         _md("evidence", "evidence-only") + _NOWORK, {"journey_history": "@HIST_OK@"}, 0, (), ("E11",)),
 }
@@ -533,10 +714,15 @@ def _lint_self_test() -> int:
     hists = {
         "@HIST_OK@": {"journeys": {"J-01": {"status": "passing"}, "J-02": {"status": "already_passing"}}},
         "@HIST_BAD@": {"journeys": {"J-01": {"status": "passing"}, "J-02": {"status": "failing"}}},
+        "@HIST_SHAPE@": {"journeys": []},
+        "@HIST_REC@": {"journeys": {"J-01": "passing", "J-02": 42}},
     }
     for token, payload in hists.items():
         with open(f"{tmp}/{token.strip('@')}.json", "w", encoding="utf-8") as fh:
             json.dump(payload, fh)
+    with open(f"{tmp}/HIST_BAD_JSON.json", "w", encoding="utf-8") as fh:
+        fh.write("{ not json at all")
+    hists["@HIST_BAD_JSON@"] = None
     for name, (text, kwargs, want_rc, must, must_not) in _LINT_FIXTURES.items():
         kwargs = dict(kwargs)
         jh = kwargs.get("journey_history")
@@ -544,7 +730,9 @@ def _lint_self_test() -> int:
             kwargs["journey_history"] = f"{tmp}/{jh.strip('@')}.json"
         res = lint_spec(text, **kwargs)
         got = {f["rule"] for f in res["errors"]} | {f["rule"] for f in res["warnings"]}
-        rc = 1 if res["errors"] else 0
+        rc = 2 if res["input_error"] else (1 if res["errors"] else 0)
+        if res["input_error"]:
+            got.add("INPUT")
         ok = rc == want_rc and all(r in got for r in must) and not any(r in got for r in must_not)
         print(f"  {'PASS' if ok else 'FAIL'}  lint: {name} (rc={rc}, want {want_rc}; rules={sorted(got)})")
         fails += 0 if ok else 1
