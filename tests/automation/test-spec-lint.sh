@@ -821,6 +821,104 @@ python3 "$PROBE" has-implementation-work "$SPECS/loose-l1.md" >/dev/null 2>&1
   && assert "L7: HARD-1's probe STILL counts the harmless loose bullet as work (unchanged, conservative)" "pass" \
   || assert "L7: HARD-1 probe unchanged by the narrowed classifier" "fail"
 
+# ── Part RCF: the replay lane never degrades on an accessor FAILURE ──────────
+echo "== RCF. replay-lane accessor rc handling"
+# A private lib dir so `dirname "${BASH_SOURCE[0]}"` resolves to OUR stub probe.
+RCF="$WORK/rcf"; mkdir -p "$RCF/lib"
+cp "$ENGINE_ROOT/scripts/automation/lib/replay-lane.sh" "$RCF/lib/"
+cp "$ENGINE_ROOT/scripts/automation/lib/iter_spec.py" "$RCF/lib/iter_spec.py.real"
+# A goal-mode spec WITH metadata, plus prose the legacy grep would happily find.
+{ echo "## NOTES"; echo "- **Target journeys:** J-99"
+  echo "- **Required-still-passing journeys:** J-98"; echo
+  echo "## Goal Mode Metadata"; echo "- **Mode:** next"; echo "- **Depth:** lean"
+  echo "- **Target journeys:** J-01"; echo "- **Required-still-passing journeys:** J-02"
+  echo "- **Work kind:** implementation"; echo
+  echo "## IN SCOPE"; echo "### Backend"; echo "- [ ] add it"; } > "$RCF/spec.md"
+printf '# Phase 7\n\nTarget journeys: J-05\n' > "$RCF/phase.md"
+cat > "$RCF/lib/crash.py" <<'EOF8'
+#!/usr/bin/env python3
+import sys
+sys.exit(2)
+EOF8
+
+rcf_call() {  # rcf_call <probe: real|crash> <label> <spec> -> stdout to $WORK/rcf.out, rc echoed
+  cp "$RCF/lib/${1}" "$RCF/lib/iter_spec.py" 2>/dev/null || cp "$RCF/lib/iter_spec.py.real" "$RCF/lib/iter_spec.py"
+  local _rc=0
+  ( set +e
+    # shellcheck disable=SC1090
+    source "$RCF/lib/replay-lane.sh" 2>/dev/null
+    replay_lane_spec_journeys "$2" "$3" ) > "$WORK/rcf.out" 2>"$WORK/rcf.err" || _rc=$?
+  echo "$_rc"
+}
+
+_rc="$(rcf_call crash.py 'Target journeys:' "$RCF/spec.md")"
+_out="$(cat "$WORK/rcf.out")"
+[[ "$_rc" != "0" ]] && [[ -z "$_out" ]] && ! grep -q 'J-99' "$WORK/rcf.out" \
+  && assert "RCF1: accessor rc2 on a metadata-bearing spec FAILS (rc!=0) and prints nothing - J-99 never returned" "pass" \
+  || assert "RCF1: rc2 fails without leaking prose (rc=$_rc out='$_out')" "fail"
+grep -qi 'refusing' "$WORK/rcf.err" \
+  && assert "RCF1b: the failure is announced on stderr, naming the refusal to fall back" "pass" \
+  || assert "RCF1b: loud stderr on accessor failure ($(head -c 120 "$WORK/rcf.err"))" "fail"
+[[ "$_rc" == "78" ]] \
+  && assert "RCF1c: it returns the reserved SPEC_FIELD_UNAVAILABLE_EXIT_CODE (78), not a generic 1" "pass" \
+  || assert "RCF1c: distinct failure code (got $_rc)" "fail"
+# Under `set -e` - how both real callers assign - the failure aborts.
+( set -e
+  # shellcheck disable=SC1090
+  source "$RCF/lib/replay-lane.sh" 2>/dev/null
+  X="$(replay_lane_spec_journeys 'Target journeys:' "$RCF/spec.md")"
+  echo "NOT-ABORTED" ) > "$WORK/rcf-sete.out" 2>/dev/null
+! grep -q 'NOT-ABORTED' "$WORK/rcf-sete.out" \
+  && assert "RCF1d: under 'set -e' (both real callers' shape) the failure ABORTS - it cannot read as a valid empty set" "pass" \
+  || assert "RCF1d: set -e aborts on the failure" "fail"
+
+_rc="$(rcf_call crash.py 'Required-still-passing' "$RCF/spec.md")"
+[[ "$_rc" != "0" ]] && ! grep -q 'J-98' "$WORK/rcf.out" \
+  && assert "RCF2: required-journeys behaves identically on rc2 - J-98 prose never leaks" "pass" \
+  || assert "RCF2: required journeys fail closed (rc=$_rc out='$(cat "$WORK/rcf.out")')" "fail"
+
+_rc="$(rcf_call iter_spec.py.real 'Target journeys:' "$RCF/phase.md")"
+grep -q 'J-05' "$WORK/rcf.out" && [[ "$_rc" == "0" ]] \
+  && assert "RCF3: rc3 (phase-mode spec, no metadata section) still uses the legacy grep and returns J-05" "pass" \
+  || assert "RCF3: phase-mode fallback preserved (rc=$_rc out='$(cat "$WORK/rcf.out")')" "fail"
+
+_rc="$(rcf_call iter_spec.py.real 'Target journeys:' "$RCF/spec.md")"
+grep -q 'J-01' "$WORK/rcf.out" && ! grep -q 'J-99' "$WORK/rcf.out" && [[ "$_rc" == "0" ]] \
+  && assert "RCF4: rc0 returns the canonical J-01 only - external J-99 has no influence" "pass" \
+  || assert "RCF4: rc0 canonical (rc=$_rc out='$(cat "$WORK/rcf.out")')" "fail"
+
+grep -q '3)' "$ENGINE_ROOT/scripts/automation/lib/replay-lane.sh" \
+  && ! grep -qE 'if \[\[ "\$_rc" -eq 0 \]\]; then' "$ENGINE_ROOT/scripts/automation/lib/replay-lane.sh" \
+  && assert "RCF5 (structural): the implementation branches on rc==3 explicitly, not on 'anything nonzero'" "pass" \
+  || assert "RCF5: explicit rc==3 branch" "fail"
+grep -q 'SPEC_FIELD_UNAVAILABLE_EXIT_CODE' "$ENGINE_ROOT/scripts/automation/lib/common.sh" \
+  && assert "RCF5b: the failure code is a named reserved constant in lib/common.sh" "pass" \
+  || assert "RCF5b: named failure constant" "fail"
+
+# ── Part LW: write/wire are construction verbs; one exact legacy shape is not ─
+echo "== LW. write/wire loose-bullet edge"
+loose_case lw1 "verify-only baseline (iteration-state wiring test)" no \
+  "LW1: the exact legacy descriptor with 'wiring' in a parenthetical stays non-blocking"
+lint "$SPECS/loose-lw1.md" --mode-expected baseline
+has_rule W06 && assert "LW1b: the legacy descriptor still reports W06" "pass" || assert "LW1b: W06 on the legacy descriptor" "fail"
+loose_case lw2 "verify the login flow by writing persistent session state" yes \
+  "LW2: 'verify ... by writing ...' is ACTIONABLE (E08+E09)"
+loose_case lw3 "confirm the feature by wiring token persistence into the login path" yes \
+  "LW3: 'confirm ... by wiring ...' is ACTIONABLE"
+loose_case lw4 "write persistent session state" yes "LW4: a bare 'write ...' instruction is ACTIONABLE"
+loose_case lw5 "wire token persistence into the login path" yes "LW5: a bare 'wire ...' instruction is ACTIONABLE"
+lint "$SPECS/loose-lw2.md" --mode-expected baseline
+has_rule E08 && has_rule E09 \
+  && assert "LW2b: the writing bullet raises BOTH E08 (verify-only) and E09 (baseline)" "pass" \
+  || assert "LW2b: E08+E09 on the writing bullet" "fail"
+_lw_unchanged=yes
+for f in lw1 lw2 lw3 lw4 lw5; do
+  python3 "$PROBE" has-implementation-work "$SPECS/loose-$f.md" >/dev/null 2>&1 || _lw_unchanged=no
+done
+[[ "$_lw_unchanged" == "yes" ]] \
+  && assert "LW6: HARD-1's has-implementation-work still counts every one of these loose bullets as work (unchanged)" "pass" \
+  || assert "LW6: HARD-1 probe unchanged across the LW cases" "fail"
+
 # ── Part R: HARD-1 and HARD-3 boundaries ─────────────────────────────────────
 echo "== R. HARD-1 regressions and scope"
 python3 "$PROBE" has-implementation-work "$SPECS/iter7.md" >/dev/null 2>&1; r7=$?

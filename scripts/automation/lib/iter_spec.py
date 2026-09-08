@@ -342,6 +342,14 @@ _DESCRIPTIVE_LOOSE_RE = re.compile(
 # opens with. Without this, a descriptive opener hid a real instruction:
 # "review the authentication flow AND CHANGE login behavior to persist tokens"
 # was exempted as harmless baseline prose.
+# The ONE proven-necessary legacy shape: a baseline spec describing itself, with
+# an optional parenthetical note. Checked BEFORE the construction-verb test so a
+# fixture like "verify-only baseline (iteration-state wiring test)" stays
+# compatible WITHOUT having to exempt the words `wiring`/`writing` generally.
+# Deliberately exact: it matches this shape and nothing else.
+_LEGACY_DESCRIPTOR_RE = re.compile(
+    r"""^[("'`*\[]*\s*verify-only\s+baseline\s*(\([^)]*\))?\s*\.?\s*$""", re.I)
+
 _CONSTRUCTION_VERB_RE = re.compile(
     r"\b(add|adds|adding|change|changes|changing|update|updates|updating"
     r"|implement|implements|implementing|create|creates|creating"
@@ -350,13 +358,14 @@ _CONSTRUCTION_VERB_RE = re.compile(
     r"|refactor|refactors|refactoring|introduce|introduces|introducing"
     r"|build|builds|building|migrate|migrates|migrating"
     r"|rename|renames|renaming|replace|replaces|replacing|extend|extends|extending"
-    r"|install|installs|installing|configure|configures|configuring)\b",
+    r"|install|installs|installing|configure|configures|configuring"
+    r"|write|writes|writing|wire|wires|wiring)\b",
     re.I,
 )
-# Deliberately NOT construction verbs: `wire`/`wiring` and `write`/`writing`.
-# They collide with proven-necessary legacy descriptors ("verify-only baseline
-# (iteration-state wiring test)"), and a bullet that genuinely opens with one is
-# already actionable because the opener is not in the descriptive allowlist.
+# `write`/`wire` are full construction verbs. The only phrase that needed them
+# exempted is the exact legacy descriptor above, which is matched first, so
+# "verify the login flow by writing persistent session state" and "confirm the
+# feature by wiring token persistence" are correctly actionable.
 _CODE_MARKER_RE = re.compile(r"[`/]|\b\w+\.(py|ts|tsx|js|jsx|sh|json|md|sql|ya?ml|css|html)\b|::")
 
 
@@ -372,7 +381,11 @@ def _actionable_loose_bullets(spec_text: str) -> list[str]:
         if not _is_concrete_bullet(line):
             continue
         txt = _BULLET_RE.match(line).group(1).strip()
-        # Descriptive ONLY when all three hold: it opens with closed-set
+        # The exact legacy descriptor is compatibility surface, whatever words it
+        # happens to contain.
+        if _LEGACY_DESCRIPTOR_RE.match(txt):
+            continue
+        # Otherwise descriptive ONLY when all three hold: it opens with closed-set
         # capture/verification vocabulary, names no code artefact, and contains
         # no construction verb anywhere. Unknown phrasing is actionable, so the
         # exemption can never be widened by wording the classifier has not seen.

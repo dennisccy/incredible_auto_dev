@@ -1536,6 +1536,15 @@ _spec_full_trigger_present() {
 : "${EVIDENCE_MODE_REFUSED_EXIT_CODE:=76}"
 export EVIDENCE_MODE_REFUSED_EXIT_CODE
 
+# HARD-2: the canonical machine-field accessor could not answer for a spec that
+# DOES have a `## Goal Mode Metadata` section (probe crash, unreadable spec,
+# unexpected rc). Callers must not degrade to whole-document parsing and must not
+# report an empty set as success — an empty journey list would silently skip the
+# browser/replay verification the iteration owes. Both callers assign through
+# `X="$(...)"` under `set -e`, so a non-zero return aborts loudly.
+: "${SPEC_FIELD_UNAVAILABLE_EXIT_CODE:=78}"
+export SPEC_FIELD_UNAVAILABLE_EXIT_CODE
+
 # ── Idempotent service bootstrap (shared by qa-phase.sh and browser-qa-phase.sh) ──
 #
 # Starts the backend (and optionally frontend) if they are not already running.
