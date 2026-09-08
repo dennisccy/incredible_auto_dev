@@ -111,7 +111,12 @@
 #   CHAIN_SPEC_LINT=block|warn|off  (default block) - after the goal-decomposer writes the
 #                      spec and BEFORE any dispatch, lib/iter_spec.py lint reads its
 #                      machine-readable metadata (bold `- **Depth:** ...` etc.) and its IN
-#                      SCOPE structure. ERRORs (E01-E11) buy exactly ONE automatic re-plan
+#                      SCOPE structure. Machine fields count ONLY inside the canonical
+#                      `## Goal Mode Metadata` section — every runtime consumer (depth,
+#                      target journeys, full trigger, the browser lane's journey sets) reads
+#                      that same canonical interpretation, so the validator and the executor
+#                      can never see different values. ERRORs (E01-E12; E06 is reserved for
+#                      HARD-3) buy exactly ONE automatic re-plan
 #                      with the errors quoted back to the decomposer; a second failure halts
 #                      GATE_BLOCKED (reason GATE_BLOCKED_SPEC_LINT). A linter crash or an
 #                      unreadable spec (exit 2) is NEVER re-planned and fails closed in block
@@ -2703,14 +2708,26 @@ $(cat "$_lint_txt")"
   fi
 
   # Parse depth
-  DEPTH=$(grep -m1 -E '^[[:space:]]*-?[[:space:]]*\*\*Depth:\*\*' "$ITER_SPEC_PATH" \
-            | sed -E 's/.*\*\*Depth:\*\*[[:space:]]*//; s/[[:space:]]+$//' \
-            | tr '[:upper:]' '[:lower:]') || true
-  if [[ -z "$DEPTH" ]]; then
-    DEPTH=$(grep -m1 -E '^[[:space:]]*-?[[:space:]]*Depth:' "$ITER_SPEC_PATH" \
-              | sed -E 's/.*Depth:[[:space:]]*//; s/[[:space:]]+$//' \
+  # CANONICAL source (HARD-2): the `## Goal Mode Metadata` section
+  # only, via lib/iter_spec.py, so the depth the engine dispatches is the depth
+  # the lint gate validated. A `Depth:` line anywhere else is prose with zero
+  # runtime influence. The legacy whole-document grep survives ONLY for a spec
+  # that has no metadata section at all (phase mode), which the probe reports
+  # with exit 3.
+  DEPTH=""
+  _depth_rc=0
+  DEPTH="$(_spec_field "$ITER_SPEC_PATH" depth)" || _depth_rc=$?
+  if [[ "$_depth_rc" -eq 3 ]]; then
+    DEPTH=$(grep -m1 -E '^[[:space:]]*-?[[:space:]]*\*\*Depth:\*\*' "$ITER_SPEC_PATH" \
+              | sed -E 's/.*\*\*Depth:\*\*[[:space:]]*//; s/[[:space:]]+$//' \
               | tr '[:upper:]' '[:lower:]') || true
+    if [[ -z "$DEPTH" ]]; then
+      DEPTH=$(grep -m1 -E '^[[:space:]]*-?[[:space:]]*Depth:' "$ITER_SPEC_PATH" \
+                | sed -E 's/.*Depth:[[:space:]]*//; s/[[:space:]]+$//' \
+                | tr '[:upper:]' '[:lower:]') || true
+    fi
   fi
+  DEPTH="$(printf '%s' "$DEPTH" | tr '[:upper:]' '[:lower:]')"
   # SPEED-9: 'evidence' is a first-class depth (capture + evaluate only). The
   # knob maps it back to lean when the micro-path is disabled.
   if [[ "$DEPTH" == "evidence" && "${CHAIN_EVIDENCE_MICRO_PATH:-true}" != "true" ]]; then
@@ -2746,28 +2763,18 @@ $(cat "$_lint_txt")"
   # Target-journey parse (SPEED-20 moved this up from below the depth blocks:
   # the arbiter's new-fullstack-journey test reads the target list, so it must
   # be available BEFORE the depth decision).
-  TARGET_JOURNEYS=$(grep -m1 -E '^[[:space:]]*-?[[:space:]]*\*\*Target journeys:\*\*' "$ITER_SPEC_PATH" \
-                      | sed -E 's/.*\*\*Target journeys:\*\*[[:space:]]*//' || echo "")
-  # HARD-2: plain-form fallback, mirroring the `Depth:` fallback above. A
-  # plain-form target line used to parse EMPTY here, silently disarming both the
-  # evidence backstop and the browser lane. The bold grep stays FIRST so the
-  # canonical form always wins (test-depth-arbiter.sh pins that precedence).
-  # The fallback goes through the CANONICAL parser, not a second grep, so it is
-  # section-scoped: a `Target journeys:` line under OUT OF SCOPE or NOTES is
-  # prose and can never become the engine's target list. The spec lint still
-  # reports the plain form as E02.
-  if [[ -z "$TARGET_JOURNEYS" ]]; then
-    TARGET_JOURNEYS=$(python3 -c '
-import sys
-sys.path.insert(0, sys.argv[1])
-import iter_spec
-try:
-    text = open(sys.argv[2], encoding="utf-8", errors="replace").read()
-except OSError:
-    sys.exit(0)
-print(", ".join(iter_spec.read_metadata(text)["target_journeys"]))
-' "$SCRIPT_DIR/lib" "$ITER_SPEC_PATH" 2>/dev/null || echo "")
-    [[ -n "$TARGET_JOURNEYS" ]] && echo "[run-goal] NOTE: 'Target journeys:' was written in plain (non-bold) form inside Goal Mode Metadata — parsed via the HARD-2 canonical fallback."
+  # CANONICAL source (HARD-2). The old bold-first whole-document grep let a
+  # `- **Target journeys:** J-99` line under NOTES become the engine's target
+  # list while the linter validated J-01 inside the metadata section. Both forms
+  # are now read from the metadata section by lib/iter_spec.py: bold is the
+  # canonical form, a plain-form line is still read (so the browser lane is not
+  # silently disarmed) but is an E02 lint error that blocks in block mode.
+  TARGET_JOURNEYS=""
+  _tj_rc=0
+  TARGET_JOURNEYS="$(_spec_field "$ITER_SPEC_PATH" target_journeys)" || _tj_rc=$?
+  if [[ "$_tj_rc" -eq 3 ]]; then
+    TARGET_JOURNEYS=$(grep -m1 -E '^[[:space:]]*-?[[:space:]]*\*\*Target journeys:\*\*' "$ITER_SPEC_PATH" \
+                        | sed -E 's/.*\*\*Target journeys:\*\*[[:space:]]*//' || echo "")
   fi
 
   # SPEED-20 deterministic depth arbiter: the SPEED-10 allowlist trusted the
@@ -2834,7 +2841,7 @@ print(", ".join(iter_spec.read_metadata(text)["target_journeys"]))
         # BINDING unless the spec provably plans a brand-new full-stack
         # journey (Full-trigger line AND backend+frontend bullets AND real
         # Data-contract additions AND a never-implemented target journey).
-        if grep -qiE '^[[:space:]]*-?[[:space:]]*(\*\*)?Full trigger:' "$ITER_SPEC_PATH" \
+        if _spec_full_trigger_present "$ITER_SPEC_PATH" \
            && goal_new_fullstack_journey "$ITER_SPEC_PATH" "$JOURNEY_HISTORY"; then
           _arb_decision="full"; _arb_reason="new-fullstack-journey"
         else
@@ -2883,7 +2890,7 @@ print(", ".join(iter_spec.read_metadata(text)["target_journeys"]))
       _full_reason="prior-verdict-${PRIOR_VERDICT}"
     elif grep -qE '^\*\*Verdict:\*\* COHERENCE-FAIL' "$_prev_coh_file" 2>/dev/null; then
       _full_reason="prior-coherence-fail"
-    elif grep -qiE '^[[:space:]]*-?[[:space:]]*(\*\*)?Full trigger:' "$ITER_SPEC_PATH"; then
+    elif _spec_full_trigger_present "$ITER_SPEC_PATH"; then
       _full_reason="spec-full-trigger"
     elif goal_cadence_forces_full "$LEAN_STREAK" "$CURRENT_ITER"; then
       _full_reason="cadence-due"

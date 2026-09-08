@@ -607,9 +607,9 @@ run_engine outsidefield
 grep -q 'E01' "$ENG_SESSION/iter-0/spec-lint.txt" 2>/dev/null && [[ "$(eng_status)" == "GATE_BLOCKED" ]] \
   && assert "GE1: a Depth line living only outside Goal Mode Metadata blocks end-to-end (E01)" "pass" \
   || assert "GE1: misplaced field blocks end-to-end (status=$(eng_status))" "fail"
-grep -q 'iter_spec' <(sed -n '/HARD-2: plain-form fallback/,/^  fi$/p' "$RG") \
-  && assert "GE2: the engine's plain-form Target-journeys fallback goes through the canonical section-scoped parser, not a second grep" "pass" \
-  || assert "GE2: fallback uses the canonical parser" "fail"
+grep -q '_spec_field "$ITER_SPEC_PATH" target_journeys' "$RG" \
+  && assert "GE2: the engine's Target-journeys read goes through the canonical section-scoped parser, not a whole-document grep" "pass" \
+  || assert "GE2: target journeys read canonically" "fail"
 
 # G-T: telemetry counts must be truthful on the CLEAN path (zero errors).
 run_engine good
@@ -694,12 +694,22 @@ _disp=$(grep -n 'Dispatching LEAN pipeline' "$RG" | head -1 | cut -d: -f1)
 grep -q '"GATE_BLOCKED")' "$RG" || grep -q '"AWAITING_FULL_DEPTH", "GATE_BLOCKED"' "$RG" \
   && assert "W3: GATE_BLOCKED is in the resume status-reset list (a fixed spec can resume)" "pass" \
   || assert "W3: GATE_BLOCKED in the resume reset list" "fail"
-_bold=$(grep -n 'TARGET_JOURNEYS=\$(grep -m1' "$RG" | head -1 | cut -d: -f1)
-_plain=$(grep -n "HARD-2: plain-form fallback" "$RG" | head -1 | cut -d: -f1)
-_boldpat=$(grep -c 'Target journeys:\\\*\\\*' "$RG" 2>/dev/null || true)
-[[ -n "$_bold" && -n "$_plain" && "$_bold" -lt "$_plain" ]] \
-  && assert "W4: the bold 'Target journeys' grep still runs FIRST; the plain fallback is second" "pass" \
-  || assert "W4: bold-before-plain target precedence (bold=$_bold plain=$_plain)" "fail"
+# W4 (rewritten): the old contract was "the whole-document bold grep runs FIRST,
+# the canonical parser is only a fallback". That contract WAS the split brain and
+# is retired. DEPTH and TARGET_JOURNEYS now come from the canonical parser; the
+# legacy grep survives only for a spec with no metadata section (phase mode).
+grep -q '_spec_field "$ITER_SPEC_PATH" depth' "$RG" && grep -q '_spec_field "$ITER_SPEC_PATH" target_journeys' "$RG" \
+  && assert "W4: DEPTH and TARGET_JOURNEYS are read through the canonical _spec_field accessor" "pass" \
+  || assert "W4: canonical accessor used for DEPTH and TARGET_JOURNEYS" "fail"
+grep -q '_depth_rc" -eq 3' "$RG" && grep -q '_tj_rc" -eq 3' "$RG" \
+  && assert "W4b: the legacy grep survives only behind the probe's exit-3 (no metadata section = phase mode)" "pass" \
+  || assert "W4b: legacy grep gated on exit 3" "fail"
+grep -q 'iter_spec.py" field' "$ENGINE_ROOT/scripts/automation/lib/replay-lane.sh" \
+  && assert "W4c: the browser lane's journey sets come from the canonical parser too" "pass" \
+  || assert "W4c: replay lane uses the canonical parser" "fail"
+grep -q '_spec_full_trigger_present' "$RG" \
+  && assert "W4d: 'Full trigger:' presence is canonical too (a NOTES line cannot grant full depth)" "pass" \
+  || assert "W4d: Full trigger presence is canonical" "fail"
 grep -q 'Work kind' "$ENGINE_ROOT/agents/goal-decomposer/body.md" \
   && grep -q 'Spec lint (deterministic — HARD-2)' "$ENGINE_ROOT/agents/goal-decomposer/body.md" \
   && assert "W5: the decomposer contract documents Work kind and the spec-lint rules" "pass" \
@@ -707,6 +717,109 @@ grep -q 'Work kind' "$ENGINE_ROOT/agents/goal-decomposer/body.md" \
 python3 "$ENGINE_ROOT/scripts/automation/sync-cli-assets.py" --cli claude --check >/dev/null 2>&1 \
   && assert "W6: sync-cli-assets --check is clean (generated mirrors match the neutral source)" "pass" \
   || assert "W6: mirror drift check clean" "fail"
+
+# ── Part M: one canonical machine-field source (post-G8 blocker 1) ───────────
+echo "== M. canonical machine fields"
+mk_split() {  # mk_split <file> <outside-depth> <outside-targets> <inside-depth> <inside-targets>
+  { echo "## NOTES"; echo
+    echo "- **Depth:** $2"
+    echo "- **Target journeys:** $3"; echo
+    echo "## Goal Mode Metadata"; echo
+    echo "- **Mode:** next"
+    echo "- **Depth:** $4"
+    echo "- **Target journeys:** $5"
+    echo "- **Required-still-passing journeys:** J-02"
+    echo "- **Work kind:** implementation"
+    echo "- **Full trigger:** 2 - coherence FAIL"; echo
+    echo "## IN SCOPE"; echo "### Backend"; echo "- [ ] add it"; echo
+    echo "## OUT OF SCOPE"; echo "- x"; echo
+    echo "## DEFINITION OF DONE"; echo "- [ ] done"; echo
+    echo "## TESTING REQUIREMENTS"; echo "- TC-1: given x, when y, then z"; } > "$1"
+}
+canon() { python3 "$PROBE" field "$1" "$2"; }
+
+mk_split "$SPECS/m1.md" evidence J-99 lean "J-01"
+[[ "$(canon "$SPECS/m1.md" depth)" == "lean" ]] \
+  && assert "M1: an external '**Depth:** evidence' before the metadata section has ZERO effect (canonical depth is lean)" "pass" \
+  || assert "M1: canonical depth wins (got '$(canon "$SPECS/m1.md" depth)')" "fail"
+lint "$SPECS/m1.md"
+has_rule W12 \
+  && assert "M1b: the shadowed external copy is reported as prose with zero runtime influence (W12, non-blocking)" "pass" \
+  || assert "M1b: shadowed external field reported (rc=$LINT_RC; $LINT_OUT)" "fail"
+[[ "$(canon "$SPECS/m1.md" target_journeys)" == "J-01" ]] \
+  && assert "M2: an external '**Target journeys:** J-99' has ZERO influence (canonical list is J-01)" "pass" \
+  || assert "M2: canonical targets win (got '$(canon "$SPECS/m1.md" target_journeys)')" "fail"
+( source "$ENGINE_ROOT/scripts/automation/lib/replay-lane.sh" 2>/dev/null
+  printf '%s' "$(replay_lane_spec_journeys 'Target journeys:' "$SPECS/m1.md")" ) > "$WORK/m2.out" 2>/dev/null
+grep -q 'J-01' "$WORK/m2.out" && ! grep -q 'J-99' "$WORK/m2.out" \
+  && assert "M2b: the browser lane's target set is J-01 only - J-99 never reaches it" "pass" \
+  || assert "M2b: browser lane targets canonical (got '$(cat "$WORK/m2.out")')" "fail"
+mk_split "$SPECS/m3.md" full "J-98, J-99" lean "J-01, J-03"
+[[ "$(canon "$SPECS/m3.md" depth)" == "lean" && "$(canon "$SPECS/m3.md" target_journeys)" == "J-01, J-03" ]] \
+  && assert "M3: conflicting external duplicates are prose - runtime uses the canonical section only" "pass" \
+  || assert "M3: canonical only (depth=$(canon "$SPECS/m3.md" depth) tj=$(canon "$SPECS/m3.md" target_journeys))" "fail"
+md "$SPECS/m4.md" lean implementation
+sed -i 's/- \*\*Target journeys:\*\* J-01, J-02/Target journeys: J-01, J-02/' "$SPECS/m4.md"
+add_work "$SPECS/m4.md"; add_tail "$SPECS/m4.md"
+lint "$SPECS/m4.md"
+[[ "$(canon "$SPECS/m4.md" target_journeys)" == "J-01, J-02" && "$LINT_RC" == "1" ]] && has_rule E02 \
+  && assert "M4: a plain-form field inside metadata is READ canonically for compatibility and still blocks with E02" "pass" \
+  || assert "M4: plain form read + E02 (canon='$(canon "$SPECS/m4.md" target_journeys)' rc=$LINT_RC)" "fail"
+run_engine good
+_dd="$(cat "$ENG_SESSION/iter-0/depth-dispatched" 2>/dev/null)"
+[[ "$_dd" == "lean" ]] \
+  && assert "M5: the depth the engine DISPATCHED matches the canonical metadata the linter validated" "pass" \
+  || assert "M5: dispatched depth matches canonical (depth-dispatched='$_dd')" "fail"
+# M7 — the legacy short label the pre-HARD-2 prefix grep accepted.
+{ echo "## Goal Mode Metadata"; echo "- **Mode:** next"; echo "- **Depth:** lean"
+  echo "- **Target journeys:** J-01"; echo "- **Required-still-passing:** J-02"
+  echo "- **Work kind:** implementation"; } > "$SPECS/m7.md"
+add_work "$SPECS/m7.md"; add_tail "$SPECS/m7.md"
+[[ "$(canon "$SPECS/m7.md" required_journeys)" == "J-02" ]] \
+  && assert "M7: the legacy short label 'Required-still-passing:' (no trailing 'journeys') is still read canonically" "pass" \
+  || assert "M7: short-label compatibility (got '$(canon "$SPECS/m7.md" required_journeys)')" "fail"
+lint "$SPECS/m7.md"
+[[ "$LINT_RC" == "0" ]] \
+  && assert "M7b: a legacy short-label spec still lints clean (no new false block)" "pass" \
+  || assert "M7b: short-label spec lints clean (rc=$LINT_RC; $LINT_OUT)" "fail"
+
+printf '# Phase 7\n\nTarget journeys: J-05\n' > "$SPECS/phase-7.md"
+( source "$ENGINE_ROOT/scripts/automation/lib/replay-lane.sh" 2>/dev/null
+  printf '%s' "$(replay_lane_spec_journeys 'Target journeys:' "$SPECS/phase-7.md")" ) > "$WORK/m6.out" 2>/dev/null
+grep -q 'J-05' "$WORK/m6.out" \
+  && assert "M6: a phase-mode spec with no metadata section still parses via the legacy grep (phase mode untouched)" "pass" \
+  || assert "M6: phase-mode fallback preserved (got '$(cat "$WORK/m6.out")')" "fail"
+
+# ── Part LG: the loose-bullet compatibility grammar (post-G8 blocker 2) ──────
+echo "== LG. loose-bullet grammar"
+loose_case() {  # loose_case <id> <bullet> <expect-blocked yes|no> <name>
+  local f="$SPECS/loose-$1.md"
+  md "$f" lean verify-only "" baseline
+  printf '\n## IN SCOPE\n\n- %s\n' "$2" >> "$f"
+  lint "$f" --mode-expected baseline
+  local blocked=no; [[ "$LINT_RC" == "1" ]] && blocked=yes
+  if [[ "$blocked" == "$3" ]]; then assert "$4" "pass"
+  else assert "$4 (rc=$LINT_RC; $(printf '%s' "$LINT_OUT" | head -1 | cut -c1-90))" "fail"; fi
+}
+loose_case l1 "verify-only baseline" no "L1: '- verify-only baseline' stays a non-blocking compatibility case"
+lint "$SPECS/loose-l1.md" --mode-expected baseline
+has_rule W06 && assert "L1b: the harmless legacy bullet still reports W06" "pass" || assert "L1b: W06 on the legacy bullet" "fail"
+loose_case l1c "verify-only baseline (iteration-state wiring test)" no "L1c: the exact legacy fixture form used by test-goal-iteration-state stays non-blocking"
+loose_case l2 "review the authentication flow and change login behavior to persist tokens" yes "L2: a descriptive opener followed by 'change ... persist' is ACTIONABLE"
+loose_case l3 "document the new login behavior and implement persistence" yes "L3: 'document ... and implement ...' is ACTIONABLE"
+loose_case l4 "verify the flow by adding persistent token storage" yes "L4: 'verify ... by adding ...' is ACTIONABLE"
+loose_case l4b "inspect the account screen and update the login behavior" yes "L4b: 'inspect ... and update ...' is ACTIONABLE"
+loose_case l5 "frobnicate the widget" yes "L5: unknown non-allowlisted phrasing is ACTIONABLE by default (fails safe)"
+loose_case l6 "capture screenshots for J-01 and J-02" no "L6: a capture-only legacy descriptor with no construction clause stays descriptive"
+loose_case l6b "evidence capture for the export flow" no "L6b: an evidence-capture descriptor stays descriptive"
+lint "$SPECS/loose-l2.md" --mode-expected baseline
+has_rule E08 && has_rule E09 \
+  && assert "L2b: the actionable mixed-action bullet raises BOTH E08 (verify-only) and E09 (baseline)" "pass" \
+  || assert "L2b: E08+E09 on the actionable bullet" "fail"
+python3 "$PROBE" has-implementation-work "$SPECS/loose-l1.md" >/dev/null 2>&1
+[[ "$?" == "0" ]] \
+  && assert "L7: HARD-1's probe STILL counts the harmless loose bullet as work (unchanged, conservative)" "pass" \
+  || assert "L7: HARD-1 probe unchanged by the narrowed classifier" "fail"
 
 # ── Part R: HARD-1 and HARD-3 boundaries ─────────────────────────────────────
 echo "== R. HARD-1 regressions and scope"

@@ -69,6 +69,25 @@ _replay_lane_warn() { echo "[${REPLAY_LANE_TAG:-replay-lane}] $*" >&2; }
 # (both 20260710/20260712 benchmark iter-0s died exactly there). Empty is a
 # legitimate parse result; it must never be an exit.
 replay_lane_spec_journeys() {
+  # HARD-2: journey lists are HARD-2-owned machine fields, so they come from the
+  # CANONICAL `## Goal Mode Metadata` section via lib/iter_spec.py — the same
+  # interpretation the lint gate validated. The old `grep | head -1` took the
+  # first match ANYWHERE in the document, so a `Target journeys: J-99` line under
+  # NOTES could become the browser lane's target set while the linter validated
+  # a different list inside the metadata section.
+  # Exit 3 from the probe means the spec has no metadata section at all (a
+  # phase-mode spec), so the legacy whole-document grep still applies there.
+  local _key _out _rc=0
+  case "$1" in
+    *[Rr]equired*) _key="required_journeys" ;;
+    *)             _key="target_journeys" ;;
+  esac
+  _out="$(python3 "$(dirname "${BASH_SOURCE[0]}")/iter_spec.py" field "$2" "$_key" --sep ' ' 2>/dev/null)" || _rc=$?
+  if [[ "$_rc" -eq 0 ]]; then
+    _out="$(printf '%s' "$_out" | grep -oE 'J-[0-9]+' | sort -u | tr '\n' ' ')" || true
+    printf '%s' "$_out"
+    return 0
+  fi
   grep -iE "$1" "$2" 2>/dev/null | head -1 | grep -oE 'J-[0-9]+' | sort -u | tr '\n' ' ' || true
 }
 

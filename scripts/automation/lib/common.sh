@@ -1502,6 +1502,32 @@ goal_spec_has_implementation_work() {
   [[ "$rc" -eq 1 ]] && return 1
   return 0
 }
+# ── HARD-2: canonical machine-field accessor ─────────────────────────────────
+# Every runtime consumer of a HARD-2-owned machine field reads the SAME
+# interpretation the lint gate validated. Each consumer used to run its own
+# whole-document `grep -m1`, so a `- **Depth:** evidence` line under NOTES beat
+# the canonical `- **Depth:** full` inside `## Goal Mode Metadata`: the validator
+# certified one machine state and the executor ran another.
+#   exit 3 from the probe = the spec has no metadata section at all (a phase-mode
+#   spec), so the caller's legacy grep still applies and phase mode is untouched.
+_spec_field() {  # _spec_field <spec> <field> [sep] -> canonical value on stdout
+  local _out _rc=0
+  _out="$(python3 "$(dirname "${BASH_SOURCE[0]}")/iter_spec.py" field "$1" "$2" --sep "${3:-, }" 2>/dev/null)" || _rc=$?
+  [[ "$_rc" -eq 0 ]] || return "$_rc"
+  printf '%s' "$_out"
+}
+# `Full trigger:` is a HARD-2-owned machine field too: it is what the legacy
+# allowlist consults to grant full depth, so a line under NOTES must not grant it.
+_spec_full_trigger_present() {
+  local _v _rc=0
+  _v="$(_spec_field "$1" full_trigger)" || _rc=$?
+  if [[ "$_rc" -eq 3 ]]; then   # no metadata section (phase spec): legacy grep
+    grep -qiE '^[[:space:]]*-?[[:space:]]*(\*\*)?Full trigger:' "$1"
+    return $?
+  fi
+  [[ -n "$_v" ]]
+}
+
 # Executor self-refusal code for an EVIDENCE dispatch of a spec that plans
 # implementation work (goal-iter-lean.sh exits with it BEFORE writing any
 # artifact; run-goal.sh re-dispatches the iteration lean). 70 (dispatch

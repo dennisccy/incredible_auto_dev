@@ -4,7 +4,7 @@ description: Goal-mode iteration planner. Reads docs/goal.md (with Must-have use
 model: claude-sonnet-5
 tools: [Read, Glob, Grep, Bash, Write]
 disallowed_tools: ["Bash(rm -rf /)", "Bash(rm -rf ~)", "Bash(rm -rf ~/*)", "Bash(rm -rf /home*)", "Bash(rm -rf /root*)", "Bash(rm -rf /etc*)", "Bash(rm -rf /usr*)", "Bash(rm -rf /var*)", "Bash(rm -rf /boot*)", "Bash(rm -rf /lib*)", "Bash(rm -rf /opt*)", "Bash(rm -rf /srv*)", "Bash(rm -rf /sys*)", "Bash(rm -rf /proc*)", "Bash(git push --force origin main)", "Bash(git push --force origin master)", "Bash(git push -f origin main)", "Bash(git push -f origin master)", "Bash(git push *)", "Bash(git push)", "Bash(git push --force *)", "Bash(gh pr merge *)", "Bash(gh pr close *)", "Bash(gh release *)", "Bash(git tag *)"]
-version: 2.7.0
+version: 2.7.1
 last_updated: 2026-09-08
 ---
 
@@ -148,14 +148,15 @@ Before anything is dispatched, the engine runs `lib/iter_spec.py lint` over the 
 
 Errors, in plain words:
 
-- **E01** — no `## Goal Mode Metadata` section.
+- **E01** — no `## Goal Mode Metadata` section, or a machine field that is missing from it. **A machine field counts only inside that section.** A `- **Depth:** lean` line under OUT OF SCOPE, NOTES or a test-case example is prose: it never satisfies the field, and the engine reads its depth, target journeys and full trigger from the metadata section alone. If E01 says a field is misplaced, move it into the metadata block rather than adding a second copy.
+- **E12** — the same machine field declared twice inside the metadata section with different values, or a second `## Goal Mode Metadata` section. The engine refuses to pick one by document order; keep exactly one line and one section. An identical repeat is harmless.
 - **E02** — `Depth`, `Target journeys`, `Required-still-passing journeys` or `Work kind` written without the bold markers.
 - **E03** — `Depth` is not `lean`, `full` or `evidence`.
 - **E04** — a `Target journeys:` line that names no `J-<n>` id.
 - **E05** — `Work kind` is not `implementation`, `evidence-only` or `verify-only`.
-- **E07** — `Depth: evidence` or `Work kind: evidence-only` while IN SCOPE lists a concrete Backend/Frontend bullet. An evidence iteration dispatches no developer, so that work would never be built (this is the TenSteps iteration-7 loss).
-- **E08** — `Work kind: verify-only` with implementation work listed.
-- **E09** — a baseline (iteration 0) spec with implementation work.
+- **E07** — `Depth: evidence` or `Work kind: evidence-only` while IN SCOPE plans real work. An evidence iteration dispatches no developer, so that work would never be built (this is the TenSteps iteration-7 loss). "Real work" means a concrete bullet under `### Backend` or `### Frontend`, **or** a loose bullet directly under `## IN SCOPE` that reads as construction. A loose bullet counts as harmless description only when it opens with capture/verification vocabulary, names no file or path, and contains no construction verb anywhere — so `- verify-only baseline` is fine, while `- review the flow and change login to persist tokens` is work however it opens. Unknown phrasing counts as work: put real items under `### Backend`/`### Frontend` and the question never arises.
+- **E08** — `Work kind: verify-only` with implementation work listed, structured or actionable-loose.
+- **E09** — a baseline (iteration 0) spec with implementation work, structured or actionable-loose. The engine knows the iteration is the baseline from its own state, so writing `Mode: next` does not avoid this.
 - **E10** — `Depth: evidence` after a prior `ESCALATE` verdict.
 - **E11** — `Depth: evidence` while one of your target journeys is not recorded passing.
 

@@ -174,6 +174,16 @@ _JOURNEY_ID_RE = re.compile(r"J-\d+")
 _OPERATOR_ONLY = ("Depth enforcement", "Maintenance isolation")
 
 
+# Accepted alternate spellings, tried after the canonical label. The engine's
+# pre-HARD-2 greps matched a PREFIX, so specs in the wild (and fixtures) carry
+# `- **Required-still-passing:** J-02` without the trailing word. The canonical
+# parser must read those too, or a valid legacy spec would silently lose its
+# required-journey list.
+_FIELD_ALIASES_LABELS: dict[str, tuple[str, ...]] = {
+    "required_journeys": ("Required-still-passing",),
+}
+
+
 def _field_patterns(label: str) -> tuple[re.Pattern[str], re.Pattern[str]]:
     esc = re.escape(label)
     bold = re.compile(rf"^[ \t]*-?[ \t]*\*\*{esc}:\*\*[ \t]*(.*?)[ \t]*$", re.M | re.I)
@@ -209,10 +219,19 @@ def read_metadata(spec_text: str) -> dict:
     # then first occurrence) so the report is reproducible.
     conflicts: dict[str, list[str]] = {}
     misplaced: list[str] = []
+    shadowed: list[str] = []
     for key, label in _FIELDS.items():
         b_re, p_re = _field_patterns(label)
         b_hits = [m.group(1).strip() for m in b_re.finditer(section)]
         p_hits = [m.group(1).strip() for m in p_re.finditer(section)]
+        for alt in _FIELD_ALIASES_LABELS.get(key, ()):
+            if b_hits or p_hits:
+                break
+            ab_re, ap_re = _field_patterns(alt)
+            b_hits = [m.group(1).strip() for m in ab_re.finditer(section)]
+            p_hits = [m.group(1).strip() for m in ap_re.finditer(section)]
+            if b_hits or p_hits:
+                b_re, p_re = ab_re, ap_re      # so the outside-scan uses the same label
         distinct = []
         for v in b_hits + p_hits:
             n = v.strip().strip("*").strip().lower()
@@ -220,6 +239,13 @@ def read_metadata(spec_text: str) -> dict:
                 distinct.append(n)
         if len(distinct) > 1:
             conflicts[key] = distinct
+        outside_txt = spec_text.replace(section, "\n") if section else spec_text
+        if b_hits or p_hits:
+            # Declared canonically AND repeated outside: the outside copy is
+            # prose with zero runtime influence, but say so — a reader should
+            # not have to guess which line the engine obeyed.
+            if b_re.search(outside_txt) or p_re.search(outside_txt):
+                shadowed.append(key)
         if b_hits:
             values[key], bold[key], present[key] = b_hits[0], True, True
         elif p_hits:
@@ -229,8 +255,7 @@ def read_metadata(spec_text: str) -> dict:
             # A machine field that exists ONLY outside the canonical section is
             # MISPLACED, not absent — say so, so the author is not told to add a
             # line the document already contains.
-            outside = spec_text.replace(section, "\n") if section else spec_text
-            if b_re.search(outside) or p_re.search(outside):
+            if b_re.search(outside_txt) or p_re.search(outside_txt):
                 misplaced.append(key)
 
     def _norm(v: str | None) -> str | None:
@@ -250,6 +275,7 @@ def read_metadata(spec_text: str) -> dict:
         "metadata_section_count": section_count,
         "field_conflicts": conflicts,
         "fields_outside_section": misplaced,
+        "fields_shadowed_outside": shadowed,
         "h2_sections": h2s,
         "mode": _norm(values.get("mode")),
         "depth": _norm(values.get("depth")),
@@ -293,6 +319,8 @@ _RULE_TEXT = {
     "W06": "loose-in-scope-bullets",
     "W07": "sentinel-spec",
     "W08": "full-without-trigger",
+    # W09-W11 are RESERVED for HARD-3's side-effect warnings.
+    "W12": "field-shadowed-outside-metadata",
 }
 
 # A loose bullet directly under `## IN SCOPE` is ambiguous: legacy baseline specs
@@ -304,12 +332,31 @@ _RULE_TEXT = {
 # Anything else counts as work — unknown text is treated as actionable, so the
 # governor is never widened by a phrasing it has not seen.
 _DESCRIPTIVE_LOOSE_RE = re.compile(
-    r"""^[("'`*\[]*\s*(verify|verification|verify-only|evidence|evidence-only|baseline"""
+    r"""^[("'`*\[]*\s*(verify-only|evidence-only|verification|verify|evidence|baseline"""
     r"""|capture|capturing|record|recording|re-?record|screenshot|screenshots|demo"""
     r"""|walkthrough|confirm|confirmation|observe|observation|smoke|sanity|read-only"""
-    r"""|no-op|noop|inspect|review|report|document|documentation)\b""",
+    r"""|no-op|noop)\b""",
     re.I,
 )
+# A construction verb ANYWHERE in the bullet makes it actionable, whatever it
+# opens with. Without this, a descriptive opener hid a real instruction:
+# "review the authentication flow AND CHANGE login behavior to persist tokens"
+# was exempted as harmless baseline prose.
+_CONSTRUCTION_VERB_RE = re.compile(
+    r"\b(add|adds|adding|change|changes|changing|update|updates|updating"
+    r"|implement|implements|implementing|create|creates|creating"
+    r"|modify|modifies|modifying|fix|fixes|fixing|rewrite|rewrites|rewriting"
+    r"|persist|persists|persisting|remove|removes|removing|delete|deletes|deleting"
+    r"|refactor|refactors|refactoring|introduce|introduces|introducing"
+    r"|build|builds|building|migrate|migrates|migrating"
+    r"|rename|renames|renaming|replace|replaces|replacing|extend|extends|extending"
+    r"|install|installs|installing|configure|configures|configuring)\b",
+    re.I,
+)
+# Deliberately NOT construction verbs: `wire`/`wiring` and `write`/`writing`.
+# They collide with proven-necessary legacy descriptors ("verify-only baseline
+# (iteration-state wiring test)"), and a bullet that genuinely opens with one is
+# already actionable because the opener is not in the descriptive allowlist.
 _CODE_MARKER_RE = re.compile(r"[`/]|\b\w+\.(py|ts|tsx|js|jsx|sh|json|md|sql|ya?ml|css|html)\b|::")
 
 
@@ -325,7 +372,13 @@ def _actionable_loose_bullets(spec_text: str) -> list[str]:
         if not _is_concrete_bullet(line):
             continue
         txt = _BULLET_RE.match(line).group(1).strip()
-        if _DESCRIPTIVE_LOOSE_RE.match(txt) and not _CODE_MARKER_RE.search(txt):
+        # Descriptive ONLY when all three hold: it opens with closed-set
+        # capture/verification vocabulary, names no code artefact, and contains
+        # no construction verb anywhere. Unknown phrasing is actionable, so the
+        # exemption can never be widened by wording the classifier has not seen.
+        if (_DESCRIPTIVE_LOOSE_RE.match(txt)
+                and not _CODE_MARKER_RE.search(txt)
+                and not _CONSTRUCTION_VERB_RE.search(txt)):
             continue
         out.append(txt)
     return out
@@ -403,6 +456,10 @@ def lint_spec(
             err("E01", f"'{_FIELDS[key]}:' appears in the document but NOT inside "
                        f"'## Goal Mode Metadata'. A field outside that section is prose, not machine "
                        f"state, and never satisfies the machine field — move it into the metadata section")
+    for key in md["fields_shadowed_outside"]:
+        warn("W12", f"'{_FIELDS[key]}:' is declared inside '## Goal Mode Metadata' AND repeated "
+                    f"elsewhere in the document. Only the metadata section is machine state; the "
+                    f"other copy has ZERO runtime influence and is ignored")
     if md["metadata_section_count"] > 1:
         err("E12", f"{md['metadata_section_count']} '## Goal Mode Metadata' sections — exactly one is canonical")
     for key, vals in sorted(md["field_conflicts"].items()):
@@ -509,6 +566,53 @@ def cmd_metadata(path: str) -> int:
         print(json.dumps({"error": f"unreadable: {exc}"}))
         return 2
     print(json.dumps(read_metadata(text), sort_keys=True))
+    return 0
+
+
+_FIELD_ALIASES = {
+    "depth": "depth", "mode": "mode", "work_kind": "work_kind", "work-kind": "work_kind",
+    "full_trigger": "full_trigger", "full-trigger": "full_trigger",
+    "target_journeys": "target_journeys", "target-journeys": "target_journeys",
+    "required_journeys": "required_journeys", "required-journeys": "required_journeys",
+}
+
+
+def cmd_field(argv: list[str]) -> int:
+    """Print ONE canonical machine field for shell consumers.
+
+    The point of this subcommand is that the engine, the executor and the browser
+    lane read the SAME interpretation the lint gate validated. Before it existed
+    each consumer ran its own whole-document `grep -m1`, so a `- **Depth:**
+    evidence` line under NOTES beat the canonical `- **Depth:** full` inside the
+    metadata section and the validator certified one machine state while the
+    executor ran another.
+
+      exit 0  value printed (empty line when the field is absent)
+      exit 2  the spec could not be read
+      exit 3  the spec has no `## Goal Mode Metadata` section at all — NOT a
+              goal-mode iteration spec (a phase-mode spec, say). Callers fall
+              back to their legacy grep so phase mode is untouched.
+    """
+    path, name = argv[0], argv[1]
+    sep = ", "
+    if "--sep" in argv:
+        sep = argv[argv.index("--sep") + 1]
+    key = _FIELD_ALIASES.get(name.strip().lower().replace(" ", "_"))
+    if key is None:
+        print(f"iter_spec: unknown field {name!r}", file=sys.stderr)
+        return 2
+    try:
+        text = _read_spec(path)
+    except OSError as exc:
+        print(f"iter_spec: unreadable: {exc}", file=sys.stderr)
+        return 2
+    md = read_metadata(text)
+    if not md["metadata_section_present"]:
+        return 3
+    if key in ("target_journeys", "required_journeys"):
+        print(sep.join(md[key]))
+    else:
+        print(md[key] or "")
     return 0
 
 
@@ -665,6 +769,9 @@ _LINT_FIXTURES: dict[str, tuple[str, dict, int, tuple[str, ...], tuple[str, ...]
     "E01 a misplaced field is reported as misplaced, not merely absent": (
         _md("lean", "implementation").replace("- **Target journeys:** J-01, J-02\n", "")
         + "\n## NOTES\n- **Target journeys:** J-99\n" + _WORK, {}, 1, ("E01",), ()),
+    "W12 a field repeated outside the section is prose, warned not blocked": (
+        "## NOTES\n\n- **Depth:** evidence\n\n" + _md("lean", "implementation") + _WORK,
+        {}, 0, ("W12",), ("E01", "E12")),
     "E12 conflicting duplicate field inside the metadata section": (
         _md("lean", "implementation").replace("- **Depth:** lean\n",
                                               "- **Depth:** lean\n- **Depth:** evidence\n")
@@ -763,6 +870,8 @@ def main(argv: list[str]) -> int:
         return cmd_has_implementation_work(argv[1])
     if len(argv) >= 2 and argv[0] == "metadata":
         return cmd_metadata(argv[1])
+    if len(argv) >= 3 and argv[0] == "field":
+        return cmd_field(argv[1:])
     if len(argv) >= 2 and argv[0] == "lint":
         return cmd_lint(argv[1:])
     if argv and argv[0] == "self-test":
