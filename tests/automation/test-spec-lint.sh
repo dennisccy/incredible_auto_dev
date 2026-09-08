@@ -1130,18 +1130,24 @@ sed -n "${_gs_start:-1},${_gs_end:-1}p" "$RG" | grep -q '_spec_targets="\$TARGET
   || assert "GS6: reuses canonical TARGET_JOURNEYS" "fail"
 
 # The developer's sliced goal view is the other target consumer.
-grep -q 'CHAIN_GOAL_TARGET_JOURNEYS:-' "$ENGINE_ROOT/scripts/automation/dev-phase.sh" \
-  && assert "GS7: dev-phase.sh prefers the canonical exported CHAIN_GOAL_TARGET_JOURNEYS for its goal slice" "pass" \
+grep -q 'CHAIN_GOAL_TARGET_JOURNEYS+x' "$ENGINE_ROOT/scripts/automation/dev-phase.sh" \
+  && assert "GS7: dev-phase.sh prefers the canonical exported CHAIN_GOAL_TARGET_JOURNEYS for its goal slice (is-set test)" "pass" \
   || assert "GS7: dev-phase prefers the canonical export" "fail"
 _dp_export=$(grep -n 'export CHAIN_GOAL_TARGET_JOURNEYS' "$RG" | head -1 | cut -d: -f1)
 _dp_disp=$(grep -n 'Dispatching FULL pipeline' "$RG" | head -1 | cut -d: -f1)
 [[ -n "$_dp_export" && -n "$_dp_disp" && "$_dp_export" -lt "$_dp_disp" ]] \
   && assert "GS7b: the canonical export happens before any executor dispatch, so the child always sees it" "pass" \
   || assert "GS7b: export precedes dispatch (export=$_dp_export dispatch=$_dp_disp)" "fail"
-( set +u; unset CHAIN_GOAL_TARGET_JOURNEYS
-  grep -A6 'CHAIN_GOAL_TARGET_JOURNEYS:-' "$ENGINE_ROOT/scripts/automation/dev-phase.sh" | grep -q "grep -iE 'Target journeys:'" ) \
-  && assert "GS7c: the whole-document grep survives in dev-phase only as the standalone-invocation fallback" "pass" \
-  || assert "GS7c: standalone fallback retained" "fail"
+# GS7c (rewritten): the old contract was "standalone dev-phase falls straight
+# back to the whole-document grep". That is no longer correct for a Goal Mode
+# iteration spec — standalone reaches the canonical accessor first, and the
+# legacy parse is reachable only after rc 3 (no metadata section).
+grep -q '_spec_field "$SPEC" target_journeys' "$ENGINE_ROOT/scripts/automation/dev-phase.sh" \
+  && assert "GS7c: standalone dev-phase asks the canonical accessor for a Goal Mode spec (not the whole-document grep)" "pass" \
+  || assert "GS7c: standalone dev-phase uses _spec_field" "fail"
+grep -q '_dev_tj_rc" -eq 3' "$ENGINE_ROOT/scripts/automation/dev-phase.sh" \
+  && assert "GS7d: dev-phase's whole-document parse is reachable ONLY after accessor rc 3" "pass" \
+  || assert "GS7d: legacy parse gated on rc 3" "fail"
 
 # GS8 — the decomposer resume-skip check is a whole-document PRESENCE test, but
 # it yields no machine value and the lint blocks such a spec before any dispatch.
@@ -1159,6 +1165,86 @@ lint "$SPECS/gs8.md"
 grep -q 'Target journeys: %s' "$RG" && grep -q '"${TARGET_JOURNEYS' "$RG" \
   && assert "GS9: the per-iteration push message reports the canonical TARGET_JOURNEYS variable, not a fresh parse" "pass" \
   || assert "GS9: push message uses the canonical variable" "fail"
+
+# ── Part DP: dev-phase target precedence (canonical, never a shadow) ────────
+echo "== DP. dev-phase target precedence"
+DP="$WORK/dp"; mkdir -p "$DP"
+{ echo "## NOTES"; echo; echo "- **Target journeys:** J-99"; echo
+  echo "## Goal Mode Metadata"; echo
+  echo "- **Mode:** next"; echo "- **Depth:** lean"; echo "- **Target journeys:** J-01"
+  echo "- **Work kind:** implementation"; echo
+  echo "## IN SCOPE"; echo "### Backend"; echo "- [ ] add it"; } > "$DP/goal-spec.md"
+printf '# Phase 7\n\nTarget journeys: J-05\n' > "$DP/phase-spec.md"
+# Extract the REAL precedence block from dev-phase.sh and drive it.
+DPH="$ENGINE_ROOT/scripts/automation/dev-phase.sh"
+sed -n '/HARD-2: the target list decides/,/^  fi$/p' "$DPH" > "$DP/block.sh"
+[[ -s "$DP/block.sh" ]] && grep -q '_dev_tj_rc" -ne 0' "$DP/block.sh" \
+  && assert "DP0: the real dev-phase precedence block was extracted (env branch + rc0/rc3/fail-closed)" "pass" \
+  || assert "DP0: extract the dev-phase block" "fail"
+# dp_run <lib-dir> <spec> <env-mode: set|empty|unset> -> stdout '<rc>|<targets>'
+dp_run() {
+  ( set +e
+    # shellcheck disable=SC1090
+    source "$1/common.sh" 2>/dev/null
+    SPEC="$2"
+    case "$3" in
+      set)   export CHAIN_GOAL_TARGET_JOURNEYS="J-01" ;;
+      empty) export CHAIN_GOAL_TARGET_JOURNEYS="" ;;
+      unset) unset CHAIN_GOAL_TARGET_JOURNEYS ;;
+    esac
+    # shellcheck disable=SC1090
+    . "$DP/block.sh"
+    printf '0|%s' "${_dev_targets-}" ) 2>"$DP/err" || printf '%s|' "$?"
+}
+LIBR="$ENGINE_ROOT/scripts/automation/lib"
+
+_r="$(dp_run "$LIBR" "$DP/goal-spec.md" set)"
+[[ "$_r" == "0|J-01" ]] \
+  && assert "DP1: engine-exported canonical J-01 is used; the NOTES J-99 has zero influence" "pass" \
+  || assert "DP1: exported canonical wins (got '$_r')" "fail"
+
+_r="$(dp_run "$LIBR" "$DP/goal-spec.md" empty)"
+[[ "$_r" == "0|" ]] \
+  && assert "DP2: an exported EMPTY canonical value is authoritative — J-99 is NOT resurrected by the legacy grep" "pass" \
+  || assert "DP2: set-empty is authoritative (got '$_r')" "fail"
+
+_r="$(dp_run "$LIBR" "$DP/goal-spec.md" unset)"
+[[ "$_r" == "0|J-01" ]] \
+  && assert "DP3: a STANDALONE Goal Mode invocation reaches the canonical accessor and gets J-01, not the shadow J-99" "pass" \
+  || assert "DP3: standalone uses the canonical accessor (got '$_r')" "fail"
+
+# rc 2: a crashed accessor on a spec that HAS a metadata section.
+DPCR="$DP/crashlib"; mkdir -p "$DPCR"
+cp "$LIBR/common.sh" "$DPCR/"
+printf '#!/usr/bin/env python3\nimport sys\nsys.exit(2)\n' > "$DPCR/iter_spec.py"
+_r="$(dp_run "$DPCR" "$DP/goal-spec.md" unset)"
+[[ "$_r" == "78|" ]] \
+  && assert "DP4: accessor rc 2 fails closed with the reserved 78 — no developer dispatch, no shadow target" "pass" \
+  || assert "DP4: rc2 fails closed with 78 (got '$_r')" "fail"
+grep -q 'Refusing to fall back' "$DP/err" && ! grep -q 'J-99' "$DP/err" \
+  && assert "DP4b: the refusal is announced and the shadow J-99 appears nowhere in the output" "pass" \
+  || assert "DP4b: refusal announced without the shadow" "fail"
+
+_r="$(dp_run "$LIBR" "$DP/phase-spec.md" unset)"
+[[ "$_r" == "0|J-05" ]] \
+  && assert "DP5: a genuine phase-mode spec with NO metadata section still uses the legacy parse via rc 3 (J-05)" "pass" \
+  || assert "DP5: rc3 legacy compatibility preserved (got '$_r')" "fail"
+
+# DP6 — set-empty and unset take DIFFERENT branches, pinned behaviourally.
+# With a crashed accessor, SET-empty must still succeed (env branch) while UNSET
+# must fail closed (accessor branch). That is only possible if the two are
+# distinguished by "is set", not by "is non-empty".
+_re="$(dp_run "$DPCR" "$DP/goal-spec.md" empty)"
+_ru="$(dp_run "$DPCR" "$DP/goal-spec.md" unset)"
+[[ "$_re" == "0|" && "$_ru" == "78|" ]] \
+  && assert "DP6: SET-empty takes the environment branch while UNSET reaches _spec_field — the two are distinguished by 'is set', not by 'is non-empty'" "pass" \
+  || assert "DP6: set-empty vs unset distinguished (empty='$_re' unset='$_ru')" "fail"
+grep -q 'CHAIN_GOAL_TARGET_JOURNEYS+x' "$DPH" \
+  && assert "DP6b (structural): the test is the '+x' is-set form, not -n" "pass" \
+  || assert "DP6b: is-set test used" "fail"
+grep -q 'CHAIN_GOAL_TARGET_JOURNEYS:-' "$DPH" \
+  && assert "DP6c: no residual '-n \${CHAIN_GOAL_TARGET_JOURNEYS:-}' non-empty test remains" "fail" \
+  || assert "DP6c: no residual non-empty test remains" "pass"
 
 # ── Part R: HARD-1 and HARD-3 boundaries ─────────────────────────────────────
 echo "== R. HARD-1 regressions and scope"
