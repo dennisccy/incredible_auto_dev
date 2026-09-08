@@ -1031,6 +1031,135 @@ grep -q 'spec_lint' "$_g78_session/telemetry.jsonl" 2>/dev/null \
   && assert "G78-3c: the iteration index did not advance across the halt and the resume" "pass" \
   || assert "G78-3c: iteration index unchanged (got '$_rci')" "fail"
 
+# ── Part GS: the evaluator goal slice uses the canonical target list ─────────
+echo "== GS. evaluator goal-slice target source"
+GS="$WORK/gs"; mkdir -p "$GS"
+# J-01 and J-99 are BOTH already passing. goal-slice keeps targets verbatim and
+# digests stable-passing NON-targets, so which one stays verbatim is exactly the
+# observable difference between the canonical list and a shadow line.
+cat > "$GS/goal.md" <<'EOF9'
+# Goal
+
+A tiny exporter.
+
+## Must-have user journeys
+
+- **J-01: Open the page**
+  - Steps: open /
+  - Acceptance: the page loads and shows the table header
+- **J-99: Export the CSV**
+  - Steps: click export
+  - Acceptance: a csv file downloads with a header row
+
+## Anti-goals
+
+- no paid SaaS
+EOF9
+cat > "$GS/history.json" <<'EOF9'
+{"journeys": {"J-01": {"status": "passing"}, "J-99": {"status": "already_passing"}},
+ "anti_goal_violations": [], "updated_at": ""}
+EOF9
+cat > "$GS/spec.md" <<'EOF9'
+## NOTES
+
+- **Target journeys:** J-99
+
+## Goal Mode Metadata
+
+- **Mode:** next
+- **Depth:** lean
+- **Target journeys:** J-01
+- **Required-still-passing journeys:** J-99
+- **Work kind:** implementation
+
+## IN SCOPE
+### Backend
+- [ ] add it
+EOF9
+# Drive the REAL pre-evaluator slice lines, extracted from run-goal.sh between
+# its own stable anchors, with the canonical variable set exactly as the engine
+# sets it. This exercises the shipped code path, not a paraphrase of it.
+_gs_start=$(grep -n 'HARD-2: the evaluator.s goal slice keeps THIS iteration' "$RG" | head -1 | cut -d: -f1)
+_gs_end=$(grep -n -- '--out "\$GOAL_SLICE_PATH" 2>/dev/null || true' "$RG" | head -1 | cut -d: -f1)
+[[ -n "$_gs_start" && -n "$_gs_end" && "$_gs_start" -lt "$_gs_end" ]] \
+  && assert "GS0: the pre-evaluator goal-slice block was located for extraction" "pass" \
+  || assert "GS0: locate the goal-slice block (start=$_gs_start end=$_gs_end)" "fail"
+sed -n "${_gs_start:-1},${_gs_end:-1}p" "$RG" > "$GS/slice-block.sh"
+run_slice() {  # run_slice <canonical TARGET_JOURNEYS>
+  rm -f "$GS/goal-slice.md"
+  ( set +u
+    SCRIPT_DIR="$ENGINE_ROOT/scripts/automation"
+    GOAL_FILE="$GS/goal.md"; JOURNEY_HISTORY="$GS/history.json"
+    GOAL_SLICE_PATH="$GS/goal-slice.md"; ITER_SPEC_PATH="$GS/spec.md"
+    TARGET_JOURNEYS="$1"
+    # shellcheck disable=SC1090
+    . "$GS/slice-block.sh" ) >/dev/null 2>&1
+}
+# The canonical read of this very spec, exactly what the depth block produces.
+_gs_canon="$(python3 "$PROBE" field "$GS/spec.md" target_journeys)"
+[[ "$_gs_canon" == "J-01" ]] \
+  && assert "GS1: the canonical parser reads J-01 from the metadata section (the NOTES J-99 is prose)" "pass" \
+  || assert "GS1: canonical target is J-01 (got '$_gs_canon')" "fail"
+
+run_slice "$_gs_canon"
+# T1 + T2: the canonical target stays VERBATIM (its acceptance text survives);
+# the non-target passing journey is digested away.
+grep -q 'shows the table header' "$GS/goal-slice.md" \
+  && assert "T2/GS2: the canonical target J-01 stays VERBATIM in the evaluator slice even though it is already passing" "pass" \
+  || assert "T2/GS2: canonical target verbatim ($(head -c 120 "$GS/goal-slice.md" | tr '\n' ' '))" "fail"
+! grep -q 'a csv file downloads with a header row' "$GS/goal-slice.md" \
+  && assert "T1/GS3: the shadow J-99 from NOTES is NOT treated as a target — its journey body is digested, not verbatim" "pass" \
+  || assert "T1/GS3: shadow J-99 inert ($(grep -c 'csv file downloads' "$GS/goal-slice.md") verbatim hits)" "fail"
+
+# Control: had the OLD whole-document grep still been in force it would have
+# passed J-99, and the slice would look the other way round. Prove the fixture
+# actually discriminates.
+_gs_old="$(grep -m1 -E 'Target journeys:' "$GS/spec.md" 2>/dev/null | sed -E 's/.*Target journeys:\*?\*?[[:space:]]*//' | tr -d ' ')"
+run_slice "$_gs_old"
+grep -q 'a csv file downloads with a header row' "$GS/goal-slice.md" && ! grep -q 'shows the table header' "$GS/goal-slice.md" \
+  && assert "T1/GS4 (control): with the OLD grep value ($_gs_old) the slice would have kept J-99 verbatim and digested J-01 — the fixture discriminates" "pass" \
+  || assert "T1/GS4: control fixture discriminates (old='$_gs_old')" "fail"
+
+# Structural: no fresh whole-document target parse remains at the slice site.
+# CODE lines only — the block's own comment explains why the grep was removed.
+sed -n "${_gs_start:-1},${_gs_end:-1}p" "$RG" | sed 's/#.*//' | grep -qE '\b(grep|sed|awk)\b' \
+  && assert "GS5: the pre-evaluator slice block runs no fresh whole-document grep/sed/awk parse" "fail" \
+  || assert "GS5: the pre-evaluator slice block runs no fresh whole-document grep/sed/awk parse" "pass"
+sed -n "${_gs_start:-1},${_gs_end:-1}p" "$RG" | grep -q '_spec_targets="\$TARGET_JOURNEYS"' \
+  && assert "GS6: it reuses the already-validated canonical TARGET_JOURNEYS variable" "pass" \
+  || assert "GS6: reuses canonical TARGET_JOURNEYS" "fail"
+
+# The developer's sliced goal view is the other target consumer.
+grep -q 'CHAIN_GOAL_TARGET_JOURNEYS:-' "$ENGINE_ROOT/scripts/automation/dev-phase.sh" \
+  && assert "GS7: dev-phase.sh prefers the canonical exported CHAIN_GOAL_TARGET_JOURNEYS for its goal slice" "pass" \
+  || assert "GS7: dev-phase prefers the canonical export" "fail"
+_dp_export=$(grep -n 'export CHAIN_GOAL_TARGET_JOURNEYS' "$RG" | head -1 | cut -d: -f1)
+_dp_disp=$(grep -n 'Dispatching FULL pipeline' "$RG" | head -1 | cut -d: -f1)
+[[ -n "$_dp_export" && -n "$_dp_disp" && "$_dp_export" -lt "$_dp_disp" ]] \
+  && assert "GS7b: the canonical export happens before any executor dispatch, so the child always sees it" "pass" \
+  || assert "GS7b: export precedes dispatch (export=$_dp_export dispatch=$_dp_disp)" "fail"
+( set +u; unset CHAIN_GOAL_TARGET_JOURNEYS
+  grep -A6 'CHAIN_GOAL_TARGET_JOURNEYS:-' "$ENGINE_ROOT/scripts/automation/dev-phase.sh" | grep -q "grep -iE 'Target journeys:'" ) \
+  && assert "GS7c: the whole-document grep survives in dev-phase only as the standalone-invocation fallback" "pass" \
+  || assert "GS7c: standalone fallback retained" "fail"
+
+# GS8 — the decomposer resume-skip check is a whole-document PRESENCE test, but
+# it yields no machine value and the lint blocks such a spec before any dispatch.
+{ echo "## Goal Mode Metadata"; echo "- **Mode:** next"; echo "- **Target journeys:** J-01"
+  echo "- **Work kind:** implementation"; echo; echo "## NOTES"; echo "- **Depth:** lean"; echo
+  echo "## IN SCOPE"; echo "### Backend"; echo "- [ ] add it"; } > "$SPECS/gs8.md"
+add_tail "$SPECS/gs8.md"
+_gs8_skip=no
+grep -qiE '(\*\*)?Depth:(\*\*)?[[:space:]]*(lean|full|evidence)' "$SPECS/gs8.md" && _gs8_skip=yes
+_gs8_depth="$(python3 "$PROBE" field "$SPECS/gs8.md" depth)"
+lint "$SPECS/gs8.md"
+[[ "$_gs8_skip" == "yes" && -z "$_gs8_depth" && "$LINT_RC" == "1" ]] && has_rule E01 \
+  && assert "GS8: the resume-skip presence grep can match prose, but yields NO machine depth and the spec is blocked by E01 before dispatch (fail closed)" "pass" \
+  || assert "GS8: prose-only Depth fails closed (skip=$_gs8_skip depth='$_gs8_depth' rc=$LINT_RC)" "fail"
+grep -q 'Target journeys: %s' "$RG" && grep -q '"${TARGET_JOURNEYS' "$RG" \
+  && assert "GS9: the per-iteration push message reports the canonical TARGET_JOURNEYS variable, not a fresh parse" "pass" \
+  || assert "GS9: push message uses the canonical variable" "fail"
+
 # ── Part R: HARD-1 and HARD-3 boundaries ─────────────────────────────────────
 echo "== R. HARD-1 regressions and scope"
 python3 "$PROBE" has-implementation-work "$SPECS/iter7.md" >/dev/null 2>&1; r7=$?

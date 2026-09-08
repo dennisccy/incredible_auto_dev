@@ -73,7 +73,20 @@ echo "[dev-phase] Mode: $MODE_LABEL"
 # a plain goal line when docs/goal.md exists, else no line (as before).
 GOAL_CONTEXT_LINE=""
 if [[ "$PHASE" =~ ^goal-(.+)-iter-[0-9]+$ ]]; then
-  _dev_targets="$(grep -iE 'Target journeys:' "$SPEC" 2>/dev/null | head -1 | grep -oE 'J-[0-9]+' | sort -u | tr '\n' ',' | sed 's/,$//' || true)"
+  # HARD-2: the target list decides which journeys stay VERBATIM in the
+  # developer's sliced goal view, so it is machine state. Prefer the canonical
+  # value the goal engine already read from `## Goal Mode Metadata` and exported
+  # (run-goal.sh sets CHAIN_GOAL_TARGET_JOURNEYS from the same variable the
+  # dispatch, browser and replay lanes use). The whole-document grep below is
+  # the standalone-invocation fallback ONLY: without the engine there is no
+  # canonical export, and a phase spec has no metadata section to read.
+  # goal_gate.py's --targets splits on comma and strips each token, so the
+  # canonical "J-01, J-03" spacing needs no normalisation.
+  if [[ -n "${CHAIN_GOAL_TARGET_JOURNEYS:-}" ]]; then
+    _dev_targets="$CHAIN_GOAL_TARGET_JOURNEYS"
+  else
+    _dev_targets="$(grep -iE 'Target journeys:' "$SPEC" 2>/dev/null | head -1 | grep -oE 'J-[0-9]+' | sort -u | tr '\n' ',' | sed 's/,$//' || true)"
+  fi
   goal_slice_for_exec "$PHASE" "$_dev_targets" "$REPO_ROOT/runs/$PHASE/goal-slice-exec.md"
   if [[ "$GOAL_SLICE_EXEC_MODE" == "sliced" ]]; then
     GOAL_CONTEXT_LINE="Project goal (SLICED — vision, anti-goals, and this iteration's target + failing journeys verbatim; stable passing journeys digested to one line): $GOAL_SLICE_EXEC_PATH  <-- read Must-have user journeys and Anti-goals here

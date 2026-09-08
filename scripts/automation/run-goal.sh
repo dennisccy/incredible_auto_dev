@@ -3244,7 +3244,16 @@ PYEOF
   fi
   _snapshot_sha_for_gates="$(cat "$ITER_DIR/snapshot-sha" 2>/dev/null || echo "")"
   goal_gate_build_diff_artifacts "$ITER_DIR" "$_snapshot_sha_for_gates" "$REPO_ROOT" || true
-  _spec_targets="$(grep -m1 -E 'Target journeys:' "$ITER_SPEC_PATH" 2>/dev/null | sed -E 's/.*Target journeys:\*?\*?[[:space:]]*//' | tr -d ' ' )" || _spec_targets=""
+  # HARD-2: the evaluator's goal slice keeps THIS iteration's target journeys
+  # verbatim while digesting stable-passing non-targets, so the target list is
+  # machine state that shapes evaluator context. Reuse the canonical value the
+  # depth block already read from `## Goal Mode Metadata` and validated — a
+  # second whole-document grep here would let a `Target journeys:` line sitting
+  # in prose (NOTES, OUT OF SCOPE, a TC example) decide what the evaluator sees,
+  # even though it never controlled the iteration that actually ran.
+  # `goal_gate.py goal-slice --targets` splits on comma and strips each token,
+  # so the canonical "J-01, J-03" form is passed through unchanged.
+  _spec_targets="$TARGET_JOURNEYS"
   python3 "$SCRIPT_DIR/lib/goal_gate.py" goal-slice "$GOAL_FILE" \
     --history "$JOURNEY_HISTORY" ${_spec_targets:+--targets "$_spec_targets"} \
     --out "$GOAL_SLICE_PATH" 2>/dev/null || true
