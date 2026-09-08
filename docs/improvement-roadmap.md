@@ -5466,7 +5466,8 @@ Four root causes: governors read proxies instead of facts (HARD-1..3); ownership
   than 2 refused demotions per session whose coherence step logged `zero-change`.
 
 ### HARD-2 · Iteration-spec fields + schema + built-in lint with one automatic re-plan
-- **Priority:** P0 · **Effort:** M · **Risk:** MED · **Status:** TODO (after HARD-1).
+- **Priority:** P0 · **Effort:** M · **Risk:** MED · **Status:** IN-PROGRESS (branch
+  `hard-2-deterministic-spec-lint`, 2026-09-08; awaiting fresh-context review, then G8).
 - **Problem:** spec intent (`Work kind`, `Side-effect policy`) is prose; contradictions
   (evidence + Backend bullets; plain-form `Target journeys:` parsing empty; evidence after
   ESCALATE) surface only when an agent misbehaves; no iteration-spec schema.
@@ -5480,6 +5481,16 @@ Four root causes: governors read proxies instead of facts (HARD-1..3); ownership
 - **DoD/Verify:** `tests/automation/test-spec-lint.sh` (per-rule fixtures, re-plan bound,
   crash fail-closed); decomposer 2.7.0. **Rollback:** `CHAIN_SPEC_LINT=warn|off`.
 - **Stop-and-ask:** `spec_replan` > 1 in 5 iterations.
+- **AS BUILT 2026-09-08:** `Side-effect policy` and its rules E06/W02 were DEFERRED to HARD-3
+  by owner instruction — HARD-2 owns no side-effect concept, and the two rule ids are reserved
+  (pinned by a test) so HARD-3 needs no renumbering. Shipped rules: E01 metadata-missing,
+  E02 field-not-bold, E03 depth-invalid, E04 targets-empty, E05 workkind-invalid,
+  E07 evidence-with-implementation, E08 verify-only-with-implementation,
+  E09 baseline-with-implementation, E10 evidence-after-escalate,
+  E11 evidence-target-not-passing; W01, W03-W08. The re-plan is a bounded 2-attempt loop
+  around the existing decomposer block rather than a `_dispatch_goal_decomposer` extraction
+  (same observable behaviour, far smaller regression surface).
+  `goal_new_fullstack_journey`'s parser was NOT consolidated.
 
 ### HARD-3 · Journey side-effect model + contradiction preflight
 - **Priority:** P0 · **Effort:** M-L · **Risk:** MED · **Status:** TODO (after HARD-2; schema

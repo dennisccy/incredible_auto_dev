@@ -107,6 +107,19 @@
 #                      promoted to full before dispatch (the evaluator/decomposer contract's
 #                      MUST, enforced). Telemetry: depth_escalate_override. Iteration 0 exempt.
 #
+# HARD-2 spec lint (deterministic structural governor over the iteration spec):
+#   CHAIN_SPEC_LINT=block|warn|off  (default block) - after the goal-decomposer writes the
+#                      spec and BEFORE any dispatch, lib/iter_spec.py lint reads its
+#                      machine-readable metadata (bold `- **Depth:** ...` etc.) and its IN
+#                      SCOPE structure. ERRORs (E01-E11) buy exactly ONE automatic re-plan
+#                      with the errors quoted back to the decomposer; a second failure halts
+#                      GATE_BLOCKED (reason GATE_BLOCKED_SPEC_LINT). A linter crash or an
+#                      unreadable spec (exit 2) is NEVER re-planned and fails closed in block
+#                      mode — a safety layer must not disappear because its own probe broke.
+#                      `warn` logs everything and dispatches anyway (the rollback); `off` is
+#                      the escape hatch. Artifacts: iter-<N>/spec-lint.{txt,json}. Telemetry:
+#                      spec_lint, spec_replan, spec_lint_crash.
+#
 # Quota exhaustion is NOT a halt: claude_with_quota_retry transparently sleeps
 # until the quota resets and resumes.
 set -euo pipefail
@@ -1697,7 +1710,7 @@ if _prev_style != "$_STYLE_ARM":
     print("[run-goal] NOTE: output-style arm changed on resume (was '%s', now '%s') — telemetry before iter %s is a different arm."
           % (_prev_style, "$_STYLE_ARM", "$CURRENT_ITER"), file=_sys.stderr)
 d["output_styles"] = "$_STYLE_ARM"
-if "$RUN_MODE" == "resume" and d.get("status") in ("REGRESSION_HALT", "AWAITING_BLUEPRINT_APPROVAL", "AWAITING_PUMP", "AWAITING_INTENT_REVIEW", "AWAITING_GITHUB_AUTH", "AWAITING_DISK", "AWAITING_HOST_GUARD", "AWAITING_FULL_DEPTH"):
+if "$RUN_MODE" == "resume" and d.get("status") in ("REGRESSION_HALT", "AWAITING_BLUEPRINT_APPROVAL", "AWAITING_PUMP", "AWAITING_INTENT_REVIEW", "AWAITING_GITHUB_AUTH", "AWAITING_DISK", "AWAITING_HOST_GUARD", "AWAITING_FULL_DEPTH", "GATE_BLOCKED"):
   d["status"] = "in_progress"
 import os as _os, tempfile as _tf
 _fd, _tmp = _tf.mkstemp(dir=_os.path.dirname("$SESSION_JSON") or ".", suffix=".sjtmp")
@@ -2410,6 +2423,14 @@ except Exception: print(0)" 2>/dev/null || echo 0)"
   JOURNEY_DIGEST=$(python3 "$SCRIPT_DIR/lib/goal_gate.py" digest "$JOURNEY_HISTORY" 2>/dev/null || echo "(journey digest unavailable — read $JOURNEY_HISTORY)")
   cd "$REPO_ROOT"
   ITER_SPEC_PATH="$REPO_ROOT/docs/phases/${ITER_NAME}.md"
+  # ── HARD-2 spec-lint loop ──────────────────────────────────────────────────
+  # The decomposer writes the spec, then the deterministic linter reads it. A
+  # spec with lint ERRORs is re-planned exactly ONCE with the errors quoted back;
+  # a second failure halts GATE_BLOCKED. The engine never guesses at a
+  # contradiction and never dispatches on an unverified spec while the gate is
+  # armed (CHAIN_SPEC_LINT=block, the default).
+  _SPEC_LINT_FEEDBACK=""
+  for _spec_attempt in 1 2; do
   # Resume-skip: a prior attempt of this same iteration already wrote a spec
   # that parses (checkpoint + Depth line) — don't redo the planning call.
   # The guarded section below is not re-indented; it ends at the matching `fi`
@@ -2494,10 +2515,15 @@ Write the iteration spec to: docs/phases/${ITER_NAME}.md
 $( if [[ "$DECOMPOSER_MODE" == "baseline" ]]; then echo "BASELINE also: draft the coherence blueprint to $BLUEPRINT_FILE per your agent instructions (Information Architecture + Data Contract, ~one screen, from docs/goal.md's Product Shape + Must-have journeys + Key Capabilities). The blueprint is auto-approved by default and the loop proceeds; pass --require-blueprint-approval to pause for human review after baseline."; else echo "Also keep $BLUEPRINT_FILE current per your agent instructions: register any new displayed value in the Data Contract and place new pages under an existing Information-Architecture home (additive edits only). For a nav-skeleton change, make the edit AND write a one-line reason to $BLUEPRINT_REAPPROVAL."; fi )
 
 The spec MUST include a 'Goal Mode Metadata' section with at minimum:
-  - Mode: $DECOMPOSER_MODE
-  - Depth: lean | full | evidence
-  - Target journeys: <comma-separated journey IDs>
-
+  - **Mode:** $DECOMPOSER_MODE
+  - **Depth:** lean | full | evidence
+  - **Target journeys:** <comma-separated journey IDs>
+  - **Work kind:** implementation | evidence-only | verify-only
+Write these as BOLD markdown fields exactly as shown (- **Field:** value). A deterministic
+linter reads them; a plain-form field is a lint ERROR and costs the session a re-plan.
+'Work kind' must agree with IN SCOPE: 'implementation' iff IN SCOPE lists a concrete
+Backend/Frontend bullet, 'evidence-only' or 'verify-only' iff it lists none.
+$_SPEC_LINT_FEEDBACK
 Do NOT write code or implement anything. The iteration spec and any blueprint edits are planning documents, not code. STOP after writing them." || _decomp_rc=$?
 
   record_agent_invocation_end "goal-decomposer" "$_decomp_start" "$_decomp_rc"
@@ -2534,6 +2560,82 @@ Do NOT write code or implement anything. The iteration spec and any blueprint ed
 
   step_mark_done decomposer --dir "$ITER_DIR" "$ITER_SPEC_PATH"
   fi  # end of the decomposer resume-skip guard
+
+  # ── HARD-2 deterministic spec lint (framework rules BEFORE project rules) ──
+  # Runs on resume too, so a hand-fixed spec is re-linted without re-planning.
+  # rc 0 = clean or warnings only; rc 1 = lint ERRORs; rc 2 = the linter crashed
+  # or the spec is unreadable. In `block` mode BOTH rc 1 (after one re-plan) and
+  # rc 2 fail closed: an unverified spec never reaches developer or browser
+  # dispatch. There is deliberately no "crashed -> warn -> continue" path in
+  # block mode — a safety layer must not vanish because its own probe broke.
+  _SPEC_LINT_MODE="${CHAIN_SPEC_LINT:-block}"
+  if [[ "$_SPEC_LINT_MODE" != "off" ]]; then
+    mkdir -p "$ITER_DIR"
+    _lint_txt="$ITER_DIR/spec-lint.txt"; _lint_json="$ITER_DIR/spec-lint.json"
+    _lint_args=(--json-out "$_lint_json")
+    [[ -n "${PRIOR_VERDICT:-}" ]] && _lint_args+=(--prior-verdict "$PRIOR_VERDICT")
+    [[ -n "${DECOMPOSER_MODE:-}" ]] && _lint_args+=(--mode-expected "$DECOMPOSER_MODE")
+    [[ -f "$JOURNEY_HISTORY" ]] && _lint_args+=(--journey-history "$JOURNEY_HISTORY")
+    _lint_rc=0
+    python3 "$SCRIPT_DIR/lib/iter_spec.py" lint "$ITER_SPEC_PATH" "${_lint_args[@]}" \
+      > "$_lint_txt" 2>"$ITER_DIR/spec-lint.stderr" || _lint_rc=$?
+    _lint_errs="$(grep -c '^\[spec-lint\] ERROR' "$_lint_txt" 2>/dev/null || echo 0)"
+    _lint_warns="$(grep -c '^\[spec-lint\] WARN' "$_lint_txt" 2>/dev/null || echo 0)"
+    record_telemetry_event "spec_lint" "$(jq -cn --arg n "$ITER_NAME" --arg a "$_spec_attempt" \
+      --arg rc "$_lint_rc" --arg e "$_lint_errs" --arg w "$_lint_warns" --arg m "$_SPEC_LINT_MODE" \
+      '{iter_name:$n, attempt:($a|tonumber), rc:($rc|tonumber), errors:($e|tonumber), warnings:($w|tonumber), mode:$m}' \
+      2>/dev/null || printf '{"iter_name":"%s","rc":%s}' "$ITER_NAME" "$_lint_rc")"
+    [[ -s "$_lint_txt" ]] && sed 's/^/[run-goal]   /' "$_lint_txt"
+
+    if [[ "$_lint_rc" -eq 2 ]]; then
+      # Linter crash / unreadable spec. Never re-planned: the planner is not the
+      # thing that is broken, and a re-plan would hide the breakage.
+      _lint_tail="$(tail -c 400 "$ITER_DIR/spec-lint.stderr" 2>/dev/null | tr '\n' ' ')"
+      record_telemetry_event "spec_lint_crash" "$(jq -cn --arg n "$ITER_NAME" --arg rc "$_lint_rc" \
+        --arg t "$_lint_tail" --arg m "$_SPEC_LINT_MODE" '{iter_name:$n, rc:($rc|tonumber), mode:$m, stderr_tail:$t}' \
+        2>/dev/null || printf '{"iter_name":"%s","rc":2}' "$ITER_NAME")"
+      if [[ "$_SPEC_LINT_MODE" == "block" ]]; then
+        echo "[run-goal] Spec lint could not verify $ITER_SPEC_PATH (exit 2: linter crashed or the spec is unreadable)." >&2
+        echo "[run-goal]   $_lint_tail" >&2
+        echo "[run-goal]   Reproduce:  python3 scripts/automation/lib/iter_spec.py lint $ITER_SPEC_PATH" >&2
+        echo "[run-goal]   Fix the spec or the linter, then:  /goal-resume $SESSION_ID" >&2
+        echo "[run-goal]   To dispatch without the gate (NOT recommended): CHAIN_SPEC_LINT=warn or =off" >&2
+        record_telemetry_event "halt" '{"reason":"GATE_BLOCKED_SPEC_LINT","detected_at_step":"spec-lint-crash"}'
+        write_session_summary "GATE_BLOCKED" "$CURRENT_ITER"
+        explain_goal_status "GATE_BLOCKED" "$SESSION_ID" "$REPO_ROOT" >&2
+        exit 0
+      fi
+      echo "[run-goal] WARNING: spec lint exited 2 (crash/unreadable) — CHAIN_SPEC_LINT=$_SPEC_LINT_MODE, continuing UNVERIFIED." >&2
+      break
+    fi
+
+    if [[ "$_lint_rc" -ne 0 && "$_SPEC_LINT_MODE" == "block" ]]; then
+      if [[ "$_spec_attempt" -eq 1 ]]; then
+        echo "[run-goal] Spec lint REJECTED $ITER_SPEC_PATH ($_lint_errs error(s)) — re-planning once." >&2
+        record_telemetry_event "spec_replan" "$(jq -cn --arg n "$ITER_NAME" --arg e "$_lint_errs" \
+          '{iter_name:$n, errors:($e|tonumber)}' 2>/dev/null || printf '{"iter_name":"%s"}' "$ITER_NAME")"
+        _SPEC_LINT_FEEDBACK="
+SPEC LINT ERRORS — your previous spec for THIS iteration was REJECTED by the deterministic spec lint.
+Fix EVERY line below and rewrite the same file. This is the ONE automatic re-plan; a second failure
+pauses the session for the human.
+$(cat "$_lint_txt")"
+        step_invalidate_from decomposer "$ITER_DIR"
+        continue
+      fi
+      echo "[run-goal] Spec lint REJECTED the re-planned spec too ($_lint_errs error(s)) — halting." >&2
+      echo "[run-goal]   Errors: $_lint_txt" >&2
+      echo "[run-goal]   Fix $ITER_SPEC_PATH by hand, then:  /goal-resume $SESSION_ID  (the spec is re-linted, not re-planned)" >&2
+      record_telemetry_event "halt" '{"reason":"GATE_BLOCKED_SPEC_LINT","detected_at_step":"spec-lint"}'
+      write_session_summary "GATE_BLOCKED" "$CURRENT_ITER"
+      explain_goal_status "GATE_BLOCKED" "$SESSION_ID" "$REPO_ROOT" >&2
+      exit 0
+    fi
+    if [[ "$_lint_rc" -ne 0 ]]; then
+      echo "[run-goal] WARNING: spec lint found $_lint_errs error(s) — CHAIN_SPEC_LINT=$_SPEC_LINT_MODE, dispatching anyway." >&2
+    fi
+  fi
+  break
+  done  # end of the HARD-2 spec-lint re-plan loop
 
   # ── Post-decompose gate (generic, project-local, default-off) ───────────────
   # Extension point M2: if the project provides project-extensions/gates/
@@ -2613,6 +2715,16 @@ Do NOT write code or implement anything. The iteration spec and any blueprint ed
   # be available BEFORE the depth decision).
   TARGET_JOURNEYS=$(grep -m1 -E '^[[:space:]]*-?[[:space:]]*\*\*Target journeys:\*\*' "$ITER_SPEC_PATH" \
                       | sed -E 's/.*\*\*Target journeys:\*\*[[:space:]]*//' || echo "")
+  # HARD-2: plain-form fallback, mirroring the `Depth:` fallback above. A
+  # plain-form target line used to parse EMPTY here, silently disarming both the
+  # evidence backstop and the browser lane. The bold grep stays FIRST so the
+  # canonical form always wins (test-depth-arbiter.sh pins that precedence);
+  # the spec lint still reports the plain form as E02.
+  if [[ -z "$TARGET_JOURNEYS" ]]; then
+    TARGET_JOURNEYS=$(grep -m1 -E '^[[:space:]]*-?[[:space:]]*Target journeys:' "$ITER_SPEC_PATH" \
+                        | sed -E 's/.*Target journeys:[[:space:]]*//' || echo "")
+    [[ -n "$TARGET_JOURNEYS" ]] && echo "[run-goal] NOTE: 'Target journeys:' was written in plain (non-bold) form — parsed via the HARD-2 fallback."
+  fi
 
   # SPEED-20 deterministic depth arbiter: the SPEED-10 allowlist trusted the
   # spec's own 'Full trigger:' line, and the decomposer learned to write a

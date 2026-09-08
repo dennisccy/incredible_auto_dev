@@ -58,6 +58,11 @@ class ArtifactSchema:
     # `_review_not_dispatched`) — in a normal iteration such a file is a review
     # failure.
     status_alternatives: tuple[str, ...] = ()
+    # HARD-2: run lib/iter_spec.py's deterministic spec lint over this artifact
+    # and surface its ERRORs as validation issues. Advisory here (the hook shows
+    # them on Write); the engine's own blocking gate is run-goal.sh's
+    # CHAIN_SPEC_LINT loop, which calls the linter directly.
+    metadata_lint: bool = False
 
 
 SCHEMAS: tuple[ArtifactSchema, ...] = (
@@ -142,6 +147,17 @@ SCHEMAS: tuple[ArtifactSchema, ...] = (
             "Iteration-state digest — runs/goal-session-<sid>/state/"
             "iteration-state.md (goal-evaluator-written, OVERWRITE, ≤40 lines)"
         ),
+    ),
+    ArtifactSchema(
+        artifact_type="iteration-spec",
+        # Goal-mode iteration specs only. Phase-mode `docs/phases/phase-N.md` is
+        # human-authored and deliberately excluded.
+        path_pattern=re.compile(r"docs/phases/goal-.+-iter-\d+\.md$"),
+        verdict_enum=None,
+        required_h2=("Goal Mode Metadata", "IN SCOPE", "OUT OF SCOPE",
+                     "DEFINITION OF DONE", "TESTING REQUIREMENTS"),
+        description="Goal-mode iteration spec — docs/phases/goal-<sid>-iter-<N>.md (machine-readable Goal Mode Metadata; deterministic lint in lib/iter_spec.py)",
+        metadata_lint=True,
     ),
 )
 
@@ -231,6 +247,17 @@ def validate_path(path: str) -> ValidationResult:
         if required not in h2s:
             issues.append(f"missing required '## {required}' section")
 
+    if schema.metadata_lint:
+        # HARD-2: deterministic spec lint. Import lazily and never let a linter
+        # problem become a validation crash — the blocking decision belongs to
+        # run-goal.sh's CHAIN_SPEC_LINT gate, not to this advisory validator.
+        try:
+            import iter_spec  # noqa: PLC0415
+            for f in iter_spec.lint_spec(content)["errors"]:
+                issues.append(f"[spec-lint] {f['rule']} {f['name']}: {f['msg']}")
+        except Exception as exc:  # pragma: no cover - defensive
+            issues.append(f"[spec-lint] linter unavailable: {exc}")
+
     if schema.max_lines is not None:
         n_lines = len(content.splitlines())
         if n_lines > schema.max_lines:
@@ -308,6 +335,26 @@ _FIXTURES = {
         "reports/reviews/goal-demo-iter-9-review.md",
         "Review status: NOT_DISPATCHED (plain text, not the bold contract line)\n",
         False,
+    ),
+    "iteration_spec_ok": (
+        "docs/phases/goal-demo-iter-3.md",
+        "## Goal Mode Metadata\n\n- **Session ID:** s\n- **Iteration:** 3\n- **Mode:** next\n- **Depth:** lean\n- **Target journeys:** J-01\n- **Required-still-passing journeys:** J-02\n- **Work kind:** implementation\n\n## IN SCOPE\n### Backend\n- [ ] add it\n\n## OUT OF SCOPE\n- x\n\n## DEFINITION OF DONE\n- [ ] done\n\n## TESTING REQUIREMENTS\n- TC-1: given x, when y, then z\n",
+        True,
+    ),
+    "iteration_spec_missing_h2": (
+        "docs/phases/goal-demo-iter-3.md",
+        "## Goal Mode Metadata\n\n- **Depth:** lean\n- **Target journeys:** J-01\n",
+        False,  # missing IN SCOPE / OUT OF SCOPE / DoD / TESTING REQUIREMENTS
+    ),
+    "iteration_spec_evidence_with_impl": (
+        "docs/phases/goal-demo-iter-3.md",
+        "## Goal Mode Metadata\n\n- **Session ID:** s\n- **Iteration:** 3\n- **Mode:** next\n- **Depth:** lean\n- **Target journeys:** J-01\n- **Required-still-passing journeys:** J-02\n- **Work kind:** implementation\n\n## IN SCOPE\n### Backend\n- [ ] add it\n\n## OUT OF SCOPE\n- x\n\n## DEFINITION OF DONE\n- [ ] done\n\n## TESTING REQUIREMENTS\n- TC-1: given x, when y, then z\n".replace("**Depth:** lean", "**Depth:** evidence"),
+        False,  # HARD-2 E07 surfaces through the schema as an issue
+    ),
+    "phase_spec_is_not_an_iteration_spec": (
+        "docs/phases/phase-7.md",
+        "# Phase 7\n\nHuman-authored phase spec, no Goal Mode Metadata.\n",
+        True,  # must not match the iteration-spec schema at all -> silently passes
     ),
     "review_invalid_verdict": (
         "reports/reviews/phase-1-review.md",

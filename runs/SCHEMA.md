@@ -154,6 +154,7 @@ Also included as a section inside `reports/qa/<phase>-qa.md` when `Frontend Pres
 | Coherence blueprint (goal mode) | `runs/goal-session-<sid>/state/blueprint.md` |
 | Coherence audit per iter (goal mode) | `runs/goal-session-<sid>/iter-<N>/coherence.md` |
 | Goal-edit drift note (goal mode) | `runs/goal-session-<sid>/iter-<N>/journeys-changed.md` |
+| Spec-lint report (goal mode, HARD-2) | `runs/goal-session-<sid>/iter-<N>/spec-lint.txt` and `.json` — the deterministic iteration-spec lint's findings (`[spec-lint] ERROR\|WARN <rule> <name>: <msg>` lines; the JSON adds the parsed metadata and `work_kind_derived`). Written on every linted iteration, clean or not. `spec-lint.stderr` holds the linter's own stderr and is what `spec_lint_crash` samples |
 | Evidence-mode refusal marker (goal mode, HARD-1) | `runs/goal-session-<sid>/iter-<N>/evidence-mode-refused` — written by `goal-iter-lean.sh` when an evidence-only dispatch was refused because the spec plans implementation work (`reason=`, `spec=`, `work=`); the engine re-dispatches the iteration lean. On the evidence micro-path the dev handoff carries `**Developer status:** NOT_DISPATCHED` and the review file carries `**Review status:** NOT_DISPATCHED` (no verdict line) |
 | GOAL_ACHIEVED delivered wrap (MD) | `reports/goal-session-<sid>-delivered.md` |
 | GOAL_ACHIEVED delivered wrap (HTML) | `reports/goal-session-<sid>-delivered.html` |
