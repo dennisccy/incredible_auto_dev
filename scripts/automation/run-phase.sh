@@ -361,6 +361,15 @@ _is_transport_failure() {
   local rc="$1"
   [[ $rc -eq ${DISPATCH_UNAVAILABLE_EXIT_CODE:-70} ]]
 }
+# HARD-2: a canonical Goal-Mode-Metadata field lookup became unavailable mid-run
+# (lib/replay-lane.sh refused to fall back to whole-document parsing and refused
+# to report an empty journey set). This is neither agent quality nor transport:
+# continuing would run QA, audit and closure over an iteration whose journey set
+# was never established. Fatal, like a signal.
+_is_spec_field_unavailable() {
+  local rc="$1"
+  [[ $rc -eq ${SPEC_FIELD_UNAVAILABLE_EXIT_CODE:-78} ]]
+}
 
 # Guard a step's exit code for fatal, non-quality conditions that must STOP the
 # phase immediately instead of being retried or warned-past. Call right after a
@@ -382,6 +391,15 @@ _guard_step_rc() {
   if _is_transport_failure "$rc"; then
     log "  $label: interactive pump/dispatch unavailable (exit $rc) — pausing the run."
     log "    The interactive session/pump went away. Resume with /goal-resume after re-opening it."
+    exit "$rc"
+  fi
+  if _is_spec_field_unavailable "$rc"; then
+    log "  $label: canonical Goal Mode Metadata field lookup UNAVAILABLE (exit $rc) — aborting the phase."
+    log "    A machine field (target / required journeys) could not be read from the spec's"
+    log "    '## Goal Mode Metadata' section, and the deterministic reader refused BOTH the legacy"
+    log "    whole-document fallback and an empty journey set. Continuing would verify an iteration"
+    log "    whose journey set was never established, so this is fatal rather than retried."
+    log "    Reproduce:  python3 scripts/automation/lib/iter_spec.py field <spec> target_journeys"
     exit "$rc"
   fi
 }

@@ -69,7 +69,46 @@ _replay_lane_warn() { echo "[${REPLAY_LANE_TAG:-replay-lane}] $*" >&2; }
 # (both 20260710/20260712 benchmark iter-0s died exactly there). Empty is a
 # legitimate parse result; it must never be an exit.
 replay_lane_spec_journeys() {
-  grep -iE "$1" "$2" 2>/dev/null | head -1 | grep -oE 'J-[0-9]+' | sort -u | tr '\n' ' ' || true
+  # HARD-2: journey lists are HARD-2-owned machine fields, so they come from the
+  # CANONICAL `## Goal Mode Metadata` section via lib/iter_spec.py — the same
+  # interpretation the lint gate validated. The old `grep | head -1` took the
+  # first match ANYWHERE in the document, so a `Target journeys: J-99` line under
+  # NOTES could become the browser lane's target set while the linter validated
+  # a different list inside the metadata section.
+  # Exit 3 from the probe means the spec has no metadata section at all (a
+  # phase-mode spec), so the legacy whole-document grep still applies there.
+  local _key _out _rc=0
+  case "$1" in
+    *[Rr]equired*) _key="required_journeys" ;;
+    *)             _key="target_journeys" ;;
+  esac
+  _out="$(python3 "$(dirname "${BASH_SOURCE[0]}")/iter_spec.py" field "$2" "$_key" --sep ' ' 2>/dev/null)" || _rc=$?
+  case "$_rc" in
+    0)
+      _out="$(printf '%s' "$_out" | grep -oE 'J-[0-9]+' | sort -u | tr '\n' ' ')" || true
+      printf '%s' "$_out"
+      return 0 ;;
+    3)
+      # No `## Goal Mode Metadata` section at all — a phase-mode spec. The legacy
+      # whole-document grep is the correct reader there, and ONLY there.
+      grep -iE "$1" "$2" 2>/dev/null | head -1 | grep -oE 'J-[0-9]+' | sort -u | tr '\n' ' ' || true
+      return 0 ;;
+  esac
+  # Any OTHER rc (2 = unreadable/crashed accessor, or something unforeseen) on a
+  # spec that HAS a metadata section. Falling back to the whole-document grep here
+  # would re-open the exact split brain HARD-2 exists to close: a `Target journeys:
+  # J-99` line in prose would become the browser lane's target set. Returning an
+  # empty set would be worse still — it reads as "this iteration verifies nothing"
+  # and silently skips the browser/replay work the iteration owes. So: print
+  # NOTHING and fail. Both callers assign through `X="$(...)"` under `set -e`, so
+  # this aborts the executor loudly instead of degrading.
+  local _msg="canonical journey lookup FAILED for '$1' in $2 (accessor rc=$_rc). Refusing to fall back to whole-document parsing (that is the HARD-2 split brain) and refusing to report an empty journey set. Reproduce: python3 scripts/automation/lib/iter_spec.py field '$2' '$_key'"
+  if declare -F _replay_lane_warn >/dev/null 2>&1; then
+    _replay_lane_warn "$_msg"
+  else
+    echo "[replay-lane] $_msg" >&2
+  fi
+  return "${SPEC_FIELD_UNAVAILABLE_EXIT_CODE:-78}"
 }
 
 # Lane path derivations for iteration/phase name $1 (goal-<sid>-iter-<N>).

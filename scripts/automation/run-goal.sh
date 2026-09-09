@@ -107,6 +107,30 @@
 #                      promoted to full before dispatch (the evaluator/decomposer contract's
 #                      MUST, enforced). Telemetry: depth_escalate_override. Iteration 0 exempt.
 #
+# HARD-2 spec lint (deterministic structural governor over the iteration spec):
+#   CHAIN_SPEC_LINT=block|warn|off  (default block) - after the goal-decomposer writes the
+#                      spec and BEFORE any dispatch, lib/iter_spec.py lint reads its
+#                      machine-readable metadata (bold `- **Depth:** ...` etc.) and its IN
+#                      SCOPE structure. Machine fields count ONLY inside the canonical
+#                      `## Goal Mode Metadata` section — every runtime consumer (depth,
+#                      target journeys, full trigger, the browser lane's journey sets) reads
+#                      that same canonical interpretation, so the validator and the executor
+#                      can never see different values. ERRORs (E01-E12; E06 is reserved for
+#                      HARD-3) buy exactly ONE automatic re-plan
+#                      with the errors quoted back to the decomposer; a second failure halts
+#                      GATE_BLOCKED (reason GATE_BLOCKED_SPEC_LINT). A linter crash or an
+#                      unreadable spec (exit 2) is NEVER re-planned and fails closed in block
+#                      mode — a safety layer must not disappear because its own probe broke.
+#                      `warn` logs everything and dispatches anyway (the rollback); `off` is
+#                      the escape hatch. The enum is CLOSED: any other value is refused
+#                      (GATE_BLOCKED, detected_at_step spec-lint-config, telemetry
+#                      spec_lint_config_invalid) and is never interpreted as `warn`.
+#                      An unverifiable independent input (a corrupt journey-history) is an
+#                      exit-2 INPUT-FAILURE, so it fails closed exactly like a crash and is
+#                      never read as "every target journey passes".
+#                      Artifacts: iter-<N>/spec-lint.{txt,json}. Telemetry:
+#                      spec_lint, spec_replan, spec_lint_crash, spec_lint_config_invalid.
+#
 # Quota exhaustion is NOT a halt: claude_with_quota_retry transparently sleeps
 # until the quota resets and resumes.
 set -euo pipefail
@@ -1697,7 +1721,7 @@ if _prev_style != "$_STYLE_ARM":
     print("[run-goal] NOTE: output-style arm changed on resume (was '%s', now '%s') — telemetry before iter %s is a different arm."
           % (_prev_style, "$_STYLE_ARM", "$CURRENT_ITER"), file=_sys.stderr)
 d["output_styles"] = "$_STYLE_ARM"
-if "$RUN_MODE" == "resume" and d.get("status") in ("REGRESSION_HALT", "AWAITING_BLUEPRINT_APPROVAL", "AWAITING_PUMP", "AWAITING_INTENT_REVIEW", "AWAITING_GITHUB_AUTH", "AWAITING_DISK", "AWAITING_HOST_GUARD", "AWAITING_FULL_DEPTH"):
+if "$RUN_MODE" == "resume" and d.get("status") in ("REGRESSION_HALT", "AWAITING_BLUEPRINT_APPROVAL", "AWAITING_PUMP", "AWAITING_INTENT_REVIEW", "AWAITING_GITHUB_AUTH", "AWAITING_DISK", "AWAITING_HOST_GUARD", "AWAITING_FULL_DEPTH", "GATE_BLOCKED"):
   d["status"] = "in_progress"
 import os as _os, tempfile as _tf
 _fd, _tmp = _tf.mkstemp(dir=_os.path.dirname("$SESSION_JSON") or ".", suffix=".sjtmp")
@@ -2410,6 +2434,14 @@ except Exception: print(0)" 2>/dev/null || echo 0)"
   JOURNEY_DIGEST=$(python3 "$SCRIPT_DIR/lib/goal_gate.py" digest "$JOURNEY_HISTORY" 2>/dev/null || echo "(journey digest unavailable — read $JOURNEY_HISTORY)")
   cd "$REPO_ROOT"
   ITER_SPEC_PATH="$REPO_ROOT/docs/phases/${ITER_NAME}.md"
+  # ── HARD-2 spec-lint loop ──────────────────────────────────────────────────
+  # The decomposer writes the spec, then the deterministic linter reads it. A
+  # spec with lint ERRORs is re-planned exactly ONCE with the errors quoted back;
+  # a second failure halts GATE_BLOCKED. The engine never guesses at a
+  # contradiction and never dispatches on an unverified spec while the gate is
+  # armed (CHAIN_SPEC_LINT=block, the default).
+  _SPEC_LINT_FEEDBACK=""
+  for _spec_attempt in 1 2; do
   # Resume-skip: a prior attempt of this same iteration already wrote a spec
   # that parses (checkpoint + Depth line) — don't redo the planning call.
   # The guarded section below is not re-indented; it ends at the matching `fi`
@@ -2494,10 +2526,15 @@ Write the iteration spec to: docs/phases/${ITER_NAME}.md
 $( if [[ "$DECOMPOSER_MODE" == "baseline" ]]; then echo "BASELINE also: draft the coherence blueprint to $BLUEPRINT_FILE per your agent instructions (Information Architecture + Data Contract, ~one screen, from docs/goal.md's Product Shape + Must-have journeys + Key Capabilities). The blueprint is auto-approved by default and the loop proceeds; pass --require-blueprint-approval to pause for human review after baseline."; else echo "Also keep $BLUEPRINT_FILE current per your agent instructions: register any new displayed value in the Data Contract and place new pages under an existing Information-Architecture home (additive edits only). For a nav-skeleton change, make the edit AND write a one-line reason to $BLUEPRINT_REAPPROVAL."; fi )
 
 The spec MUST include a 'Goal Mode Metadata' section with at minimum:
-  - Mode: $DECOMPOSER_MODE
-  - Depth: lean | full | evidence
-  - Target journeys: <comma-separated journey IDs>
-
+  - **Mode:** $DECOMPOSER_MODE
+  - **Depth:** lean | full | evidence
+  - **Target journeys:** <comma-separated journey IDs>
+  - **Work kind:** implementation | evidence-only | verify-only
+Write these as BOLD markdown fields exactly as shown (- **Field:** value). A deterministic
+linter reads them; a plain-form field is a lint ERROR and costs the session a re-plan.
+'Work kind' must agree with IN SCOPE: 'implementation' iff IN SCOPE lists a concrete
+Backend/Frontend bullet, 'evidence-only' or 'verify-only' iff it lists none.
+$_SPEC_LINT_FEEDBACK
 Do NOT write code or implement anything. The iteration spec and any blueprint edits are planning documents, not code. STOP after writing them." || _decomp_rc=$?
 
   record_agent_invocation_end "goal-decomposer" "$_decomp_start" "$_decomp_rc"
@@ -2535,6 +2572,109 @@ Do NOT write code or implement anything. The iteration spec and any blueprint ed
   step_mark_done decomposer --dir "$ITER_DIR" "$ITER_SPEC_PATH"
   fi  # end of the decomposer resume-skip guard
 
+  # ── HARD-2 deterministic spec lint (framework rules BEFORE project rules) ──
+  # Runs on resume too, so a hand-fixed spec is re-linted without re-planning.
+  # rc 0 = clean or warnings only; rc 1 = lint ERRORs; rc 2 = the linter crashed
+  # or the spec is unreadable. In `block` mode BOTH rc 1 (after one re-plan) and
+  # rc 2 fail closed: an unverified spec never reaches developer or browser
+  # dispatch. There is deliberately no "crashed -> warn -> continue" path in
+  # block mode — a safety layer must not vanish because its own probe broke.
+  _SPEC_LINT_MODE="${CHAIN_SPEC_LINT:-block}"
+  # A malformed safety-governor configuration must not weaken the governor. The
+  # enum is closed: anything else (a typo like `blok`) previously fell through
+  # both the `!= off` and the `== block` tests and silently behaved as `warn`.
+  # Refuse deterministically instead — never guess, never normalise.
+  case "$_SPEC_LINT_MODE" in
+    block|warn|off) ;;
+    *)
+      echo "[run-goal] CHAIN_SPEC_LINT='$_SPEC_LINT_MODE' is not a valid mode. Valid values: block (default), warn, off." >&2
+      echo "[run-goal]   A malformed spec-lint configuration is refused rather than interpreted — it is NOT treated as 'warn'." >&2
+      echo "[run-goal]   Fix the value, then:  /goal-resume $SESSION_ID" >&2
+      record_telemetry_event "spec_lint_config_invalid" "$(jq -cn --arg n "$ITER_NAME" --arg m "$_SPEC_LINT_MODE" \
+        '{iter_name:$n, value:$m, valid:["block","warn","off"]}' 2>/dev/null \
+        || printf '{"iter_name":"%s","value":"%s"}' "$ITER_NAME" "$_SPEC_LINT_MODE")"
+      record_telemetry_event "halt" '{"reason":"GATE_BLOCKED_SPEC_LINT","detected_at_step":"spec-lint-config"}'
+      write_session_summary "GATE_BLOCKED" "$CURRENT_ITER"
+      explain_goal_status "GATE_BLOCKED" "$SESSION_ID" "$REPO_ROOT" >&2
+      exit 0 ;;
+  esac
+  if [[ "$_SPEC_LINT_MODE" != "off" ]]; then
+    mkdir -p "$ITER_DIR"
+    _lint_txt="$ITER_DIR/spec-lint.txt"; _lint_json="$ITER_DIR/spec-lint.json"
+    _lint_args=(--json-out "$_lint_json")
+    [[ -n "${PRIOR_VERDICT:-}" ]] && _lint_args+=(--prior-verdict "$PRIOR_VERDICT")
+    [[ -n "${DECOMPOSER_MODE:-}" ]] && _lint_args+=(--mode-expected "$DECOMPOSER_MODE")
+    [[ -f "$JOURNEY_HISTORY" ]] && _lint_args+=(--journey-history "$JOURNEY_HISTORY")
+    _lint_rc=0
+    python3 "$SCRIPT_DIR/lib/iter_spec.py" lint "$ITER_SPEC_PATH" "${_lint_args[@]}" \
+      > "$_lint_txt" 2>"$ITER_DIR/spec-lint.stderr" || _lint_rc=$?
+    # `grep -c` PRINTS 0 and EXITS 1 when nothing matches, so a `|| echo 0`
+    # fallback would append a second line and the count would arrive as "0\n0" —
+    # jq then rejects the whole payload and the spec_lint event silently degrades
+    # to a stub on the CLEAN path, which is where truthful counts matter most.
+    # `grep -c` PRINTS 0 and EXITS 1 when nothing matches. `|| echo 0` would
+    # append a SECOND line, so the count arrived as "0\n0", jq rejected the whole
+    # payload, and the spec_lint event silently degraded to a stub on the CLEAN
+    # path — exactly where truthful counts matter most. `|| true` keeps grep's
+    # own "0" and only neutralises its exit status for `set -e`.
+    _lint_errs="$(grep -c '^\[spec-lint\] ERROR' "$_lint_txt" 2>/dev/null || true)"; _lint_errs="${_lint_errs:-0}"
+    _lint_warns="$(grep -c '^\[spec-lint\] WARN' "$_lint_txt" 2>/dev/null || true)"; _lint_warns="${_lint_warns:-0}"
+    record_telemetry_event "spec_lint" "$(jq -cn --arg n "$ITER_NAME" --arg a "$_spec_attempt" \
+      --arg rc "$_lint_rc" --arg e "$_lint_errs" --arg w "$_lint_warns" --arg m "$_SPEC_LINT_MODE" \
+      '{iter_name:$n, attempt:($a|tonumber), rc:($rc|tonumber), errors:($e|tonumber), warnings:($w|tonumber), mode:$m}' \
+      2>/dev/null || printf '{"iter_name":"%s","rc":%s}' "$ITER_NAME" "$_lint_rc")"
+    [[ -s "$_lint_txt" ]] && sed 's/^/[run-goal]   /' "$_lint_txt"
+
+    if [[ "$_lint_rc" -eq 2 ]]; then
+      # Linter crash / unreadable spec. Never re-planned: the planner is not the
+      # thing that is broken, and a re-plan would hide the breakage.
+      _lint_tail="$(tail -c 400 "$ITER_DIR/spec-lint.stderr" 2>/dev/null | tr '\n' ' ')"
+      record_telemetry_event "spec_lint_crash" "$(jq -cn --arg n "$ITER_NAME" --arg rc "$_lint_rc" \
+        --arg t "$_lint_tail" --arg m "$_SPEC_LINT_MODE" '{iter_name:$n, rc:($rc|tonumber), mode:$m, stderr_tail:$t}' \
+        2>/dev/null || printf '{"iter_name":"%s","rc":2}' "$ITER_NAME")"
+      if [[ "$_SPEC_LINT_MODE" == "block" ]]; then
+        echo "[run-goal] Spec lint could not verify $ITER_SPEC_PATH (exit 2: linter crashed or the spec is unreadable)." >&2
+        echo "[run-goal]   $_lint_tail" >&2
+        echo "[run-goal]   Reproduce:  python3 scripts/automation/lib/iter_spec.py lint $ITER_SPEC_PATH" >&2
+        echo "[run-goal]   Fix the spec or the linter, then:  /goal-resume $SESSION_ID" >&2
+        echo "[run-goal]   To dispatch without the gate (NOT recommended): CHAIN_SPEC_LINT=warn or =off" >&2
+        record_telemetry_event "halt" '{"reason":"GATE_BLOCKED_SPEC_LINT","detected_at_step":"spec-lint-crash"}'
+        write_session_summary "GATE_BLOCKED" "$CURRENT_ITER"
+        explain_goal_status "GATE_BLOCKED" "$SESSION_ID" "$REPO_ROOT" >&2
+        exit 0
+      fi
+      echo "[run-goal] WARNING: spec lint exited 2 (crash/unreadable) — CHAIN_SPEC_LINT=$_SPEC_LINT_MODE, continuing UNVERIFIED." >&2
+      break
+    fi
+
+    if [[ "$_lint_rc" -ne 0 && "$_SPEC_LINT_MODE" == "block" ]]; then
+      if [[ "$_spec_attempt" -eq 1 ]]; then
+        echo "[run-goal] Spec lint REJECTED $ITER_SPEC_PATH ($_lint_errs error(s)) — re-planning once." >&2
+        record_telemetry_event "spec_replan" "$(jq -cn --arg n "$ITER_NAME" --arg e "$_lint_errs" \
+          '{iter_name:$n, errors:($e|tonumber)}' 2>/dev/null || printf '{"iter_name":"%s"}' "$ITER_NAME")"
+        _SPEC_LINT_FEEDBACK="
+SPEC LINT ERRORS — your previous spec for THIS iteration was REJECTED by the deterministic spec lint.
+Fix EVERY line below and rewrite the same file. This is the ONE automatic re-plan; a second failure
+pauses the session for the human.
+$(cat "$_lint_txt")"
+        step_invalidate_from decomposer "$ITER_DIR"
+        continue
+      fi
+      echo "[run-goal] Spec lint REJECTED the re-planned spec too ($_lint_errs error(s)) — halting." >&2
+      echo "[run-goal]   Errors: $_lint_txt" >&2
+      echo "[run-goal]   Fix $ITER_SPEC_PATH by hand, then:  /goal-resume $SESSION_ID  (the spec is re-linted, not re-planned)" >&2
+      record_telemetry_event "halt" '{"reason":"GATE_BLOCKED_SPEC_LINT","detected_at_step":"spec-lint"}'
+      write_session_summary "GATE_BLOCKED" "$CURRENT_ITER"
+      explain_goal_status "GATE_BLOCKED" "$SESSION_ID" "$REPO_ROOT" >&2
+      exit 0
+    fi
+    if [[ "$_lint_rc" -ne 0 ]]; then
+      echo "[run-goal] WARNING: spec lint found $_lint_errs error(s) — CHAIN_SPEC_LINT=$_SPEC_LINT_MODE, dispatching anyway." >&2
+    fi
+  fi
+  break
+  done  # end of the HARD-2 spec-lint re-plan loop
+
   # ── Post-decompose gate (generic, project-local, default-off) ───────────────
   # Extension point M2: if the project provides project-extensions/gates/
   # post-decompose.sh, run it with the iteration context BEFORE any build work.
@@ -2568,14 +2708,26 @@ Do NOT write code or implement anything. The iteration spec and any blueprint ed
   fi
 
   # Parse depth
-  DEPTH=$(grep -m1 -E '^[[:space:]]*-?[[:space:]]*\*\*Depth:\*\*' "$ITER_SPEC_PATH" \
-            | sed -E 's/.*\*\*Depth:\*\*[[:space:]]*//; s/[[:space:]]+$//' \
-            | tr '[:upper:]' '[:lower:]') || true
-  if [[ -z "$DEPTH" ]]; then
-    DEPTH=$(grep -m1 -E '^[[:space:]]*-?[[:space:]]*Depth:' "$ITER_SPEC_PATH" \
-              | sed -E 's/.*Depth:[[:space:]]*//; s/[[:space:]]+$//' \
+  # CANONICAL source (HARD-2): the `## Goal Mode Metadata` section
+  # only, via lib/iter_spec.py, so the depth the engine dispatches is the depth
+  # the lint gate validated. A `Depth:` line anywhere else is prose with zero
+  # runtime influence. The legacy whole-document grep survives ONLY for a spec
+  # that has no metadata section at all (phase mode), which the probe reports
+  # with exit 3.
+  DEPTH=""
+  _depth_rc=0
+  DEPTH="$(_spec_field "$ITER_SPEC_PATH" depth)" || _depth_rc=$?
+  if [[ "$_depth_rc" -eq 3 ]]; then
+    DEPTH=$(grep -m1 -E '^[[:space:]]*-?[[:space:]]*\*\*Depth:\*\*' "$ITER_SPEC_PATH" \
+              | sed -E 's/.*\*\*Depth:\*\*[[:space:]]*//; s/[[:space:]]+$//' \
               | tr '[:upper:]' '[:lower:]') || true
+    if [[ -z "$DEPTH" ]]; then
+      DEPTH=$(grep -m1 -E '^[[:space:]]*-?[[:space:]]*Depth:' "$ITER_SPEC_PATH" \
+                | sed -E 's/.*Depth:[[:space:]]*//; s/[[:space:]]+$//' \
+                | tr '[:upper:]' '[:lower:]') || true
+    fi
   fi
+  DEPTH="$(printf '%s' "$DEPTH" | tr '[:upper:]' '[:lower:]')"
   # SPEED-9: 'evidence' is a first-class depth (capture + evaluate only). The
   # knob maps it back to lean when the micro-path is disabled.
   if [[ "$DEPTH" == "evidence" && "${CHAIN_EVIDENCE_MICRO_PATH:-true}" != "true" ]]; then
@@ -2611,8 +2763,19 @@ Do NOT write code or implement anything. The iteration spec and any blueprint ed
   # Target-journey parse (SPEED-20 moved this up from below the depth blocks:
   # the arbiter's new-fullstack-journey test reads the target list, so it must
   # be available BEFORE the depth decision).
-  TARGET_JOURNEYS=$(grep -m1 -E '^[[:space:]]*-?[[:space:]]*\*\*Target journeys:\*\*' "$ITER_SPEC_PATH" \
-                      | sed -E 's/.*\*\*Target journeys:\*\*[[:space:]]*//' || echo "")
+  # CANONICAL source (HARD-2). The old bold-first whole-document grep let a
+  # `- **Target journeys:** J-99` line under NOTES become the engine's target
+  # list while the linter validated J-01 inside the metadata section. Both forms
+  # are now read from the metadata section by lib/iter_spec.py: bold is the
+  # canonical form, a plain-form line is still read (so the browser lane is not
+  # silently disarmed) but is an E02 lint error that blocks in block mode.
+  TARGET_JOURNEYS=""
+  _tj_rc=0
+  TARGET_JOURNEYS="$(_spec_field "$ITER_SPEC_PATH" target_journeys)" || _tj_rc=$?
+  if [[ "$_tj_rc" -eq 3 ]]; then
+    TARGET_JOURNEYS=$(grep -m1 -E '^[[:space:]]*-?[[:space:]]*\*\*Target journeys:\*\*' "$ITER_SPEC_PATH" \
+                        | sed -E 's/.*\*\*Target journeys:\*\*[[:space:]]*//' || echo "")
+  fi
 
   # SPEED-20 deterministic depth arbiter: the SPEED-10 allowlist trusted the
   # spec's own 'Full trigger:' line, and the decomposer learned to write a
@@ -2678,7 +2841,7 @@ Do NOT write code or implement anything. The iteration spec and any blueprint ed
         # BINDING unless the spec provably plans a brand-new full-stack
         # journey (Full-trigger line AND backend+frontend bullets AND real
         # Data-contract additions AND a never-implemented target journey).
-        if grep -qiE '^[[:space:]]*-?[[:space:]]*(\*\*)?Full trigger:' "$ITER_SPEC_PATH" \
+        if _spec_full_trigger_present "$ITER_SPEC_PATH" \
            && goal_new_fullstack_journey "$ITER_SPEC_PATH" "$JOURNEY_HISTORY"; then
           _arb_decision="full"; _arb_reason="new-fullstack-journey"
         else
@@ -2727,7 +2890,7 @@ Do NOT write code or implement anything. The iteration spec and any blueprint ed
       _full_reason="prior-verdict-${PRIOR_VERDICT}"
     elif grep -qE '^\*\*Verdict:\*\* COHERENCE-FAIL' "$_prev_coh_file" 2>/dev/null; then
       _full_reason="prior-coherence-fail"
-    elif grep -qiE '^[[:space:]]*-?[[:space:]]*(\*\*)?Full trigger:' "$ITER_SPEC_PATH"; then
+    elif _spec_full_trigger_present "$ITER_SPEC_PATH"; then
       _full_reason="spec-full-trigger"
     elif goal_cadence_forces_full "$LEAN_STREAK" "$CURRENT_ITER"; then
       _full_reason="cadence-due"
@@ -2957,6 +3120,37 @@ PYEOF
     _engine_step_done
   fi
 
+  # HARD-2: the executor could not read a canonical machine field from the spec's
+  # `## Goal Mode Metadata` section (lib/replay-lane.sh refused both the legacy
+  # whole-document fallback and an empty journey set). The spec lint may well
+  # have PASSED earlier — this is a later runtime access failure, so it is not a
+  # spec_lint_crash — and it is not transport, so it is not AWAITING_PUMP.
+  # Halting here means the coherence auditor and the goal-evaluator never run on
+  # an iteration whose journey set was never established, current_iter is not
+  # advanced (it only moves after the evaluator), and nothing is pushed as a
+  # successful iteration. `--resume` re-runs THIS iteration from the decomposer
+  # checkpoint, which re-lints the spec and re-reads the canonical fields: the
+  # halt is never treated as approval.
+  if [[ "$_exec_rc" -eq "${SPEC_FIELD_UNAVAILABLE_EXIT_CODE:-78}" ]]; then
+    echo "[run-goal] Canonical spec-field lookup UNAVAILABLE during iteration $CURRENT_ITER (executor exit $_exec_rc) — halting." >&2
+    echo "[run-goal]   A machine field (target / required journeys) could not be read from '## Goal Mode Metadata'" >&2
+    echo "[run-goal]   in $ITER_SPEC_PATH. The deterministic reader REFUSED to fall back to whole-document parsing" >&2
+    echo "[run-goal]   (that is the split brain HARD-2 closes) and refused to report an empty journey set." >&2
+    echo "[run-goal]   Nothing was evaluated and iteration $CURRENT_ITER was not advanced." >&2
+    echo "[run-goal]   Reproduce:  python3 scripts/automation/lib/iter_spec.py field $ITER_SPEC_PATH target_journeys" >&2
+    echo "[run-goal]   Fix the spec's metadata section (or the accessor/runtime fault), then:  /goal-resume $SESSION_ID" >&2
+    echo "[run-goal]   Resuming re-runs THIS iteration and re-checks the spec — it is not an approval." >&2
+    mkdir -p "$ITER_DIR" 2>/dev/null || true
+    printf 'reason=canonical-spec-field-unavailable\nrc=%s\nspec=%s\niter=%s\ndetected_at_step=executor-spec-field\n' \
+      "$_exec_rc" "$ITER_SPEC_PATH" "$CURRENT_ITER" > "$ITER_DIR/spec-field-unavailable" 2>/dev/null || true
+    record_telemetry_event "halt" "$(jq -cn --arg n "$ITER_NAME" --arg rc "$_exec_rc" \
+      '{reason:"GATE_BLOCKED_SPEC_FIELD_UNAVAILABLE", detected_at_step:"executor-spec-field", rc:($rc|tonumber), iter_name:$n}' \
+      2>/dev/null || printf '{"reason":"GATE_BLOCKED_SPEC_FIELD_UNAVAILABLE","detected_at_step":"executor-spec-field","rc":%s}' "$_exec_rc")"
+    write_session_summary "GATE_BLOCKED" "$CURRENT_ITER"
+    explain_goal_status "GATE_BLOCKED" "$SESSION_ID" "$REPO_ROOT" >&2
+    exit 0
+  fi
+
   # Transport/dispatch-unavailable (exit 70) from the interactive backend: the
   # pump/session went away mid-iteration. This is infrastructure, not agent
   # quality — pause cleanly and resumably instead of running the coherence-auditor
@@ -3050,7 +3244,16 @@ PYEOF
   fi
   _snapshot_sha_for_gates="$(cat "$ITER_DIR/snapshot-sha" 2>/dev/null || echo "")"
   goal_gate_build_diff_artifacts "$ITER_DIR" "$_snapshot_sha_for_gates" "$REPO_ROOT" || true
-  _spec_targets="$(grep -m1 -E 'Target journeys:' "$ITER_SPEC_PATH" 2>/dev/null | sed -E 's/.*Target journeys:\*?\*?[[:space:]]*//' | tr -d ' ' )" || _spec_targets=""
+  # HARD-2: the evaluator's goal slice keeps THIS iteration's target journeys
+  # verbatim while digesting stable-passing non-targets, so the target list is
+  # machine state that shapes evaluator context. Reuse the canonical value the
+  # depth block already read from `## Goal Mode Metadata` and validated — a
+  # second whole-document grep here would let a `Target journeys:` line sitting
+  # in prose (NOTES, OUT OF SCOPE, a TC example) decide what the evaluator sees,
+  # even though it never controlled the iteration that actually ran.
+  # `goal_gate.py goal-slice --targets` splits on comma and strips each token,
+  # so the canonical "J-01, J-03" form is passed through unchanged.
+  _spec_targets="$TARGET_JOURNEYS"
   python3 "$SCRIPT_DIR/lib/goal_gate.py" goal-slice "$GOAL_FILE" \
     --history "$JOURNEY_HISTORY" ${_spec_targets:+--targets "$_spec_targets"} \
     --out "$GOAL_SLICE_PATH" 2>/dev/null || true

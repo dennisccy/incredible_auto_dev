@@ -48,6 +48,7 @@ Write the iteration spec to `docs/phases/goal-<sid>-iter-<N>.md`. The file MUST 
 - **Full trigger:** <1|2|3|4> — <one-line reason>  (REQUIRED when Depth is full; omit at other depths)
 - **Target journeys:** J-01, J-03, J-07
 - **Required-still-passing journeys:** J-02, J-04
+- **Work kind:** implementation | evidence-only | verify-only
 - **Anti-goal reminders:**
   - <verbatim anti-goal that this iteration must respect>
 
@@ -131,6 +132,28 @@ The `Frontend Present:` field is implicit — if any Frontend item is listed, do
 Every FULL-depth spec MUST carry the machine-parseable metadata line `Full trigger: <1|2|3|4> — <one-line reason>`, naming which numbered full-depth trigger (see "Picking depth") applies. The evaluator's depth recommendation (inlined in your prompt) is **BINDING by default**: plan the recommended depth unless one of the four escape conditions holds — prior ESCALATE/REGRESSION verdict, prior coherence-audit FAIL, hardening cadence due, or a brand-new full-stack journey (backend AND frontend work with real Data-contract additions for a never-implemented target journey). The engine's deterministic arbiter re-validates a full spec against those same independent signals: a `Full trigger:` line alone does NOT grant full, and an unjustified full spec is demoted to lean.
 
 Two metadata lines exist that you must **NEVER** emit: `Depth enforcement: required` and `Maintenance isolation: required`. They are operator-only engine controls, not planning fields — the first makes full depth a hard requirement the engine will halt on rather than downgrade (`AWAITING_FULL_DEPTH`), the second forbids application-service boot, browser QA and the deterministic replay lane for the whole iteration. A spec you wrote is the one input you also author, so a self-written safety declaration is exactly the governor bypass anti-pattern 25 describes (`.claude/anti-patterns/25-self-justifying-governor-bypass.md`; SPEED-10's `Full trigger:` arm was superseded for the same reason). When you believe an iteration needs either control — a destructive migration, a repair pass on damaged data — say so in **BACKGROUND** in plain prose ("this iteration rewrites persisted rows; it should not run with the app booted") and leave the line to the human, who adds it to the spec or sets `CHAIN_REQUIRE_FULL_DEPTH` / `CHAIN_MAINTENANCE_ISOLATION` for the run.
+
+## Spec lint (deterministic — HARD-2)
+
+Before anything is dispatched, the engine runs `lib/iter_spec.py lint` over the spec you just wrote. It reads the declared fields and the IN SCOPE structure; it never reads your prose. An ERROR costs the session ONE automatic re-plan, with the exact errors quoted back to you; a second failure pauses the session for the human (`GATE_BLOCKED`). Write the fields in canonical **bold** form (`- **Depth:** lean`) — a plain-form field is itself an error, because the engine's own parsers key on the bold form.
+
+Errors, in plain words:
+
+- **E01** — no `## Goal Mode Metadata` section, or a machine field that is missing from it. **A machine field counts only inside that section.** A `- **Depth:** lean` line under OUT OF SCOPE, NOTES or a test-case example is prose: it never satisfies the field, and the engine reads its depth, target journeys and full trigger from the metadata section alone. If E01 says a field is misplaced, move it into the metadata block rather than adding a second copy.
+- **E12** — the same machine field declared twice inside the metadata section with different values, or a second `## Goal Mode Metadata` section. The engine refuses to pick one by document order; keep exactly one line and one section. An identical repeat is harmless.
+- **E02** — `Depth`, `Target journeys`, `Required-still-passing journeys` or `Work kind` written without the bold markers.
+- **E03** — `Depth` is not `lean`, `full` or `evidence`.
+- **E04** — a `Target journeys:` line that names no `J-<n>` id.
+- **E05** — `Work kind` is not `implementation`, `evidence-only` or `verify-only`.
+- **E07** — `Depth: evidence` or `Work kind: evidence-only` while IN SCOPE plans real work. An evidence iteration dispatches no developer, so that work would never be built (this is the TenSteps iteration-7 loss). "Real work" means a concrete bullet under `### Backend` or `### Frontend`, **or** a loose bullet directly under `## IN SCOPE` that reads as construction. A loose bullet counts as harmless description only when it opens with capture/verification vocabulary, names no file or path, and contains no construction verb anywhere — so `- verify-only baseline` is fine, while `- review the flow and change login to persist tokens` is work however it opens. Unknown phrasing counts as work: put real items under `### Backend`/`### Frontend` and the question never arises.
+- **E08** — `Work kind: verify-only` with implementation work listed, structured or actionable-loose.
+- **E09** — a baseline (iteration 0) spec with implementation work, structured or actionable-loose. The engine knows the iteration is the baseline from its own state, so writing `Mode: next` does not avoid this.
+- **E10** — `Depth: evidence` after a prior `ESCALATE` verdict.
+- **E11** — `Depth: evidence` while one of your target journeys is not recorded passing.
+
+Warnings do not block: a missing `Work kind` line (the engine derives it from IN SCOPE), no `Target journeys:` line, `lean` after ESCALATE (the engine promotes it to full anyway), contract additions with no bullets to build them, bullets sitting loose under `## IN SCOPE`, a sentinel spec with no IN SCOPE at all, and `full` without a `Full trigger:` line.
+
+Self-check before you finish: **Work kind, Depth and IN SCOPE must agree.** If you listed a Backend or Frontend bullet, the work kind is `implementation` and the depth is `lean` or `full` — never `evidence`.
 
 ## Picking target journeys (priority rubric — apply top-down)
 

@@ -73,7 +73,43 @@ echo "[dev-phase] Mode: $MODE_LABEL"
 # a plain goal line when docs/goal.md exists, else no line (as before).
 GOAL_CONTEXT_LINE=""
 if [[ "$PHASE" =~ ^goal-(.+)-iter-[0-9]+$ ]]; then
-  _dev_targets="$(grep -iE 'Target journeys:' "$SPEC" 2>/dev/null | head -1 | grep -oE 'J-[0-9]+' | sort -u | tr '\n' ',' | sed 's/,$//' || true)"
+  # HARD-2: the target list decides which journeys stay VERBATIM in the
+  # developer's sliced goal view, so it is machine state and must come from the
+  # canonical `## Goal Mode Metadata` section — never from a `Target journeys:`
+  # line sitting in prose. Precedence:
+  #
+  #   1. CHAIN_GOAL_TARGET_JOURNEYS is SET  -> use it verbatim, INCLUDING when it
+  #      is empty. run-goal.sh exports it unconditionally from the value the
+  #      dispatch, browser and replay lanes use, so "set but empty" is the engine
+  #      saying this iteration names no target. Testing `-n` instead of "is set"
+  #      would let a shadow line be resurrected by the fallback below.
+  #   2. UNSET (standalone `dev-phase.sh goal-<sid>-iter-N`) -> ask the canonical
+  #      accessor directly. This path reads a real Goal Mode spec, so it gets the
+  #      same answer the engine would have.
+  #        rc 0 -> the canonical value.
+  #        rc 3 -> no metadata section at all (phase-mode/legacy shape): the
+  #                whole-document parse is the correct reader, and only here.
+  #        else -> the accessor could not answer for a spec that HAS a metadata
+  #                section. Fail closed rather than hand the developer a shadow
+  #                or degraded target list.
+  #
+  # goal_gate.py's --targets splits on comma and strips each token, so the
+  # canonical "J-01, J-03" spacing needs no normalisation.
+  if [[ -n "${CHAIN_GOAL_TARGET_JOURNEYS+x}" ]]; then
+    _dev_targets="$CHAIN_GOAL_TARGET_JOURNEYS"
+  else
+    _dev_tj_rc=0
+    _dev_targets="$(_spec_field "$SPEC" target_journeys)" || _dev_tj_rc=$?
+    if [[ "$_dev_tj_rc" -eq 3 ]]; then
+      _dev_targets="$(grep -iE 'Target journeys:' "$SPEC" 2>/dev/null | head -1 | grep -oE 'J-[0-9]+' | sort -u | tr '\n' ',' | sed 's/,$//' || true)"
+    elif [[ "$_dev_tj_rc" -ne 0 ]]; then
+      echo "[dev-phase] canonical Target-journeys lookup FAILED for $SPEC (accessor rc=$_dev_tj_rc)." >&2
+      echo "[dev-phase]   Refusing to fall back to whole-document parsing (that is the HARD-2 split brain)" >&2
+      echo "[dev-phase]   and refusing to dispatch the developer with a degraded target list." >&2
+      echo "[dev-phase]   Reproduce:  python3 scripts/automation/lib/iter_spec.py field '$SPEC' target_journeys" >&2
+      exit "${SPEC_FIELD_UNAVAILABLE_EXIT_CODE:-78}"
+    fi
+  fi
   goal_slice_for_exec "$PHASE" "$_dev_targets" "$REPO_ROOT/runs/$PHASE/goal-slice-exec.md"
   if [[ "$GOAL_SLICE_EXEC_MODE" == "sliced" ]]; then
     GOAL_CONTEXT_LINE="Project goal (SLICED — vision, anti-goals, and this iteration's target + failing journeys verbatim; stable passing journeys digested to one line): $GOAL_SLICE_EXEC_PATH  <-- read Must-have user journeys and Anti-goals here
