@@ -28,5 +28,15 @@ jobs:
       - name: Install jq (used by trace + telemetry helpers)
         run: sudo apt-get update -qq && sudo apt-get install -y -qq jq
 
+      # actions/setup-python gives a clean interpreter with only pip, so the
+      # automation toolchain's one third-party import is missing. adapters/lib/
+      # translate.py imports yaml unconditionally, which means sync-cli-assets.py
+      # and mcp_sync_selftest.py could not even start: they failed with
+      # ModuleNotFoundError, not with a real drift or logic finding. Installing it
+      # lets the mirror-drift check actually run instead of reporting a broken
+      # toolchain as a failure. The repo has no requirements file to point at.
+      - name: Install Python dependencies used by the automation toolchain
+        run: python -m pip install --disable-pip-version-check --quiet PyYAML
+
       - name: Run offline evals
         run: ./scripts/automation/run-evals.sh --verbose
