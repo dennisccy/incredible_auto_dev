@@ -34,37 +34,75 @@ import re
 import sys
 from pathlib import Path
 
-_VERDICT_RE = re.compile(r"\*\*Browser QA Verdict:\*\*\s*([A-Z_]+)")
+# Headline verdict. Tolerates markdown emphasis around the token (`**FAIL**`,
+# `` `SKIPPED` ``) — anti-pattern 28: agent formatting drift must never read as
+# "no verdict".
+_VERDICT_RE = re.compile(r"\*\*Browser QA Verdict:\*\*\s*[*_`~\s]*([A-Z_]+)")
 # A results-table data row: | UT-xx | name | type | prio | expected | actual | VERDICT | evidence |
 _ROW_RE = re.compile(r"^\|\s*(UT-[^|]+?)\s*\|(.*)\|\s*$")
+# Cells split on UNESCAPED pipes only — the replay renderer escapes '|' inside
+# cells as '\|'; a bare split would shift every later cell.
+_CELL_SPLIT_RE = re.compile(r"(?<!\\)\|")
 # Column order in the template (after the leading Test ID cell).
-_C_NAME, _C_ACTUAL, _C_EVIDENCE = 0, 4, 6
+_C_NAME, _C_ACTUAL, _C_VERDICT, _C_EVIDENCE = 0, 4, 5, 6
+# A verdict CELL (anti-pattern 28): the token may be wrapped in markdown
+# emphasis/backticks and may carry an annotation — `**FAIL**`, `` `SKIPPED` ``,
+# `PASS (with caveat)`, `FAIL — step 3`, `SKIP: no frontend`. What follows the
+# token must be the end of the cell, whitespace, or an annotation opener; a
+# word character, '/', '.' or '_' means it is a different word (`PASSED`, the
+# template placeholder `PASS/FAIL`, a filename `PASS.png`). Bare-word prose
+# that merely CONTAINS a verdict word never matches (the token must lead).
+_CELL_VERDICT_RE = re.compile(
+    r"^[\s*_`~]*(PASS|FAIL|SKIPPED|SKIP)[*_`~]*(?:$|[\s(\[:;,\u2014\u2013-])",
+    re.IGNORECASE)
 
 
 def _today() -> str:
     return datetime.date.today().isoformat()
 
 
+def cell_verdict(cell: str) -> str:
+    """The verdict a single cell carries: PASS, FAIL, SKIP (SKIPPED folds into
+    SKIP) or "" when the cell is not a verdict cell. See _CELL_VERDICT_RE."""
+    m = _CELL_VERDICT_RE.match(cell)
+    if not m:
+        return ""
+    v = m.group(1).upper()
+    return "SKIP" if v == "SKIPPED" else v
+
+
+def row_verdict(cells: "list[str]") -> str:
+    """The row's verdict. The template's Verdict column wins when it parses;
+    otherwise the cells are scanned in REVERSE order, because in every template
+    shape the verdict sits to the RIGHT of the free-prose Expected/Actual cells
+    (anti-pattern 28: the verdict column must outrank prose that happens to
+    start with a verdict word). "" when no cell parses as a verdict — an
+    unparseable row is UNKNOWN, never an implicit PASS."""
+    if len(cells) > _C_VERDICT:
+        v = cell_verdict(cells[_C_VERDICT])
+        if v:
+            return v
+    for c in reversed(cells):
+        v = cell_verdict(c)
+        if v:
+            return v
+    return ""
+
+
 def parse_rows(text: str) -> "list[dict]":
     """Extract results-table data rows. Returns dicts with test_id + cells +
-    verdict (the cell that is one of PASS/FAIL/SKIP/SKIPPED)."""
+    verdict (PASS/FAIL/SKIP, or "" when no cell parses as a verdict)."""
     rows: list[dict] = []
     for line in text.splitlines():
         m = _ROW_RE.match(line.strip())
         if not m:
             continue
         test_id = m.group(1).strip()
-        cells = [c.strip() for c in m.group(2).split("|")]
+        cells = [c.strip() for c in _CELL_SPLIT_RE.split(m.group(2))]
         # Skip a markdown header-separator row that happened to start with a dash run.
         if cells and all(set(c) <= {"-", ":"} for c in cells if c):
             continue
-        verdict = ""
-        for c in cells:
-            cu = c.upper()
-            if cu in ("PASS", "FAIL", "SKIP", "SKIPPED"):
-                verdict = "SKIP" if cu == "SKIPPED" else cu
-                break
-        rows.append({"test_id": test_id, "cells": cells, "verdict": verdict,
+        rows.append({"test_id": test_id, "cells": cells, "verdict": row_verdict(cells),
                      "raw": "| " + test_id + " |" + m.group(2) + "|"})
     return rows
 
@@ -168,7 +206,7 @@ def void_text(text: str, journeys: "list[str]") -> "tuple[str, list[str]]":
             tid = m.group(1).strip()
             # Split on UNESCAPED pipes only — the replay renderer escapes '|'
             # inside cells as '\|'; a bare split would shift every later cell.
-            cells = [c.strip() for c in re.split(r"(?<!\\)\|", m.group(2))]
+            cells = [c.strip() for c in _CELL_SPLIT_RE.split(m.group(2))]
             is_sep = cells and all(set(c) <= {"-", ":"} for c in cells if c)
             if tid in want and not is_sep and any(c.upper() == "FAIL" for c in cells):
                 new_cells = []
@@ -248,8 +286,11 @@ def main(argv: "list[str]") -> int:
 
 def _self_test() -> int:
     failures: list[str] = []
+    n_checks = 0
 
     def check(name, fn):
+        nonlocal n_checks
+        n_checks += 1
         try:
             fn()
         except Exception as exc:  # noqa: BLE001
@@ -357,9 +398,65 @@ def _self_test() -> int:
     check("void_no_match_is_noop", t_void_no_match_is_noop)
     check("void_respects_escaped_pipes", t_void_respects_escaped_pipes)
 
+    # ── anti-pattern 28: markdown-styled / annotated verdict cells ───────────
+    # Real agent output shapes that previously parsed as NO verdict and dropped
+    # out of compute_overall (ops-hardening iter-9: two bold FAILs → merged PASS).
+    styled = (
+        "**Browser QA Verdict:** FAIL\n\n## Results Table\n"
+        "| Test ID | Name | Type | Priority | Expected | Actual | Verdict | Evidence |\n"
+        "|---|---|---|---|---|---|---|---|\n"
+        "| UT-J-04 | compute | journey | P1 | e | button did nothing | **FAIL** | a.png |\n"
+        "| UT-J-05 | sweep | journey | P1 | e | ok | PASS (with caveat) | b.png |\n"
+        "| UT-J-06 | export | journey | P1 | e | no frontend | `SKIPPED` | none |\n"
+        "| UT-J-07 | banner | journey | P1 | expected result: user sees PASS label | label missing | FAIL | c.png |\n")
+
+    def t_bold_verdicts():
+        rows = {r["test_id"]: r["verdict"] for r in parse_rows(styled)}
+        assert rows["UT-J-04"] == "FAIL", rows
+        # the bold FAIL must reach the headline — this is the laundered-PASS shape
+        assert file_top_verdict(merge([styled])) == "FAIL", file_top_verdict(merge([styled]))
+
+    def t_annotated_verdicts():
+        rows = {r["test_id"]: r["verdict"] for r in parse_rows(styled)}
+        assert rows["UT-J-05"] == "PASS", rows
+
+    def t_backtick_skipped():
+        rows = {r["test_id"]: r["verdict"] for r in parse_rows(styled)}
+        assert rows["UT-J-06"] == "SKIP", rows
+
+    def t_prose_not_verdict():
+        # The verdict column outranks a free-prose cell that merely contains the
+        # word PASS; and a bare prose cell never becomes a verdict by itself.
+        rows = {r["test_id"]: r["verdict"] for r in parse_rows(styled)}
+        assert rows["UT-J-07"] == "FAIL", rows
+        prose_only = ("| UT-J-08 | banner | journey | P1 | expected: user sees PASS label "
+                      "| label shows PASS text | (no verdict recorded) | none |\n")
+        assert parse_rows(prose_only)[0]["verdict"] == "", parse_rows(prose_only)
+        # the template placeholder and a passing-looking filename are not verdicts
+        assert parse_rows("| UT-01 | n | smoke | P1 | e | a | PASS/FAIL | none |\n")[0]["verdict"] == ""
+        assert parse_rows("| UT-01 | n | smoke | P1 | e | passed | | PASS.png |\n")[0]["verdict"] == ""
+
+    def t_styled_headline():
+        assert file_top_verdict("**Browser QA Verdict:** **FAIL**\n") == "FAIL"
+        assert file_top_verdict("**Browser QA Verdict:** `SKIPPED`\n") == "SKIPPED"
+
+    def t_escaped_pipe_cells():
+        # cells split on UNESCAPED pipes only, so the verdict column is found by
+        # position even when an earlier cell carries an escaped '|'
+        row = "| UT-J-07 | Filter \\| sort table | regression | P1 | e | ok | PASS | b.png |\n"
+        r = parse_rows(row)[0]
+        assert len(r["cells"]) == 7 and r["verdict"] == "PASS", r
+
+    check("bold_verdicts", t_bold_verdicts)
+    check("annotated_verdicts", t_annotated_verdicts)
+    check("backtick_skipped", t_backtick_skipped)
+    check("prose_not_verdict", t_prose_not_verdict)
+    check("styled_headline", t_styled_headline)
+    check("escaped_pipe_cells", t_escaped_pipe_cells)
+
     for f in failures:
         print(f"  FAIL {f}", file=sys.stderr)
-    print(f"[merge_ui_test_results self-test] {8 - len(failures)} passed, {len(failures)} failed")
+    print(f"[merge_ui_test_results self-test] {n_checks - len(failures)} passed, {len(failures)} failed")
     return 1 if failures else 0
 
 
