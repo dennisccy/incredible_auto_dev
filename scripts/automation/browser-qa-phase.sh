@@ -289,7 +289,7 @@ R_LLM=""
 REQUIRED_JOURNEYS=""
 _llm_out="$UI_TEST_RESULTS"
 _llm_regr_set=""
-_bqa_floor="no"
+_bqa_targets=""
 _goal_lanes_note=""
 if [[ "$PHASE" =~ ^goal-(.+)-iter-[0-9]+$ ]]; then
   GOAL_REPLAY_ACTIVE="yes"
@@ -312,11 +312,6 @@ if [[ "$PHASE" =~ ^goal-(.+)-iter-[0-9]+$ ]]; then
     declare -F iter_budget_trim_event >/dev/null 2>&1 && iter_budget_trim_event "replay-narrow"
   fi
   _llm_regr_set="$(replay_lane_llm_regression_set)"
-  # Fresh-evidence obligations for the merge: the regression set is id-keyed
-  # (the addendum asks for UT-J-NN rows), the targets are test-plan-keyed
-  # (UT-XX rows) — so targets are owed at LANE level (the primary lane must
-  # carry fresh PASS rows and no browser-infra SKIP row).
-  [[ -n "${_bqa_targets// /}" ]] && _bqa_floor="yes"
   # TOKEN-10: journey definitions for the regression lane come from a sliced
   # goal view — targets ∪ this run's LLM regression set stay verbatim; only
   # replay-covered/stable journeys are digested. Bare call: sets
@@ -344,6 +339,9 @@ $(if [[ "$_use_replay" == "yes" && -n "${R_REPLAY// /}" ]]; then
 fi)
 $(if [[ -n "${_llm_regr_set// /}" ]]; then
   echo "- ALSO execute these regression journeys this run: ${_llm_regr_set% }. For each: read its numbered steps + Acceptance line from the \"Must-have user journeys\" section of ${_bqa_goal_ref}${_bqa_goal_note}, execute it like a test case, and add a results-table row using the journey ID as the Test ID (e.g. UT-J-01)."
+fi)
+$(if [[ -n "${_bqa_targets// /}" ]]; then
+  echo "- TARGET JOURNEY ATTRIBUTION (required): this iteration's target journeys are ${_bqa_targets% }. For EACH of them add ONE results-table row whose Test ID is the journey ID (UT-J-04 style) recording that journey's Acceptance verdict — PASS, FAIL, or SKIP with the reason — from the test-plan cases you executed for it, IN ADDITION to the UT-XX rows (never instead of them). The engine attributes evidence to a target ONLY through that row: a target without its UT-J-NN row counts as NOT verified this iteration (merged verdict SKIPPED, never PASS), whatever the UT-XX rows say. If the browser could not run for a target, its row is SKIP with the exact browser-infrastructure reason."
 fi)
 $(if [[ -n "${REPLAY_FAILED// /}" ]]; then
   echo "- The replay lane flagged possible regression(s) on: ${REPLAY_FAILED% } (already included in the list above). Re-confirm each by executing the journey yourself; if it passes, the replay FAIL was a stale golden script — repair that journey's golden so the next iteration replays clean."
@@ -480,10 +478,13 @@ if [[ "$GOAL_REPLAY_ACTIVE" == "yes" ]]; then
   fi
   if [[ "$_use_replay" == "yes" ]]; then
     # The merged headline is PASS only when the LLM lane delivered the fresh
-    # evidence it owed: a PASS row for every id-keyed regression journey it
-    # was asked to run, fresh PASS rows for the test plan (targets), and no
-    # browser-infra SKIP row — a replay PASS never stands in for those.
-    replay_lane_merge_results "$UI_TEST_RESULTS" "$_llm_out" "$_llm_regr_set" "$_bqa_floor"
+    # evidence it owed: a PASS row for EVERY journey in the owed set — the
+    # targets (each via its required UT-J-NN attribution row) and the
+    # id-keyed regression journeys it was asked to run — and no browser-infra
+    # SKIP row anywhere in the lane. Generic UT-XX test-plan rows never prove
+    # a target: a target without its UT-J-NN row is MISSING, and a replay PASS
+    # never stands in for any of them (headline SKIPPED, never PASS).
+    replay_lane_merge_results "$UI_TEST_RESULTS" "$_llm_out" "$_bqa_tok_set"
     replay_lane_write_deferred_rows "$UI_TEST_RESULTS"
   fi
   replay_lane_golden_coverage "$UI_TEST_RESULTS" "$PHASE"
@@ -492,12 +493,12 @@ fi
 # REL-14 post-scan (same knob): a dispatch that returned but left no results
 # file (mid-run browser death; quota pauses excluded) earns the token for the
 # whole owed set; otherwise the RAW LLM output ($_llm_out — never the merged
-# file) is classified PER JOURNEY in the owed set (targets + the id-keyed
-# regression journeys) and the token lists exactly the journeys whose fresh
-# browser attempt was blocked by infra. Test-plan-keyed target rows (UT-XX)
-# cannot be attributed by journey unless the Name cell carries the J-NN token,
-# so a target is tokenized only when the whole lane died. Goal-session
-# iterations only.
+# file) is classified PER JOURNEY in the owed set (targets via their UT-J-NN
+# attribution rows + the id-keyed regression journeys) and the token lists
+# exactly the journeys whose fresh browser attempt was blocked by infra. A
+# generic UT-XX row can never be attributed to a target (no fabricated token);
+# the whole-lane-dead fallback covers only a lane with rows but no PASS/FAIL
+# anywhere. Goal-session iterations only.
 if [[ "${CHAIN_BQA_PREFLIGHT:-false}" == "true" && "$_bqa_infra_blocked" != "yes" \
       && "$GOAL_REPLAY_ACTIVE" == "yes" && -n "${GOAL_SESSION_DIR:-}" && -n "${GOAL_ITER_INDEX:-}" ]]; then
   if [[ ! -f "$_llm_out" && $_bqa_rc -ne ${QUOTA_EXHAUSTED_EXIT_CODE:-75} ]]; then

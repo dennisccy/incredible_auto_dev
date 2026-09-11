@@ -255,9 +255,12 @@ grep -q 'bqa_write_infra_token' "$BQP" \
 grep -q 'bqa_primary_infra_scan "\$_llm_out" "\$_bqa_tok_set"' "$BQP" && ! grep -q 'bqa_results_infra_reason' "$BQP" \
   && assert "wiring(full): post-scan classifies the RAW primary output against the owed set, never the merged file" "pass" \
   || assert "wiring(full): post-scan classifies the RAW primary output against the owed set, never the merged file" "fail"
-grep -q 'replay_lane_merge_results "\$UI_TEST_RESULTS" "\$_llm_out" "\$_llm_regr_set" "\$_bqa_floor"' "$BQP" \
-  && assert "wiring(full): the merge carries the id-keyed regression obligation + the plan-keyed lane floor" "pass" \
-  || assert "wiring(full): the merge carries the id-keyed regression obligation + the plan-keyed lane floor" "fail"
+grep -q 'replay_lane_merge_results "\$UI_TEST_RESULTS" "\$_llm_out" "\$_bqa_tok_set"' "$BQP" && ! grep -q '_bqa_floor' "$BQP" \
+  && assert "wiring(full): the merge carries targets ∪ the id-keyed regression set (no lane-floor approximation)" "pass" \
+  || assert "wiring(full): the merge carries targets ∪ the id-keyed regression set (no lane-floor approximation)" "fail"
+grep -q 'TARGET JOURNEY ATTRIBUTION' "$BQP" \
+  && assert "wiring(full): the dispatch addendum requires one UT-J-NN row per target" "pass" \
+  || assert "wiring(full): the dispatch addendum requires one UT-J-NN row per target" "fail"
 
 # ── wiring: run-goal.sh (evaluator input + make-up scheduling) ────────────────
 RG="$ENGINE_ROOT/scripts/automation/run-goal.sh"

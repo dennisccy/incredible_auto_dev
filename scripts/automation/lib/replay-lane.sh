@@ -534,12 +534,15 @@ replay_lane_write_deferred_rows() {
 #
 # Fresh-evidence coverage contract (REL-14 target-aware): $3 = the journeys
 # the LLM (primary) dispatch owed fresh, id-keyed evidence for this iteration
-# (lean: LLM_JOURNEYS; full: the id-keyed regression set); $4 = "yes" when the
-# primary also owed test-plan-keyed evidence (full depth targets, UT-XX rows).
-# With either set, the merged headline is PASS only if every owed journey has a
-# fresh PASS row FROM THE PRIMARY LANE (a replay PASS never substitutes) and no
-# primary row is a browser-infra SKIP — otherwise SKIPPED (a real FAIL stays
-# FAIL). Both empty ⇒ the generic merge, byte-identical to before.
+# (lean: LLM_JOURNEYS; full: targets ∪ the id-keyed regression set — full depth
+# requires one UT-J-NN attribution row per target beside the generic UT-XX
+# test-plan rows, so targets are attributable there too); $4 = "yes" arms the
+# optional lane floor (at least one primary PASS row — a sanity guard, never a
+# proof of any journey; no production caller passes it today). With either
+# set, the merged headline is PASS only if every owed journey has a fresh PASS
+# row FROM THE PRIMARY LANE (a replay PASS never substitutes) and no primary
+# row is a browser-infra SKIP — otherwise SKIPPED (a real FAIL stays FAIL).
+# Both empty ⇒ the generic merge, byte-identical to before.
 replay_lane_merge_results() {
   local _rl_out="$1" _rl_llm="$2" _rl_required="${3:-}" _rl_floor="${4:-}"
   local _rl_mid=() _rl_opts=() _rl_req_csv=""

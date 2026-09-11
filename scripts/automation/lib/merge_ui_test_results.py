@@ -39,9 +39,12 @@ is additionally gated (existing vocabulary only — PASS | FAIL | SKIPPED):
   - any surviving FAIL row                                   → FAIL (unchanged)
   - every --required-primary journey has a fresh PRIMARY-lane row (mapped by
     UT-J-NN test id or a J-NN token in the id/Name cell) and every such row is
-    PASS; no primary-lane row is a browser-infra SKIP; with --primary-lane-floor
-    (full depth: targets are test-plan-keyed, UT-XX) the primary lane carries at
-    least one PASS row                                        → PASS
+    PASS; no primary-lane row is a browser-infra SKIP; with the optional
+    --primary-lane-floor guard the primary lane also carries at least one PASS
+    row (a lane-level sanity check only — it never proves a journey; both goal
+    depths pass their targets in --required-primary: lean rows are UT-J-NN by
+    prompt contract, full depth requires one UT-J-NN attribution row per target
+    beside its generic UT-XX test-plan rows)                  → PASS
   - otherwise (a required journey is SKIP/MISSING/FAIL-free-but-unverified) → SKIPPED
 A replay PASS row never satisfies a fresh-primary obligation; replay-lane rows
 (voids, unscripted SKIPs, DEFERRED-BUDGET) never block it. The primary lane is
@@ -266,10 +269,11 @@ def infra_journeys(text: "str | None", expected: "list[str]") -> "list[str]":
 
 def coverage_gaps(primary_text: "str | None", required_primary: "list[str]", lane_floor: bool) -> "list[str]":
     """Why the fresh-evidence coverage contract is NOT satisfied — [] when it is.
-    A required journey is satisfied only by a PASS-classified PRIMARY-lane row set;
-    any primary-lane browser-infra SKIP row is a gap (plan-keyed rows cannot be
-    attributed by journey, but the dispatch owed that test case); the lane floor
-    requires at least one primary PASS row."""
+    A required journey is satisfied only by a PASS-classified PRIMARY-lane row set
+    (a generic UT-XX row never proves a journey — MISSING is a gap); any
+    primary-lane browser-infra SKIP row is a gap (the dispatch owed that test
+    case even when the row is not journey-attributable); the optional lane floor
+    additionally requires at least one primary PASS row."""
     gaps = [f"{j}: {c}" for j, c, _ in classify_primary(primary_text, required_primary) if c != CLASS_PASS]
     prows = parse_rows(primary_text) if primary_text else []
     sections = _row_sections(primary_text) if primary_text else {}
@@ -800,7 +804,7 @@ def _self_test() -> int:
         c = cls(p, ["J-04", "J-13"])
         assert c["J-04"][0] == "SKIP_INFRA" and c["J-13"][0] == "PASS", c
 
-    def t_full_mode_plan_rows():  # full depth: targets are test-plan-keyed (UT-01), covered by the lane floor
+    def t_full_mode_plan_rows():  # the optional lane floor over generic UT-XX rows (a guard, never target proof)
         plan_ok = ("**Browser QA Verdict:** PASS\n\n## Results Table\n" + hdr +
                    "| UT-01 | page loads | smoke | P1 | e | ok | PASS | a.png |\n")
         plan_dead = ("**Browser QA Verdict:** SKIPPED\n\n## Results Table\n" + hdr +

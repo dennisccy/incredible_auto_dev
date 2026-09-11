@@ -44,6 +44,19 @@
 #      an infra-SKIP → token names ONLY J-02, headline SKIPPED, one dispatch.
 #   H. Healthy with the knob on → merged PASS, NO token, one dispatch (the
 #      healthy path's dispatch count is unchanged by the classifier).
+#   T1-T5. FULL-depth TARGET attribution (two targets J-04 J-13, replay covers
+#      J-01). Full-depth test-plan rows are generic (UT-01, UT-02 …), so the
+#      merged headline may never infer target coverage from "some UT-XX row
+#      passed": every target owes a machine-attributable UT-J-NN row.
+#      T1 one target PASS + the other with NO attributable row → SKIPPED, J-13
+#         MISSING, no infra token, replay rows intact, one dispatch (this is
+#         the counterexample that FAILED on 5675f3a: the lane floor let a single
+#         generic UT-01 PASS read as "all targets verified" → PASS).
+#      T2 J-04 PASS + J-13 Chrome-SKIP → SKIPPED, token exactly J-13.
+#      T3 both PASS → PASS, no token.  T4 J-04 FAIL + J-13 infra → FAIL,
+#      token J-13, the FAIL row survives.  T5 generic rows only (UT-01 PASS,
+#      UT-02 infra-SKIP, no target rows) → SKIPPED, both targets MISSING, no
+#      fabricated token (fail closed, never PASS).
 #
 # No API calls; a few seconds per scenario.
 #
@@ -75,8 +88,8 @@ cleanup() {
 trap cleanup EXIT
 
 # ── Sandbox builder (fresh per scenario; engine scripts embedded) ────────────
-make_sandbox() {
-  local tag="$1" phase="$2"
+make_sandbox() {  # make_sandbox <tag> <phase> [<targets line>] [<required line>]
+  local tag="$1" phase="$2" targets="${3:-J-02}" required="${4:-J-01, J-02}"
   SBX="$WORK/proj-$tag"
   PHASE="$phase"
   mkdir -p "$SBX"
@@ -89,16 +102,18 @@ make_sandbox() {
 ## Must-have user journeys
 - J-01: open the page. Acceptance: page loads.
 - J-02: add an item. Acceptance: item appears.
+- J-04: compute a total. Acceptance: total appears.
+- J-13: run the sweep. Acceptance: sweep summary appears.
 ## Anti-goals
 - none
 EOF
-  cat > "$SBX/docs/phases/$PHASE.md" <<'EOF'
+  cat > "$SBX/docs/phases/$PHASE.md" <<EOF
 # Full-depth spec (replay-lane-full wiring test)
 ## Goal Mode Metadata
 - **Mode:** next
 - **Depth:** full
-- **Target journeys:** J-02
-- **Required-still-passing journeys:** J-01, J-02
+- **Target journeys:** $targets
+- **Required-still-passing journeys:** $required
 ## IN SCOPE
 - exercise browser-qa (wiring test)
 EOF
@@ -209,6 +224,20 @@ mode="${STUB_BQA_INFRA:-}"
     else
       printf '| UT-%s | llm %s | regression | P1 | works | stub re-verified | PASS | none |\n' "$j" "$j"
     fi
+  done
+  # STUB_BQA_PLAN_INFRA=1: a second GENERIC test-plan row that hit browser infra.
+  if [[ "${STUB_BQA_PLAN_INFRA:-}" == "1" ]]; then
+    printf '| UT-02 | add an item | happy-path | P1 | item appears | %s | SKIP | none |\n' "$infra"
+  fi
+  # STUB_BQA_TARGET_ROWS="J-04=PASS J-13=INFRA": the target-attributed UT-J-NN
+  # rows (PASS | FAIL | INFRA); a target absent from the list gets NO row.
+  for kv in ${STUB_BQA_TARGET_ROWS:-}; do
+    tj="${kv%%=*}"; tv="${kv#*=}"
+    case "$tv" in
+      INFRA) printf '| UT-%s | target %s | journey | P1 | acceptance | %s | SKIP | none |\n' "$tj" "$tj" "$infra" ;;
+      FAIL)  printf '| UT-%s | target %s | journey | P1 | acceptance | total wrong | FAIL | reports/qa/x.png |\n' "$tj" "$tj" ;;
+      *)     printf '| UT-%s | target %s | journey | P1 | acceptance | verified | PASS | reports/qa/x.png |\n' "$tj" "$tj" ;;
+    esac
   done
 } > "$out"
 exit 0
@@ -423,6 +452,91 @@ grep -q '^\*\*Browser QA Verdict:\*\* PASS' "$UI_TEST_RESULTS" 2>/dev/null && ! 
 [[ "$(wc -l < "$STUB_CALLS" | tr -dc 0-9)" == "1" ]] \
   && assert "H: exactly ONE browser-qa dispatch — the healthy path's dispatch count is unchanged" pass \
   || assert "H: exactly ONE browser-qa dispatch (got $(wc -l < "$STUB_CALLS" | tr -dc 0-9))" fail
+unset CHAIN_BQA_PREFLIGHT STUB_CALLS GOAL_SESSION_DIR GOAL_ITER_INDEX
+
+# ══ T1-T5: FULL-depth TARGET attribution (two targets, generic plan rows) ═════
+# Spec: Target journeys J-04, J-13; Required-still-passing J-01 (golden on
+# file → replay covers it). The only fresh evidence for the targets is the
+# primary dispatch; its test-plan rows are generic (UT-01 …), so each target
+# owes its own UT-J-NN row.
+export CHAIN_BQA_PREFLIGHT=true GOAL_SESSION_DIR="" GOAL_ITER_INDEX=""
+classify_of() { python3 "$ENGINE_ROOT/scripts/automation/lib/merge_ui_test_results.py" classify "$1" J-04 J-13 | awk -F'\t' '{printf "%s:%s ", $1, $2}'; }
+run_target_case() {  # <tag> <iter> <STUB_BQA_TARGET_ROWS> [<STUB_BQA_PLAN_INFRA>]
+  make_sandbox "$1" "goal-rlf-iter-$2" "J-04, J-13" "J-01"
+  golden rlf "J-01"
+  export GOAL_SESSION_DIR="$SBX/runs/goal-session-rlf" GOAL_ITER_INDEX="$2" STUB_CALLS="$WORK/calls-$1"
+  export STUB_BQA_TARGET_ROWS="$3" STUB_BQA_PLAN_INFRA="${4:-}"
+  : > "$STUB_CALLS"
+  run_bqa "$WORK/log-$1.txt" "$1"
+  TOKEN="$GOAL_SESSION_DIR/iter-$2/browser-infra.json"
+  unset STUB_BQA_TARGET_ROWS STUB_BQA_PLAN_INFRA
+}
+
+# T1 (F1): J-04 fresh PASS, J-13 has NO attributable row (only a generic UT-01 PASS).
+run_target_case T1 11 "J-04=PASS"
+[[ "$BQA_RC" -eq 0 ]] && assert "T1: exits 0" pass || { assert "T1: exits 0 (rc=$BQA_RC)" fail; sed -n '1,40p' "$WORK/log-T1.txt"; }
+grep -q '^\*\*Browser QA Verdict:\*\* SKIPPED' "$UI_TEST_RESULTS" 2>/dev/null \
+  && assert "T1: one target PASS + one target with no attributable row → merged SKIPPED (never PASS on a generic UT-01 PASS)" pass \
+  || { assert "T1: one target PASS + one target with no attributable row → merged SKIPPED (got: $(grep -m1 -oE 'Verdict:\*\* [A-Z]+' "$UI_TEST_RESULTS" 2>/dev/null))" fail; }
+[[ "$(classify_of "$LLM_RESULTS")" == "J-04:PASS J-13:MISSING " ]] \
+  && assert "T1: raw primary classifies J-04 PASS, J-13 MISSING" pass \
+  || assert "T1: raw primary classifies J-04 PASS, J-13 MISSING (got: $(classify_of "$LLM_RESULTS"))" fail
+grep -q 'J-13: MISSING' "$UI_TEST_RESULTS" 2>/dev/null \
+  && assert "T1: the merged coverage note names J-13 as MISSING" pass \
+  || assert "T1: the merged coverage note names J-13 as MISSING" fail
+[[ ! -f "$TOKEN" ]] && assert "T1: no browser-infra token (a missing row is not infra evidence)" pass \
+  || assert "T1: no browser-infra token (a missing row is not infra evidence; got $(token_journeys "$TOKEN"))" fail
+grep -E '^\| UT-J-01 ' "$UI_TEST_RESULTS" 2>/dev/null | grep -qF '| PASS |' \
+  && assert "T1: the replay PASS row (J-01) survives intact" pass || assert "T1: the replay PASS row (J-01) survives intact" fail
+grep -E '^\| UT-01 ' "$UI_TEST_RESULTS" 2>/dev/null | grep -qF '| PASS |' \
+  && assert "T1: the generic UT-01 test-plan row is retained" pass || assert "T1: the generic UT-01 test-plan row is retained" fail
+[[ "$(wc -l < "$STUB_CALLS" | tr -dc 0-9)" == "1" ]] && assert "T1: exactly ONE browser-qa dispatch" pass || assert "T1: exactly ONE browser-qa dispatch" fail
+grep -q '^- TARGET JOURNEY ATTRIBUTION.*J-04 J-13' "$WORK/prompt-T1.txt" \
+  && assert "T1: the dispatch prompt requires one UT-J-NN row per target (J-04 J-13)" pass \
+  || assert "T1: the dispatch prompt requires one UT-J-NN row per target (J-04 J-13)" fail
+[[ ! -f "$SBX/runs/$PHASE/.steps/browser-qa.done" ]] || true
+
+# T2 (F2): J-04 PASS + J-13 Chrome-SKIP.
+run_target_case T2 12 "J-04=PASS J-13=INFRA"
+grep -q '^\*\*Browser QA Verdict:\*\* SKIPPED' "$UI_TEST_RESULTS" 2>/dev/null \
+  && assert "T2: J-04 PASS + J-13 infra-SKIP → merged SKIPPED" pass \
+  || assert "T2: J-04 PASS + J-13 infra-SKIP → merged SKIPPED (got: $(grep -m1 -oE 'Verdict:\*\* [A-Z]+' "$UI_TEST_RESULTS" 2>/dev/null))" fail
+[[ "$(token_journeys "$TOKEN")" == "J-13" ]] \
+  && assert "T2: browser-infra.json journeys exactly [J-13] — J-04 is not pending-infra" pass \
+  || assert "T2: browser-infra.json journeys exactly [J-13] (got: $(token_journeys "$TOKEN"))" fail
+[[ "$(classify_of "$LLM_RESULTS")" == "J-04:PASS J-13:SKIP_INFRA " ]] \
+  && assert "T2: raw primary classifies J-04 PASS, J-13 SKIP_INFRA" pass \
+  || assert "T2: raw primary classifies J-04 PASS, J-13 SKIP_INFRA (got: $(classify_of "$LLM_RESULTS"))" fail
+[[ "$(wc -l < "$STUB_CALLS" | tr -dc 0-9)" == "1" ]] && assert "T2: exactly ONE browser-qa dispatch" pass || assert "T2: exactly ONE browser-qa dispatch" fail
+
+# T3 (F3): both targets PASS.
+run_target_case T3 13 "J-04=PASS J-13=PASS"
+grep -q '^\*\*Browser QA Verdict:\*\* PASS' "$UI_TEST_RESULTS" 2>/dev/null && ! grep -q 'Fresh-evidence coverage' "$UI_TEST_RESULTS" \
+  && assert "T3: both targets PASS → merged PASS, no coverage note" pass \
+  || assert "T3: both targets PASS → merged PASS (got: $(grep -m1 -oE 'Verdict:\*\* [A-Z]+' "$UI_TEST_RESULTS" 2>/dev/null))" fail
+[[ ! -f "$TOKEN" ]] && assert "T3: no browser-infra token" pass || assert "T3: no browser-infra token" fail
+[[ "$(wc -l < "$STUB_CALLS" | tr -dc 0-9)" == "1" ]] && assert "T3: exactly ONE browser-qa dispatch" pass || assert "T3: exactly ONE browser-qa dispatch" fail
+
+# T4 (F4): J-04 FAIL + J-13 infra-SKIP.
+run_target_case T4 14 "J-04=FAIL J-13=INFRA"
+grep -q '^\*\*Browser QA Verdict:\*\* FAIL' "$UI_TEST_RESULTS" 2>/dev/null \
+  && assert "T4: J-04 FAIL + J-13 infra → merged FAIL (a product defect dominates)" pass \
+  || assert "T4: J-04 FAIL + J-13 infra → merged FAIL (got: $(grep -m1 -oE 'Verdict:\*\* [A-Z]+' "$UI_TEST_RESULTS" 2>/dev/null))" fail
+grep -E '^\| UT-J-04 ' "$UI_TEST_RESULTS" 2>/dev/null | grep -qF '| FAIL |' \
+  && assert "T4: the J-04 FAIL row survives unchanged" pass || assert "T4: the J-04 FAIL row survives unchanged" fail
+[[ "$(token_journeys "$TOKEN")" == "J-13" ]] \
+  && assert "T4: token only J-13" pass || assert "T4: token only J-13 (got: $(token_journeys "$TOKEN"))" fail
+
+# T5: generic rows only — UT-01 PASS + UT-02 infra-SKIP, no UT-J-NN rows at all.
+run_target_case T5 15 "" 1
+grep -q '^\*\*Browser QA Verdict:\*\* SKIPPED' "$UI_TEST_RESULTS" 2>/dev/null \
+  && assert "T5: generic rows only (one PASS, one infra-SKIP) → merged SKIPPED, never PASS" pass \
+  || assert "T5: generic rows only → merged SKIPPED (got: $(grep -m1 -oE 'Verdict:\*\* [A-Z]+' "$UI_TEST_RESULTS" 2>/dev/null))" fail
+[[ "$(classify_of "$LLM_RESULTS")" == "J-04:MISSING J-13:MISSING " ]] \
+  && assert "T5: both targets classify MISSING (no attributable row)" pass \
+  || assert "T5: both targets classify MISSING (got: $(classify_of "$LLM_RESULTS"))" fail
+[[ ! -f "$TOKEN" ]] && assert "T5: no fabricated browser-infra token (the generic infra row cannot be attributed to a target)" pass \
+  || assert "T5: no fabricated browser-infra token (got $(token_journeys "$TOKEN"))" fail
 unset CHAIN_BQA_PREFLIGHT STUB_CALLS GOAL_SESSION_DIR GOAL_ITER_INDEX
 
 echo ""
