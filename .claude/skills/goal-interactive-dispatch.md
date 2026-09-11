@@ -1,6 +1,6 @@
 # Goal Mode — Interactive Dispatch (Pump Protocol)
 
-version: 4.0.0 (protocol v4 — finish-in-await: one Bash call closes the previous dispatch and awaits the next, requests arrive as JSON; bump with every change to this file)
+version: 4.0.1 (protocol v4 — finish-in-await: one Bash call closes the previous dispatch and awaits the next, requests arrive as JSON; bump with every change to this file. 4.0.1: host-guard section documents the HOST_GUARD_PUMP_HEADLESS_QA launch check — no protocol change)
 
 This skill defines how the foreground Claude Code session (the "pump") runs the
 existing goal-mode engine so that every agent executes as an interactive
@@ -170,6 +170,15 @@ automatically — no special launch command is required:
   every iteration boundary (via the `pid=` line in `.pump-alive` or the CLI
   root it captured at launch) and auto-confines it again if needed, pausing
   (`AWAITING_HOST_GUARD`, resumable) only when in-place confinement fails.
+- with `HOST_GUARD_PUMP_HEADLESS_QA=1`, the engine also verifies at every
+  iteration boundary — before the iteration's first dispatch — that THIS CLI
+  was launched display-less (its `/proc/<pid>/environ` carries neither
+  `DISPLAY` nor `WAYLAND_DISPLAY`), because the Chrome MCP that serves your
+  browser QA inherits that environment and would otherwise run a headed
+  browser. A display-bound or unverifiable pump pauses `AWAITING_HOST_GUARD`
+  (resumable); the only remedy is to relaunch through
+  `scripts/automation/host-guard-exec.sh claude` (it strips both names) and
+  `/goal-resume`. `CHAIN_BQA_HEADED=1` is the headed debugging escape.
 
 Optional belt-and-braces: launching the CLI through
 `scripts/automation/host-guard-exec.sh claude` confines it from birth and also
