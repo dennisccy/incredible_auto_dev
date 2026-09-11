@@ -184,6 +184,16 @@ _replay_lane_mark_skipped_infra() {
 # $ITER_DIR/browser-infra.json separately and scores the listed journeys
 # partial(pending-infra). All call sites gate on CHAIN_BQA_PREFLIGHT
 # (default false — an absent token is byte-for-byte today's behavior).
+#
+# TARGET-AWARE (2026-09): the post-scan classifies the RAW primary artifact
+# ($_llm_out — never the merged file, whose replay rows have a different
+# provenance) PER JOURNEY the dispatch owed fresh evidence for, so the token
+# lists EXACTLY the journeys whose required fresh browser attempt was blocked
+# by infra. A replay PASS for a stable journey can no longer suppress
+# attribution for a different target (the old whole-file "any PASS/FAIL row →
+# not infra" predicate did exactly that), and a journey the primary DID verify
+# is never tokenized because a sibling was blocked. The same classifier backs
+# the merge's fresh-evidence coverage contract (replay_lane_merge_results).
 
 # bqa_services_probe — pure probe, never boots. Backend health URL first, then
 # the frontend. Ready = any HTTP status (same permissive regex as
@@ -252,20 +262,46 @@ PY
   fi
 }
 
-# bqa_results_infra_reason <merged-results-file>
-# Post-scan classifier for mid-run browser death (which no preflight can
-# catch): succeeds (and echoes the reason) ONLY when the results contain at
-# least one row, NO PASS/FAIL row, and an explicit browser-infra taxonomy
-# reason (demo_runner's "browser infrastructure failure" / a Chrome readiness
-# error). Deliberately conservative: legitimate SKIPs (single-service
-# projects, frontend-less iterations) must never be tokenized — a false
-# negative just means today's behavior.
-bqa_results_infra_reason() {
-  local _br_f="$1"
-  [[ -f "$_br_f" ]] || return 1
-  grep -qE '\|[[:space:]]*(PASS|FAIL)[[:space:]]*\|' "$_br_f" && return 1
-  grep -qE '^\|' "$_br_f" || return 1
-  grep -m1 -oiE '(browser infrastructure failure|chrome (mcp )?did not become ready)[^|]*' "$_br_f" || return 1
+# bqa_classify_primary_results <raw-primary-results-file> <expected-journeys-space-sep>
+# Per-journey classification of the RAW primary browser-qa output against the
+# journeys that dispatch owed fresh evidence for. Prints one
+# "<J-NN>\t<PASS|FAIL|SKIP_INFRA|SKIP_OTHER|MISSING>\t<detail>" line per
+# expected journey (merge_ui_test_results.py classify — one parser, no model).
+# Only the explicit browser-infra taxonomy in the journey's OWN row/section is
+# SKIP_INFRA; a sibling journey's PASS/FAIL never changes a journey's class;
+# MISSING and SKIP_OTHER are never infra — except that a lane which produced
+# rows but no PASS/FAIL row anywhere and carries the taxonomy (Chrome never
+# started for the whole dispatch) attributes its unverified journeys to infra.
+# Fails closed: a classifier crash reports every journey MISSING (no token,
+# no PASS), never a guess.
+bqa_classify_primary_results() {
+  local _bc_raw="$1" _bc_set="$2" _bc_merge _bc_j
+  _bc_merge="${MERGE_RESULTS:-$_REPLAY_LANE_LIB_DIR/merge_ui_test_results.py}"
+  # shellcheck disable=SC2086  # word-splitting the journey list is the point
+  if ! python3 "$_bc_merge" classify "$_bc_raw" $_bc_set 2>/dev/null; then
+    for _bc_j in $_bc_set; do printf '%s\tMISSING\tclassifier failed\n' "$_bc_j"; done
+  fi
+}
+
+# bqa_primary_infra_scan <raw-primary-results-file> <expected-journeys-space-sep>
+# The REL-14 post-scan for mid-run browser death (which no preflight can
+# catch). Echoes "<infra-journeys-space-sep>\t<reason>" — EXACTLY the expected
+# journeys whose required fresh primary attempt was blocked by browser infra —
+# and returns 1 when there is none (no token; a false negative is today's
+# behavior). Legitimate SKIPs (single-service projects, frontend-less
+# iterations, contract reasons) and rows that simply never appeared are never
+# tokenized on their own. Callers pass the RAW primary artifact, never the
+# merged results file (replay rows there have a different provenance).
+bqa_primary_infra_scan() {
+  local _bs_j _bs_c _bs_d _bs_set="" _bs_reason=""
+  [[ -n "${2// /}" ]] || return 1
+  while IFS=$'\t' read -r _bs_j _bs_c _bs_d; do
+    [[ "$_bs_c" == "SKIP_INFRA" ]] || continue
+    _bs_set+="$_bs_j "
+    [[ -n "$_bs_reason" ]] || _bs_reason="$_bs_d"
+  done < <(bqa_classify_primary_results "$1" "$2")
+  [[ -n "${_bs_set// /}" ]] || return 1
+  printf '%s\t%s' "${_bs_set% }" "$_bs_reason"
 }
 
 # Partition Required-still-passing into replay (LINTABLE golden on file) vs LLM,
@@ -495,11 +531,26 @@ replay_lane_write_deferred_rows() {
 # canary verdicts beat the (possibly voided) replay rows, and the main LLM
 # lane still wins where it re-tested a journey. On merge failure, degrade to a
 # lane copy (LLM preferred) so the evaluator always has something to read.
+#
+# Fresh-evidence coverage contract (REL-14 target-aware): $3 = the journeys
+# the LLM (primary) dispatch owed fresh, id-keyed evidence for this iteration
+# (lean: LLM_JOURNEYS; full: the id-keyed regression set); $4 = "yes" when the
+# primary also owed test-plan-keyed evidence (full depth targets, UT-XX rows).
+# With either set, the merged headline is PASS only if every owed journey has a
+# fresh PASS row FROM THE PRIMARY LANE (a replay PASS never substitutes) and no
+# primary row is a browser-infra SKIP — otherwise SKIPPED (a real FAIL stays
+# FAIL). Both empty ⇒ the generic merge, byte-identical to before.
 replay_lane_merge_results() {
-  local _rl_out="$1" _rl_llm="$2"
-  local _rl_mid=()
+  local _rl_out="$1" _rl_llm="$2" _rl_required="${3:-}" _rl_floor="${4:-}"
+  local _rl_mid=() _rl_opts=() _rl_req_csv=""
   [[ -n "${CANARY_RESULTS:-}" && -f "${CANARY_RESULTS:-}" ]] && _rl_mid=("$CANARY_RESULTS")
-  if ! python3 "$MERGE_RESULTS" "$_rl_out" "$REGRESSION_RESULTS" ${_rl_mid[@]+"${_rl_mid[@]}"} "$_rl_llm"; then
+  if [[ -n "${_rl_required// /}" ]]; then
+    _rl_req_csv="$(echo "$_rl_required" | tr ' ' '\n' | grep -E '^J-[0-9]+$' | sort -u | tr '\n' ',' | sed 's/,$//' || true)"
+    [[ -n "$_rl_req_csv" ]] && _rl_opts+=(--required-primary "$_rl_req_csv")
+  fi
+  [[ "$_rl_floor" == "yes" ]] && _rl_opts+=(--primary-lane-floor)
+  if ! python3 "$MERGE_RESULTS" "$_rl_out" "$REGRESSION_RESULTS" ${_rl_mid[@]+"${_rl_mid[@]}"} "$_rl_llm" \
+        --primary-lane "$_rl_llm" ${_rl_opts[@]+"${_rl_opts[@]}"}; then
     _replay_lane_warn "results merge failed — falling back to a lane output."
     if [[ -f "$_rl_llm" ]]; then cp "$_rl_llm" "$_rl_out" 2>/dev/null || true
     elif [[ -f "$REGRESSION_RESULTS" ]]; then cp "$REGRESSION_RESULTS" "$_rl_out" 2>/dev/null || true; fi

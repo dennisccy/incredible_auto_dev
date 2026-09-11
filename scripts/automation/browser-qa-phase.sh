@@ -288,6 +288,8 @@ _use_replay="no"; R_REPLAY=""; REPLAY_FAILED=""
 R_LLM=""
 REQUIRED_JOURNEYS=""
 _llm_out="$UI_TEST_RESULTS"
+_llm_regr_set=""
+_bqa_floor="no"
 _goal_lanes_note=""
 if [[ "$PHASE" =~ ^goal-(.+)-iter-[0-9]+$ ]]; then
   GOAL_REPLAY_ACTIVE="yes"
@@ -310,6 +312,11 @@ if [[ "$PHASE" =~ ^goal-(.+)-iter-[0-9]+$ ]]; then
     declare -F iter_budget_trim_event >/dev/null 2>&1 && iter_budget_trim_event "replay-narrow"
   fi
   _llm_regr_set="$(replay_lane_llm_regression_set)"
+  # Fresh-evidence obligations for the merge: the regression set is id-keyed
+  # (the addendum asks for UT-J-NN rows), the targets are test-plan-keyed
+  # (UT-XX rows) — so targets are owed at LANE level (the primary lane must
+  # carry fresh PASS rows and no browser-infra SKIP row).
+  [[ -n "${_bqa_targets// /}" ]] && _bqa_floor="yes"
   # TOKEN-10: journey definitions for the regression lane come from a sliced
   # goal view — targets ∪ this run's LLM regression set stay verbatim; only
   # replay-covered/stable journeys are digested. Bare call: sets
@@ -472,24 +479,33 @@ if [[ "$GOAL_REPLAY_ACTIVE" == "yes" ]]; then
     warn_missing_evidence "browser-qa-agent" "$_llm_out"
   fi
   if [[ "$_use_replay" == "yes" ]]; then
-    replay_lane_merge_results "$UI_TEST_RESULTS" "$_llm_out"
+    # The merged headline is PASS only when the LLM lane delivered the fresh
+    # evidence it owed: a PASS row for every id-keyed regression journey it
+    # was asked to run, fresh PASS rows for the test plan (targets), and no
+    # browser-infra SKIP row — a replay PASS never stands in for those.
+    replay_lane_merge_results "$UI_TEST_RESULTS" "$_llm_out" "$_llm_regr_set" "$_bqa_floor"
     replay_lane_write_deferred_rows "$UI_TEST_RESULTS"
   fi
   replay_lane_golden_coverage "$UI_TEST_RESULTS" "$PHASE"
 fi
 
 # REL-14 post-scan (same knob): a dispatch that returned but left no results
-# file (mid-run browser death; quota pauses excluded) or an all-SKIP results
-# file carrying an explicit browser-infra reason also earns the token — no
-# preflight can catch a Chrome that dies mid-run. Goal-session iterations only.
+# file (mid-run browser death; quota pauses excluded) earns the token for the
+# whole owed set; otherwise the RAW LLM output ($_llm_out — never the merged
+# file) is classified PER JOURNEY in the owed set (targets + the id-keyed
+# regression journeys) and the token lists exactly the journeys whose fresh
+# browser attempt was blocked by infra. Test-plan-keyed target rows (UT-XX)
+# cannot be attributed by journey unless the Name cell carries the J-NN token,
+# so a target is tokenized only when the whole lane died. Goal-session
+# iterations only.
 if [[ "${CHAIN_BQA_PREFLIGHT:-false}" == "true" && "$_bqa_infra_blocked" != "yes" \
       && "$GOAL_REPLAY_ACTIVE" == "yes" && -n "${GOAL_SESSION_DIR:-}" && -n "${GOAL_ITER_INDEX:-}" ]]; then
   if [[ ! -f "$_llm_out" && $_bqa_rc -ne ${QUOTA_EXHAUSTED_EXIT_CODE:-75} ]]; then
     bqa_write_infra_token "$GOAL_SESSION_DIR/iter-$GOAL_ITER_INDEX" "$_bqa_tok_set" \
       "browser-qa dispatch returned rc=$_bqa_rc with no results file" "postscan-missing"
-  elif _bqa_infra_reason="$(bqa_results_infra_reason "$UI_TEST_RESULTS")"; then
-    bqa_write_infra_token "$GOAL_SESSION_DIR/iter-$GOAL_ITER_INDEX" "$_bqa_tok_set" \
-      "$_bqa_infra_reason" "postscan"
+  elif _bqa_infra_scan="$(bqa_primary_infra_scan "$_llm_out" "$_bqa_tok_set")"; then
+    bqa_write_infra_token "$GOAL_SESSION_DIR/iter-$GOAL_ITER_INDEX" "${_bqa_infra_scan%%$'\t'*}" \
+      "${_bqa_infra_scan#*$'\t'}" "postscan"
   fi
 fi
 

@@ -9,8 +9,12 @@
 #   bqa_write_infra_token     — $ITER_DIR/browser-infra.json {journeys, reason,
 #                               attempts, detected_by}; attempts carries across
 #                               iterations via CHAIN_BQA_PREV_ATTEMPTS
-#   bqa_results_infra_reason  — post-scan classifier: results with NO PASS/FAIL
-#                               rows AND an infra-taxonomy reason → echoes reason
+#   bqa_classify_primary_results — per-journey classifier over the RAW primary
+#                               browser results (PASS|FAIL|SKIP_INFRA|SKIP_OTHER|
+#                               MISSING; merge_ui_test_results.py classify)
+#   bqa_primary_infra_scan    — post-scan: the SKIP_INFRA subset of the journeys
+#                               the primary dispatch owed + the reason (the
+#                               browser-infra token lists EXACTLY these)
 #
 # The token is OUT-OF-BAND by design: the merged ui-test-results verdict enum
 # must stay exactly PASS|FAIL|SKIPPED (REL-5 invariant; checkpoint greps parse
@@ -148,7 +152,13 @@ else
   assert "token: CHAIN_BQA_PREV_ATTEMPTS=1 -> attempts=2 (cross-iteration counter)" "fail"
 fi
 
-# ── bqa_results_infra_reason (post-scan classifier) ───────────────────────────
+# ── bqa_primary_infra_scan (target-aware post-scan classifier) ───────────────
+# The classifier reads the RAW primary browser results and answers, per journey
+# the dispatch owed fresh evidence for, what happened to THAT journey. Before
+# this existed the post-scan was a whole-file predicate ("any PASS/FAIL row
+# anywhere → not infra") run over the MERGED results, so a deterministic-replay
+# PASS for a stable journey silently suppressed infra attribution for a
+# different target that Chrome never reached — the exact incident shape.
 INFRA_MD="$WORK/results-infra.md"
 cat > "$INFRA_MD" <<'EOF'
 **Browser QA Verdict:** SKIPPED
@@ -163,19 +173,54 @@ cat > "$MIXED_MD" <<'EOF'
 | UT-J-04 | compute button | PASS | shot.png |
 | UT-J-05 | resume sweep | SKIP | browser infrastructure failure: crash |
 EOF
-reason_out="$( ( set -euo pipefail; source "$LIB"; bqa_results_infra_reason "$INFRA_MD" ) 2>/dev/null || true )"
-[[ "$reason_out" == *"browser infrastructure failure"* ]] \
-  && assert "classifier: all-SKIP + infra taxonomy -> echoes reason" "pass" \
-  || assert "classifier: all-SKIP + infra taxonomy -> echoes reason (got '$reason_out')" "fail"
-if ( set -euo pipefail; source "$LIB"; bqa_results_infra_reason "$MIXED_MD" ) >/dev/null 2>&1; then
-  assert "classifier: PASS row present -> 1 (never tokenizes real results)" "fail"
+OTHER_MD="$WORK/results-other.md"
+cat > "$OTHER_MD" <<'EOF'
+**Browser QA Verdict:** SKIPPED
+
+| UT-J-04 | compute button | SKIP | prerequisite data missing — contract reason |
+EOF
+scan() {  # scan <file> <expected-journeys> → "<journeys>\t<reason>" on stdout; rc 1 = no infra journey
+  ( set -euo pipefail; source "$LIB"; bqa_primary_infra_scan "$1" "$2" ) 2>/dev/null
+}
+scan_out="$(scan "$INFRA_MD" "J-04 J-05" || true)"
+[[ "${scan_out%%$'\t'*}" == "J-04 J-05" && "${scan_out#*$'\t'}" == *"did not become ready"* ]] \
+  && assert "scan: all targets infra-SKIP -> both journeys + the taxonomy reason" "pass" \
+  || assert "scan: all targets infra-SKIP -> both journeys + the taxonomy reason (got '$scan_out')" "fail"
+# The old whole-file rule returned "not infra" here because J-04 PASSed. That
+# assertion encoded the defect: a PASS for one journey must never suppress
+# browser-infra attribution for a DIFFERENT journey the dispatch owed.
+scan_out="$(scan "$MIXED_MD" "J-04 J-05" || true)"
+[[ "${scan_out%%$'\t'*}" == "J-05" ]] \
+  && assert "scan: PASS + infra-SKIP -> token names ONLY the infra-blocked journey (J-05)" "pass" \
+  || assert "scan: PASS + infra-SKIP -> token names ONLY the infra-blocked journey (got '$scan_out')" "fail"
+if scan "$OTHER_MD" "J-04" >/dev/null; then
+  assert "scan: non-infra SKIP -> rc 1 (legitimate SKIPs are never tokenized)" "fail"
 else
-  assert "classifier: PASS row present -> 1 (never tokenizes real results)" "pass"
+  assert "scan: non-infra SKIP -> rc 1 (legitimate SKIPs are never tokenized)" "pass"
 fi
-if ( set -euo pipefail; source "$LIB"; bqa_results_infra_reason "$WORK/nope.md" ) >/dev/null 2>&1; then
-  assert "classifier: missing file -> 1" "fail"
+if scan "$MIXED_MD" "J-04 J-09" >/dev/null; then
+  assert "scan: a journey with NO row in a lane that has real results is not fabricated as infra" "fail"
 else
-  assert "classifier: missing file -> 1" "pass"
+  assert "scan: a journey with NO row in a lane that has real results is not fabricated as infra" "pass"
+fi
+if scan "$WORK/nope.md" "J-04" >/dev/null; then
+  assert "scan: missing file -> rc 1" "fail"
+else
+  assert "scan: missing file -> rc 1" "pass"
+fi
+if scan "$INFRA_MD" "" >/dev/null; then
+  assert "scan: empty expected set -> rc 1 (nothing owed, nothing tokenized)" "fail"
+else
+  assert "scan: empty expected set -> rc 1 (nothing owed, nothing tokenized)" "pass"
+fi
+cls_out="$( ( set -euo pipefail; source "$LIB"; bqa_classify_primary_results "$MIXED_MD" "J-04 J-05 J-09" ) 2>/dev/null || true )"
+[[ "$(printf '%s\n' "$cls_out" | awk -F'\t' '{print $1":"$2}' | tr '\n' ' ')" == "J-04:PASS J-05:SKIP_INFRA J-09:MISSING " ]] \
+  && assert "classify: per-journey classes PASS / SKIP_INFRA / MISSING" "pass" \
+  || assert "classify: per-journey classes PASS / SKIP_INFRA / MISSING (got: $(printf '%s' "$cls_out" | tr '\n\t' ' :'))" "fail"
+if ( set -euo pipefail; source "$LIB"; declare -F bqa_results_infra_reason ) >/dev/null 2>&1; then
+  assert "classify: the whole-file bqa_results_infra_reason predicate is gone" "fail"
+else
+  assert "classify: the whole-file bqa_results_infra_reason predicate is gone" "pass"
 fi
 
 # ── wiring: goal-iter-lean.sh (lean lane) ─────────────────────────────────────
@@ -189,6 +234,12 @@ grep -q 'bqa_write_infra_token' "$GIL" \
 grep -q 'CHAIN_BQA_MAKEUP_JOURNEYS' "$GIL" \
   && assert "wiring(lean): make-up journeys unioned into the browser set" "pass" \
   || assert "wiring(lean): make-up journeys unioned into the browser set" "fail"
+grep -q 'bqa_primary_infra_scan "\$_llm_out" "\$LLM_JOURNEYS"' "$GIL" && ! grep -q 'bqa_results_infra_reason' "$GIL" \
+  && assert "wiring(lean): post-scan classifies the RAW primary output (\$_llm_out) against the owed set, never the merged file" "pass" \
+  || assert "wiring(lean): post-scan classifies the RAW primary output (\$_llm_out) against the owed set, never the merged file" "fail"
+grep -q 'replay_lane_merge_results "\$UI_TEST_RESULTS" "\$_llm_out" "\$LLM_JOURNEYS"' "$GIL" \
+  && assert "wiring(lean): the merge carries the fresh-primary obligation (LLM_JOURNEYS)" "pass" \
+  || assert "wiring(lean): the merge carries the fresh-primary obligation (LLM_JOURNEYS)" "fail"
 [[ "$(grep -c "grep -oE 'PASS|FAIL|SKIPPED'" "$GIL")" -ge 4 ]] \
   && assert "wiring(lean): all 4 checkpoint verdict greps still parse PASS|FAIL|SKIPPED" "pass" \
   || assert "wiring(lean): all 4 checkpoint verdict greps still parse PASS|FAIL|SKIPPED" "fail"
@@ -201,6 +252,12 @@ grep -q 'CHAIN_BQA_PREFLIGHT' "$BQP" \
 grep -q 'bqa_write_infra_token' "$BQP" \
   && assert "wiring(full): token writer called (goal mode)" "pass" \
   || assert "wiring(full): token writer called (goal mode)" "fail"
+grep -q 'bqa_primary_infra_scan "\$_llm_out" "\$_bqa_tok_set"' "$BQP" && ! grep -q 'bqa_results_infra_reason' "$BQP" \
+  && assert "wiring(full): post-scan classifies the RAW primary output against the owed set, never the merged file" "pass" \
+  || assert "wiring(full): post-scan classifies the RAW primary output against the owed set, never the merged file" "fail"
+grep -q 'replay_lane_merge_results "\$UI_TEST_RESULTS" "\$_llm_out" "\$_llm_regr_set" "\$_bqa_floor"' "$BQP" \
+  && assert "wiring(full): the merge carries the id-keyed regression obligation + the plan-keyed lane floor" "pass" \
+  || assert "wiring(full): the merge carries the id-keyed regression obligation + the plan-keyed lane floor" "fail"
 
 # ── wiring: run-goal.sh (evaluator input + make-up scheduling) ────────────────
 RG="$ENGINE_ROOT/scripts/automation/run-goal.sh"

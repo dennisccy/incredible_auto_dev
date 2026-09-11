@@ -35,6 +35,15 @@
 #   E. LLM dispatch dies without writing (rc 1) → the merge still produces
 #      ui-test-results.md from the replay lane's rows (not a SKIPPED stub) and
 #      the script propagates rc 1.
+#   F. REL-14 target-aware post-scan, the exact incident shape: replay PASSes
+#      J-01, the LLM lane's raw output says Chrome never started (every row a
+#      browser-infra SKIP) → browser-infra.json lists exactly the owed journey
+#      (J-02), the merged headline is SKIPPED (never PASS), the replay PASS row
+#      survives, exactly ONE browser-qa dispatch.
+#   G. Mixed: the test-plan row PASSes, the id-keyed regression journey J-02 is
+#      an infra-SKIP → token names ONLY J-02, headline SKIPPED, one dispatch.
+#   H. Healthy with the knob on → merged PASS, NO token, one dispatch (the
+#      healthy path's dispatch count is unchanged by the classifier).
 #
 # No API calls; a few seconds per scenario.
 #
@@ -171,18 +180,35 @@ cat > "$STUB_DIR/claude" <<'EOF'
 #!/usr/bin/env bash
 prompt="$*"
 printf '%s\n' "$prompt" > "$PROMPT_OUT"
+[[ -n "${STUB_CALLS:-}" ]] && echo 1 >> "$STUB_CALLS"
 if [[ -n "${STUB_BQA_RC:-}" ]]; then exit "$STUB_BQA_RC"; fi
 out="$(printf '%s\n' "$prompt" | sed -n 's/^Write your results to: //p' | head -n1)"
 [[ -n "$out" ]] || exit 64
 also="$(printf '%s\n' "$prompt" | sed -n 's/^- ALSO execute these regression journeys this run: //p' | head -n1)"
+# Only the journey-set portion (before ". For each:") — the instruction text
+# that follows carries the literal example "UT-J-01", which is not a journey
+# this run was asked to execute (scenario B makes the same cut).
+also="${also%%. For each*}"
 journeys="$(printf '%s\n' "$also" | grep -oE 'J-[0-9]+' | sort -u | tr '\n' ' ' || true)"
+# STUB_BQA_INFRA: "" = every row PASS; "regr" = the id-keyed regression rows are
+# browser-infra SKIPs; "all" = the test-plan row too (Chrome never started).
+infra="browser infrastructure failure: Chrome did not become ready on port 9222 within 15000ms"
+mode="${STUB_BQA_INFRA:-}"
 {
-  printf '**Browser QA Verdict:** PASS\n\n'
+  if [[ "$mode" == "all" ]]; then printf '**Browser QA Verdict:** SKIPPED\n\n'; else printf '**Browser QA Verdict:** PASS\n\n'; fi
   printf '| Test ID | Name | Type | Priority | Expected | Actual | Verdict | Evidence |\n'
   printf '|---|---|---|---|---|---|---|---|\n'
-  printf '| UT-01 | open the page | smoke | P1 | loads | stub verified | PASS | none |\n'
+  if [[ "$mode" == "all" ]]; then
+    printf '| UT-01 | open the page | smoke | P1 | loads | %s | SKIP | none |\n' "$infra"
+  else
+    printf '| UT-01 | open the page | smoke | P1 | loads | stub verified | PASS | none |\n'
+  fi
   for j in $journeys; do
-    printf '| UT-%s | llm %s | regression | P1 | works | stub re-verified | PASS | none |\n' "$j" "$j"
+    if [[ -n "$mode" ]]; then
+      printf '| UT-%s | llm %s | regression | P1 | works | %s | SKIP | none |\n' "$j" "$j" "$infra"
+    else
+      printf '| UT-%s | llm %s | regression | P1 | works | stub re-verified | PASS | none |\n' "$j" "$j"
+    fi
   done
 } > "$out"
 exit 0
@@ -333,6 +359,71 @@ unset STUB_BQA_RC
 grep -q '^| UT-J-01 ' "$UI_TEST_RESULTS" 2>/dev/null \
   && assert "E: merged results still carry the replay lane's rows (not a stub)" pass \
   || assert "E: merged results still carry the replay lane's rows (not a stub)" fail
+
+# ══ Scenario F: REL-14 target-aware post-scan — the exact incident shape ═════
+# Owed set = targets (J-02) ∪ the id-keyed regression journeys the LLM lane
+# runs (J-02; J-01 is replay-verified). Chrome never starts for the LLM lane.
+token_journeys() { python3 -c 'import json,sys; print(" ".join(json.load(open(sys.argv[1]))["journeys"]))' "$1" 2>/dev/null || echo "(no token)"; }
+make_sandbox F "goal-rlf-iter-7"
+golden rlf "J-01"
+export GOAL_SESSION_DIR="$SBX/runs/goal-session-rlf" GOAL_ITER_INDEX=7
+export CHAIN_BQA_PREFLIGHT=true STUB_BQA_INFRA=all STUB_CALLS="$WORK/calls-F"
+: > "$STUB_CALLS"
+run_bqa "$WORK/log-F.txt" F
+TOKEN_F="$GOAL_SESSION_DIR/iter-7/browser-infra.json"
+[[ "$BQA_RC" -eq 0 ]] && assert "F: incident iteration exits 0 (infra is not a product failure)" pass \
+  || { assert "F: incident iteration exits 0 (rc=$BQA_RC)" fail; sed -n '1,40p' "$WORK/log-F.txt"; }
+[[ "$(token_journeys "$TOKEN_F")" == "J-02" ]] \
+  && assert "F: browser-infra.json lists exactly the owed journey the LLM lane never reached (J-02)" pass \
+  || assert "F: browser-infra.json lists exactly the owed journey (got: $(token_journeys "$TOKEN_F"))" fail
+grep -q '"detected_by": "postscan"' "$TOKEN_F" 2>/dev/null \
+  && assert "F: token detected_by=postscan" pass || assert "F: token detected_by=postscan" fail
+grep -q '^\*\*Browser QA Verdict:\*\* SKIPPED' "$UI_TEST_RESULTS" 2>/dev/null \
+  && assert "F: merged headline is SKIPPED — the replay PASS cannot satisfy the LLM lane's obligation" pass \
+  || { assert "F: merged headline is SKIPPED — the replay PASS cannot satisfy the LLM lane's obligation" fail; head -12 "$UI_TEST_RESULTS" 2>/dev/null | sed 's/^/        /'; }
+grep -E '^\| UT-J-01 ' "$UI_TEST_RESULTS" 2>/dev/null | grep -qF '| PASS |' \
+  && assert "F: the replay PASS row (J-01) survives intact" pass \
+  || { assert "F: the replay PASS row (J-01) survives intact" fail; sed -n '1,20p' "$UI_TEST_RESULTS" 2>/dev/null | sed 's/^/        /'; grep -i 'replay\|merge\|lane' "$WORK/log-F.txt" | sed 's/^/        LOG: /' | head -20; }
+! grep -qF '| FAIL |' "$UI_TEST_RESULTS" 2>/dev/null \
+  && assert "F: no journey marked FAIL because of infra" pass \
+  || assert "F: no journey marked FAIL because of infra" fail
+[[ "$(wc -l < "$STUB_CALLS" | tr -dc 0-9)" == "1" ]] \
+  && assert "F: exactly ONE browser-qa dispatch (no retry, no second agent)" pass \
+  || assert "F: exactly ONE browser-qa dispatch (got $(wc -l < "$STUB_CALLS" | tr -dc 0-9))" fail
+
+# ══ Scenario G: mixed — plan row PASS, regression journey infra-SKIP ══════════
+make_sandbox G "goal-rlf-iter-8"
+golden rlf "J-01"
+export GOAL_ITER_INDEX=8 STUB_BQA_INFRA=regr STUB_CALLS="$WORK/calls-G"
+: > "$STUB_CALLS"
+run_bqa "$WORK/log-G.txt" G
+TOKEN_G="$GOAL_SESSION_DIR/iter-8/browser-infra.json"
+[[ "$(token_journeys "$TOKEN_G")" == "J-02" ]] \
+  && assert "G: token names ONLY the infra-blocked journey (J-02); the passing plan row is not tokenized" pass \
+  || assert "G: token names ONLY the infra-blocked journey (got: $(token_journeys "$TOKEN_G"))" fail
+grep -q '^\*\*Browser QA Verdict:\*\* SKIPPED' "$UI_TEST_RESULTS" 2>/dev/null \
+  && assert "G: merged headline SKIPPED while an owed regression journey is infra-blocked" pass \
+  || assert "G: merged headline SKIPPED while an owed regression journey is infra-blocked" fail
+grep -E '^\| UT-01 ' "$UI_TEST_RESULTS" 2>/dev/null | grep -qF '| PASS |' \
+  && assert "G: the fresh plan-row PASS is recorded" pass || assert "G: the fresh plan-row PASS is recorded" fail
+[[ "$(wc -l < "$STUB_CALLS" | tr -dc 0-9)" == "1" ]] \
+  && assert "G: exactly ONE browser-qa dispatch" pass || assert "G: exactly ONE browser-qa dispatch" fail
+
+# ══ Scenario H: healthy with the knob on — PASS, no token, one dispatch ═══════
+make_sandbox H "goal-rlf-iter-9"
+golden rlf "J-01"
+export GOAL_ITER_INDEX=9 STUB_CALLS="$WORK/calls-H"
+unset STUB_BQA_INFRA
+: > "$STUB_CALLS"
+run_bqa "$WORK/log-H.txt" H
+[[ ! -f "$GOAL_SESSION_DIR/iter-9/browser-infra.json" ]] \
+  && assert "H: healthy run writes NO browser-infra token" pass || assert "H: healthy run writes NO browser-infra token" fail
+grep -q '^\*\*Browser QA Verdict:\*\* PASS' "$UI_TEST_RESULTS" 2>/dev/null && ! grep -q 'Fresh-evidence coverage' "$UI_TEST_RESULTS" \
+  && assert "H: healthy run merges PASS with no coverage note" pass || assert "H: healthy run merges PASS with no coverage note" fail
+[[ "$(wc -l < "$STUB_CALLS" | tr -dc 0-9)" == "1" ]] \
+  && assert "H: exactly ONE browser-qa dispatch — the healthy path's dispatch count is unchanged" pass \
+  || assert "H: exactly ONE browser-qa dispatch (got $(wc -l < "$STUB_CALLS" | tr -dc 0-9))" fail
+unset CHAIN_BQA_PREFLIGHT STUB_CALLS GOAL_SESSION_DIR GOAL_ITER_INDEX
 
 echo ""
 echo "=== Results: $PASS passed, $FAIL failed ==="
