@@ -34,7 +34,10 @@
 #      deterministic achievement gate read (LLM listed last → wins on any
 #      journey both lanes touched), then reconcile the raw replay artifact so
 #      an overturned replay FAIL cannot survive on disk as a contradiction
-#      (replay_lane_merge_results).
+#      (replay_lane_merge_results). When the lane did NOT run, the LLM file is
+#      the results file and replay_lane_finalize_results applies the same
+#      fresh-evidence coverage contract to it in place — coverage honesty is
+#      independent of replay activity.
 #
 # Escape hatch: CHAIN_REGRESSION_REPLAY=false routes the whole regression set
 # to the LLM lane at both depths (replay_lane_llm_regression_set).
@@ -560,6 +563,31 @@ replay_lane_merge_results() {
     return 0
   fi
   replay_lane_reconcile_regression_artifact "$_rl_out"
+}
+
+# replay_lane_finalize_results <results-file> <required-primary-space-sep>
+# The no-replay counterpart of replay_lane_merge_results: when the replay lane
+# did not run this iteration (no goldens, CHAIN_REGRESSION_REPLAY=false,
+# frontend down, lane crash/SKIPPED-INFRA fallback), the LLM lane's file IS
+# ui-test-results.md and nothing merges — so the SAME fresh-evidence coverage
+# contract (merge_ui_test_results.py finalize) is applied to that artifact in
+# place: the headline is recomputed from the rows (a FAIL row outranks an
+# agent-written PASS), every owed journey must have its fresh PASS row, and a
+# gap turns the headline SKIPPED with the coverage note directly under it. The
+# agent's rows and sections are preserved byte-for-byte; a satisfied contract
+# changes nothing. Replay activity never decides whether coverage is enforced.
+# No-op when the file is absent (the SKIPPED-stub path owns that) or nothing
+# is owed. A finalizer failure is loud (warn) — never silent.
+replay_lane_finalize_results() {
+  local _rf_out="$1" _rf_required="${2:-}" _rf_csv _rf_merge
+  [[ -f "$_rf_out" && -n "${_rf_required// /}" ]] || return 0
+  _rf_csv="$(echo "$_rf_required" | tr ' ' '\n' | grep -E '^J-[0-9]+$' | sort -u | tr '\n' ',' | sed 's/,$//' || true)"
+  [[ -n "$_rf_csv" ]] || return 0
+  _rf_merge="${MERGE_RESULTS:-$_REPLAY_LANE_LIB_DIR/merge_ui_test_results.py}"
+  if ! python3 "$_rf_merge" finalize "$_rf_out" --required-primary "$_rf_csv"; then
+    _replay_lane_warn "fresh-evidence finalization FAILED for $(basename "$_rf_out") — its headline is UNVERIFIED against the owed set ($_rf_csv). Reproduce: python3 $_rf_merge finalize $_rf_out --required-primary $_rf_csv"
+  fi
+  return 0
 }
 
 # Reconcile the RAW replay artifact after a merge: any journey the replay lane

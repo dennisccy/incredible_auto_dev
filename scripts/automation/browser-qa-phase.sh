@@ -486,6 +486,12 @@ if [[ "$GOAL_REPLAY_ACTIVE" == "yes" ]]; then
     # never stands in for any of them (headline SKIPPED, never PASS).
     replay_lane_merge_results "$UI_TEST_RESULTS" "$_llm_out" "$_bqa_tok_set"
     replay_lane_write_deferred_rows "$UI_TEST_RESULTS"
+  else
+    # No replay lane this run: the LLM lane's file IS ui-test-results.md and
+    # nothing merges — the SAME coverage contract finalizes it in place over the
+    # owed set (targets via their UT-J-NN rows + the id-keyed regression set).
+    # Coverage honesty never depends on replay activity.
+    replay_lane_finalize_results "$UI_TEST_RESULTS" "$_bqa_tok_set"
   fi
   replay_lane_golden_coverage "$UI_TEST_RESULTS" "$PHASE"
 fi

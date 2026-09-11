@@ -19,6 +19,7 @@ FAIL that the LLM later re-confirmed as PASS would wrongly keep the file at FAIL
 Usage:
   merge_ui_test_results.py <out.md> <in1.md> [<in2.md> ...]
       [--required-primary J-04,J-13] [--primary-lane <path>] [--primary-lane-floor]
+  merge_ui_test_results.py finalize <results.md> --required-primary J-04,J-13 [--primary-lane-floor]
   merge_ui_test_results.py classify <raw-primary.md> <J-XX> [<J-YY> ...]
   merge_ui_test_results.py void <results.md> <J-XX> [<J-YY> ...]
   merge_ui_test_results.py self-test
@@ -51,6 +52,18 @@ A replay PASS row never satisfies a fresh-primary obligation; replay-lane rows
 the LAST input unless --primary-lane names it (an absent primary file = every
 required journey MISSING). Without the flags the merger is byte-identical to
 before.
+
+The `finalize` subcommand applies the SAME contract to a single artifact — the
+no-replay case, where the LLM lane's file IS ui-test-results.md and no merge
+runs. Coverage honesty is a Goal Mode browser-result invariant, not a replay
+feature: whether the replay lane ran, was skipped for lack of goldens, crashed,
+or was disabled with CHAIN_REGRESSION_REPLAY=false must never decide whether
+the owed targets are checked. `finalize` rewrites ONLY the headline line
+(recomputed from the rows exactly as the merge does, so a FAIL row outranks an
+agent-written PASS headline) and the single `**Fresh-evidence coverage:**` note
+line directly under it (inserted, refreshed, or removed); every other byte —
+the agent's rows, sections, evidence paths — is preserved. A satisfied contract
+leaves the file byte-identical; an empty owed set is a no-op.
 
 The `classify` subcommand is the per-journey classifier behind that contract
 and behind the REL-14 post-scan browser-infra token: for each expected journey
@@ -285,6 +298,57 @@ def coverage_gaps(primary_text: "str | None", required_primary: "list[str]", lan
     return gaps
 
 
+def apply_coverage_contract(overall: str, primary_text: "str | None", required_primary: "list[str]",
+                            lane_floor: bool = False) -> "tuple[str, list[str]]":
+    """The ONE fresh-evidence coverage decision, shared by the merge and by
+    `finalize`: FAIL is never overridden; with an active contract (a non-empty
+    owed set, or the optional lane floor) any gap turns the headline into
+    SKIPPED. Returns (overall, gaps)."""
+    required_primary = [j for j in (required_primary or []) if j]
+    if overall == "FAIL" or not (required_primary or lane_floor):
+        return overall, []
+    gaps = coverage_gaps(primary_text, required_primary, lane_floor)
+    return ("SKIPPED" if gaps else overall), gaps
+
+
+def coverage_note(gaps: "list[str]") -> str:
+    """The single machine-and-human-readable line that names the undelivered
+    obligation (same text in merged and finalized artifacts)."""
+    return ("**Fresh-evidence coverage:** INCOMPLETE — the primary browser dispatch owed "
+            "fresh evidence this iteration that it did not deliver: " + "; ".join(gaps) +
+            ". Replay PASS rows below do not satisfy that obligation (the headline is "
+            "SKIPPED, not PASS); no journey is marked FAIL on this basis.")
+
+
+_HEADLINE_LINE_RE = re.compile(r"^\*\*Browser QA Verdict:\*\*")
+_COVERAGE_LINE_RE = re.compile(r"^\*\*Fresh-evidence coverage:\*\*")
+
+
+def finalize_text(text: str, required_primary: "list[str]", lane_floor: bool = False) -> "tuple[str, str, list[str]]":
+    """Apply the coverage contract to ONE results artifact in place (module
+    docstring, `finalize`). Returns (new_text, overall, gaps). Only the headline
+    line and the coverage note line directly under it change; a satisfied
+    contract (or an empty owed set) returns the text unchanged."""
+    required_primary = [j for j in (required_primary or []) if j]
+    if not (required_primary or lane_floor):
+        return text, file_top_verdict(text), []
+    rows = parse_rows(text)
+    overall = compute_overall(rows, [file_top_verdict(text)])
+    overall, gaps = apply_coverage_contract(overall, text, required_primary, lane_floor)
+    lines = text.splitlines()
+    kept = [l for l in lines if not _COVERAGE_LINE_RE.match(l)]
+    head_idx = next((i for i, l in enumerate(kept) if _HEADLINE_LINE_RE.match(l)), None)
+    headline = f"**Browser QA Verdict:** {overall}"
+    if head_idx is None:
+        new_lines = [headline] + ([coverage_note(gaps)] if gaps else []) + [""] + kept
+    else:
+        new_lines = kept[:head_idx] + [headline] + ([coverage_note(gaps)] if gaps else []) + kept[head_idx + 1:]
+    new_text = "\n".join(new_lines) + ("\n" if text.endswith("\n") or not text else "")
+    if new_lines == lines:
+        return text, overall, gaps      # byte-identical, including line endings
+    return new_text, overall, gaps
+
+
 def compute_overall(rows: "list[dict]", file_verdicts: "list[str] | None" = None) -> str:
     """Overall verdict. Surviving rows are authoritative; only when NO rows could
     be parsed do we fall back to the input files' headline verdicts."""
@@ -331,13 +395,8 @@ def merge(texts: "list[str]", required_primary: "list[str] | None" = None,
             by_id[tid] = row  # later wins
     rows = [by_id[t] for t in order]
     overall = compute_overall(rows, file_verdicts)
-    required_primary = [j for j in (required_primary or []) if j]
-    gaps: list[str] = []
-    if overall != "FAIL" and (required_primary or lane_floor):
-        primary_text = texts[primary_index] if primary_index is not None and 0 <= primary_index < len(texts) else None
-        gaps = coverage_gaps(primary_text, required_primary, lane_floor)
-        if gaps:
-            overall = "SKIPPED"
+    primary_text = texts[primary_index] if primary_index is not None and 0 <= primary_index < len(texts) else None
+    overall, gaps = apply_coverage_contract(overall, primary_text, required_primary or [], lane_floor)
     n_pass = sum(1 for r in rows if r["verdict"] == "PASS")
     n_skip = sum(1 for r in rows if r["verdict"] == "SKIP")
     total = len(rows)
@@ -348,10 +407,7 @@ def merge(texts: "list[str]", required_primary: "list[str] | None" = None,
            "", "---", "",
            f"**Browser QA Verdict:** {overall}", ""]
     if gaps:
-        out += ["**Fresh-evidence coverage:** INCOMPLETE — the primary browser dispatch owed "
-                "fresh evidence this iteration that it did not deliver: " + "; ".join(gaps) +
-                ". Replay PASS rows below do not satisfy that obligation (the headline is "
-                "SKIPPED, not PASS); no journey is marked FAIL on this basis.", ""]
+        out += [coverage_note(gaps), ""]
     out += [f"**Overall:** {n_pass}/{total} journeys passed ({n_skip} skipped)",
             "", "---", "", "## Results Table", "",
            "| Test ID | Name | Type | Priority | Expected | Actual | Verdict | Evidence |",
@@ -448,6 +504,29 @@ def cmd_void(path: str, journeys: "list[str]") -> int:
     return 0
 
 
+def cmd_finalize(path: str, required_primary: "list[str]", lane_floor: bool) -> int:
+    """Finalize one results artifact in place (see finalize_text). rc 2 when the
+    file cannot be read/written; rc 0 otherwise (unchanged files are not
+    rewritten)."""
+    fp = Path(path)
+    try:
+        text = fp.read_text(encoding="utf-8")
+    except OSError as exc:
+        sys.stderr.write(f"[merge_ui_test_results] finalize: unreadable {path}: {exc}\n")
+        return 2
+    new_text, overall, gaps = finalize_text(text, required_primary, lane_floor)
+    if new_text != text:
+        try:
+            fp.write_text(new_text, encoding="utf-8")
+        except OSError as exc:
+            sys.stderr.write(f"[merge_ui_test_results] finalize: cannot write {path}: {exc}\n")
+            return 2
+    print(f"[merge_ui_test_results] finalized {fp} → {overall}"
+          f"{' (fresh-evidence gaps: ' + '; '.join(gaps) + ')' if gaps else ''}"
+          f"{'' if new_text != text else ' (unchanged)'}")
+    return 0
+
+
 def cmd_classify(path: str, journeys: "list[str]") -> int:
     """Print `<J-NN>\t<CLASS>\t<detail>` per expected journey. Always exits 0:
     an unreadable file classifies everything MISSING (the caller must fail
@@ -496,6 +575,12 @@ def main(argv: "list[str]") -> int:
             sys.stderr.write("usage: merge_ui_test_results.py classify <raw-primary.md> <J-XX> [...]\n")
             return 2
         return cmd_classify(argv[1], argv[2:])
+    if argv and argv[0] == "finalize":
+        fpos, fopts = _split_opts(argv[1:])
+        if len(fpos) != 1:
+            sys.stderr.write("usage: merge_ui_test_results.py finalize <results.md> --required-primary J-XX,... [--primary-lane-floor]\n")
+            return 2
+        return cmd_finalize(fpos[0], fopts["required_primary"], fopts["lane_floor"])
     pos, opts = _split_opts(argv)
     if len(pos) < 2:
         sys.stderr.write("usage: merge_ui_test_results.py <out.md> <in1.md> [<in2.md> ...] "
@@ -830,6 +915,72 @@ def _self_test() -> int:
                   f"| UT-J-01 | login | regression | P1 | e | {_VOID_NOTE} | SKIP | none |\n"
                   "| UT-J-02 | browse | regression | P1 | e | ok | PASS | b.png |\n")
         assert file_top_verdict(merge([voided, primary_ok], required_primary=["J-04", "J-13"], primary_index=1)) == "PASS"
+
+    # ── finalize: the SAME coverage contract over a single primary artifact ──
+    # (no replay lane → the LLM lane's file IS ui-test-results.md; the
+    # finalizer adjusts only the headline and the coverage note in place).
+    solo_missing = ("**Browser QA Verdict:** PASS\n\n## Results Table\n" + hdr +
+                    "| UT-01 | page loads | smoke | P1 | e | ok | PASS | a.png |\n"
+                    "| UT-J-04 | compute | journey | P1 | e | ok | PASS | c.png |\n\n"
+                    "## Environment\n- browser: chromium\n")
+
+    def rows_of(md):
+        return [l for l in md.splitlines() if l.startswith("| UT-")]
+
+    def t_finalize_missing_target():
+        new, overall, gaps = finalize_text(solo_missing, ["J-04", "J-13"])
+        assert overall == "SKIPPED" and file_top_verdict(new) == "SKIPPED", (overall, file_top_verdict(new))
+        assert any("J-13: MISSING" in g for g in gaps), gaps
+        assert "**Fresh-evidence coverage:** INCOMPLETE" in new and "J-13: MISSING" in new
+        assert rows_of(new) == rows_of(solo_missing), "rows must be byte-identical"
+        assert new.count("**Browser QA Verdict:**") == 1 and new.count("**Fresh-evidence coverage:**") == 1
+        assert "## Environment\n- browser: chromium" in new, "everything else untouched"
+        # only two lines differ: the headline, plus the inserted note line
+        added = [l for l in new.splitlines() if l not in solo_missing.splitlines()]
+        assert added == ["**Browser QA Verdict:** SKIPPED", [l for l in added if l.startswith("**Fresh-evidence")][0]], added
+
+    def t_finalize_satisfied_unchanged():
+        ok = solo_missing.replace("| UT-J-04 | compute | journey | P1 | e | ok | PASS | c.png |\n",
+                                  "| UT-J-04 | compute | journey | P1 | e | ok | PASS | c.png |\n"
+                                  "| UT-J-13 | sweep | journey | P1 | e | ok | PASS | d.png |\n")
+        new, overall, gaps = finalize_text(ok, ["J-04", "J-13"])
+        assert overall == "PASS" and gaps == [] and new == ok, "a satisfied contract leaves the file byte-identical"
+        # an empty owed set = contract inactive = untouched
+        assert finalize_text(solo_missing, [])[0] == solo_missing
+
+    def t_finalize_fail_dominates():
+        bad = solo_missing.replace("| UT-J-04 | compute | journey | P1 | e | ok | PASS | c.png |",
+                                   "| UT-J-04 | compute | journey | P1 | e | total wrong | FAIL | c.png |")
+        new, overall, gaps = finalize_text(bad, ["J-04", "J-13"])
+        assert overall == "FAIL" and file_top_verdict(new) == "FAIL", overall
+        assert "**Fresh-evidence coverage:**" not in new, "FAIL carries no coverage note"
+
+    def t_finalize_idempotent_and_refresh():
+        once, _, _ = finalize_text(solo_missing, ["J-04", "J-13"])
+        twice, _, _ = finalize_text(once, ["J-04", "J-13"])
+        assert twice == once, "finalizing twice changes nothing"
+        # a stale note from an earlier finalization is dropped once the
+        # contract is satisfied (the resume re-collected the missing row)
+        fixed = once.replace("| UT-J-04 | compute | journey | P1 | e | ok | PASS | c.png |\n",
+                             "| UT-J-04 | compute | journey | P1 | e | ok | PASS | c.png |\n"
+                             "| UT-J-13 | sweep | journey | P1 | e | ok | PASS | d.png |\n")
+        new, overall, _ = finalize_text(fixed, ["J-04", "J-13"])
+        assert overall == "PASS" and file_top_verdict(new) == "PASS" and "**Fresh-evidence coverage:**" not in new
+
+    def t_finalize_styled_or_missing_headline():
+        styled = solo_missing.replace("**Browser QA Verdict:** PASS", "**Browser QA Verdict:** **PASS**")
+        new, overall, _ = finalize_text(styled, ["J-04", "J-13"])
+        assert file_top_verdict(new) == "SKIPPED" and new.count("**Browser QA Verdict:**") == 1
+        headless = solo_missing.replace("**Browser QA Verdict:** PASS\n\n", "")
+        new, overall, _ = finalize_text(headless, ["J-04", "J-13"])
+        assert new.startswith("**Browser QA Verdict:** SKIPPED\n"), new[:80]
+        assert rows_of(new) == rows_of(headless)
+
+    check("finalize_missing_target", t_finalize_missing_target)
+    check("finalize_satisfied_unchanged", t_finalize_satisfied_unchanged)
+    check("finalize_fail_dominates", t_finalize_fail_dominates)
+    check("finalize_idempotent_and_refresh", t_finalize_idempotent_and_refresh)
+    check("finalize_styled_or_missing_headline", t_finalize_styled_or_missing_headline)
 
     check("classify_incident", t_classify_incident)
     check("merge_incident_not_pass", t_merge_incident_not_pass)

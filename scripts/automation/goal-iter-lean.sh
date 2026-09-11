@@ -916,6 +916,13 @@ fi
 if [[ "$_use_replay" == "yes" ]]; then
   replay_lane_merge_results "$UI_TEST_RESULTS" "$_llm_out" "$LLM_JOURNEYS"
   replay_lane_write_deferred_rows "$UI_TEST_RESULTS"
+else
+  # No replay lane this run (no goldens, hatch off, frontend down, lane
+  # fallback): the LLM lane's file IS ui-test-results.md and nothing merges —
+  # the SAME coverage contract finalizes it in place (headline recomputed from
+  # the rows, an owed journey without its fresh PASS row → SKIPPED + note; the
+  # agent's rows untouched). Coverage honesty never depends on replay activity.
+  replay_lane_finalize_results "$UI_TEST_RESULTS" "$LLM_JOURNEYS"
 fi
 
 # REL-14 post-scan (same knob): a dispatch that returned but left no results

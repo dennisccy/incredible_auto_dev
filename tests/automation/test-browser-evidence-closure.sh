@@ -31,6 +31,13 @@
 #       NO_STEADY_STATE_AGENT_CALL_INCREASE).
 #   S   structural pin: the new deterministic path (classifier + coverage
 #       contract) contains no agent-dispatch primitive at all.
+#   N6  LEAN with NO replay lane (Required-still-passing: none, no goldens →
+#       _use_replay=no, the LLM lane writes ui-test-results.md directly): J-04
+#       PASS + J-13 absent → headline SKIPPED, coverage note, no token, NO
+#       browser-qa checkpoint, dispatch sequence unchanged (FAILED on 913604b:
+#       the agent's PASS headline stood and the checkpoint was written).
+#   N7  LEAN no replay, both targets PASS → PASS, checkpoint written, same
+#       dispatch sequence.
 #
 # No API calls; a few seconds per scenario.
 #
@@ -62,8 +69,8 @@ cleanup() {
 trap cleanup EXIT
 
 # ── Sandbox builder (fresh per scenario; engine scripts embedded) ────────────
-make_sandbox() {
-  local tag="$1" n="$2"
+make_sandbox() {  # make_sandbox <tag> <n> [nogoldens] [<required line>]
+  local tag="$1" n="$2" goldens="${3:-goldens}" required="${4:-J-01, J-02}"
   SBX="$WORK/proj-$tag"
   mkdir -p "$SBX"
   cp -r "$ENGINE_ROOT/scripts" "$SBX/"
@@ -81,13 +88,13 @@ make_sandbox() {
 - none
 EOF
   ITER="goal-bectest-iter-$n"
-  cat > "$SBX/docs/phases/$ITER.md" <<'EOF'
+  cat > "$SBX/docs/phases/$ITER.md" <<EOF
 # Iteration spec
 ## Goal Mode Metadata
 - **Mode:** next
 - **Depth:** lean
 - **Target journeys:** J-04, J-13
-- **Required-still-passing:** J-01, J-02
+- **Required-still-passing:** $required
 ## IN SCOPE
 - compute + sweep (evidence-closure wiring test)
 EOF
@@ -99,9 +106,12 @@ EOF
   ITER_DIR="$GOAL_SESSION_DIR/iter-$n"
   mkdir -p "$ITER_DIR" "$GOAL_SESSION_DIR/journey-scripts"
   UI_TEST_RESULTS="$SBX/reports/phase-${ITER}-ui-test-results.md"
-  # Goldens for the stable journeys → the replay lane engages for J-01, J-02.
-  echo '{"journey":"J-01","steps":[]}' > "$GOAL_SESSION_DIR/journey-scripts/J-01.json"
-  echo '{"journey":"J-02","steps":[]}' > "$GOAL_SESSION_DIR/journey-scripts/J-02.json"
+  # Goldens for the stable journeys → the replay lane engages for J-01, J-02
+  # (omitted with "nogoldens": the LLM lane then writes the results directly).
+  if [[ "$goldens" != "nogoldens" ]]; then
+    echo '{"journey":"J-01","steps":[]}' > "$GOAL_SESSION_DIR/journey-scripts/J-01.json"
+    echo '{"journey":"J-02","steps":[]}' > "$GOAL_SESSION_DIR/journey-scripts/J-02.json"
+  fi
 
   # Stub demo_runner: lint ok; verify writes production-shaped PASS rows.
   cat > "$SBX/scripts/automation/lib/demo_runner.py" <<'PYEOF'
@@ -170,6 +180,7 @@ case "$agent" in
       v="PASS"
       for kv in ${STUB_BQA_VERDICTS:-}; do [[ "${kv%%=*}" == "$j" ]] && v="${kv#*=}"; done
       case "$v" in
+        ABSENT) continue ;;   # no row at all for this journey
         INFRA) rows+="| UT-$j | llm $j | journey | P1 | works | $infra | SKIP | none |"$'\n' ;;
         FAIL)  rows+="| UT-$j | llm $j | journey | P1 | works | button did nothing | FAIL | reports/qa/x.png |"$'\n'; any_fail=yes ;;
         *)     rows+="| UT-$j | llm $j | journey | P1 | works | stub verified | PASS | reports/qa/x.png |"$'\n'; any_pass=yes ;;
@@ -331,6 +342,31 @@ run_lean "$WORK/lean-R7.log"
   && assert "R7: dispatch sequence IDENTICAL to the incident run — NO_STEADY_STATE_AGENT_CALL_INCREASE" pass \
   || assert "R7: dispatch sequence (got: $(dispatches); R1 had: $R1_DISPATCHES)" fail
 unset CHAIN_BQA_PREFLIGHT
+
+# ══ N6: LEAN, no replay lane — J-04 PASS, J-13 absent ════════════════════════
+make_sandbox N6 6 nogoldens "none — no prior passing journeys"
+new_capture N6
+export CHAIN_BQA_PREFLIGHT=true STUB_BQA_VERDICTS="J-04=PASS J-13=ABSENT"
+run_lean "$WORK/lean-N6.log"
+[[ "$LEAN_RC" -eq 0 ]] && assert "N6: exits 0" pass || { assert "N6: exits 0 (rc=$LEAN_RC)" fail; sed -n '1,40p' "$WORK/lean-N6.log"; }
+! grep -q 'Regression (deterministic replay)' "$WORK/lean-N6.log" && [[ ! -f "$SBX/reports/phase-${ITER}-ui-test-results.llm.md" ]]   && assert "N6: no replay lane engaged — the LLM lane wrote ui-test-results.md directly (no merge)" pass   || assert "N6: no replay lane engaged — the LLM lane wrote ui-test-results.md directly (no merge)" fail
+[[ "$(headline "$UI_TEST_RESULTS")" == "SKIPPED" ]]   && assert "N6: lean no-replay J-04 PASS + J-13 absent → headline SKIPPED (the agent's PASS headline does not stand)" pass   || assert "N6: lean no-replay J-04 PASS + J-13 absent → headline SKIPPED (got: $(headline "$UI_TEST_RESULTS"))" fail
+grep -q '^\*\*Fresh-evidence coverage:\*\* INCOMPLETE.*J-13: MISSING' "$UI_TEST_RESULTS" 2>/dev/null   && assert "N6: deterministic coverage note names J-13 MISSING" pass   || assert "N6: deterministic coverage note names J-13 MISSING" fail
+[[ ! -f "$ITER_DIR/browser-infra.json" ]] && assert "N6: no browser-infra token" pass || assert "N6: no browser-infra token" fail
+[[ ! -f "$ITER_DIR/.steps/browser-qa.done" ]]   && assert "N6: browser-qa checkpoint NOT written (a resume re-collects J-13)" pass   || assert "N6: browser-qa checkpoint NOT written (a resume re-collects J-13)" fail
+[[ "$(row_verdict "$UI_TEST_RESULTS" J-04)" == "PASS" ]] && assert "N6: the agent's J-04 PASS row is preserved" pass || assert "N6: the agent's J-04 PASS row is preserved" fail
+[[ "$(dispatches)" == "$R1_DISPATCHES" ]] && assert "N6: dispatch sequence unchanged" pass || assert "N6: dispatch sequence unchanged (got: $(dispatches))" fail
+
+# ══ N7: LEAN, no replay lane — both targets PASS ═════════════════════════════
+make_sandbox N7 7 nogoldens "none — no prior passing journeys"
+new_capture N7
+export STUB_BQA_VERDICTS="J-04=PASS J-13=PASS"
+run_lean "$WORK/lean-N7.log"
+[[ "$(headline "$UI_TEST_RESULTS")" == "PASS" ]] && ! grep -q 'Fresh-evidence coverage' "$UI_TEST_RESULTS"   && assert "N7: lean no-replay both targets PASS → PASS, no coverage note" pass   || assert "N7: lean no-replay both targets PASS → PASS (got: $(headline "$UI_TEST_RESULTS"))" fail
+[[ -f "$ITER_DIR/.steps/browser-qa.done" ]] && assert "N7: browser-qa checkpoint written" pass || assert "N7: browser-qa checkpoint written" fail
+[[ ! -f "$ITER_DIR/browser-infra.json" ]] && assert "N7: no browser-infra token" pass || assert "N7: no browser-infra token" fail
+[[ "$(dispatches)" == "$R1_DISPATCHES" ]] && assert "N7: dispatch sequence unchanged" pass || assert "N7: dispatch sequence unchanged (got: $(dispatches))" fail
+unset CHAIN_BQA_PREFLIGHT STUB_BQA_VERDICTS
 
 # ══ S: structural pin — the new deterministic path dispatches nothing ════════
 MERGE_PY="$ENGINE_ROOT/scripts/automation/lib/merge_ui_test_results.py"

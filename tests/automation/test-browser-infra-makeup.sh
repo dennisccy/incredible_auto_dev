@@ -240,6 +240,9 @@ grep -q 'bqa_primary_infra_scan "\$_llm_out" "\$LLM_JOURNEYS"' "$GIL" && ! grep 
 grep -q 'replay_lane_merge_results "\$UI_TEST_RESULTS" "\$_llm_out" "\$LLM_JOURNEYS"' "$GIL" \
   && assert "wiring(lean): the merge carries the fresh-primary obligation (LLM_JOURNEYS)" "pass" \
   || assert "wiring(lean): the merge carries the fresh-primary obligation (LLM_JOURNEYS)" "fail"
+grep -q 'replay_lane_finalize_results "\$UI_TEST_RESULTS" "\$LLM_JOURNEYS"' "$GIL" \
+  && assert "wiring(lean): without a replay lane the SAME contract finalizes the LLM file in place" "pass" \
+  || assert "wiring(lean): without a replay lane the SAME contract finalizes the LLM file in place" "fail"
 [[ "$(grep -c "grep -oE 'PASS|FAIL|SKIPPED'" "$GIL")" -ge 4 ]] \
   && assert "wiring(lean): all 4 checkpoint verdict greps still parse PASS|FAIL|SKIPPED" "pass" \
   || assert "wiring(lean): all 4 checkpoint verdict greps still parse PASS|FAIL|SKIPPED" "fail"
@@ -261,6 +264,9 @@ grep -q 'replay_lane_merge_results "\$UI_TEST_RESULTS" "\$_llm_out" "\$_bqa_tok_
 grep -q 'TARGET JOURNEY ATTRIBUTION' "$BQP" \
   && assert "wiring(full): the dispatch addendum requires one UT-J-NN row per target" "pass" \
   || assert "wiring(full): the dispatch addendum requires one UT-J-NN row per target" "fail"
+grep -q 'replay_lane_finalize_results "\$UI_TEST_RESULTS" "\$_bqa_tok_set"' "$BQP" \
+  && assert "wiring(full): without a replay lane the SAME contract finalizes the LLM file in place" "pass" \
+  || assert "wiring(full): without a replay lane the SAME contract finalizes the LLM file in place" "fail"
 
 # ── wiring: run-goal.sh (evaluator input + make-up scheduling) ────────────────
 RG="$ENGINE_ROOT/scripts/automation/run-goal.sh"
