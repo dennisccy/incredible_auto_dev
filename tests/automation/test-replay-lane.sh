@@ -867,6 +867,52 @@ grep -q '^\*\*Browser QA Verdict:\*\* SKIPPED' "$MERGED17" \
   && assert "17: plan-keyed lane floor with an absent LLM file → SKIPPED" pass \
   || assert "17: plan-keyed lane floor with an absent LLM file → SKIPPED" fail
 
+# ── 18. Fail-closed rc contract of the coverage gate helpers ──────────────────
+# A merger that crashes (MERGE_RESULTS → a script that exits 1) must NOT be
+# smoothed over when a fresh-evidence obligation is owed: no lane-copy
+# fallback, non-zero rc, no PASS headline at the results path. Without an
+# obligation the legacy lane-copy fallback (scenario 11) is unchanged.
+BROKEN18="$SBX/scripts/automation/lib/broken_merge.py"
+printf '#!/usr/bin/env python3\nimport sys\nsys.stderr.write("boom\\n")\nsys.exit(1)\n' > "$BROKEN18"
+reset_goldens
+REG="$SBX/reports/phase-$ITER-regression-replay-results.md"
+LLM="$SBX/reports/phase-$ITER-ui-test-results.llm.md"
+MERGED="$SBX/reports/phase-$ITER-ui-test-results.md"
+rm -f "$MERGED"
+printf '**Browser QA Verdict:** PASS\n\n| UT-J-01 | login | regression | P1 | e | ok | PASS | none |\n' > "$REG"
+printf '**Browser QA Verdict:** PASS\n\n| UT-J-04 | compute | journey | P1 | e | ok | PASS | none |\n' > "$LLM"
+rc18=0
+( set -euo pipefail; source "$LIB"; REPO_ROOT="$SBX"; replay_lane_paths "$ITER"; MERGE_RESULTS="$BROKEN18"; _use_replay=yes
+  replay_lane_merge_results "$MERGED" "$LLM" "J-04 J-13 " ) >/dev/null 2>&1 || rc18=$?
+[[ "$rc18" -ne 0 ]] && assert "18: merge crash WITH an owed set → helper returns non-zero" pass \
+  || assert "18: merge crash WITH an owed set → helper returns non-zero (got 0)" fail
+[[ ! -f "$MERGED" ]] && assert "18: merge crash WITH an owed set → no lane copy at the results path (no PASS headline to trust)" pass \
+  || assert "18: merge crash WITH an owed set → no lane copy at the results path (got: $(head -1 "$MERGED"))" fail
+rc18=0
+( set -euo pipefail; source "$LIB"; REPO_ROOT="$SBX"; replay_lane_paths "$ITER"; MERGE_RESULTS="$BROKEN18"; _use_replay=yes
+  replay_lane_merge_results "$MERGED" "$LLM" ) >/dev/null 2>&1 || rc18=$?
+[[ "$rc18" -eq 0 && -f "$MERGED" ]] && cmp -s "$MERGED" "$LLM" \
+  && assert "18: merge crash WITHOUT an obligation → legacy lane-copy fallback, rc 0 (unchanged)" pass \
+  || assert "18: merge crash WITHOUT an obligation → legacy lane-copy fallback, rc 0 (got rc=$rc18)" fail
+rc18=0
+( set -euo pipefail; source "$LIB"; REPO_ROOT="$SBX"; replay_lane_paths "$ITER"; MERGE_RESULTS="$BROKEN18"
+  replay_lane_finalize_results "$LLM" "J-04 J-13 " ) >/dev/null 2>&1 || rc18=$?
+[[ "$rc18" -ne 0 ]] && assert "18: finalizer crash WITH an owed set → helper returns non-zero" pass \
+  || assert "18: finalizer crash WITH an owed set → helper returns non-zero (got 0)" fail
+rc18=0
+( set -euo pipefail; source "$LIB"; REPO_ROOT="$SBX"; replay_lane_paths "$ITER"; MERGE_RESULTS="$BROKEN18"
+  replay_lane_finalize_results "$LLM" "" && replay_lane_finalize_results "$SBX/reports/absent.md" "J-04 " ) >/dev/null 2>&1 || rc18=$?
+[[ "$rc18" -eq 0 ]] && assert "18: nothing owed / no results file → legitimate no-op, rc 0" pass \
+  || assert "18: nothing owed / no results file → legitimate no-op, rc 0 (got $rc18)" fail
+# The shared fail-closed handler: moves the unverified artifact aside and never leaves a PASS headline at the results path.
+cp "$LLM" "$MERGED"
+rc18=0
+( set -euo pipefail; source "$LIB"; REPO_ROOT="$SBX"; replay_lane_paths "$ITER"
+  bqa_coverage_gate_fail_closed "$MERGED" "finalize" "$ITER" ) >/dev/null 2>&1 || rc18=$?
+[[ "$rc18" -ne 0 ]] && [[ -f "${MERGED%.md}.unverified.md" ]] && ! grep -q '^\*\*Browser QA Verdict:\*\* PASS' "$MERGED" 2>/dev/null \
+  && assert "18: fail-closed handler → rc non-zero, artifact moved aside, no PASS headline left at the results path" pass \
+  || assert "18: fail-closed handler → rc non-zero, artifact moved aside, no PASS headline left (rc=$rc18)" fail
+
 echo ""
 echo "RESULT: $PASS passed, $FAIL failed"
 [[ "$FAIL" -eq 0 ]] || exit 1

@@ -243,6 +243,9 @@ grep -q 'replay_lane_merge_results "\$UI_TEST_RESULTS" "\$_llm_out" "\$LLM_JOURN
 grep -q 'replay_lane_finalize_results "\$UI_TEST_RESULTS" "\$LLM_JOURNEYS"' "$GIL" \
   && assert "wiring(lean): without a replay lane the SAME contract finalizes the LLM file in place" "pass" \
   || assert "wiring(lean): without a replay lane the SAME contract finalizes the LLM file in place" "fail"
+[[ "$(grep -c 'bqa_coverage_gate_fail_closed "\$UI_TEST_RESULTS"' "$GIL")" == "2" ]] \
+  && assert "wiring(lean): BOTH gate calls (merge + finalize) fail closed via bqa_coverage_gate_fail_closed + exit" "pass" \
+  || assert "wiring(lean): BOTH gate calls (merge + finalize) fail closed via bqa_coverage_gate_fail_closed + exit" "fail"
 [[ "$(grep -c "grep -oE 'PASS|FAIL|SKIPPED'" "$GIL")" -ge 4 ]] \
   && assert "wiring(lean): all 4 checkpoint verdict greps still parse PASS|FAIL|SKIPPED" "pass" \
   || assert "wiring(lean): all 4 checkpoint verdict greps still parse PASS|FAIL|SKIPPED" "fail"
@@ -267,6 +270,9 @@ grep -q 'TARGET JOURNEY ATTRIBUTION' "$BQP" \
 grep -q 'replay_lane_finalize_results "\$UI_TEST_RESULTS" "\$_bqa_tok_set"' "$BQP" \
   && assert "wiring(full): without a replay lane the SAME contract finalizes the LLM file in place" "pass" \
   || assert "wiring(full): without a replay lane the SAME contract finalizes the LLM file in place" "fail"
+[[ "$(grep -c 'bqa_coverage_gate_fail_closed "\$UI_TEST_RESULTS"' "$BQP")" == "2" ]] \
+  && assert "wiring(full): BOTH gate calls (merge + finalize) fail closed via bqa_coverage_gate_fail_closed + exit" "pass" \
+  || assert "wiring(full): BOTH gate calls (merge + finalize) fail closed via bqa_coverage_gate_fail_closed + exit" "fail"
 
 # ── wiring: run-goal.sh (evaluator input + make-up scheduling) ────────────────
 RG="$ENGINE_ROOT/scripts/automation/run-goal.sh"

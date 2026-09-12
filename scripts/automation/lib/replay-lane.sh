@@ -37,7 +37,9 @@
 #      (replay_lane_merge_results). When the lane did NOT run, the LLM file is
 #      the results file and replay_lane_finalize_results applies the same
 #      fresh-evidence coverage contract to it in place — coverage honesty is
-#      independent of replay activity.
+#      independent of replay activity. Both helpers return non-zero when the
+#      gate cannot be established and the callers fail closed via
+#      bqa_coverage_gate_fail_closed (no checkpoint, no PASS, nothing invented).
 #
 # Escape hatch: CHAIN_REGRESSION_REPLAY=false routes the whole regression set
 # to the LLM lane at both depths (replay_lane_llm_regression_set).
@@ -557,6 +559,15 @@ replay_lane_merge_results() {
   [[ "$_rl_floor" == "yes" ]] && _rl_opts+=(--primary-lane-floor)
   if ! python3 "$MERGE_RESULTS" "$_rl_out" "$REGRESSION_RESULTS" ${_rl_mid[@]+"${_rl_mid[@]}"} "$_rl_llm" \
         --primary-lane "$_rl_llm" ${_rl_opts[@]+"${_rl_opts[@]}"}; then
+    if [[ -n "$_rl_req_csv" || "$_rl_floor" == "yes" ]]; then
+      # FAIL CLOSED: the merge IS the fresh-evidence coverage gate whenever an
+      # obligation is owed. Copying the raw LLM lane here would hand its
+      # self-written headline downstream unverified — the exact false-PASS
+      # class this contract exists to prevent. No fallback, non-zero.
+      _replay_lane_warn "results merge FAILED while a fresh-evidence obligation is owed (${_rl_req_csv:-lane floor}) — REFUSING the lane-copy fallback: no headline can be established for $(basename "$_rl_out"). Reproduce: python3 $MERGE_RESULTS $_rl_out $REGRESSION_RESULTS ${_rl_mid[*]:-} $_rl_llm --primary-lane $_rl_llm ${_rl_opts[*]:-}"
+      return 1
+    fi
+    # No obligation (generic merge): the legacy artifact-preservation fallback.
     _replay_lane_warn "results merge failed — falling back to a lane output."
     if [[ -f "$_rl_llm" ]]; then cp "$_rl_llm" "$_rl_out" 2>/dev/null || true
     elif [[ -f "$REGRESSION_RESULTS" ]]; then cp "$REGRESSION_RESULTS" "$_rl_out" 2>/dev/null || true; fi
@@ -576,8 +587,11 @@ replay_lane_merge_results() {
 # gap turns the headline SKIPPED with the coverage note directly under it. The
 # agent's rows and sections are preserved byte-for-byte; a satisfied contract
 # changes nothing. Replay activity never decides whether coverage is enforced.
-# No-op when the file is absent (the SKIPPED-stub path owns that) or nothing
-# is owed. A finalizer failure is loud (warn) — never silent.
+# rc contract: 0 = finalized, or a legitimate no-op (no results file — the
+# SKIPPED-stub path owns that; nothing owed); NON-ZERO = the coverage gate
+# could not be established. A failure is never swallowed: the caller must
+# fail closed (bqa_coverage_gate_fail_closed) — an unverified headline must
+# not reach a checkpoint or an evaluator.
 replay_lane_finalize_results() {
   local _rf_out="$1" _rf_required="${2:-}" _rf_csv _rf_merge
   [[ -f "$_rf_out" && -n "${_rf_required// /}" ]] || return 0
@@ -586,8 +600,52 @@ replay_lane_finalize_results() {
   _rf_merge="${MERGE_RESULTS:-$_REPLAY_LANE_LIB_DIR/merge_ui_test_results.py}"
   if ! python3 "$_rf_merge" finalize "$_rf_out" --required-primary "$_rf_csv"; then
     _replay_lane_warn "fresh-evidence finalization FAILED for $(basename "$_rf_out") — its headline is UNVERIFIED against the owed set ($_rf_csv). Reproduce: python3 $_rf_merge finalize $_rf_out --required-primary $_rf_csv"
+    return 1
   fi
   return 0
+}
+
+# bqa_coverage_gate_fail_closed <results-file> <what: finalize|merge> [<phase-name>]
+# The deterministic fresh-evidence coverage gate could not be established
+# (finalizer or merger failure). This is a FRAMEWORK failure — not a product
+# defect and not browser infrastructure — so it must never become a PASS, a
+# FAIL row, or an infra token. Fail CLOSED with the engine's existing
+# artifact conventions: the unverified artifact (if any) is moved aside as
+# <results>.unverified.md (kept for forensics, never read as evidence), the
+# existing SKIPPED stub (write_failed_artifact_stub, common.sh) is written in
+# its place with a reason that names the framework failure — an all-SKIPPED
+# file with a Reason is what every reader already handles, so nothing is
+# hidden — and the function returns 1 so the caller ABORTS before any
+# checkpoint mark or post-scan (the caller does `|| { ...; exit 1; }`). If the
+# artifact cannot even be moved aside (unwritable directory) the warning and
+# the non-zero rc still stand; the headline is then explicitly unverified.
+bqa_coverage_gate_fail_closed() {
+  local _cg_out="$1" _cg_what="${2:-finalize}" _cg_phase="${3:-}" _cg_aside _cg_base
+  _cg_aside="${_cg_out%.md}.unverified.md"
+  _cg_base="$(basename "$_cg_out")"
+  if [[ -z "$_cg_phase" ]]; then
+    _cg_phase="${_cg_base#phase-}"; _cg_phase="${_cg_phase%-ui-test-results.md}"
+  fi
+  if [[ -f "$_cg_out" ]]; then
+    if mv -f "$_cg_out" "$_cg_aside" 2>/dev/null; then
+      _replay_lane_warn "FRAMEWORK FAILURE: the fresh-evidence coverage gate ($_cg_what) could not finalize $_cg_base — moved aside to $(basename "$_cg_aside"); its headline is UNVERIFIED and is NOT evidence."
+    else
+      _replay_lane_warn "FRAMEWORK FAILURE: the fresh-evidence coverage gate ($_cg_what) could not finalize $_cg_base AND it could not be moved aside — its headline is UNVERIFIED; treat it as NOT evidence."
+    fi
+  else
+    _replay_lane_warn "FRAMEWORK FAILURE: the fresh-evidence coverage gate ($_cg_what) failed before $_cg_base was written."
+  fi
+  if [[ ! -f "$_cg_out" ]] && declare -F write_failed_artifact_stub >/dev/null 2>&1; then
+    write_failed_artifact_stub "$_cg_phase" "ui-test-results" \
+      "FRAMEWORK FAILURE — not a product or browser failure: the deterministic fresh-evidence coverage gate ($_cg_what, merge_ui_test_results.py) could not finalize this iteration's browser results, so the browser-qa agent's output is UNVERIFIED and was moved to $(basename "$_cg_aside") (kept for forensics only; it is not evidence and no journey may be scored from it). No journey is FAILED and no browser-infra token was written on this basis. Fix the framework fault (see the warning above for the exact command), then re-run the browser-qa step / resume the iteration — the step was not checkpointed." \
+      >/dev/null 2>&1 || _replay_lane_warn "FRAMEWORK FAILURE: the SKIPPED stub could not be written either — $_cg_base is absent."
+  fi
+  if declare -F record_telemetry_event >/dev/null 2>&1; then
+    record_telemetry_event "browser_evidence_gate_failed" "$(jq -cn --arg w "$_cg_what" --arg f "$_cg_base" --arg p "$_cg_phase" \
+        '{what:$w, results:$f, phase:$p, note:"framework failure: coverage gate could not be established; failed closed (no checkpoint, no PASS, no FAIL, no token)"}' 2>/dev/null \
+      || printf '{"what":"%s","results":"%s"}' "$_cg_what" "$_cg_base")" || true
+  fi
+  return 1
 }
 
 # Reconcile the RAW replay artifact after a merge: any journey the replay lane

@@ -484,14 +484,20 @@ if [[ "$GOAL_REPLAY_ACTIVE" == "yes" ]]; then
     # SKIP row anywhere in the lane. Generic UT-XX test-plan rows never prove
     # a target: a target without its UT-J-NN row is MISSING, and a replay PASS
     # never stands in for any of them (headline SKIPPED, never PASS).
-    replay_lane_merge_results "$UI_TEST_RESULTS" "$_llm_out" "$_bqa_tok_set"
+    # FAIL CLOSED on a gate failure (merger/finalizer): the phase exits
+    # non-zero right here — before the post-scan and the stubs — with the
+    # unverified artifact moved aside and the SKIPPED stub (framework-failure
+    # reason) in its place; nothing is invented (no FAIL, no token).
+    replay_lane_merge_results "$UI_TEST_RESULTS" "$_llm_out" "$_bqa_tok_set" \
+      || { bqa_coverage_gate_fail_closed "$UI_TEST_RESULTS" "merge" "$PHASE"; exit 1; }
     replay_lane_write_deferred_rows "$UI_TEST_RESULTS"
   else
     # No replay lane this run: the LLM lane's file IS ui-test-results.md and
     # nothing merges — the SAME coverage contract finalizes it in place over the
     # owed set (targets via their UT-J-NN rows + the id-keyed regression set).
     # Coverage honesty never depends on replay activity.
-    replay_lane_finalize_results "$UI_TEST_RESULTS" "$_bqa_tok_set"
+    replay_lane_finalize_results "$UI_TEST_RESULTS" "$_bqa_tok_set" \
+      || { bqa_coverage_gate_fail_closed "$UI_TEST_RESULTS" "finalize" "$PHASE"; exit 1; }
   fi
   replay_lane_golden_coverage "$UI_TEST_RESULTS" "$PHASE"
 fi

@@ -68,6 +68,11 @@
 #      token J-13 (FAILED on 913604b: the agent's PASS headline stood over a
 #      FAIL row); N5 CHAIN_REGRESSION_REPLAY=false with a golden on file → the
 #      hatch disables replay (verify never invoked) but not coverage → SKIPPED.
+#   FF1/FF2. The coverage gate FAILS CLOSED: a stub merger forces `finalize`
+#      (FF1, no replay) or the replay merge (FF2, replay active + owed set) to
+#      fail → the phase exits non-zero, the results path holds the engine's
+#      SKIPPED stub naming the FRAMEWORK failure (never the agent's PASS), the
+#      unverified output is kept aside, no token/FAIL fabricated, ONE dispatch.
 #
 # No API calls; a few seconds per scenario.
 #
@@ -142,6 +147,7 @@ EOF
 EOF
   git -C "$SBX" add -A
   git -C "$SBX" -c user.email=t@t -c user.name=t commit -qm base
+  [[ "${STUB_MERGE_WRAPPER:-}" == "1" ]] && install_merge_stub
 
   UI_TEST_RESULTS="$SBX/reports/phase-${PHASE}-ui-test-results.md"
   LLM_RESULTS="$SBX/reports/phase-${PHASE}-ui-test-results.llm.md"
@@ -190,6 +196,25 @@ if mode == "verify":
     sys.exit(5 if verdict == "FAIL" else 0)
 
 sys.exit(0)
+PYEOF
+}
+
+install_merge_stub() {  # force the merger/finalizer to fail via STUB_MERGE_RC / STUB_FINALIZE_RC
+  cat > "$SBX/scripts/automation/lib/merge_ui_test_results.py" <<PYEOF
+#!/usr/bin/env python3
+import os, runpy, sys
+REAL = "$ENGINE_ROOT/scripts/automation/lib/merge_ui_test_results.py"
+sub = sys.argv[1] if len(sys.argv) > 1 else ""
+forced = ""
+if sub == "finalize":
+    forced = os.environ.get("STUB_FINALIZE_RC", "")
+elif sub not in ("classify", "void", "self-test", "--self-test"):
+    forced = os.environ.get("STUB_MERGE_RC", "")
+if forced:
+    sys.stderr.write(f"[stub merger] forced failure rc={forced} for '{sub or 'merge'}' (simulated: cannot write results)\n")
+    sys.exit(int(forced))
+sys.argv[0] = REAL
+runpy.run_path(REAL, run_name="__main__")
 PYEOF
 }
 
@@ -621,6 +646,33 @@ unset CHAIN_REGRESSION_REPLAY STUB_VERIFY_STAMP
 [[ "$(headline_of "$UI_TEST_RESULTS")" == "SKIPPED" ]] && grep -q 'J-13: MISSING' "$UI_TEST_RESULTS" 2>/dev/null \
   && assert "N5: CHAIN_REGRESSION_REPLAY=false cannot bypass coverage — J-13 MISSING → SKIPPED" pass \
   || assert "N5: CHAIN_REGRESSION_REPLAY=false cannot bypass coverage (got: $(headline_of "$UI_TEST_RESULTS"))" fail
+unset CHAIN_BQA_PREFLIGHT STUB_CALLS GOAL_SESSION_DIR GOAL_ITER_INDEX
+
+# ══ FF1/FF2: the coverage gate fails CLOSED through the real full-depth script ═
+export CHAIN_BQA_PREFLIGHT=true
+full_fail_closed_asserts() {  # <tag> <raw-lane-file-that-must-survive>
+  local tag="$1" raw="$2"
+  [[ "$BQA_RC" -ne 0 ]] && assert "$tag: phase exits non-zero" pass || assert "$tag: phase exits non-zero (got rc=$BQA_RC)" fail
+  [[ "$(headline_of "$UI_TEST_RESULTS")" == "SKIPPED" ]] && grep -qi 'FRAMEWORK FAILURE' "$UI_TEST_RESULTS" 2>/dev/null \
+    && assert "$tag: results path holds the SKIPPED stub naming the FRAMEWORK failure (never the agent's PASS)" pass \
+    || assert "$tag: results path holds the SKIPPED stub (got headline: $(headline_of "$UI_TEST_RESULTS"))" fail
+  [[ -f "$raw" ]] && [[ "$(headline_of "$raw")" == "PASS" ]] \
+    && assert "$tag: the unverified agent output is preserved aside (not evidence)" pass \
+    || assert "$tag: the unverified agent output is preserved aside ($raw)" fail
+  ! grep -qF '| FAIL |' "$UI_TEST_RESULTS" && assert "$tag: no product FAIL fabricated" pass || assert "$tag: no product FAIL fabricated" fail
+  [[ ! -f "$TOKEN" ]] && assert "$tag: no browser-infra token fabricated" pass || assert "$tag: no browser-infra token fabricated" fail
+  [[ "$(wc -l < "$STUB_CALLS" | tr -dc 0-9)" == "1" ]] && assert "$tag: exactly ONE browser-qa dispatch" pass || assert "$tag: exactly ONE browser-qa dispatch" fail
+}
+# FF1: no replay, finalizer forced to fail (agent headline PASS, both targets PASS).
+export STUB_MERGE_WRAPPER=1 STUB_FINALIZE_RC=1
+run_noreplay_case FF1 26 "J-04=PASS J-13=PASS"
+unset STUB_FINALIZE_RC
+full_fail_closed_asserts FF1 "${UI_TEST_RESULTS%.md}.unverified.md"
+# FF2: replay active (golden J-01, required J-01) + owed targets, merge forced to fail.
+export STUB_MERGE_RC=1
+run_noreplay_case FF2 27 "J-04=PASS J-13=PASS" "J-01" "J-01"
+unset STUB_MERGE_RC STUB_MERGE_WRAPPER
+full_fail_closed_asserts FF2 "$LLM_RESULTS"
 unset CHAIN_BQA_PREFLIGHT STUB_CALLS GOAL_SESSION_DIR GOAL_ITER_INDEX
 
 echo ""

@@ -38,6 +38,15 @@
 #       the agent's PASS headline stood and the checkpoint was written).
 #   N7  LEAN no replay, both targets PASS → PASS, checkpoint written, same
 #       dispatch sequence.
+#   FCF1/FCF2/FCF3 the coverage gate FAILS CLOSED: the merger is wrapped by a
+#       stub that forces `finalize` (FCF1 rc 1, FCF2 rc 2 "cannot write") or
+#       the replay merge (FCF3 rc 1, replay active + owed set) to fail. The
+#       executor must exit non-zero, write NO browser-qa checkpoint, dispatch
+#       nothing extra, leave NO PASS headline at the results path (the
+#       unverified agent output is moved aside as *.unverified.md and the
+#       engine's existing SKIPPED stub carries a FRAMEWORK-failure reason),
+#       fabricate no FAIL row and no infra token. (On ea8bfe6 the helpers
+#       swallowed the failure: exit 0, PASS headline kept, checkpoint written.)
 #
 # No API calls; a few seconds per scenario.
 #
@@ -143,6 +152,28 @@ if mode == "verify":
                     "|---|---|---|---|---|---|---|---|\n" + rows + "\n")
     sys.exit(0)
 sys.exit(0)
+PYEOF
+}
+
+# Wrap the sandbox's merger so a test can force the deterministic gate to fail
+# (STUB_FINALIZE_RC for `finalize`, STUB_MERGE_RC for the merge); with neither
+# set it runs the REAL module unchanged.
+install_merge_stub() {
+  cat > "$SBX/scripts/automation/lib/merge_ui_test_results.py" <<PYEOF
+#!/usr/bin/env python3
+import os, runpy, sys
+REAL = "$ENGINE_ROOT/scripts/automation/lib/merge_ui_test_results.py"
+sub = sys.argv[1] if len(sys.argv) > 1 else ""
+forced = ""
+if sub == "finalize":
+    forced = os.environ.get("STUB_FINALIZE_RC", "")
+elif sub not in ("classify", "void", "self-test", "--self-test"):
+    forced = os.environ.get("STUB_MERGE_RC", "")
+if forced:
+    sys.stderr.write(f"[stub merger] forced failure rc={forced} for '{sub or 'merge'}' (simulated: cannot write results)\n")
+    sys.exit(int(forced))
+sys.argv[0] = REAL
+runpy.run_path(REAL, run_name="__main__")
 PYEOF
 }
 
@@ -366,6 +397,45 @@ run_lean "$WORK/lean-N7.log"
 [[ -f "$ITER_DIR/.steps/browser-qa.done" ]] && assert "N7: browser-qa checkpoint written" pass || assert "N7: browser-qa checkpoint written" fail
 [[ ! -f "$ITER_DIR/browser-infra.json" ]] && assert "N7: no browser-infra token" pass || assert "N7: no browser-infra token" fail
 [[ "$(dispatches)" == "$R1_DISPATCHES" ]] && assert "N7: dispatch sequence unchanged" pass || assert "N7: dispatch sequence unchanged (got: $(dispatches))" fail
+unset CHAIN_BQA_PREFLIGHT STUB_BQA_VERDICTS
+
+# ══ FCF1: lean, no replay — the finalizer fails (rc 1) ═══════════════════════
+fail_closed_asserts() {  # <tag> <raw-lane-file-that-must-survive>
+  local tag="$1" raw="$2"
+  [[ "$LEAN_RC" -ne 0 ]] && assert "$tag: executor exits non-zero (no successful PASS-capable path)" pass \
+    || assert "$tag: executor exits non-zero (got rc=$LEAN_RC)" fail
+  [[ ! -f "$ITER_DIR/.steps/browser-qa.done" ]] && assert "$tag: browser-qa.done DOES NOT EXIST" pass \
+    || assert "$tag: browser-qa.done DOES NOT EXIST" fail
+  [[ "$(dispatches)" == "$R1_DISPATCHES" ]] && assert "$tag: no extra dispatch (sequence unchanged)" pass \
+    || assert "$tag: no extra dispatch (got: $(dispatches))" fail
+  [[ "$(headline "$UI_TEST_RESULTS")" == "SKIPPED" ]] && grep -qi 'FRAMEWORK FAILURE' "$UI_TEST_RESULTS" 2>/dev/null \
+    && assert "$tag: results path holds the engine's SKIPPED stub naming the FRAMEWORK failure (never the agent's PASS)" pass \
+    || assert "$tag: results path holds the SKIPPED stub (got headline: $(headline "$UI_TEST_RESULTS"))" fail
+  [[ -f "$raw" ]] && [[ "$(headline "$raw")" == "PASS" ]] \
+    && assert "$tag: the unverified agent output is preserved aside with its original headline (forensics, not evidence)" pass \
+    || assert "$tag: the unverified agent output is preserved aside ($raw)" fail
+  ! grep -qF '| FAIL |' "$UI_TEST_RESULTS" && assert "$tag: no product FAIL fabricated" pass || assert "$tag: no product FAIL fabricated" fail
+  [[ ! -f "$ITER_DIR/browser-infra.json" ]] && assert "$tag: no browser-infra token fabricated" pass || assert "$tag: no browser-infra token fabricated" fail
+}
+make_sandbox FCF1 8 nogoldens "none — no prior passing journeys"; install_merge_stub
+new_capture FCF1
+export CHAIN_BQA_PREFLIGHT=true STUB_BQA_VERDICTS="J-04=PASS J-13=ABSENT" STUB_FINALIZE_RC=1
+run_lean "$WORK/lean-FCF1.log"; unset STUB_FINALIZE_RC
+fail_closed_asserts FCF1 "${UI_TEST_RESULTS%.md}.unverified.md"
+
+# ══ FCF2: lean, no replay — the finalizer cannot write (rc 2) ═════════════════
+make_sandbox FCF2 9 nogoldens "none — no prior passing journeys"; install_merge_stub
+new_capture FCF2
+export STUB_BQA_VERDICTS="J-04=PASS J-13=PASS" STUB_FINALIZE_RC=2
+run_lean "$WORK/lean-FCF2.log"; unset STUB_FINALIZE_RC
+fail_closed_asserts FCF2 "${UI_TEST_RESULTS%.md}.unverified.md"
+
+# ══ FCF3: lean, replay ACTIVE + owed set — the merge fails (rc 1) ═════════════
+make_sandbox FCF3 10; install_merge_stub
+new_capture FCF3
+export STUB_BQA_VERDICTS="J-04=PASS J-13=PASS" STUB_MERGE_RC=1
+run_lean "$WORK/lean-FCF3.log"; unset STUB_MERGE_RC
+fail_closed_asserts FCF3 "$SBX/reports/phase-${ITER}-ui-test-results.llm.md"
 unset CHAIN_BQA_PREFLIGHT STUB_BQA_VERDICTS
 
 # ══ S: structural pin — the new deterministic path dispatches nothing ════════

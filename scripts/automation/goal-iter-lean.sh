@@ -913,8 +913,15 @@ fi
 # journey this dispatch was asked to test has a fresh PASS row from the LLM
 # lane — a replay PASS for a stable journey never stands in for a target the
 # browser never reached (headline SKIPPED, never PASS, in that case).
+# FAIL CLOSED: if the deterministic gate itself cannot be established (merger
+# or finalizer failure) the section aborts HERE — before the post-scan, the
+# stub logic and the checkpoint mark — with the unverified artifact moved
+# aside and the engine's SKIPPED stub (framework-failure reason) in its place.
+# A framework failure never becomes a PASS, a FAIL row or an infra token; the
+# executor exits non-zero and the un-checkpointed step re-runs on resume.
 if [[ "$_use_replay" == "yes" ]]; then
-  replay_lane_merge_results "$UI_TEST_RESULTS" "$_llm_out" "$LLM_JOURNEYS"
+  replay_lane_merge_results "$UI_TEST_RESULTS" "$_llm_out" "$LLM_JOURNEYS" \
+    || { bqa_coverage_gate_fail_closed "$UI_TEST_RESULTS" "merge" "$ITER_NAME"; exit 1; }
   replay_lane_write_deferred_rows "$UI_TEST_RESULTS"
 else
   # No replay lane this run (no goldens, hatch off, frontend down, lane
@@ -922,7 +929,8 @@ else
   # the SAME coverage contract finalizes it in place (headline recomputed from
   # the rows, an owed journey without its fresh PASS row → SKIPPED + note; the
   # agent's rows untouched). Coverage honesty never depends on replay activity.
-  replay_lane_finalize_results "$UI_TEST_RESULTS" "$LLM_JOURNEYS"
+  replay_lane_finalize_results "$UI_TEST_RESULTS" "$LLM_JOURNEYS" \
+    || { bqa_coverage_gate_fail_closed "$UI_TEST_RESULTS" "finalize" "$ITER_NAME"; exit 1; }
 fi
 
 # REL-14 post-scan (same knob): a dispatch that returned but left no results
