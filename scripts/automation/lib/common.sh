@@ -1545,6 +1545,19 @@ export EVIDENCE_MODE_REFUSED_EXIT_CODE
 : "${SPEC_FIELD_UNAVAILABLE_EXIT_CODE:=78}"
 export SPEC_FIELD_UNAVAILABLE_EXIT_CODE
 
+# The browser evidence coverage gate could not be ESTABLISHED: the deterministic
+# fresh-evidence finalizer/merger (merge_ui_test_results.py finalize / merge with
+# an owed journey set, lib/replay-lane.sh) failed, so this iteration's browser
+# results are UNVERIFIED — a framework/runtime fault, never a product defect,
+# browser infrastructure, agent quality, quota or a stall. The leaf fails closed
+# (quarantine + SKIPPED stub, no checkpoint) and exits THIS code; run-phase.sh's
+# _guard_step_rc and run-goal.sh treat it as fatal-and-resumable (GATE_BLOCKED,
+# reason GATE_BLOCKED_BROWSER_EVIDENCE) so nothing downstream — demo, QA, audit,
+# closure, the coherence auditor, the goal-evaluator — can consume the evidence.
+# 70 transport, 75 quota, 76 evidence-mode refusal, 78 spec field, 86 engine lock.
+: "${BROWSER_EVIDENCE_GATE_UNAVAILABLE_EXIT_CODE:=79}"
+export BROWSER_EVIDENCE_GATE_UNAVAILABLE_EXIT_CODE
+
 # ── Idempotent service bootstrap (shared by qa-phase.sh and browser-qa-phase.sh) ──
 #
 # Starts the backend (and optionally frontend) if they are not already running.

@@ -46,6 +46,12 @@
 #      re-confirms; replay_lane_write_deferred_rows appends DEFERRED-BUDGET rows
 #      the achievement gate (real goal_gate.py) treats as blocking; empty
 #      deferred set → both are no-ops.
+#  17. Fresh-evidence coverage contract through replay_lane_merge_results ($3 =
+#      the journeys the LLM lane owed, $4 = "yes" for the plan-keyed lane
+#      floor): the exact incident shape (replay PASS + every target infra-SKIP)
+#      merges SKIPPED, never PASS; the replay PASS rows survive untouched; a
+#      healthy run merges PASS byte-identically to the generic merge; an absent
+#      LLM file with an obligation merges SKIPPED; no $3/$4 = the generic merge.
 #
 # No API calls; runs in a couple of seconds.
 #
@@ -765,6 +771,147 @@ _before13="$(cat "$MERGED13")"
 [[ "$(cat "$MERGED13")" == "$_before13" ]] \
   && assert "13f: empty deferred set → writer no-op" pass \
   || assert "13f: empty deferred set → writer no-op" fail
+
+# ── 17. Fresh-evidence coverage contract via replay_lane_merge_results ───────
+cov_case() {  # $1 = LLM file content ("" = the LLM lane wrote nothing), $2 = owed set, $3 = floor
+  reset_goldens
+  REG="$SBX/reports/phase-$ITER-regression-replay-results.md"
+  LLM="$SBX/reports/phase-$ITER-ui-test-results.llm.md"
+  MERGED="$SBX/reports/phase-$ITER-ui-test-results.md"
+  rm -f "$MERGED" "$LLM"
+  cat > "$REG" <<'EOF'
+**Browser QA Verdict:** PASS
+
+## Results Table
+| Test ID | Name | Type | Priority | Expected | Actual | Verdict | Evidence |
+|---|---|---|---|---|---|---|---|
+| UT-J-01 | login | regression | P1 | e | ok | PASS | none |
+| UT-J-02 | browse | regression | P1 | e | ok | PASS | none |
+EOF
+  [[ -n "$1" ]] && printf '%s\n' "$1" > "$LLM"
+  (
+    set -euo pipefail
+    source "$LIB"
+    REPO_ROOT="$SBX"
+    replay_lane_paths "$ITER"
+    _use_replay=yes
+    replay_lane_merge_results "$MERGED" "$LLM" "$2" "$3"
+  ) >/dev/null 2>&1
+}
+INFRA17="browser infrastructure failure: Chrome did not become ready on port 9222 within 15000ms"
+LLM_DEAD17="**Browser QA Verdict:** SKIPPED
+
+## Results Table
+| Test ID | Name | Type | Priority | Expected | Actual | Verdict | Evidence |
+|---|---|---|---|---|---|---|---|
+| UT-J-04 | compute | journey | P1 | e | $INFRA17 | SKIP | none |
+| UT-J-13 | sweep | journey | P1 | e | $INFRA17 | SKIP | none |"
+LLM_OK17='**Browser QA Verdict:** PASS
+
+## Results Table
+| Test ID | Name | Type | Priority | Expected | Actual | Verdict | Evidence |
+|---|---|---|---|---|---|---|---|
+| UT-J-04 | compute | journey | P1 | e | ok | PASS | none |
+| UT-J-13 | sweep | journey | P1 | e | ok | PASS | none |'
+
+cov_case "$LLM_DEAD17" "J-04 J-13 " ""
+MERGED17="$SBX/reports/phase-$ITER-ui-test-results.md"
+grep -q '^\*\*Browser QA Verdict:\*\* SKIPPED' "$MERGED17" \
+  && assert "17: incident shape (replay PASS + targets infra-SKIP) merges SKIPPED, never PASS" pass \
+  || { assert "17: incident shape (replay PASS + targets infra-SKIP) merges SKIPPED, never PASS" fail; head -12 "$MERGED17" | sed 's/^/        /'; }
+grep -E '^\| UT-J-01 ' "$MERGED17" | grep -qF '| PASS |' && grep -E '^\| UT-J-02 ' "$MERGED17" | grep -qF '| PASS |' \
+  && assert "17: the replay PASS rows survive the merge untouched" pass \
+  || assert "17: the replay PASS rows survive the merge untouched" fail
+! grep -qF '| FAIL |' "$MERGED17" \
+  && assert "17: no journey is marked FAIL because of infra" pass \
+  || assert "17: no journey is marked FAIL because of infra" fail
+grep -q '^\*\*Fresh-evidence coverage:\*\* INCOMPLETE.*J-04.*J-13' "$MERGED17" \
+  && assert "17: the merged file names the owed journeys the primary lane did not deliver" pass \
+  || assert "17: the merged file names the owed journeys the primary lane did not deliver" fail
+
+cov_case "$LLM_DEAD17" "" ""
+grep -q '^\*\*Browser QA Verdict:\*\* PASS' "$MERGED17" \
+  && assert "17: no owed set (\$3 empty) → the generic merge is unchanged (PASS from surviving rows)" pass \
+  || assert "17: no owed set (\$3 empty) → the generic merge is unchanged (PASS from surviving rows)" fail
+
+cov_case "$LLM_OK17" "J-04 J-13 " ""
+_healthy17="$(sed '/^\*\*Date:\*\*/d;/^- \*\*Test Date:\*\*/d' "$MERGED17")"
+grep -q '^\*\*Browser QA Verdict:\*\* PASS' "$MERGED17" && ! grep -q 'Fresh-evidence coverage' "$MERGED17" \
+  && assert "17: healthy mixed lanes (every owed target PASS) merge PASS with no coverage note" pass \
+  || assert "17: healthy mixed lanes (every owed target PASS) merge PASS with no coverage note" fail
+cov_case "$LLM_OK17" "" ""
+[[ "$(sed '/^\*\*Date:\*\*/d;/^- \*\*Test Date:\*\*/d' "$MERGED17")" == "$_healthy17" ]] \
+  && assert "17: a satisfied contract is byte-identical to the generic merge" pass \
+  || assert "17: a satisfied contract is byte-identical to the generic merge" fail
+
+cov_case "" "J-04 " ""
+grep -q '^\*\*Browser QA Verdict:\*\* SKIPPED' "$MERGED17" \
+  && assert "17: LLM lane wrote nothing but owed J-04 → SKIPPED (replay rows still present, never PASS)" pass \
+  || assert "17: LLM lane wrote nothing but owed J-04 → SKIPPED (replay rows still present, never PASS)" fail
+cov_case "" "" ""
+grep -q '^\*\*Browser QA Verdict:\*\* PASS' "$MERGED17" \
+  && assert "17: LLM lane wrote nothing and owed nothing (replay-only iteration) → PASS preserved" pass \
+  || assert "17: LLM lane wrote nothing and owed nothing (replay-only iteration) → PASS preserved" fail
+
+cov_case '**Browser QA Verdict:** PASS
+
+## Results Table
+| Test ID | Name | Type | Priority | Expected | Actual | Verdict | Evidence |
+|---|---|---|---|---|---|---|---|
+| UT-01 | open the page | smoke | P1 | e | ok | PASS | none |' "" "yes"
+grep -q '^\*\*Browser QA Verdict:\*\* PASS' "$MERGED17" \
+  && assert "17: plan-keyed lane floor satisfied by a fresh UT-XX PASS row → PASS" pass \
+  || assert "17: plan-keyed lane floor satisfied by a fresh UT-XX PASS row → PASS" fail
+cov_case "" "" "yes"
+grep -q '^\*\*Browser QA Verdict:\*\* SKIPPED' "$MERGED17" \
+  && assert "17: plan-keyed lane floor with an absent LLM file → SKIPPED" pass \
+  || assert "17: plan-keyed lane floor with an absent LLM file → SKIPPED" fail
+
+# ── 18. Fail-closed rc contract of the coverage gate helpers ──────────────────
+# A merger that crashes (MERGE_RESULTS → a script that exits 1) must NOT be
+# smoothed over when a fresh-evidence obligation is owed: no lane-copy
+# fallback, non-zero rc, no PASS headline at the results path. Without an
+# obligation the legacy lane-copy fallback (scenario 11) is unchanged.
+BROKEN18="$SBX/scripts/automation/lib/broken_merge.py"
+printf '#!/usr/bin/env python3\nimport sys\nsys.stderr.write("boom\\n")\nsys.exit(1)\n' > "$BROKEN18"
+reset_goldens
+REG="$SBX/reports/phase-$ITER-regression-replay-results.md"
+LLM="$SBX/reports/phase-$ITER-ui-test-results.llm.md"
+MERGED="$SBX/reports/phase-$ITER-ui-test-results.md"
+rm -f "$MERGED"
+printf '**Browser QA Verdict:** PASS\n\n| UT-J-01 | login | regression | P1 | e | ok | PASS | none |\n' > "$REG"
+printf '**Browser QA Verdict:** PASS\n\n| UT-J-04 | compute | journey | P1 | e | ok | PASS | none |\n' > "$LLM"
+rc18=0
+( set -euo pipefail; source "$LIB"; REPO_ROOT="$SBX"; replay_lane_paths "$ITER"; MERGE_RESULTS="$BROKEN18"; _use_replay=yes
+  replay_lane_merge_results "$MERGED" "$LLM" "J-04 J-13 " ) >/dev/null 2>&1 || rc18=$?
+[[ "$rc18" -ne 0 ]] && assert "18: merge crash WITH an owed set → helper returns non-zero" pass \
+  || assert "18: merge crash WITH an owed set → helper returns non-zero (got 0)" fail
+[[ ! -f "$MERGED" ]] && assert "18: merge crash WITH an owed set → no lane copy at the results path (no PASS headline to trust)" pass \
+  || assert "18: merge crash WITH an owed set → no lane copy at the results path (got: $(head -1 "$MERGED"))" fail
+rc18=0
+( set -euo pipefail; source "$LIB"; REPO_ROOT="$SBX"; replay_lane_paths "$ITER"; MERGE_RESULTS="$BROKEN18"; _use_replay=yes
+  replay_lane_merge_results "$MERGED" "$LLM" ) >/dev/null 2>&1 || rc18=$?
+[[ "$rc18" -eq 0 && -f "$MERGED" ]] && cmp -s "$MERGED" "$LLM" \
+  && assert "18: merge crash WITHOUT an obligation → legacy lane-copy fallback, rc 0 (unchanged)" pass \
+  || assert "18: merge crash WITHOUT an obligation → legacy lane-copy fallback, rc 0 (got rc=$rc18)" fail
+rc18=0
+( set -euo pipefail; source "$LIB"; REPO_ROOT="$SBX"; replay_lane_paths "$ITER"; MERGE_RESULTS="$BROKEN18"
+  replay_lane_finalize_results "$LLM" "J-04 J-13 " ) >/dev/null 2>&1 || rc18=$?
+[[ "$rc18" -ne 0 ]] && assert "18: finalizer crash WITH an owed set → helper returns non-zero" pass \
+  || assert "18: finalizer crash WITH an owed set → helper returns non-zero (got 0)" fail
+rc18=0
+( set -euo pipefail; source "$LIB"; REPO_ROOT="$SBX"; replay_lane_paths "$ITER"; MERGE_RESULTS="$BROKEN18"
+  replay_lane_finalize_results "$LLM" "" && replay_lane_finalize_results "$SBX/reports/absent.md" "J-04 " ) >/dev/null 2>&1 || rc18=$?
+[[ "$rc18" -eq 0 ]] && assert "18: nothing owed / no results file → legitimate no-op, rc 0" pass \
+  || assert "18: nothing owed / no results file → legitimate no-op, rc 0 (got $rc18)" fail
+# The shared fail-closed handler: moves the unverified artifact aside and never leaves a PASS headline at the results path.
+cp "$LLM" "$MERGED"
+rc18=0
+( set -euo pipefail; source "$LIB"; REPO_ROOT="$SBX"; replay_lane_paths "$ITER"
+  bqa_coverage_gate_fail_closed "$MERGED" "finalize" "$ITER" ) >/dev/null 2>&1 || rc18=$?
+[[ "$rc18" -ne 0 ]] && [[ -f "${MERGED%.md}.unverified.md" ]] && ! grep -q '^\*\*Browser QA Verdict:\*\* PASS' "$MERGED" 2>/dev/null \
+  && assert "18: fail-closed handler → rc non-zero, artifact moved aside, no PASS headline left at the results path" pass \
+  || assert "18: fail-closed handler → rc non-zero, artifact moved aside, no PASS headline left (rc=$rc18)" fail
 
 echo ""
 echo "RESULT: $PASS passed, $FAIL failed"

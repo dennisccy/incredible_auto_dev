@@ -125,6 +125,64 @@ hg_pid_matches() {
   [[ "$(_hg_proc_starttime "$pid")" == "$stt" ]]
 }
 
+# hg_pid_display_env <pid> — print "DISPLAY=<v>" / "WAYLAND_DISPLAY=<v>" for
+# each of those two names PRESENT in the process's launch environment
+# (/proc/<pid>/environ, NUL-separated). That file reflects the environment the
+# process was exec'd with — exactly what every child it spawns inherits, the
+# Chrome MCP server included, which is why it is the oracle for "will this
+# pump's browser QA run headed?". rc 0 = environment read (empty output =
+# neither present); rc 2 = NOT readable — no such pid, no procfs on this
+# platform, permission denied (another user's process), or a zombie whose
+# environ reads empty because its memory is gone. A caller must never turn
+# rc 2 into a fact about the process. HOST_GUARD_PROC_ROOT is the test seam.
+hg_pid_display_env() {
+  local pid="${1:-}" root="${HOST_GUARD_PROC_ROOT:-/proc}" f raw st
+  [[ "$pid" =~ ^[0-9]+$ ]] || return 2
+  f="$root/$pid/environ"
+  [[ -r "$f" ]] || return 2
+  raw="$(tr '\0' '\n' < "$f" 2>/dev/null)" || return 2
+  if [[ -z "$raw" ]]; then
+    # An empty environ is what a zombie (or a kernel thread) reads as — not a
+    # process that was launched display-less. Only a live, non-zombie process
+    # with a genuinely empty environment (env -i) counts as "neither present".
+    st="$(awk '/^State:/{print $2; exit}' "$root/$pid/status" 2>/dev/null)"
+    [[ -n "$st" && "$st" != "Z" ]] || return 2
+  fi
+  printf '%s\n' "$raw" | grep -E '^(DISPLAY|WAYLAND_DISPLAY)=' || true
+  return 0
+}
+
+# hg_pump_display_verdict <pid> — one line for the iteration gate:
+#   "display-bound: DISPLAY=:1 WAYLAND_DISPLAY=wayland-0"  (whichever are set)
+#   "display-less"
+#   "unreadable: <why>"
+# A present-but-EMPTY value counts as absent: the Chrome MCP tests truthiness
+# and host-guard-exec.sh unsets the names outright, so an empty value is the
+# operator's own explicit "no display". Never guesses on rc 2.
+hg_pump_display_verdict() {
+  local pid="${1:-}" root="${HOST_GUARD_PROC_ROOT:-/proc}" out rc=0 bound="" line
+  out="$(hg_pid_display_env "$pid")" || rc=$?
+  if (( rc != 0 )); then
+    if [[ ! "$pid" =~ ^[0-9]+$ ]]; then
+      echo "unreadable: no usable pid"
+    elif [[ ! -d "$root/$pid" ]]; then
+      echo "unreadable: process $pid is gone, or $root has no entry for it (no procfs on this platform?)"
+    else
+      echo "unreadable: $root/$pid/environ cannot be read (another user's process? a zombie?)"
+    fi
+    return 0
+  fi
+  while IFS= read -r line; do
+    [[ -n "$line" && -n "${line#*=}" ]] && bound+="$line "
+  done <<< "$out"
+  if [[ -n "${bound// /}" ]]; then
+    echo "display-bound: ${bound% }"
+  else
+    echo "display-less"
+  fi
+  return 0
+}
+
 # hg_boot_epoch — unix time this boot started (/proc/stat btime).
 # HOST_GUARD_BTIME_OVERRIDE is the test seam: no test can reboot a machine.
 hg_boot_epoch() {

@@ -519,6 +519,15 @@ _bqa_full_fork_consume() {
     # whole section and nothing certifies the fork's partial artifacts.
     _pause_if_transport "${DISPATCH_UNAVAILABLE_EXIT_CODE:-70}" "browser-qa-agent (parallel full)"
   fi
+  if [[ "$_frc" -eq "${BROWSER_EVIDENCE_GATE_UNAVAILABLE_EXIT_CODE:-79}" || "$_file_rc" == "${BROWSER_EVIDENCE_GATE_UNAVAILABLE_EXIT_CODE:-79}" ]]; then
+    # The forked section failed CLOSED on the browser evidence gate (the
+    # reserved rc surfaces through `wait`, exactly like a transport 70). Never
+    # re-run the section inline — that would burn a second browser dispatch
+    # against the same deterministic fault; propagate the reserved rc so the
+    # engine halts GATE_BLOCKED before any evaluation.
+    echo "[goal-iter-lean] Forked full browser-qa section: browser evidence coverage gate UNAVAILABLE (exit ${BROWSER_EVIDENCE_GATE_UNAVAILABLE_EXIT_CODE:-79}) — failing closed, no inline re-run." >&2
+    exit "${BROWSER_EVIDENCE_GATE_UNAVAILABLE_EXIT_CODE:-79}"
+  fi
   if [[ "$_file_rc" != "0" ]]; then
     echo "[goal-iter-lean] Forked full browser-qa section unusable (wait rc=$_frc, section rc=${_file_rc:-none}) — running the section inline." >&2
     return 1
@@ -908,21 +917,46 @@ fi
 # (LLM listed last → wins on any journey both lanes touched, e.g. a re-confirm).
 # Shared implementation in lib/replay-lane.sh — includes the reconciliation
 # footer on the raw replay artifact when the LLM lane overturned a replay FAIL,
-# so no stale FAIL survives the iteration on disk.
+# so no stale FAIL survives the iteration on disk. LLM_JOURNEYS is the
+# fresh-evidence obligation: the merged headline can be PASS only when every
+# journey this dispatch was asked to test has a fresh PASS row from the LLM
+# lane — a replay PASS for a stable journey never stands in for a target the
+# browser never reached (headline SKIPPED, never PASS, in that case).
+# FAIL CLOSED: if the deterministic gate itself cannot be established (merger
+# or finalizer failure) the section aborts HERE — before the post-scan, the
+# stub logic and the checkpoint mark — with the unverified artifact moved
+# aside and the engine's SKIPPED stub (framework-failure reason) in its place.
+# A framework failure never becomes a PASS, a FAIL row or an infra token; the
+# executor exits the RESERVED code BROWSER_EVIDENCE_GATE_UNAVAILABLE_EXIT_CODE
+# (lib/common.sh) so run-goal.sh halts GATE_BLOCKED before the coherence
+# auditor / evaluator, and the un-checkpointed step re-runs on resume.
 if [[ "$_use_replay" == "yes" ]]; then
-  replay_lane_merge_results "$UI_TEST_RESULTS" "$_llm_out"
+  replay_lane_merge_results "$UI_TEST_RESULTS" "$_llm_out" "$LLM_JOURNEYS" \
+    || { bqa_coverage_gate_fail_closed "$UI_TEST_RESULTS" "merge" "$ITER_NAME"; exit "${BROWSER_EVIDENCE_GATE_UNAVAILABLE_EXIT_CODE:-79}"; }
   replay_lane_write_deferred_rows "$UI_TEST_RESULTS"
+else
+  # No replay lane this run (no goldens, hatch off, frontend down, lane
+  # fallback): the LLM lane's file IS ui-test-results.md and nothing merges —
+  # the SAME coverage contract finalizes it in place (headline recomputed from
+  # the rows, an owed journey without its fresh PASS row → SKIPPED + note; the
+  # agent's rows untouched). Coverage honesty never depends on replay activity.
+  replay_lane_finalize_results "$UI_TEST_RESULTS" "$LLM_JOURNEYS" \
+    || { bqa_coverage_gate_fail_closed "$UI_TEST_RESULTS" "finalize" "$ITER_NAME"; exit "${BROWSER_EVIDENCE_GATE_UNAVAILABLE_EXIT_CODE:-79}"; }
 fi
 
 # REL-14 post-scan (same knob): a dispatch that returned but left no results
-# file (mid-run browser death; quota pauses excluded) or an all-SKIP results
-# file carrying an explicit browser-infra reason also earns the token — no
-# preflight can catch a Chrome that dies mid-run.
+# file (mid-run browser death; quota pauses excluded) earns the token for the
+# whole owed set; otherwise the RAW LLM output ($_llm_out — never the merged
+# file, whose replay rows have a different provenance) is classified PER
+# JOURNEY in LLM_JOURNEYS and the token lists exactly the journeys whose fresh
+# browser attempt was blocked by infra (mid-run Chrome death that no preflight
+# can catch). A journey the LLM verified is never tokenized because a sibling
+# was blocked; a legitimate SKIP or a missing row is never infra on its own.
 if [[ "${CHAIN_BQA_PREFLIGHT:-false}" == "true" && "$_bqa_infra_blocked" != "yes" && "$_bqa_dispatched" == "yes" ]]; then
   if [[ ! -f "$_llm_out" && "$_bqa_rc" -ne "${QUOTA_EXHAUSTED_EXIT_CODE:-75}" ]]; then
     bqa_write_infra_token "$ITER_DIR" "$LLM_JOURNEYS" "browser-qa dispatch returned rc=$_bqa_rc with no results file" "postscan-missing"
-  elif _bqa_infra_reason="$(bqa_results_infra_reason "$UI_TEST_RESULTS")"; then
-    bqa_write_infra_token "$ITER_DIR" "$LLM_JOURNEYS" "$_bqa_infra_reason" "postscan"
+  elif _bqa_infra_scan="$(bqa_primary_infra_scan "$_llm_out" "$LLM_JOURNEYS")"; then
+    bqa_write_infra_token "$ITER_DIR" "${_bqa_infra_scan%%$'\t'*}" "${_bqa_infra_scan#*$'\t'}" "postscan"
   fi
 fi
 
@@ -941,7 +975,10 @@ fi
 replay_lane_golden_coverage "$UI_TEST_RESULTS" "$ITER_NAME"
 
 # Checkpoint: reusable on resume only with a real PASS/FAIL verdict (never a
-# SKIPPED stub) and the journey signature this run actually covered.
+# SKIPPED stub, and never a merge whose fresh-evidence coverage contract left
+# the headline SKIPPED — a resume then re-runs this section and collects the
+# evidence the primary lane still owes) and the journey signature this run
+# actually covered.
 # SPEED-3: inside the full fork the mark is DEFERRED to the join
 # (_bqa_full_fork_consume) — a marker written from the fork could race the
 # review loop's invalidation cascade in the parent shell.

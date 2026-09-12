@@ -34,7 +34,12 @@
 #      deterministic achievement gate read (LLM listed last → wins on any
 #      journey both lanes touched), then reconcile the raw replay artifact so
 #      an overturned replay FAIL cannot survive on disk as a contradiction
-#      (replay_lane_merge_results).
+#      (replay_lane_merge_results). When the lane did NOT run, the LLM file is
+#      the results file and replay_lane_finalize_results applies the same
+#      fresh-evidence coverage contract to it in place — coverage honesty is
+#      independent of replay activity. Both helpers return non-zero when the
+#      gate cannot be established and the callers fail closed via
+#      bqa_coverage_gate_fail_closed (no checkpoint, no PASS, nothing invented).
 #
 # Escape hatch: CHAIN_REGRESSION_REPLAY=false routes the whole regression set
 # to the LLM lane at both depths (replay_lane_llm_regression_set).
@@ -184,6 +189,16 @@ _replay_lane_mark_skipped_infra() {
 # $ITER_DIR/browser-infra.json separately and scores the listed journeys
 # partial(pending-infra). All call sites gate on CHAIN_BQA_PREFLIGHT
 # (default false — an absent token is byte-for-byte today's behavior).
+#
+# TARGET-AWARE (2026-09): the post-scan classifies the RAW primary artifact
+# ($_llm_out — never the merged file, whose replay rows have a different
+# provenance) PER JOURNEY the dispatch owed fresh evidence for, so the token
+# lists EXACTLY the journeys whose required fresh browser attempt was blocked
+# by infra. A replay PASS for a stable journey can no longer suppress
+# attribution for a different target (the old whole-file "any PASS/FAIL row →
+# not infra" predicate did exactly that), and a journey the primary DID verify
+# is never tokenized because a sibling was blocked. The same classifier backs
+# the merge's fresh-evidence coverage contract (replay_lane_merge_results).
 
 # bqa_services_probe — pure probe, never boots. Backend health URL first, then
 # the frontend. Ready = any HTTP status (same permissive regex as
@@ -252,20 +267,46 @@ PY
   fi
 }
 
-# bqa_results_infra_reason <merged-results-file>
-# Post-scan classifier for mid-run browser death (which no preflight can
-# catch): succeeds (and echoes the reason) ONLY when the results contain at
-# least one row, NO PASS/FAIL row, and an explicit browser-infra taxonomy
-# reason (demo_runner's "browser infrastructure failure" / a Chrome readiness
-# error). Deliberately conservative: legitimate SKIPs (single-service
-# projects, frontend-less iterations) must never be tokenized — a false
-# negative just means today's behavior.
-bqa_results_infra_reason() {
-  local _br_f="$1"
-  [[ -f "$_br_f" ]] || return 1
-  grep -qE '\|[[:space:]]*(PASS|FAIL)[[:space:]]*\|' "$_br_f" && return 1
-  grep -qE '^\|' "$_br_f" || return 1
-  grep -m1 -oiE '(browser infrastructure failure|chrome (mcp )?did not become ready)[^|]*' "$_br_f" || return 1
+# bqa_classify_primary_results <raw-primary-results-file> <expected-journeys-space-sep>
+# Per-journey classification of the RAW primary browser-qa output against the
+# journeys that dispatch owed fresh evidence for. Prints one
+# "<J-NN>\t<PASS|FAIL|SKIP_INFRA|SKIP_OTHER|MISSING>\t<detail>" line per
+# expected journey (merge_ui_test_results.py classify — one parser, no model).
+# Only the explicit browser-infra taxonomy in the journey's OWN row/section is
+# SKIP_INFRA; a sibling journey's PASS/FAIL never changes a journey's class;
+# MISSING and SKIP_OTHER are never infra — except that a lane which produced
+# rows but no PASS/FAIL row anywhere and carries the taxonomy (Chrome never
+# started for the whole dispatch) attributes its unverified journeys to infra.
+# Fails closed: a classifier crash reports every journey MISSING (no token,
+# no PASS), never a guess.
+bqa_classify_primary_results() {
+  local _bc_raw="$1" _bc_set="$2" _bc_merge _bc_j
+  _bc_merge="${MERGE_RESULTS:-$_REPLAY_LANE_LIB_DIR/merge_ui_test_results.py}"
+  # shellcheck disable=SC2086  # word-splitting the journey list is the point
+  if ! python3 "$_bc_merge" classify "$_bc_raw" $_bc_set 2>/dev/null; then
+    for _bc_j in $_bc_set; do printf '%s\tMISSING\tclassifier failed\n' "$_bc_j"; done
+  fi
+}
+
+# bqa_primary_infra_scan <raw-primary-results-file> <expected-journeys-space-sep>
+# The REL-14 post-scan for mid-run browser death (which no preflight can
+# catch). Echoes "<infra-journeys-space-sep>\t<reason>" — EXACTLY the expected
+# journeys whose required fresh primary attempt was blocked by browser infra —
+# and returns 1 when there is none (no token; a false negative is today's
+# behavior). Legitimate SKIPs (single-service projects, frontend-less
+# iterations, contract reasons) and rows that simply never appeared are never
+# tokenized on their own. Callers pass the RAW primary artifact, never the
+# merged results file (replay rows there have a different provenance).
+bqa_primary_infra_scan() {
+  local _bs_j _bs_c _bs_d _bs_set="" _bs_reason=""
+  [[ -n "${2// /}" ]] || return 1
+  while IFS=$'\t' read -r _bs_j _bs_c _bs_d; do
+    [[ "$_bs_c" == "SKIP_INFRA" ]] || continue
+    _bs_set+="$_bs_j "
+    [[ -n "$_bs_reason" ]] || _bs_reason="$_bs_d"
+  done < <(bqa_classify_primary_results "$1" "$2")
+  [[ -n "${_bs_set// /}" ]] || return 1
+  printf '%s\t%s' "${_bs_set% }" "$_bs_reason"
 }
 
 # Partition Required-still-passing into replay (LINTABLE golden on file) vs LLM,
@@ -495,17 +536,120 @@ replay_lane_write_deferred_rows() {
 # canary verdicts beat the (possibly voided) replay rows, and the main LLM
 # lane still wins where it re-tested a journey. On merge failure, degrade to a
 # lane copy (LLM preferred) so the evaluator always has something to read.
+#
+# Fresh-evidence coverage contract (REL-14 target-aware): $3 = the journeys
+# the LLM (primary) dispatch owed fresh, id-keyed evidence for this iteration
+# (lean: LLM_JOURNEYS; full: targets ∪ the id-keyed regression set — full depth
+# requires one UT-J-NN attribution row per target beside the generic UT-XX
+# test-plan rows, so targets are attributable there too); $4 = "yes" arms the
+# optional lane floor (at least one primary PASS row — a sanity guard, never a
+# proof of any journey; no production caller passes it today). With either
+# set, the merged headline is PASS only if every owed journey has a fresh PASS
+# row FROM THE PRIMARY LANE (a replay PASS never substitutes) and no primary
+# row is a browser-infra SKIP — otherwise SKIPPED (a real FAIL stays FAIL).
+# Both empty ⇒ the generic merge, byte-identical to before.
 replay_lane_merge_results() {
-  local _rl_out="$1" _rl_llm="$2"
-  local _rl_mid=()
+  local _rl_out="$1" _rl_llm="$2" _rl_required="${3:-}" _rl_floor="${4:-}"
+  local _rl_mid=() _rl_opts=() _rl_req_csv=""
   [[ -n "${CANARY_RESULTS:-}" && -f "${CANARY_RESULTS:-}" ]] && _rl_mid=("$CANARY_RESULTS")
-  if ! python3 "$MERGE_RESULTS" "$_rl_out" "$REGRESSION_RESULTS" ${_rl_mid[@]+"${_rl_mid[@]}"} "$_rl_llm"; then
+  if [[ -n "${_rl_required// /}" ]]; then
+    _rl_req_csv="$(echo "$_rl_required" | tr ' ' '\n' | grep -E '^J-[0-9]+$' | sort -u | tr '\n' ',' | sed 's/,$//' || true)"
+    [[ -n "$_rl_req_csv" ]] && _rl_opts+=(--required-primary "$_rl_req_csv")
+  fi
+  [[ "$_rl_floor" == "yes" ]] && _rl_opts+=(--primary-lane-floor)
+  if ! python3 "$MERGE_RESULTS" "$_rl_out" "$REGRESSION_RESULTS" ${_rl_mid[@]+"${_rl_mid[@]}"} "$_rl_llm" \
+        --primary-lane "$_rl_llm" ${_rl_opts[@]+"${_rl_opts[@]}"}; then
+    if [[ -n "$_rl_req_csv" || "$_rl_floor" == "yes" ]]; then
+      # FAIL CLOSED: the merge IS the fresh-evidence coverage gate whenever an
+      # obligation is owed. Copying the raw LLM lane here would hand its
+      # self-written headline downstream unverified — the exact false-PASS
+      # class this contract exists to prevent. No fallback, non-zero.
+      _replay_lane_warn "results merge FAILED while a fresh-evidence obligation is owed (${_rl_req_csv:-lane floor}) — REFUSING the lane-copy fallback: no headline can be established for $(basename "$_rl_out"). Reproduce: python3 $MERGE_RESULTS $_rl_out $REGRESSION_RESULTS ${_rl_mid[*]:-} $_rl_llm --primary-lane $_rl_llm ${_rl_opts[*]:-}"
+      return 1
+    fi
+    # No obligation (generic merge): the legacy artifact-preservation fallback.
     _replay_lane_warn "results merge failed — falling back to a lane output."
     if [[ -f "$_rl_llm" ]]; then cp "$_rl_llm" "$_rl_out" 2>/dev/null || true
     elif [[ -f "$REGRESSION_RESULTS" ]]; then cp "$REGRESSION_RESULTS" "$_rl_out" 2>/dev/null || true; fi
     return 0
   fi
   replay_lane_reconcile_regression_artifact "$_rl_out"
+}
+
+# replay_lane_finalize_results <results-file> <required-primary-space-sep>
+# The no-replay counterpart of replay_lane_merge_results: when the replay lane
+# did not run this iteration (no goldens, CHAIN_REGRESSION_REPLAY=false,
+# frontend down, lane crash/SKIPPED-INFRA fallback), the LLM lane's file IS
+# ui-test-results.md and nothing merges — so the SAME fresh-evidence coverage
+# contract (merge_ui_test_results.py finalize) is applied to that artifact in
+# place: the headline is recomputed from the rows (a FAIL row outranks an
+# agent-written PASS), every owed journey must have its fresh PASS row, and a
+# gap turns the headline SKIPPED with the coverage note directly under it. The
+# agent's rows and sections are preserved byte-for-byte; a satisfied contract
+# changes nothing. Replay activity never decides whether coverage is enforced.
+# rc contract: 0 = finalized, or a legitimate no-op (no results file — the
+# SKIPPED-stub path owns that; nothing owed); NON-ZERO = the coverage gate
+# could not be established. A failure is never swallowed: the caller must
+# fail closed (bqa_coverage_gate_fail_closed) — an unverified headline must
+# not reach a checkpoint or an evaluator.
+replay_lane_finalize_results() {
+  local _rf_out="$1" _rf_required="${2:-}" _rf_csv _rf_merge
+  [[ -f "$_rf_out" && -n "${_rf_required// /}" ]] || return 0
+  _rf_csv="$(echo "$_rf_required" | tr ' ' '\n' | grep -E '^J-[0-9]+$' | sort -u | tr '\n' ',' | sed 's/,$//' || true)"
+  [[ -n "$_rf_csv" ]] || return 0
+  _rf_merge="${MERGE_RESULTS:-$_REPLAY_LANE_LIB_DIR/merge_ui_test_results.py}"
+  if ! python3 "$_rf_merge" finalize "$_rf_out" --required-primary "$_rf_csv"; then
+    _replay_lane_warn "fresh-evidence finalization FAILED for $(basename "$_rf_out") — its headline is UNVERIFIED against the owed set ($_rf_csv). Reproduce: python3 $_rf_merge finalize $_rf_out --required-primary $_rf_csv"
+    return 1
+  fi
+  return 0
+}
+
+# bqa_coverage_gate_fail_closed <results-file> <what: finalize|merge> [<phase-name>]
+# The deterministic fresh-evidence coverage gate could not be established
+# (finalizer or merger failure). This is a FRAMEWORK failure — not a product
+# defect and not browser infrastructure — so it must never become a PASS, a
+# FAIL row, or an infra token. Fail CLOSED with the engine's existing
+# artifact conventions: the unverified artifact (if any) is moved aside as
+# <results>.unverified.md (kept for forensics, never read as evidence), the
+# existing SKIPPED stub (write_failed_artifact_stub, common.sh) is written in
+# its place with a reason that names the framework failure — an all-SKIPPED
+# file with a Reason is what every reader already handles, so nothing is
+# hidden — and the function returns the RESERVED exit code
+# BROWSER_EVIDENCE_GATE_UNAVAILABLE_EXIT_CODE (lib/common.sh; 79) so the caller
+# ABORTS with that same code before any checkpoint mark or post-scan
+# (`|| { ...; exit "$BROWSER_EVIDENCE_GATE_UNAVAILABLE_EXIT_CODE"; }`) and the
+# phase runner / goal engine halt resumably instead of warning past a generic
+# non-zero. If the artifact cannot even be moved aside (unwritable directory)
+# the raw headline may remain on disk: the reserved rc is then the ONLY
+# boundary, and it is sufficient — no evaluator runs after it.
+bqa_coverage_gate_fail_closed() {
+  local _cg_out="$1" _cg_what="${2:-finalize}" _cg_phase="${3:-}" _cg_aside _cg_base
+  _cg_aside="${_cg_out%.md}.unverified.md"
+  _cg_base="$(basename "$_cg_out")"
+  if [[ -z "$_cg_phase" ]]; then
+    _cg_phase="${_cg_base#phase-}"; _cg_phase="${_cg_phase%-ui-test-results.md}"
+  fi
+  if [[ -f "$_cg_out" ]]; then
+    if mv -f "$_cg_out" "$_cg_aside" 2>/dev/null; then
+      _replay_lane_warn "FRAMEWORK FAILURE: the fresh-evidence coverage gate ($_cg_what) could not finalize $_cg_base — moved aside to $(basename "$_cg_aside"); its headline is UNVERIFIED and is NOT evidence."
+    else
+      _replay_lane_warn "FRAMEWORK FAILURE: the fresh-evidence coverage gate ($_cg_what) could not finalize $_cg_base AND it could not be moved aside — its headline is UNVERIFIED; treat it as NOT evidence."
+    fi
+  else
+    _replay_lane_warn "FRAMEWORK FAILURE: the fresh-evidence coverage gate ($_cg_what) failed before $_cg_base was written."
+  fi
+  if [[ ! -f "$_cg_out" ]] && declare -F write_failed_artifact_stub >/dev/null 2>&1; then
+    write_failed_artifact_stub "$_cg_phase" "ui-test-results" \
+      "FRAMEWORK FAILURE — not a product or browser failure: the deterministic fresh-evidence coverage gate ($_cg_what, merge_ui_test_results.py) could not finalize this iteration's browser results, so the browser-qa agent's output is UNVERIFIED and was moved to $(basename "$_cg_aside") (kept for forensics only; it is not evidence and no journey may be scored from it). No journey is FAILED and no browser-infra token was written on this basis. Fix the framework fault (see the warning above for the exact command), then re-run the browser-qa step / resume the iteration — the step was not checkpointed." \
+      >/dev/null 2>&1 || _replay_lane_warn "FRAMEWORK FAILURE: the SKIPPED stub could not be written either — $_cg_base is absent."
+  fi
+  if declare -F record_telemetry_event >/dev/null 2>&1; then
+    record_telemetry_event "browser_evidence_gate_failed" "$(jq -cn --arg w "$_cg_what" --arg f "$_cg_base" --arg p "$_cg_phase" \
+        '{what:$w, results:$f, phase:$p, note:"framework failure: coverage gate could not be established; failed closed (no checkpoint, no PASS, no FAIL, no token)"}' 2>/dev/null \
+      || printf '{"what":"%s","results":"%s"}' "$_cg_what" "$_cg_base")" || true
+  fi
+  return "${BROWSER_EVIDENCE_GATE_UNAVAILABLE_EXIT_CODE:-79}"
 }
 
 # Reconcile the RAW replay artifact after a merge: any journey the replay lane

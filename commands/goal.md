@@ -23,7 +23,12 @@ First read `.claude/skills/goal-interactive-dispatch.md` and follow it exactly.
    launch command is required. Only if it prints `FAILED`, tell the user to
    relaunch via `scripts/automation/host-guard-exec.sh claude` (the from-birth
    wrapper) — the engine's iteration gate re-verifies each iteration and would
-   pause (AWAITING_HOST_GUARD, resumable) on an unconfinable pump.
+   pause (AWAITING_HOST_GUARD, resumable) on an unconfinable pump. If that env
+   also sets `HOST_GUARD_PUMP_HEADLESS_QA=1`, the gate additionally requires
+   THIS CLI to have been launched display-less (via that same wrapper); a
+   session started with `DISPLAY`/`WAYLAND_DISPLAY` set pauses before the first
+   dispatch — adoption cannot fix a launch environment, so relaunch and
+   `/goal-resume`.
 3. **Launch the engine** in the background (Bash with run_in_background) and
    capture its PID:
    `./scripts/automation/run-goal.sh --session-id <sid> --interactive <passthrough flags>`

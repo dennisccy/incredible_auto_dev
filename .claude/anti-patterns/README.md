@@ -3,7 +3,7 @@
 One file per numbered entry, split from the former monolith (CTX-12) so a reader loads
 only what matches the situation: scan this index, open the matching `<NN>-<slug>.md`,
 nothing else. Numbering is FROZEN forever — files keep their original `## <N>. <title>`
-headings; the next new entry takes the next free number (33) as `<NN>-<slug>.md` plus a
+headings; the next new entry takes the next free number (34) as `<NN>-<slug>.md` plus a
 row here (maintenance protocol §2).
 
 | # | Entry | Applies when | Rule (one line) |
@@ -40,3 +40,4 @@ row here (maintenance protocol §2).
 | 30 | [30-process-identity-by-cmdline-substring.md](30-process-identity-by-cmdline-substring.md) | identifying a process from /proc or ps | Match the program (`comm` / `argv[0]` basename), never a substring of the whole cmdline — a path component is not an identity |
 | 31 | [31-rule-documented-where-nobody-reads-it.md](31-rule-documented-where-nobody-reads-it.md) | authoring rules for agents | A rule whose breach halts a run must ship in guaranteed-delivery context, not behind a pointer to another file |
 | 32 | [32-guard-modelled-on-prose-not-the-enforcer.md](32-guard-modelled-on-prose-not-the-enforcer.md) | writing any rule/allowlist that mirrors an external enforcer | Derive it from the enforcer's own rules, tag each rule with its evidence, keep unverified shapes non-enforcing and probed; delete entries with no demonstrated effect. |
+| 33 | [33-infra-classifier-over-merged-artifact.md](33-infra-classifier-over-merged-artifact.md) | classifying or headlining evidence after two sources were merged | Classify the RAW primary artifact per journey against the set that dispatch owed; a replay PASS never satisfies or masks a different journey's fresh-primary obligation |
