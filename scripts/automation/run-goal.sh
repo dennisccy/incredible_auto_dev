@@ -3212,6 +3212,40 @@ PYEOF
     exit 0
   fi
 
+  # Browser evidence gate UNAVAILABLE (reserved rc, lib/common.sh): the
+  # deterministic fresh-evidence coverage gate (merge_ui_test_results.py
+  # finalize / merge with an owed journey set) could not be established for
+  # this iteration's browser results — a FRAMEWORK/runtime fault, not a product
+  # defect, not browser infrastructure, not agent quality. The executor already
+  # failed closed at the leaf (no checkpoint, unverified artifact quarantined,
+  # SKIPPED stub) — but a generic non-zero executor exit would still let this
+  # loop run the coherence auditor and the goal-evaluator over whatever
+  # artifact survived (if quarantine itself failed, the agent's raw PASS). So
+  # halt HERE, before any evaluation: resumable GATE_BLOCKED, current_iter not
+  # advanced (it only moves after the evaluator), nothing pushed as a
+  # successful iteration. `--resume` re-runs THIS iteration — the
+  # un-checkpointed browser step re-collects and re-finalizes the evidence —
+  # and is never an approval. Identical for the lean and the full pipeline
+  # (run-phase.sh propagates the same code through _guard_step_rc).
+  if [[ "$_exec_rc" -eq "${BROWSER_EVIDENCE_GATE_UNAVAILABLE_EXIT_CODE:-79}" ]]; then
+    echo "[run-goal] Browser evidence finalization could not be established for iteration $CURRENT_ITER (executor exit $_exec_rc) — halting." >&2
+    echo "[run-goal]   The deterministic fresh-evidence coverage gate (merge_ui_test_results.py finalize/merge) FAILED, so this" >&2
+    echo "[run-goal]   iteration's browser-qa results are UNVERIFIED. This is a framework/runtime fault — not a product defect" >&2
+    echo "[run-goal]   and not browser infrastructure. The iteration was NOT evaluated and was NOT advanced." >&2
+    echo "[run-goal]   Fix the framework/runtime error shown above (the executor printed the exact command), then resume:" >&2
+    echo "[run-goal]     /goal-resume $SESSION_ID" >&2
+    echo "[run-goal]   Resume re-runs the same iteration (the browser QA step was not checkpointed); it is not an approval." >&2
+    mkdir -p "$ITER_DIR" 2>/dev/null || true
+    printf 'reason=browser-evidence-gate-unavailable\nrc=%s\niter=%s\ndetected_at_step=executor-browser-evidence\n' \
+      "$_exec_rc" "$CURRENT_ITER" > "$ITER_DIR/browser-evidence-gate-unavailable" 2>/dev/null || true
+    record_telemetry_event "halt" "$(jq -cn --arg n "$ITER_NAME" --arg rc "$_exec_rc" \
+      '{reason:"GATE_BLOCKED_BROWSER_EVIDENCE", detected_at_step:"executor-browser-evidence", rc:($rc|tonumber), iter_name:$n}' \
+      2>/dev/null || printf '{"reason":"GATE_BLOCKED_BROWSER_EVIDENCE","detected_at_step":"executor-browser-evidence","rc":%s}' "$_exec_rc")"
+    write_session_summary "GATE_BLOCKED" "$CURRENT_ITER"
+    explain_goal_status "GATE_BLOCKED" "$SESSION_ID" "$REPO_ROOT" >&2
+    exit 0
+  fi
+
   # Transport/dispatch-unavailable (exit 70) from the interactive backend: the
   # pump/session went away mid-iteration. This is infrastructure, not agent
   # quality — pause cleanly and resumably instead of running the coherence-auditor

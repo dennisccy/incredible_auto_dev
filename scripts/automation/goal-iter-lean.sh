@@ -519,6 +519,15 @@ _bqa_full_fork_consume() {
     # whole section and nothing certifies the fork's partial artifacts.
     _pause_if_transport "${DISPATCH_UNAVAILABLE_EXIT_CODE:-70}" "browser-qa-agent (parallel full)"
   fi
+  if [[ "$_frc" -eq "${BROWSER_EVIDENCE_GATE_UNAVAILABLE_EXIT_CODE:-79}" || "$_file_rc" == "${BROWSER_EVIDENCE_GATE_UNAVAILABLE_EXIT_CODE:-79}" ]]; then
+    # The forked section failed CLOSED on the browser evidence gate (the
+    # reserved rc surfaces through `wait`, exactly like a transport 70). Never
+    # re-run the section inline — that would burn a second browser dispatch
+    # against the same deterministic fault; propagate the reserved rc so the
+    # engine halts GATE_BLOCKED before any evaluation.
+    echo "[goal-iter-lean] Forked full browser-qa section: browser evidence coverage gate UNAVAILABLE (exit ${BROWSER_EVIDENCE_GATE_UNAVAILABLE_EXIT_CODE:-79}) — failing closed, no inline re-run." >&2
+    exit "${BROWSER_EVIDENCE_GATE_UNAVAILABLE_EXIT_CODE:-79}"
+  fi
   if [[ "$_file_rc" != "0" ]]; then
     echo "[goal-iter-lean] Forked full browser-qa section unusable (wait rc=$_frc, section rc=${_file_rc:-none}) — running the section inline." >&2
     return 1
@@ -918,10 +927,12 @@ fi
 # stub logic and the checkpoint mark — with the unverified artifact moved
 # aside and the engine's SKIPPED stub (framework-failure reason) in its place.
 # A framework failure never becomes a PASS, a FAIL row or an infra token; the
-# executor exits non-zero and the un-checkpointed step re-runs on resume.
+# executor exits the RESERVED code BROWSER_EVIDENCE_GATE_UNAVAILABLE_EXIT_CODE
+# (lib/common.sh) so run-goal.sh halts GATE_BLOCKED before the coherence
+# auditor / evaluator, and the un-checkpointed step re-runs on resume.
 if [[ "$_use_replay" == "yes" ]]; then
   replay_lane_merge_results "$UI_TEST_RESULTS" "$_llm_out" "$LLM_JOURNEYS" \
-    || { bqa_coverage_gate_fail_closed "$UI_TEST_RESULTS" "merge" "$ITER_NAME"; exit 1; }
+    || { bqa_coverage_gate_fail_closed "$UI_TEST_RESULTS" "merge" "$ITER_NAME"; exit "${BROWSER_EVIDENCE_GATE_UNAVAILABLE_EXIT_CODE:-79}"; }
   replay_lane_write_deferred_rows "$UI_TEST_RESULTS"
 else
   # No replay lane this run (no goldens, hatch off, frontend down, lane
@@ -930,7 +941,7 @@ else
   # the rows, an owed journey without its fresh PASS row → SKIPPED + note; the
   # agent's rows untouched). Coverage honesty never depends on replay activity.
   replay_lane_finalize_results "$UI_TEST_RESULTS" "$LLM_JOURNEYS" \
-    || { bqa_coverage_gate_fail_closed "$UI_TEST_RESULTS" "finalize" "$ITER_NAME"; exit 1; }
+    || { bqa_coverage_gate_fail_closed "$UI_TEST_RESULTS" "finalize" "$ITER_NAME"; exit "${BROWSER_EVIDENCE_GATE_UNAVAILABLE_EXIT_CODE:-79}"; }
 fi
 
 # REL-14 post-scan (same knob): a dispatch that returned but left no results

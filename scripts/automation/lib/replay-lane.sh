@@ -615,10 +615,14 @@ replay_lane_finalize_results() {
 # existing SKIPPED stub (write_failed_artifact_stub, common.sh) is written in
 # its place with a reason that names the framework failure — an all-SKIPPED
 # file with a Reason is what every reader already handles, so nothing is
-# hidden — and the function returns 1 so the caller ABORTS before any
-# checkpoint mark or post-scan (the caller does `|| { ...; exit 1; }`). If the
-# artifact cannot even be moved aside (unwritable directory) the warning and
-# the non-zero rc still stand; the headline is then explicitly unverified.
+# hidden — and the function returns the RESERVED exit code
+# BROWSER_EVIDENCE_GATE_UNAVAILABLE_EXIT_CODE (lib/common.sh; 79) so the caller
+# ABORTS with that same code before any checkpoint mark or post-scan
+# (`|| { ...; exit "$BROWSER_EVIDENCE_GATE_UNAVAILABLE_EXIT_CODE"; }`) and the
+# phase runner / goal engine halt resumably instead of warning past a generic
+# non-zero. If the artifact cannot even be moved aside (unwritable directory)
+# the raw headline may remain on disk: the reserved rc is then the ONLY
+# boundary, and it is sufficient — no evaluator runs after it.
 bqa_coverage_gate_fail_closed() {
   local _cg_out="$1" _cg_what="${2:-finalize}" _cg_phase="${3:-}" _cg_aside _cg_base
   _cg_aside="${_cg_out%.md}.unverified.md"
@@ -645,7 +649,7 @@ bqa_coverage_gate_fail_closed() {
         '{what:$w, results:$f, phase:$p, note:"framework failure: coverage gate could not be established; failed closed (no checkpoint, no PASS, no FAIL, no token)"}' 2>/dev/null \
       || printf '{"what":"%s","results":"%s"}' "$_cg_what" "$_cg_base")" || true
   fi
-  return 1
+  return "${BROWSER_EVIDENCE_GATE_UNAVAILABLE_EXIT_CODE:-79}"
 }
 
 # Reconcile the RAW replay artifact after a merge: any journey the replay lane
