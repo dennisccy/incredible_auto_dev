@@ -23,6 +23,16 @@
 #      P3/P4 healthy sequential / parallel: unchanged (rc 0, one dispatch)
 #      P5 quarantine belt: the raw PASS cannot be moved aside → it stays at the
 #         results path, yet run-phase still exits 79 and dispatches nothing
+#   M. multi-failure fanout through the REAL run-phase.sh: a reserved halt in
+#      Branch UI collides with a generic Branch QA failure (rc 124 = GNU timeout
+#      after the bounded retry). lib/parallel.sh must keep the reserved rc by
+#      MEANING, not numeric magnitude (RED on 607a117: max → 124, warn-and-continue,
+#      post_dev_parallel_complete recorded, resume skips the whole UI/browser chain)
+#      M1  79 + 124 → run-phase 79, checkpoint stays review_passed, nothing downstream
+#      M1b 79 + quarantine failure (raw PASS stays on disk) + 124 → still 79
+#      M2  78 (real spec-field accessor crash in browser-qa-phase.sh) + 124 → 78;
+#          resume re-runs the UI/browser chain
+#      M3  70 (browser-qa dispatch unavailable) + 124 → 70; resume re-runs the chain
 #   E. lean + full through the REAL run-goal.sh
 #      E1 lean gate failure → executor 79 → GATE_BLOCKED (reason
 #         GATE_BLOCKED_BROWSER_EVIDENCE), no coherence, no evaluator,
@@ -32,7 +42,11 @@
 #         evidence is re-collected, the evaluator is reached — no approval step
 #      E4 healthy lean: unchanged (evaluator reached, one browser dispatch)
 #      E5 FULL path: run-phase.sh exiting 79 → the identical GATE_BLOCKED halt
-#   W. wiring: one constant, guard order, engine halt placed before coherence.
+#      E6 FULL path: run-phase.sh exiting 78 → GATE_BLOCKED_SPEC_FIELD_UNAVAILABLE
+#      E7 FULL path: run-phase.sh exiting 70 → AWAITING_PUMP (M + E6/E7 compose
+#         the fanout collision into the top-level halts; no evaluator either way)
+#   W. wiring: one constant, guard order, engine halt placed before coherence,
+#      parallel.sh names the reserved constants ahead of quota.
 #
 # shellcheck disable=SC2015,SC2016,SC2034,SC2329
 # (SC2015: assert's pass arm always returns 0; SC2016: the wiring greps match
@@ -44,6 +58,8 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ENGINE_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 RC79="${BROWSER_EVIDENCE_GATE_UNAVAILABLE_EXIT_CODE:-79}"
+RC78="${SPEC_FIELD_UNAVAILABLE_EXIT_CODE:-78}"
+RC70="${DISPATCH_UNAVAILABLE_EXIT_CODE:-70}"
 
 PASS=0
 FAIL=0
@@ -152,6 +168,7 @@ case "$agent" in
     out="$(printf '%s\n' "$prompt" | sed -n 's/^Write your review report to: //p' | head -n1)"; [[ -n "$out" ]] || exit 64
     printf '**Verdict:** PASS\n\nStub review.\n' > "$out"; exit 0 ;;
   browser-qa-agent)
+    [[ -n "${STUB_BQA_RC:-}" ]] && { echo "[stub claude] browser-qa dispatch unavailable (rc $STUB_BQA_RC)"; exit "$STUB_BQA_RC"; }
     out="$(printf '%s\n' "$prompt" | sed -n 's/^Write your results to: //p' | head -n1)"; [[ -n "$out" ]] || exit 64
     mkdir -p "$(dirname "$out")"
     bqa_rows "$prompt" > "$out"; exit 0 ;;
@@ -312,6 +329,111 @@ run_phase P5 STUB_FINALIZE_RC=1
 chmod 755 "${UI_TEST_RESULTS%.md}.unverified.md" 2>/dev/null || true
 fi
 
+# ══ M. multi-failure fanout: reserved halt (Branch UI) + generic 124 (Branch QA) ══
+qa_rc_stub() {  # <rc> — Branch QA exits <rc> (124 = GNU timeout after the bounded retry)
+  printf '#!/usr/bin/env bash\necho "qa-phase.sh" >> "$CANARY"\necho "[qa-phase stub] runtime cap exhausted after bounded retry"\nexit %s\n' "$1" \
+    > "$SBX/scripts/automation/qa-phase.sh"
+}
+# Accessor wrapper: when STUB_SPEC_FIELD_CRASH is set, `iter_spec.py field` crashes
+# (rc 2) for browser-qa-phase.sh ONLY (its parent shell's cmdline), so the REAL
+# replay_lane_spec_journeys refuses and returns the reserved 78 inside Branch UI
+# before any dispatch; every other caller runs the real accessor unchanged.
+install_spec_field_crash_stub() {  # <sandbox>
+  local lib="$1/scripts/automation/lib"
+  mv "$lib/iter_spec.py" "$lib/iter_spec.real.py"
+  cat > "$lib/iter_spec.py" <<'PYEOF'
+#!/usr/bin/env python3
+import os, runpy, sys
+REAL = os.path.join(os.path.dirname(os.path.abspath(__file__)), "iter_spec.real.py")
+try:
+    parent = open(f"/proc/{os.getppid()}/cmdline", "rb").read().decode(errors="replace")
+except OSError:
+    parent = ""
+if os.environ.get("STUB_SPEC_FIELD_CRASH") and sys.argv[1:2] == ["field"] and "browser-qa-phase.sh" in parent:
+    sys.stderr.write("[stub iter_spec] simulated accessor crash rc=2\n")
+    sys.exit(2)
+sys.argv[0] = REAL
+runpy.run_path(REAL, run_name="__main__")
+PYEOF
+}
+after_fanout_ran() { grep -qE '^(dev-phase|review-phase|demo-phase|ux-regression-phase|phase-audit|phase-closure-check)\.sh' "$CANARY"; }
+# Shared M assertions: <tag> <reserved rc> <guard phrase run-phase prints for it>
+assert_reserved_fanout_halt() {
+  local tag="$1" want="$2" phrase="$3" log="$WORK/run-$1.log"
+  grep -q "\[Branch-UI\]=$want" "$log" && grep -q '\[Branch-QA\]=124' "$log" \
+    && assert "$tag: (seam) both branches failed — [Branch-UI]=$want and [Branch-QA]=124" pass \
+    || assert "$tag: (seam) both branches failed — [Branch-UI]=$want and [Branch-QA]=124" fail
+  grep -q "Fanout (Step 4-7/11): $phrase (exit $want)" "$log" \
+    && assert "$tag: the fanout aggregate reaching _guard_step_rc is $want, not 124" pass \
+    || assert "$tag: the fanout aggregate reaching _guard_step_rc is $want (got: $(grep -oE 'post-dev fanout exited [0-9]+|\(exit [0-9]+\)' "$log" | head -1))" fail
+  [[ "$RC" -eq "$want" ]] && assert "$tag: run-phase exits $want" pass || assert "$tag: run-phase exits $want (got rc=$RC)" fail
+  [[ "$(step_of)" == "review_passed" ]] && ! grep -q 'post_dev_parallel_complete' "$SBX/runs/$PHASE/status.json" \
+    && assert "$tag: post_dev_parallel_complete NOT recorded (current_step stays review_passed)" pass \
+    || assert "$tag: post_dev_parallel_complete NOT recorded (current_step now '$(step_of)')" fail
+  ! grep -q 'sequential retry will pick up' "$log" && ! grep -q 'Post-dev fanout complete' "$log" \
+    && ! grep -q 'Step 6/11 -- Browser QA: skipped' "$log" \
+    && assert "$tag: no warn-and-continue, no fanout completion, no SKIP_BROWSER_QA promotion" pass \
+    || assert "$tag: the reserved halt was softened (warning / completion / Step 6 skipped)" fail
+  ! after_fanout_ran && [[ "$(n_canary qa-phase)" == "1" ]] \
+    && assert "$tag: nothing after the fanout dispatched (no QA fix loop, demo, UX, audit, closure)" pass \
+    || assert "$tag: steps after the fanout dispatched: $(tr '\n' ' ' < "$CANARY")" fail
+}
+# Resume after the fault is removed (QA healthy): the checkpoint must NOT skip the
+# UI/browser chain — the fanout re-runs and browser evidence is re-collected.
+assert_resume_reruns_ui_chain() {  # <tag>
+  local tag="$1"
+  write_stub "$SBX" qa-phase.sh "PASS" "reports/qa/${PHASE}-qa.md"
+  : > "$CANARY"
+  run_phase "$tag"
+  local log="$WORK/run-$tag.log"
+  # The checkpoint-driven skip list is printed once at startup; the sequential
+  # "Step 6/11 -- Browser QA: skipped" line is NOT evidence here — a healthy
+  # fanout prints it too once the fanout itself has run the UI chain.
+  grep -q 'RESUMING from checkpoint: review_passed' "$log" && grep -q 'Post-dev fanout complete' "$log" \
+    && ! grep -qE 'Skipping: (UI impact analysis|UI test design|browser QA)' "$log" \
+    && assert "$tag: resume inherits no checkpoint that skips the UI/browser chain" pass \
+    || assert "$tag: resume skipped the UI/browser chain ($(grep -m1 -oE 'RESUMING from checkpoint: [a-z_]+' "$log"))" fail
+  [[ "$RC" -eq 0 && "$(n_canary ui-impact-phase)" == "1" && "$(n_canary browser-qa-agent)" == "1" && "$(headline_of "$UI_TEST_RESULTS")" == "PASS" ]] \
+    && assert "$tag: resume re-ran ui-impact + one browser-qa dispatch → PASS, run completes (rc 0)" pass \
+    || assert "$tag: resume re-runs the chain (rc=$RC ui-impact=$(n_canary ui-impact-phase) bqa=$(n_canary browser-qa-agent) headline='$(headline_of "$UI_TEST_RESULTS")')" fail
+}
+
+# M1 — browser evidence gate 79 (forced finalizer failure) + QA 124.
+make_phase_sandbox M1 review_passed; qa_rc_stub 124
+run_phase M1 STUB_FINALIZE_RC=1
+assert_reserved_fanout_halt M1 "$RC79" "browser evidence coverage gate UNAVAILABLE"
+[[ "$(n_canary browser-qa-agent)" == "1" ]] && assert "M1: exactly one browser-qa dispatch (no retry)" pass || assert "M1: browser-qa dispatches: $(n_canary browser-qa-agent)" fail
+
+# M1b — quarantine belt + simultaneous QA failure: the raw PASS stays authoritative
+# on disk, so the preserved rc is the ONLY boundary left.
+if [[ "$(id -u)" != "0" ]]; then
+make_phase_sandbox M1b review_passed; qa_rc_stub 124
+occupy_aside "${UI_TEST_RESULTS%.md}.unverified.md"
+run_phase M1b STUB_FINALIZE_RC=1
+[[ "$(headline_of "$UI_TEST_RESULTS")" == "PASS" ]] && assert "M1b: (seam) the raw agent PASS remains at the results path when quarantine fails" pass \
+  || assert "M1b: (seam) expected the raw PASS to remain (got '$(headline_of "$UI_TEST_RESULTS")')" fail
+assert_reserved_fanout_halt M1b "$RC79" "browser evidence coverage gate UNAVAILABLE"
+chmod 755 "${UI_TEST_RESULTS%.md}.unverified.md" 2>/dev/null || true
+fi
+
+# M2 — canonical spec-field lookup 78 (real refusal inside browser-qa-phase.sh) + QA 124.
+make_phase_sandbox M2 review_passed; qa_rc_stub 124; install_spec_field_crash_stub "$SBX"
+run_phase M2 STUB_SPEC_FIELD_CRASH=1
+grep -q 'canonical journey lookup FAILED' "$WORK/run-M2.log" && assert "M2: (seam) the REAL replay_lane_spec_journeys refused in Branch UI" pass \
+  || assert "M2: (seam) the REAL replay_lane_spec_journeys refused in Branch UI" fail
+assert_reserved_fanout_halt M2 "$RC78" "canonical Goal Mode Metadata field lookup UNAVAILABLE"
+[[ "$(n_canary browser-qa-agent)" == "0" && ! -f "$UI_TEST_RESULTS" ]] \
+  && assert "M2: no browser QA ran or completed (0 dispatches, no results artifact fabricated)" pass \
+  || assert "M2: browser QA state (dispatches=$(n_canary browser-qa-agent) results=$([[ -f "$UI_TEST_RESULTS" ]] && echo present || echo absent))" fail
+assert_resume_reruns_ui_chain M2r
+
+# M3 — dispatch unavailable 70 (browser-qa dispatch) + QA 124.
+make_phase_sandbox M3 review_passed; qa_rc_stub 124
+run_phase M3 STUB_BQA_RC="$RC70"
+assert_reserved_fanout_halt M3 "$RC70" "interactive pump/dispatch unavailable"
+[[ "$(n_canary browser-qa-agent)" == "1" ]] && assert "M3: (seam) exactly one browser-qa dispatch attempted, no retry" pass || assert "M3: browser-qa dispatches: $(n_canary browser-qa-agent)" fail
+assert_resume_reruns_ui_chain M3r
+
 # ══ E. lean + full through the REAL run-goal.sh ═══════════════════════════════
 ESBX="$WORK/engine"; mkdir -p "$ESBX"
 cp -r "$ENGINE_ROOT/scripts" "$ESBX/"
@@ -432,6 +554,26 @@ _fd="$(cat "$ENG_SESSION/iter-0/depth-dispatched" 2>/dev/null)"
 grep -q '"reason": *"GATE_BLOCKED_BROWSER_EVIDENCE"' "$ENG_SESSION/telemetry.jsonl" 2>/dev/null \
   && assert "E5: full path halt telemetry carries GATE_BLOCKED_BROWSER_EVIDENCE" pass || assert "E5: full path halt telemetry" fail
 
+# E6/E7 — the other two reserved halts M preserves through the fanout reach their
+# EXISTING top-level handlers on the FULL path, with no coherence/evaluator.
+full_exec_exits() {  # <sid> <rc> — FULL executor (run-phase.sh stub) exits <rc>
+  printf '#!/usr/bin/env bash\n# stub run-phase.sh (accepts --no-finalize)\necho "run-phase.sh" >> "$CANARY"\nexit %s\n' "$2" > "$ESBX/scripts/automation/run-phase.sh"
+  run_engine "$1" fresh STUB_SPEC_DEPTH=full CHAIN_DEPTH_ARBITER=false
+  cp "$WORK/run-phase.real" "$ESBX/scripts/automation/run-phase.sh"
+}
+full_exec_exits lc6 "$RC78"
+_fd="$(cat "$ENG_SESSION/iter-0/depth-dispatched" 2>/dev/null)"
+[[ "$(eng_status)" == "GATE_BLOCKED" && "$_fd" == "full" && "$(eng_n goal-evaluator)" == "0" && "$(eng_n coherence-auditor)" == "0" && "$(eng_iter)" == "0" ]] \
+  && grep -q '"reason": *"GATE_BLOCKED_SPEC_FIELD_UNAVAILABLE"' "$ENG_SESSION/telemetry.jsonl" 2>/dev/null \
+  && assert "E6: FULL executor $RC78 → GATE_BLOCKED_SPEC_FIELD_UNAVAILABLE (no coherence, no evaluator, iter 0)" pass \
+  || assert "E6: FULL executor $RC78 halt (status='$(eng_status)' depth='$_fd' eval=$(eng_n goal-evaluator) coh=$(eng_n coherence-auditor) iter=$(eng_iter))" fail
+full_exec_exits lc7 "$RC70"
+_fd="$(cat "$ENG_SESSION/iter-0/depth-dispatched" 2>/dev/null)"
+[[ "$(eng_status)" == "AWAITING_PUMP" && "$_fd" == "full" && "$(eng_n goal-evaluator)" == "0" && "$(eng_n coherence-auditor)" == "0" && "$(eng_iter)" == "0" ]] \
+  && grep -q '"reason": *"AWAITING_PUMP", *"detected_at_step": *"executor"' "$ENG_SESSION/telemetry.jsonl" 2>/dev/null \
+  && assert "E7: FULL executor $RC70 → AWAITING_PUMP at the executor (no coherence, no evaluator, iter 0)" pass \
+  || assert "E7: FULL executor $RC70 halt (status='$(eng_status)' depth='$_fd' eval=$(eng_n goal-evaluator) coh=$(eng_n coherence-auditor) iter=$(eng_iter))" fail
+
 # ══ W. wiring ═════════════════════════════════════════════════════════════════
 RP="$ENGINE_ROOT/scripts/automation/run-phase.sh"; RG="$ENGINE_ROOT/scripts/automation/run-goal.sh"
 GIL="$ENGINE_ROOT/scripts/automation/goal-iter-lean.sh"; BQP="$ENGINE_ROOT/scripts/automation/browser-qa-phase.sh"; RL="$ENGINE_ROOT/scripts/automation/lib/replay-lane.sh"
@@ -446,6 +588,14 @@ _halt="$(grep -n 'GATE_BLOCKED_BROWSER_EVIDENCE' "$RG" | head -1 | cut -d: -f1)"
   && assert "W4: both executors and the lib helper exit/return the reserved rc (no literal generic 1)" pass || assert "W4: executor/helper exit codes" fail
 ! grep -qE 'bqa_coverage_gate_fail_closed[^;]*; exit 1;' "$GIL" "$BQP" \
   && assert "W5: no fail-closed site still exits generic 1" pass || assert "W5: a fail-closed site still exits generic 1" fail
+PAR="$ENGINE_ROOT/scripts/automation/lib/parallel.sh"
+_r79="$(grep -n '${BROWSER_EVIDENCE_GATE_UNAVAILABLE_EXIT_CODE:-' "$PAR" | head -1 | cut -d: -f1 || true)"
+_r78="$(grep -n '${SPEC_FIELD_UNAVAILABLE_EXIT_CODE:-' "$PAR" | head -1 | cut -d: -f1 || true)"
+_r70="$(grep -n '${DISPATCH_UNAVAILABLE_EXIT_CODE:-' "$PAR" | head -1 | cut -d: -f1 || true)"
+_rq="$(grep -n 'local _quota=' "$PAR" | head -1 | cut -d: -f1 || true)"
+[[ -n "$_r79" && -n "$_r78" && -n "$_r70" && -n "$_rq" && "$_r79" -lt "$_rq" && "$_r78" -lt "$_rq" && "$_r70" -lt "$_rq" ]] \
+  && assert "W6: parallel.sh ranks the named reserved halts (79/78/70 constants) ahead of the quota block" pass \
+  || assert "W6: parallel.sh reserved-halt wiring (79@${_r79:-none} 78@${_r78:-none} 70@${_r70:-none} quota@${_rq:-none})" fail
 
 echo ""
 echo "=== Results: $PASS passed, $FAIL failed ==="

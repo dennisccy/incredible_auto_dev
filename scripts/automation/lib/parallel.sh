@@ -18,6 +18,17 @@
 #     exits with a signal code, the parent forwards SIGTERM to the other,
 #     waits, and exits with the same signal code so run-phase.sh's outer
 #     retry-loop signal guard can abort cleanly.
+#   - Reserved lifecycle halts: if either child exits one, the parent exits it,
+#     ranked by MEANING, never numeric magnitude — browser evidence gate
+#     unavailable (79) > canonical spec field unavailable (78) > dispatch /
+#     transport unavailable (70). Each has a deterministic resumable handler
+#     upstream (run-phase.sh _guard_step_rc; run-goal.sh GATE_BLOCKED_BROWSER_
+#     EVIDENCE / GATE_BLOCKED_SPEC_FIELD_UNAVAILABLE / AWAITING_PUMP), so neither
+#     a larger generic code (e.g. 124 from GNU timeout) nor quota on the other
+#     branch may mask one: masked, the caller warns-and-continues and records
+#     post_dev_parallel_complete, whose resume skips the whole UI/browser chain.
+#     Ranked ABOVE quota on purpose (run-goal.sh has no FULL-executor 75 arm);
+#     a quota condition is rediscovered on resume.
 #   - Quota exhaustion (exit 75): if either child exits 75, the parent exits
 #     75 immediately so the outer quota loop can sleep + retry the whole
 #     fanout.
@@ -52,7 +63,8 @@ _parallel_kill_children() {
 # caller below uses plain `wait $pid; rc=$?` directly.
 
 # parallel_run <label-A> <cmd-A...> -- <label-B> <cmd-B...>
-# Returns the aggregated exit code (worse of the two children).
+# Returns the aggregated exit code: signal > reserved halt (79 > 78 > 70) >
+# quota 75 > the numerically worse of two soft failures > 0.
 parallel_run() {
   local label_a label_b
   local -a cmd_a=() cmd_b=()
@@ -140,6 +152,20 @@ parallel_run() {
     return "$rc_b"
   fi
 
+  # Reserved lifecycle halts, in semantic priority order (see the contract
+  # above): the first one either child exited wins, whatever the other child's
+  # code. Named constants come from lib/common.sh / lib/quota-retry.sh when the
+  # caller sourced them; the fallbacks serve the standalone self-test.
+  local _reserved
+  for _reserved in "${BROWSER_EVIDENCE_GATE_UNAVAILABLE_EXIT_CODE:-79}" \
+                   "${SPEC_FIELD_UNAVAILABLE_EXIT_CODE:-78}" \
+                   "${DISPATCH_UNAVAILABLE_EXIT_CODE:-70}"; do
+    if [[ "$rc_a" -eq "$_reserved" || "$rc_b" -eq "$_reserved" ]]; then
+      echo "[parallel] reserved lifecycle halt ([$label_a]=$rc_a [$label_b]=$rc_b) — exiting $_reserved (outranks quota and soft failures)" >&2
+      return "$_reserved"
+    fi
+  done
+
   # Quota exhaustion (75): propagate immediately so run-phase.sh's outer
   # _run_step quota guard sleeps + retries the whole fanout.
   local _quota=${QUOTA_EXHAUSTED_EXIT_CODE:-75}
@@ -193,6 +219,62 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
         echo "  FAIL: quota-propagates returned $_rc, expected 75"
         exit 1
       fi
+      # Aggregation priority matrix, every pair in BOTH branch orders. Reserved
+      # lifecycle halts (79 browser evidence gate, 78 spec field, 70 dispatch)
+      # win by meaning, never by magnitude: a generic 124 (GNU timeout after the
+      # bounded retry) or quota 75 on the other branch must not mask one.
+      _st_fail=0
+      _st_pair() {  # <rc-A> <rc-B> <expected>
+        local _got=0 _a="$1" _b="$2" _want="$3" _order
+        for _order in AB BA; do
+          _got=0
+          parallel_run A bash -c "exit $_a" -- B bash -c "exit $_b" >/dev/null 2>&1 || _got=$?
+          if [[ "$_got" -eq "$_want" ]]; then
+            echo "  OK: [A]=$_a [B]=$_b → $_got"
+          else
+            echo "  FAIL: [A]=$_a [B]=$_b → $_got, expected $_want"
+            _st_fail=1
+          fi
+          local _t="$_a"; _a="$_b"; _b="$_t"
+        done
+      }
+      _st_pair 79 124 79     # reserved halt over a generic soft failure
+      _st_pair 78 124 78
+      _st_pair 70 124 70
+      _st_pair 79 75  79     # reserved halt over quota
+      _st_pair 78 75  78
+      _st_pair 70 75  70
+      _st_pair 79 78  79     # reserved vs reserved: 79 > 78 > 70
+      _st_pair 79 70  79
+      _st_pair 78 70  78
+      _st_pair 143 79 143    # signals stay above every reserved halt
+      _st_pair 130 70 130
+      _st_pair 75 124 75     # quota over generic — unchanged
+      _st_pair 5 124 124     # generic numeric max — unchanged
+      _st_pair 2 5 5
+      _st_pair 0 5 5
+      _st_pair 0 0 0
+      # Meaning, not magnitude: remap the named constants so the browser
+      # evidence gate is the SMALLEST reserved code — it must still win, and a
+      # bare 79 (no longer reserved) must aggregate as an ordinary soft failure.
+      _st_remap() {  # <rc-A> <rc-B> <expected>
+        local _got=0
+        ( BROWSER_EVIDENCE_GATE_UNAVAILABLE_EXIT_CODE=60 SPEC_FIELD_UNAVAILABLE_EXIT_CODE=65 DISPATCH_UNAVAILABLE_EXIT_CODE=69
+          parallel_run A bash -c "exit $1" -- B bash -c "exit $2" ) >/dev/null 2>&1 || _got=$?
+        if [[ "$_got" -eq "$3" ]]; then
+          echo "  OK: remapped (gate=60 spec=65 dispatch=69) [A]=$1 [B]=$2 → $_got"
+        else
+          echo "  FAIL: remapped (gate=60 spec=65 dispatch=69) [A]=$1 [B]=$2 → $_got, expected $3"
+          _st_fail=1
+        fi
+      }
+      _st_remap 65 60 60
+      _st_remap 60 69 60
+      _st_remap 69 65 65
+      _st_remap 60 124 60
+      _st_remap 69 75 69
+      _st_remap 79 124 124
+      [[ "$_st_fail" -eq 0 ]] || { echo "self-test FAILED"; exit 1; }
       echo "self-test passed"
       ;;
     *)
