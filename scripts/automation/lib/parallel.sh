@@ -27,11 +27,16 @@
 #     a larger generic code (e.g. 124 from GNU timeout) nor quota on the other
 #     branch may mask one: masked, the caller warns-and-continues and records
 #     post_dev_parallel_complete, whose resume skips the whole UI/browser chain.
-#     Ranked ABOVE quota on purpose (run-goal.sh has no FULL-executor 75 arm);
-#     a quota condition is rediscovered on resume.
-#   - Quota exhaustion (exit 75): if either child exits 75, the parent exits
-#     75 immediately so the outer quota loop can sleep + retry the whole
-#     fanout.
+#     Ranked ABOVE quota on purpose: quota only means "wait, then re-run the same
+#     work", while a reserved halt names a condition its own handler must stop
+#     on and surface. Masked by quota, it would hide behind a quota wait and a
+#     silent fanout re-run instead of halting; a quota condition that is still
+#     real is rediscovered when the halted run resumes.
+#   - Quota exhaustion (exit 75): if either child exits 75 (and neither exited a
+#     signal or reserved halt), the parent exits 75 once both have finished;
+#     run-phase.sh then exits 75 with its checkpoint unchanged, so a re-run
+#     repeats the fanout (under goal mode, run-goal.sh waits for the reset and
+#     re-dispatches the same iteration).
 #   - Soft failures: any other non-zero exit on either child is reported as a
 #     warning. The parent exit code is the WORSE of the two children's exit
 #     codes (0 ≪ other non-zero). The CALLER decides whether soft failures
@@ -166,8 +171,8 @@ parallel_run() {
     fi
   done
 
-  # Quota exhaustion (75): propagate immediately so run-phase.sh's outer
-  # _run_step quota guard sleeps + retries the whole fanout.
+  # Quota exhaustion (75): propagate it; run-phase.sh exits 75 and a re-run
+  # (goal mode: run-goal.sh, after the quota wait) repeats the whole fanout.
   local _quota=${QUOTA_EXHAUSTED_EXIT_CODE:-75}
   if [[ "$rc_a" -eq "$_quota" || "$rc_b" -eq "$_quota" ]]; then
     echo "[parallel] quota exhaustion detected ([$label_a]=$rc_a [$label_b]=$rc_b) — exiting $_quota" >&2

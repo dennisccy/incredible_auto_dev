@@ -37,7 +37,7 @@ Written when the loop halts.
 | `final_verdict` | string | `GOAL_ACHIEVED` \| `BUDGET_EXHAUSTED` \| `STALLED` \| `REGRESSION_HALT` \| `ABORTED` |
 | `total_iterations` | number | Iterations completed (excluding the final halt detection) |
 | `wall_time_seconds` | number | Total elapsed wall time |
-| `quota_pause_count` | number | Number of times `claude_with_quota_retry` slept for quota |
+| `quota_pause_count` | number | Number of quota-pause sleeps (`claude_with_quota_retry`'s, plus the engine's FULL-executor waits) |
 
 ### `iter_start`
 Written before goal-decomposer is invoked for an iteration.
@@ -81,18 +81,20 @@ Wrap each agent call inside an iteration (developer, reviewer, browser-qa-agent,
 | `retries` | number | (end only) Quota-retry count for this invocation |
 
 ### `quota_pause_start`, `quota_pause_end`
-Recorded around quota-exhaustion sleeps inside `claude_with_quota_retry`.
+Recorded around quota-exhaustion sleeps inside `claude_with_quota_retry`, and around
+the engine's wait before re-dispatching a FULL executor that exited quota exhaustion.
 
 | Field | Type | Description |
 |---|---|---|
-| `agent` | string | Agent that triggered the pause |
+| `agent` | string | Agent that triggered the pause (`full-pipeline` for the engine's FULL-executor wait) |
 | `reset_epoch` | number | (start only) Epoch the sleep targets |
 | `sleep_seconds` | number | (end only) Total seconds slept |
 
 > Note: These events are emitted directly by `lib/quota-retry.sh` at its sleep
-> sites (both claude and codex paths; SPEED-13). They no-op outside goal mode —
-> `record_telemetry_event` is disabled when no goal session is active. The same
-> path increments the session's `.quota-pause-count` file.
+> sites (both claude and codex paths; SPEED-13), and by `run-goal.sh`'s
+> `_full_executor_quota_wait` through the same helpers. They no-op outside goal
+> mode — `record_telemetry_event` is disabled when no goal session is active. The
+> same path increments the session's `.quota-pause-count` file.
 
 ### `evaluator_start`, `evaluator_end`
 Wrap the goal-evaluator agent invocation.
@@ -119,7 +121,7 @@ Written when a hard halt fires before normal `iter_end`.
 
 | Field | Type | Description |
 |---|---|---|
-| `reason` | string | Includes `BUDGET_EXHAUSTED`, `STALLED`, `REGRESSION_HALT`, `ABORT_MALFORMED`, `DECOMPOSER_FAILED`, `GATE_BLOCKED_POST_DECOMPOSE`, `machine_reset`, and the resumable pauses `AWAITING_BLUEPRINT_APPROVAL`, `AWAITING_INTENT_REVIEW`, `AWAITING_PUMP`, `AWAITING_GITHUB_AUTH`, `AWAITING_DISK`, `AWAITING_HOST_GUARD`, `AWAITING_FULL_DEPTH`. `ABORTED` is a session *status* only — the SIGINT trap writes the summary, not a halt event. Not a closed enum: `grep -n 'record_telemetry_event "halt"' scripts/automation/run-goal.sh` is the ground truth |
+| `reason` | string | Includes `BUDGET_EXHAUSTED`, `STALLED`, `REGRESSION_HALT`, `ABORT_MALFORMED`, `DECOMPOSER_FAILED`, `QUOTA_EXHAUSTED` (a FULL executor exited quota exhaustion while `CHAIN_DISABLE_AUTO_WAIT=true` or with a zero wait — `detected_at_step:"executor"`, `rc`, `iter_name`; session status `ABORTED`), `GATE_BLOCKED_POST_DECOMPOSE`, `machine_reset`, and the resumable pauses `AWAITING_BLUEPRINT_APPROVAL`, `AWAITING_INTENT_REVIEW`, `AWAITING_PUMP`, `AWAITING_GITHUB_AUTH`, `AWAITING_DISK`, `AWAITING_HOST_GUARD`, `AWAITING_FULL_DEPTH`. `ABORTED` is a session *status* only — the SIGINT trap writes the summary, not a halt event. Not a closed enum: `grep -n 'record_telemetry_event "halt"' scripts/automation/run-goal.sh` is the ground truth |
 | `detected_at_step` | string | Where the halt was detected (e.g., `pre_decomposer`, `post_evaluator`; `AWAITING_FULL_DEPTH` uses `depth-arbiter`, `depth-parse`, `full-dispatch`, `depth-legacy-allowlist` or `isolation-requires-full` — the five sites that could otherwise have silently run at less than the required depth) |
 | `demotion_reason` | string | `AWAITING_FULL_DEPTH` only: why full depth could not be dispatched — `arbiter-demotion:<rung>`, `unparseable Depth line in <spec-path>`, `run-phase.sh lacks --no-finalize`, `legacy-allowlist:no-qualifying-trigger (…)`, or `maintenance isolation requires full depth but this spec resolved to <depth>`. Mirrors the `reason=` field of `iter-<N>/depth-requirement-unmet`, which also carries a `remedy=` line naming the one action that unblocks that specific step |
 
