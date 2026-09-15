@@ -307,8 +307,8 @@ _branch_a_ui_chain() {
 # both branches succeed; the caller then tears down services.
 #
 # Returns 0 on success, 75 on quota exhaustion (the caller exits 75 without
-# advancing the checkpoint; under goal mode run-goal.sh waits for the reset and
-# re-dispatches the iteration), 130/137/143 on signal (caller aborts), a reserved
+# advancing the checkpoint; under goal mode run-goal.sh then stops resumably
+# before evaluation), 130/137/143 on signal (caller aborts), a reserved
 # lifecycle halt (79/78/70, caller exits it), or another non-zero code if at least
 # one branch soft-failed (caller treats as non-fatal per existing browser-QA
 # pattern — Step 4–7 already follow "warn and continue" semantics today).

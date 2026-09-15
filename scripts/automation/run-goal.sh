@@ -59,7 +59,9 @@
 #   BUDGET_EXHAUSTED - max iterations reached (only when --max-iter > 0 is set)
 #   STALLED          - journey-history hash unchanged for stall_window iterations
 #   REGRESSION_HALT  - goal-evaluator emitted REGRESSION verdict
-#   ABORTED          - user interrupted (SIGINT/SIGTERM)
+#   ABORTED          - user interrupted (SIGINT/SIGTERM), or stopped mid-iteration without
+#                      evaluating it (e.g. halt QUOTA_EXHAUSTED: a FULL executor exited quota
+#                      exhaustion); resumable — --resume re-runs the same iteration
 #   AWAITING_BLUEPRINT_APPROVAL - only with --require-blueprint-approval: paused after baseline (or a
 #                                 structural blueprint change) for the human to review/edit
 #                                 state/blueprint.md; resume with --resume (resuming counts as approval)
@@ -131,12 +133,13 @@
 #                      Artifacts: iter-<N>/spec-lint.{txt,json}. Telemetry:
 #                      spec_lint, spec_replan, spec_lint_crash, spec_lint_config_invalid.
 #
-# Quota exhaustion is NOT a halt: claude_with_quota_retry transparently sleeps
-# until the quota resets and resumes. A FULL executor (run-phase.sh) that still
-# exits QUOTA_EXHAUSTED_EXIT_CODE did not finish its iteration: the engine waits
-# the same way and re-dispatches that iteration from its run-phase checkpoint,
-# never evaluating, advancing or pushing it in between (with
-# CHAIN_DISABLE_AUTO_WAIT=true, or a zero wait, it stops resumably as ABORTED).
+# Quota waiting is owned below the engine: claude_with_quota_retry sleeps until
+# the quota resets and resumes the same agent (within CHAIN_CLAUDE_MAX_QUOTA_RETRIES),
+# and run-phase.sh's _run_step retries its own steps. A FULL executor
+# (run-phase.sh) that still exits QUOTA_EXHAUSTED_EXIT_CODE did not finish its
+# iteration: the engine stops resumably as ABORTED (halt QUOTA_EXHAUSTED) before
+# any evaluation, advance or push, keeping the run-phase checkpoint — resume once
+# quota is available. The engine adds no quota wait or re-dispatch of its own.
 set -euo pipefail
 
 # REL-2: snapshot the ambient CHAIN_* names NOW — before this script (or the
@@ -1190,47 +1193,6 @@ PY
   explain_goal_status "AWAITING_FULL_DEPTH" "$SESSION_ID" "$REPO_ROOT"
   echo "════════════════════════════════════════════════════════════════════"
   exit 0
-}
-
-# A FULL executor exit of QUOTA_EXHAUSTED_EXIT_CODE is not an iteration result.
-# run-phase.sh exits it when an agent wrapper gave up on quota (its retries spent,
-# a long-duration limit, or auto-wait disabled) in a step that leaves the retry to
-# its caller: the Step 1 orchestrator, the post-dev fanout or the demo step (the
-# last two "for the outer loop"; _run_step's contract is "sleep until the quota
-# resets, then the caller retries"). The engine is that caller: wait the way
-# _run_step does — the shared sentinel's reset epoch when one is live, else
-# CHAIN_CLAUDE_FALLBACK_SLEEP_SECONDS — and let the dispatch loop re-run
-# run-phase.sh for the SAME iteration, which resumes from its own
-# runs/<iter>/status.json. Quota is not a halt (see the header), so a wait writes
-# no session status; the pause is recorded like the wrapper's own sleeps. When no
-# real wait is allowed (CHAIN_DISABLE_AUTO_WAIT=true, or a zero wait) the engine
-# stops instead, like the goal-decomposer's own quota exit: resumable ABORTED,
-# current_iter untouched — never a tight re-dispatch loop.
-_full_executor_quota_wait() { # $1 = the executor's exit code; returns after the wait, or exits the engine
-  local now wake remaining fallback="${CHAIN_CLAUDE_FALLBACK_SLEEP_SECONDS:-3600}"
-  if [[ "$fallback" =~ ^[0-9]+$ ]]; then fallback=$((10#$fallback)); else fallback=3600; fi
-  now=$(date +%s)
-  if remaining=$(_quota_check_sentinel 2>/dev/null); then
-    wake=$(( now + remaining ))
-  else
-    wake=$(( now + fallback ))
-  fi
-  echo "[run-goal] FULL executor exited quota exhaustion (exit $1) during iteration $CURRENT_ITER — the iteration did NOT complete: not evaluated, not advanced, not pushed." >&2
-  if [[ "${CHAIN_DISABLE_AUTO_WAIT:-false}" == "true" || "$wake" -le "$now" ]]; then
-    echo "[run-goal]   Auto-wait is off (CHAIN_DISABLE_AUTO_WAIT=true, or no wait configured) — stopping instead of re-dispatching into the same quota." >&2
-    echo "[run-goal]   After the quota resets:  /goal-resume $SESSION_ID   (iteration $CURRENT_ITER resumes from runs/$ITER_NAME/status.json)" >&2
-    echo "[run-goal]   (or: ./scripts/automation/run-goal.sh --resume --session-id $SESSION_ID)" >&2
-    _engine_step_done   # close the full-pipeline wall-time bracket this attempt ran in
-    record_telemetry_event "halt" "$(printf '{"reason":"QUOTA_EXHAUSTED","detected_at_step":"executor","rc":%s,"iter_name":"%s"}' "$1" "$ITER_NAME")"
-    write_session_summary "ABORTED" "$CURRENT_ITER"
-    explain_goal_status "ABORTED" "$SESSION_ID" "$REPO_ROOT" >&2
-    exit "$1"
-  fi
-  echo "[run-goal]   Waiting $(( wake - now ))s for the quota reset, then re-dispatching run-phase.sh for the SAME iteration (it resumes from runs/$ITER_NAME/status.json)." >&2
-  CHAIN_CURRENT_AGENT=full-pipeline _quota_pause_begin "$wake"
-  _sleep_until_epoch "$wake"
-  CHAIN_CURRENT_AGENT=full-pipeline _quota_pause_end
-  _quota_clear_sentinel 2>/dev/null || true
 }
 
 _host_guard_pause() { # $1 reason, $2 detected_at_step — pause AWAITING_HOST_GUARD (resumable) and exit
@@ -3177,19 +3139,30 @@ PYEOF
     if grep -q '\-\-no-finalize' "$SCRIPT_DIR/run-phase.sh"; then
       printf 'full' > "$ITER_DIR/depth-dispatched"   # SPEED-4: cadence streak input (depth that actually runs)
       _engine_step_begin "full-pipeline"
-      # Quota is not a result: wait, then re-dispatch the SAME iteration from its
-      # run-phase checkpoint (_full_executor_quota_wait, which stops the engine
-      # instead when auto-wait is off or the wait would be zero). Any other exit
-      # leaves the loop for the handlers below, so the coherence auditor, the
-      # evaluator, the current_iter advance and the push never run over a FULL
-      # executor that exited quota.
-      while :; do
-        _exec_rc=0
-        bash "$SCRIPT_DIR/run-phase.sh" "$ITER_NAME" "${_full_extra_args[@]}" || _exec_rc=$?
-        [[ "$_exec_rc" -eq "${QUOTA_EXHAUSTED_EXIT_CODE:-75}" ]] || break
-        _full_executor_quota_wait "$_exec_rc"
-      done
+      bash "$SCRIPT_DIR/run-phase.sh" "$ITER_NAME" "${_full_extra_args[@]}" || _exec_rc=$?
       _engine_step_done
+      # Quota exhaustion from the FULL executor: the iteration did NOT finish, and
+      # automatic quota handling below the engine has already ended —
+      # claude_with_quota_retry spent its CHAIN_CLAUDE_MAX_QUOTA_RETRIES budget or
+      # failed fast (long-duration limit, CHAIN_DISABLE_AUTO_WAIT), and
+      # run-phase.sh's _run_step / step loops did whatever waiting they own. The
+      # engine adds no quota policy of its own: waiting again or starting a fresh
+      # run-phase.sh would reset that retry budget, loop on a monthly limit and
+      # double a wait _run_step already did. Stop resumably BEFORE the coherence
+      # auditor / goal-evaluator instead — current_iter not advanced, nothing
+      # pushed, runs/<iter>/status.json untouched — like the goal-decomposer's own
+      # quota exit; resuming re-runs THIS iteration from its run-phase checkpoint.
+      if [[ "$_exec_rc" -eq "${QUOTA_EXHAUSTED_EXIT_CODE:-75}" ]]; then
+        echo "[run-goal] FULL executor exited quota exhaustion (exit $_exec_rc) during iteration $CURRENT_ITER — the iteration did NOT complete: not evaluated, not advanced, not pushed." >&2
+        echo "[run-goal]   Automatic quota retries below the engine have ended; stopping resumably with the run-phase checkpoint kept (runs/$ITER_NAME/status.json)." >&2
+        echo "[run-goal]   Once quota is available:  ./scripts/automation/run-goal.sh --resume --session-id $SESSION_ID   (or /goal-resume $SESSION_ID to continue with interactive dispatch)" >&2
+        record_telemetry_event "halt" "$(jq -cn --arg n "$ITER_NAME" --arg rc "$_exec_rc" \
+          '{reason:"QUOTA_EXHAUSTED", detected_at_step:"executor", rc:($rc|tonumber), iter_name:$n}' \
+          2>/dev/null || printf '{"reason":"QUOTA_EXHAUSTED","detected_at_step":"executor","rc":%s}' "$_exec_rc")"
+        write_session_summary "ABORTED" "$CURRENT_ITER"
+        explain_goal_status "ABORTED" "$SESSION_ID" "$REPO_ROOT" >&2
+        exit "$_exec_rc"
+      fi
     else
       # SECOND demotion site: an older run-phase.sh without --no-finalize used to
       # silently fall back to lean here too. Same fail-closed rule applies.
