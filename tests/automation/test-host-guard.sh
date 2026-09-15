@@ -9,6 +9,17 @@
 #      a junior session pauses AWAITING_HOST_GUARD against a live senior
 #      registrant, a senior warns and proceeds, and a re-enabled CPU boost
 #      pauses at preflight and clears on --resume once boost is back off.
+#   C. interactive pump headless preflight (HOST_GUARD_PUMP_HEADLESS_QA=1):
+#      the pump's launch environment decides whether its Chrome MCP runs
+#      headed, so the iteration gate reads /proc/<pump>/environ BEFORE the
+#      iteration's first model dispatch — hg_pid_display_env /
+#      hg_pump_display_verdict unit semantics (fake procfs root + real
+#      processes: DISPLAY, WAYLAND_DISPLAY, neither, empty value, gone pid,
+#      unreadable), then the REAL engine with --interactive: a display-bound
+#      pump pauses AWAITING_HOST_GUARD with nothing dispatched (no req.* file,
+#      no Step 1), a display-less pump proceeds to Step 1, policy off and the
+#      CHAIN_BQA_HEADED=1 escape are no-ops, an unidentifiable live pump
+#      pauses (never a silent bypass).
 #
 # Offline, no model calls. Every victim process is spawned by this test into a
 # throwaway sandbox; signals only ever target those.
@@ -36,6 +47,7 @@ cleanup() {
     [[ -n "$pg" ]] && kill -KILL -- "-$pg" 2>/dev/null
   done
   pkill -KILL -f "$WORK/" 2>/dev/null
+  if [[ -n "${KEEP_WORK:-}" ]]; then echo "KEEP_WORK set — sandbox kept at $WORK"; return 0; fi
   rm -rf "$WORK"
   return 0
 }
@@ -334,6 +346,40 @@ assert_eq "cap: cap=0 ignored (never lock out)" "OK" "$(_cap_verdict "$CAP_JUNIO
 HOST_GUARD_REGISTRY_DIR="$CAPREG" hg_register pump "$C1" /fake/capA sA "0-3" 4G >/dev/null
 assert_eq "cap: pump records do not count as engines" "OK" "$(_cap_verdict "$CAP_JUNIOR" 2)"
 
+# 16. Pump display environment (HOST_GUARD_PUMP_HEADLESS_QA). Fake procfs root
+# first — deterministic, platform-independent — then real processes.
+FPROC="$WORK/fakeproc"; mkdir -p "$FPROC/101" "$FPROC/102" "$FPROC/103" "$FPROC/104" "$FPROC/105"
+printf 'HOME=/h\0DISPLAY=:1\0PATH=/bin\0' > "$FPROC/101/environ";              printf 'State:\tS (sleeping)\n' > "$FPROC/101/status"
+printf 'HOME=/h\0WAYLAND_DISPLAY=wayland-0\0' > "$FPROC/102/environ";        printf 'State:\tS (sleeping)\n' > "$FPROC/102/status"
+printf 'HOME=/h\0PATH=/bin\0' > "$FPROC/103/environ";                          printf 'State:\tS (sleeping)\n' > "$FPROC/103/status"
+printf 'HOME=/h\0DISPLAY=\0' > "$FPROC/104/environ";                            printf 'State:\tS (sleeping)\n' > "$FPROC/104/status"
+: > "$FPROC/105/environ";                                                        printf 'State:\tZ (zombie)\n' > "$FPROC/105/status"
+pdv() { HOST_GUARD_PROC_ROOT="$FPROC" hg_pump_display_verdict "$1"; }
+assert_eq "display: DISPLAY=:1 in the pump env → display-bound" "display-bound: DISPLAY=:1" "$(pdv 101)"
+assert_eq "display: WAYLAND_DISPLAY only → display-bound"        "display-bound: WAYLAND_DISPLAY=wayland-0" "$(pdv 102)"
+assert_eq "display: neither variable → display-less"            "display-less" "$(pdv 103)"
+assert_eq "display: present-but-empty DISPLAY counts as absent" "display-less" "$(pdv 104)"
+case "$(pdv 105)" in unreadable:*) assert "display: zombie (empty environ) → unreadable, never a fact" pass ;; *) assert "display: zombie (empty environ) → unreadable, never a fact (got '$(pdv 105)')" fail ;; esac
+case "$(pdv 999999)" in unreadable:*) assert "display: gone pid → unreadable" pass ;; *) assert "display: gone pid → unreadable (got '$(pdv 999999)')" fail ;; esac
+case "$(pdv abc)" in unreadable:*) assert "display: junk pid → unreadable" pass ;; *) assert "display: junk pid → unreadable (got '$(pdv abc)')" fail ;; esac
+case "$(HOST_GUARD_PROC_ROOT="$WORK/no-such-proc" hg_pump_display_verdict 101)" in unreadable:*) assert "display: no procfs at all (non-Linux) → unreadable" pass ;; *) assert "display: no procfs at all (non-Linux) → unreadable" fail ;; esac
+chmod 000 "$FPROC/101/environ"
+if [[ "$(id -u)" != "0" ]]; then
+  case "$(pdv 101)" in unreadable:*) assert "display: permission-denied environ → unreadable" pass ;; *) assert "display: permission-denied environ → unreadable (got '$(pdv 101)')" fail ;; esac
+fi
+chmod 644 "$FPROC/101/environ"
+# Real processes: the helper reads the REAL /proc of a process this test spawned.
+setsid env -u WAYLAND_DISPLAY DISPLAY=:9 sleep 300 & RP_HEADED=$!; _SPAWNED_PGIDS+=("$RP_HEADED")
+setsid env -u DISPLAY -u WAYLAND_DISPLAY sleep 300 & RP_HEADLESS=$!; _SPAWNED_PGIDS+=("$RP_HEADLESS")
+setsid env -u DISPLAY WAYLAND_DISPLAY=wayland-1 sleep 300 & RP_WAYLAND=$!; _SPAWNED_PGIDS+=("$RP_WAYLAND")
+wait_for 5 test -d "/proc/$RP_HEADED"; wait_for 5 test -d "/proc/$RP_HEADLESS"; wait_for 5 test -d "/proc/$RP_WAYLAND"
+assert_eq "display(real): process launched with DISPLAY=:9 → display-bound" "display-bound: DISPLAY=:9" "$(hg_pump_display_verdict "$RP_HEADED")"
+assert_eq "display(real): process launched display-less → display-less" "display-less" "$(hg_pump_display_verdict "$RP_HEADLESS")"
+assert_eq "display(real): WAYLAND_DISPLAY → display-bound" "display-bound: WAYLAND_DISPLAY=wayland-1" "$(hg_pump_display_verdict "$RP_WAYLAND")"
+[[ "$(hg_pid_display_env "$RP_HEADED")" == "DISPLAY=:9" ]] \
+  && assert "display(real): hg_pid_display_env prints the present variables verbatim" pass \
+  || assert "display(real): hg_pid_display_env prints the present variables verbatim (got '$(hg_pid_display_env "$RP_HEADED")')" fail
+
 echo ""
 echo "── B. run-goal.sh wiring (real engine, stub claude) ────────────────────"
 
@@ -476,6 +522,117 @@ else
   assert "engine: resume passes once boost is back off (status=$(status_of "$SJ3"))" fail
 fi
 pkill -KILL -f "$SBX/" 2>/dev/null
+
+echo ""
+echo "── C. interactive pump headless preflight (real engine, --interactive) ──"
+# The pump is a fake CLI root this test launched with a known environment;
+# HOST_GUARD_PUMP_ROOT_PID hands it to the gate exactly as the engine's own
+# launch-time capture would. The engine runs with --interactive, so the first
+# model dispatch would be a req.* file in the dispatch channel — its ABSENCE is
+# the proof that a pause landed before any model work.
+set_headless_policy() { # 1|0
+  sed -i '/^HOST_GUARD_PUMP_HEADLESS_QA=/d' "$SBX/project-extensions/host-guard/host-guard.env"
+  [[ "$1" == "1" ]] && echo 'HOST_GUARD_PUMP_HEADLESS_QA=1' >> "$SBX/project-extensions/host-guard/host-guard.env"
+  return 0
+}
+reached_step1() { grep -q 'Step 1: goal-decomposer' "$1"; }
+no_dispatch() { ! ls "$1"/dispatch/req.* >/dev/null 2>&1; }
+# The gate writes the session summary (status flips) BEFORE _host_guard_pause
+# prints its reason and records the halt event, and the engine's stdout reaches
+# the console log through a timestamping tee — so wait for the reason line and
+# the telemetry row, not just the status flip, before reading either.
+paused_logged() { is_paused "$1" && grep -q '\[run-goal\]   reason:' "$2" && grep -q 'iteration_gate' "$3" 2>/dev/null; }
+setsid env -u WAYLAND_DISPLAY DISPLAY=:9 sleep 300 & PUMP_HEADED=$!; _SPAWNED_PGIDS+=("$PUMP_HEADED")
+setsid env -u DISPLAY -u WAYLAND_DISPLAY sleep 300 & PUMP_HEADLESS=$!; _SPAWNED_PGIDS+=("$PUMP_HEADLESS")
+setsid env -u DISPLAY WAYLAND_DISPLAY=wayland-0 sleep 300 & PUMP_WAYLAND=$!; _SPAWNED_PGIDS+=("$PUMP_WAYLAND")
+wait_for 5 test -d "/proc/$PUMP_HEADED"; wait_for 5 test -d "/proc/$PUMP_HEADLESS"; wait_for 5 test -d "/proc/$PUMP_WAYLAND"
+rm -f "$ENG_REG"/*.rec
+
+# C1 (R15). Policy on, pump launched WITH DISPLAY → resumable pause before any dispatch.
+set_headless_policy 1
+export HOST_GUARD_PUMP_ROOT_PID="$PUMP_HEADED"
+run_goal_bg "$WORK/hg4.log" --session-id hg4 --max-iter 1 --interactive
+SJ4="$SBX/runs/goal-session-hg4/session.json"
+if wait_for 90 paused_logged "$SJ4" "$WORK/hg4.log" "$SBX/runs/goal-session-hg4/telemetry.jsonl"; then
+  assert "pump: display-bound pump + headless policy → AWAITING_HOST_GUARD (resumable)" pass
+  grep -q 'DISPLAY=:9' "$WORK/hg4.log" && assert "pump: pause reason names the offending variable" pass || assert "pump: pause reason names the offending variable" fail
+  grep -q 'host-guard-exec.sh' "$WORK/hg4.log" && assert "pump: pause reason tells the operator to relaunch via host-guard-exec.sh" pass || assert "pump: pause reason tells the operator to relaunch via host-guard-exec.sh" fail
+  no_dispatch "$SBX/runs/goal-session-hg4" && assert "pump: NO model dispatch was published before the pause (no req.* file)" pass || assert "pump: NO model dispatch was published before the pause" fail
+  reached_step1 "$WORK/hg4.log" && assert "pump: paused BEFORE Step 1 (goal-decomposer never started)" fail || assert "pump: paused BEFORE Step 1 (goal-decomposer never started)" pass
+  grep -q '"detected_at_step":"iteration_gate"' "$SBX/runs/goal-session-hg4/telemetry.jsonl" 2>/dev/null \
+    && assert "pump: halt telemetry attributes the pause to the iteration gate" pass || assert "pump: halt telemetry attributes the pause to the iteration gate" fail
+else
+  assert "pump: display-bound pump + headless policy → AWAITING_HOST_GUARD (status=$(status_of "$SJ4"))" fail
+  for _n in "names the offending variable" "tells the operator to relaunch" "no req.* file" "paused BEFORE Step 1" "halt telemetry"; do assert "pump: $_n" fail; done
+fi
+pkill -KILL -f "$SBX/" 2>/dev/null; sleep 0.5
+
+# C2 (R14). Policy on, pump launched display-less → the gate proceeds to Step 1.
+export HOST_GUARD_PUMP_ROOT_PID="$PUMP_HEADLESS"
+run_goal_bg "$WORK/hg5.log" --session-id hg5 --max-iter 1 --interactive
+SJ5="$SBX/runs/goal-session-hg5/session.json"
+if wait_for 90 reached_step1 "$WORK/hg5.log"; then
+  assert "pump: display-less pump + headless policy → proceeds to Step 1" pass
+  grep -q 'display-less' "$WORK/hg5.log" && assert "pump: the gate logs the verified display-less pump" pass || assert "pump: the gate logs the verified display-less pump" fail
+else
+  assert "pump: display-less pump + headless policy → proceeds to Step 1 (status=$(status_of "$SJ5"))" fail
+  assert "pump: the gate logs the verified display-less pump" fail
+fi
+[[ "$(status_of "$SJ5")" == "AWAITING_HOST_GUARD" ]] && assert "pump: healthy pump never pauses" fail || assert "pump: healthy pump never pauses" pass
+pkill -KILL -f "$SBX/" 2>/dev/null; sleep 0.5
+
+# C3. WAYLAND_DISPLAY alone is display-bound too.
+export HOST_GUARD_PUMP_ROOT_PID="$PUMP_WAYLAND"
+run_goal_bg "$WORK/hg6.log" --session-id hg6 --max-iter 1 --interactive
+SJ6="$SBX/runs/goal-session-hg6/session.json"
+if wait_for 90 paused_logged "$SJ6" "$WORK/hg6.log" "$SBX/runs/goal-session-hg6/telemetry.jsonl"; then
+  assert "pump: WAYLAND_DISPLAY-bound pump → pause" pass
+  grep -q 'WAYLAND_DISPLAY=wayland-0' "$WORK/hg6.log" && assert "pump: pause names WAYLAND_DISPLAY" pass || assert "pump: pause names WAYLAND_DISPLAY" fail
+else
+  assert "pump: WAYLAND_DISPLAY-bound pump → pause (status=$(status_of "$SJ6"))" fail; assert "pump: pause names WAYLAND_DISPLAY" fail
+fi
+pkill -KILL -f "$SBX/" 2>/dev/null; sleep 0.5
+
+# C4 (R16). Policy OFF: a display-bound pump is not the gate's business.
+set_headless_policy 0
+export HOST_GUARD_PUMP_ROOT_PID="$PUMP_HEADED"
+run_goal_bg "$WORK/hg7.log" --session-id hg7 --max-iter 1 --interactive
+if wait_for 90 reached_step1 "$WORK/hg7.log"; then
+  assert "pump: policy off → display-bound pump proceeds (no new gate behavior)" pass
+else
+  assert "pump: policy off → display-bound pump proceeds (status=$(status_of "$SBX/runs/goal-session-hg7/session.json"))" fail
+fi
+grep -q 'display' "$WORK/hg7.log" && assert "pump: policy off → the gate says nothing about displays" fail || assert "pump: policy off → the gate says nothing about displays" pass
+pkill -KILL -f "$SBX/" 2>/dev/null; sleep 0.5
+
+# C5 (R16). Policy on + CHAIN_BQA_HEADED=1 (the headed debugging escape) → no-op.
+set_headless_policy 1
+export CHAIN_BQA_HEADED=1
+run_goal_bg "$WORK/hg8.log" --session-id hg8 --max-iter 1 --interactive
+if wait_for 90 reached_step1 "$WORK/hg8.log"; then
+  assert "pump: CHAIN_BQA_HEADED=1 escape → display-bound pump proceeds" pass
+else
+  assert "pump: CHAIN_BQA_HEADED=1 escape → display-bound pump proceeds (status=$(status_of "$SBX/runs/goal-session-hg8/session.json"))" fail
+fi
+unset CHAIN_BQA_HEADED
+pkill -KILL -f "$SBX/" 2>/dev/null; sleep 0.5
+
+# C6. Policy on, no usable pump pid (root pid gone, heartbeat has no ident) but
+# a LIVE heartbeat → loud pause, never a silent bypass (mirrors the cpuset check).
+setsid sleep 1 & GONE=$!; wait "$GONE" 2>/dev/null || true
+export HOST_GUARD_PUMP_ROOT_PID="$GONE"
+run_goal_bg "$WORK/hg9.log" --session-id hg9 --max-iter 1 --interactive
+SJ9="$SBX/runs/goal-session-hg9/session.json"
+if wait_for 90 paused_logged "$SJ9" "$WORK/hg9.log" "$SBX/runs/goal-session-hg9/telemetry.jsonl"; then
+  assert "pump: unidentifiable live pump under the headless policy → pause (cannot verify ≠ verified)" pass
+  grep -q 'cannot verify' "$WORK/hg9.log" && assert "pump: the pause says it could not verify, not that the pump is headed" pass || assert "pump: the pause says it could not verify, not that the pump is headed" fail
+else
+  assert "pump: unidentifiable live pump under the headless policy → pause (status=$(status_of "$SJ9"))" fail
+  assert "pump: the pause says it could not verify, not that the pump is headed" fail
+fi
+pkill -KILL -f "$SBX/" 2>/dev/null; sleep 0.5
+unset HOST_GUARD_PUMP_ROOT_PID
+set_headless_policy 0
 
 echo ""
 echo "──────────────────────────────────────────────────────────────────────"

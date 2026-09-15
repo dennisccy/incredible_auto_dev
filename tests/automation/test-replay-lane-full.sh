@@ -35,6 +35,44 @@
 #   E. LLM dispatch dies without writing (rc 1) → the merge still produces
 #      ui-test-results.md from the replay lane's rows (not a SKIPPED stub) and
 #      the script propagates rc 1.
+#   F. REL-14 target-aware post-scan, the exact incident shape: replay PASSes
+#      J-01, the LLM lane's raw output says Chrome never started (every row a
+#      browser-infra SKIP) → browser-infra.json lists exactly the owed journey
+#      (J-02), the merged headline is SKIPPED (never PASS), the replay PASS row
+#      survives, exactly ONE browser-qa dispatch.
+#   G. Mixed: the test-plan row PASSes, the id-keyed regression journey J-02 is
+#      an infra-SKIP → token names ONLY J-02, headline SKIPPED, one dispatch.
+#   H. Healthy with the knob on → merged PASS, NO token, one dispatch (the
+#      healthy path's dispatch count is unchanged by the classifier).
+#   T1-T5. FULL-depth TARGET attribution (two targets J-04 J-13, replay covers
+#      J-01). Full-depth test-plan rows are generic (UT-01, UT-02 …), so the
+#      merged headline may never infer target coverage from "some UT-XX row
+#      passed": every target owes a machine-attributable UT-J-NN row.
+#      T1 one target PASS + the other with NO attributable row → SKIPPED, J-13
+#         MISSING, no infra token, replay rows intact, one dispatch (this is
+#         the counterexample that FAILED on 5675f3a: the lane floor let a single
+#         generic UT-01 PASS read as "all targets verified" → PASS).
+#      T2 J-04 PASS + J-13 Chrome-SKIP → SKIPPED, token exactly J-13.
+#      T3 both PASS → PASS, no token.  T4 J-04 FAIL + J-13 infra → FAIL,
+#      token J-13, the FAIL row survives.  T5 generic rows only (UT-01 PASS,
+#      UT-02 infra-SKIP, no target rows) → SKIPPED, both targets MISSING, no
+#      fabricated token (fail closed, never PASS).
+#   N1-N5. FULL depth WITHOUT an active replay lane (Required-still-passing:
+#      none, no goldens → _use_replay=no, the LLM lane writes ui-test-results.md
+#      directly, no merge). Fresh-evidence coverage is a Goal Mode browser-
+#      result invariant, not a replay feature, so the same contract must
+#      finalize that artifact: N1 J-04 PASS + J-13 absent → SKIPPED, J-13
+#      MISSING, no token (FAILED on 913604b: the agent's own PASS headline
+#      stood because the finalizer only ran inside the replay merge); N2 PASS +
+#      infra → SKIPPED, token J-13; N3 both PASS → PASS; N4 FAIL + infra → FAIL,
+#      token J-13 (FAILED on 913604b: the agent's PASS headline stood over a
+#      FAIL row); N5 CHAIN_REGRESSION_REPLAY=false with a golden on file → the
+#      hatch disables replay (verify never invoked) but not coverage → SKIPPED.
+#   FF1/FF2. The coverage gate FAILS CLOSED: a stub merger forces `finalize`
+#      (FF1, no replay) or the replay merge (FF2, replay active + owed set) to
+#      fail → the phase exits non-zero, the results path holds the engine's
+#      SKIPPED stub naming the FRAMEWORK failure (never the agent's PASS), the
+#      unverified output is kept aside, no token/FAIL fabricated, ONE dispatch.
 #
 # No API calls; a few seconds per scenario.
 #
@@ -66,8 +104,8 @@ cleanup() {
 trap cleanup EXIT
 
 # ── Sandbox builder (fresh per scenario; engine scripts embedded) ────────────
-make_sandbox() {
-  local tag="$1" phase="$2"
+make_sandbox() {  # make_sandbox <tag> <phase> [<targets line>] [<required line>]
+  local tag="$1" phase="$2" targets="${3:-J-02}" required="${4:-J-01, J-02}"
   SBX="$WORK/proj-$tag"
   PHASE="$phase"
   mkdir -p "$SBX"
@@ -80,16 +118,18 @@ make_sandbox() {
 ## Must-have user journeys
 - J-01: open the page. Acceptance: page loads.
 - J-02: add an item. Acceptance: item appears.
+- J-04: compute a total. Acceptance: total appears.
+- J-13: run the sweep. Acceptance: sweep summary appears.
 ## Anti-goals
 - none
 EOF
-  cat > "$SBX/docs/phases/$PHASE.md" <<'EOF'
+  cat > "$SBX/docs/phases/$PHASE.md" <<EOF
 # Full-depth spec (replay-lane-full wiring test)
 ## Goal Mode Metadata
 - **Mode:** next
 - **Depth:** full
-- **Target journeys:** J-02
-- **Required-still-passing journeys:** J-01, J-02
+- **Target journeys:** $targets
+- **Required-still-passing journeys:** $required
 ## IN SCOPE
 - exercise browser-qa (wiring test)
 EOF
@@ -107,6 +147,7 @@ EOF
 EOF
   git -C "$SBX" add -A
   git -C "$SBX" -c user.email=t@t -c user.name=t commit -qm base
+  [[ "${STUB_MERGE_WRAPPER:-}" == "1" ]] && install_merge_stub
 
   UI_TEST_RESULTS="$SBX/reports/phase-${PHASE}-ui-test-results.md"
   LLM_RESULTS="$SBX/reports/phase-${PHASE}-ui-test-results.llm.md"
@@ -158,6 +199,25 @@ sys.exit(0)
 PYEOF
 }
 
+install_merge_stub() {  # force the merger/finalizer to fail via STUB_MERGE_RC / STUB_FINALIZE_RC
+  cat > "$SBX/scripts/automation/lib/merge_ui_test_results.py" <<PYEOF
+#!/usr/bin/env python3
+import os, runpy, sys
+REAL = "$ENGINE_ROOT/scripts/automation/lib/merge_ui_test_results.py"
+sub = sys.argv[1] if len(sys.argv) > 1 else ""
+forced = ""
+if sub == "finalize":
+    forced = os.environ.get("STUB_FINALIZE_RC", "")
+elif sub not in ("classify", "void", "self-test", "--self-test"):
+    forced = os.environ.get("STUB_MERGE_RC", "")
+if forced:
+    sys.stderr.write(f"[stub merger] forced failure rc={forced} for '{sub or 'merge'}' (simulated: cannot write results)\n")
+    sys.exit(int(forced))
+sys.argv[0] = REAL
+runpy.run_path(REAL, run_name="__main__")
+PYEOF
+}
+
 golden() {  # $1 = session id, $2 = journey id
   mkdir -p "$SBX/runs/goal-session-$1/journey-scripts"
   echo '{"journey":"'"$2"'","steps":[]}' > "$SBX/runs/goal-session-$1/journey-scripts/$2.json"
@@ -171,18 +231,49 @@ cat > "$STUB_DIR/claude" <<'EOF'
 #!/usr/bin/env bash
 prompt="$*"
 printf '%s\n' "$prompt" > "$PROMPT_OUT"
+[[ -n "${STUB_CALLS:-}" ]] && echo 1 >> "$STUB_CALLS"
 if [[ -n "${STUB_BQA_RC:-}" ]]; then exit "$STUB_BQA_RC"; fi
 out="$(printf '%s\n' "$prompt" | sed -n 's/^Write your results to: //p' | head -n1)"
 [[ -n "$out" ]] || exit 64
 also="$(printf '%s\n' "$prompt" | sed -n 's/^- ALSO execute these regression journeys this run: //p' | head -n1)"
+# Only the journey-set portion (before ". For each:") — the instruction text
+# that follows carries the literal example "UT-J-01", which is not a journey
+# this run was asked to execute (scenario B makes the same cut).
+also="${also%%. For each*}"
 journeys="$(printf '%s\n' "$also" | grep -oE 'J-[0-9]+' | sort -u | tr '\n' ' ' || true)"
+# STUB_BQA_INFRA: "" = every row PASS; "regr" = the id-keyed regression rows are
+# browser-infra SKIPs; "all" = the test-plan row too (Chrome never started).
+infra="browser infrastructure failure: Chrome did not become ready on port 9222 within 15000ms"
+mode="${STUB_BQA_INFRA:-}"
 {
-  printf '**Browser QA Verdict:** PASS\n\n'
+  if [[ "$mode" == "all" ]]; then printf '**Browser QA Verdict:** SKIPPED\n\n'; else printf '**Browser QA Verdict:** PASS\n\n'; fi
   printf '| Test ID | Name | Type | Priority | Expected | Actual | Verdict | Evidence |\n'
   printf '|---|---|---|---|---|---|---|---|\n'
-  printf '| UT-01 | open the page | smoke | P1 | loads | stub verified | PASS | none |\n'
+  if [[ "$mode" == "all" ]]; then
+    printf '| UT-01 | open the page | smoke | P1 | loads | %s | SKIP | none |\n' "$infra"
+  else
+    printf '| UT-01 | open the page | smoke | P1 | loads | stub verified | PASS | none |\n'
+  fi
   for j in $journeys; do
-    printf '| UT-%s | llm %s | regression | P1 | works | stub re-verified | PASS | none |\n' "$j" "$j"
+    if [[ -n "$mode" ]]; then
+      printf '| UT-%s | llm %s | regression | P1 | works | %s | SKIP | none |\n' "$j" "$j" "$infra"
+    else
+      printf '| UT-%s | llm %s | regression | P1 | works | stub re-verified | PASS | none |\n' "$j" "$j"
+    fi
+  done
+  # STUB_BQA_PLAN_INFRA=1: a second GENERIC test-plan row that hit browser infra.
+  if [[ "${STUB_BQA_PLAN_INFRA:-}" == "1" ]]; then
+    printf '| UT-02 | add an item | happy-path | P1 | item appears | %s | SKIP | none |\n' "$infra"
+  fi
+  # STUB_BQA_TARGET_ROWS="J-04=PASS J-13=INFRA": the target-attributed UT-J-NN
+  # rows (PASS | FAIL | INFRA); a target absent from the list gets NO row.
+  for kv in ${STUB_BQA_TARGET_ROWS:-}; do
+    tj="${kv%%=*}"; tv="${kv#*=}"
+    case "$tv" in
+      INFRA) printf '| UT-%s | target %s | journey | P1 | acceptance | %s | SKIP | none |\n' "$tj" "$tj" "$infra" ;;
+      FAIL)  printf '| UT-%s | target %s | journey | P1 | acceptance | total wrong | FAIL | reports/qa/x.png |\n' "$tj" "$tj" ;;
+      *)     printf '| UT-%s | target %s | journey | P1 | acceptance | verified | PASS | reports/qa/x.png |\n' "$tj" "$tj" ;;
+    esac
   done
 } > "$out"
 exit 0
@@ -333,6 +424,256 @@ unset STUB_BQA_RC
 grep -q '^| UT-J-01 ' "$UI_TEST_RESULTS" 2>/dev/null \
   && assert "E: merged results still carry the replay lane's rows (not a stub)" pass \
   || assert "E: merged results still carry the replay lane's rows (not a stub)" fail
+
+# ══ Scenario F: REL-14 target-aware post-scan — the exact incident shape ═════
+# Owed set = targets (J-02) ∪ the id-keyed regression journeys the LLM lane
+# runs (J-02; J-01 is replay-verified). Chrome never starts for the LLM lane.
+token_journeys() { python3 -c 'import json,sys; print(" ".join(json.load(open(sys.argv[1]))["journeys"]))' "$1" 2>/dev/null || echo "(no token)"; }
+make_sandbox F "goal-rlf-iter-7"
+golden rlf "J-01"
+export GOAL_SESSION_DIR="$SBX/runs/goal-session-rlf" GOAL_ITER_INDEX=7
+export CHAIN_BQA_PREFLIGHT=true STUB_BQA_INFRA=all STUB_CALLS="$WORK/calls-F"
+: > "$STUB_CALLS"
+run_bqa "$WORK/log-F.txt" F
+TOKEN_F="$GOAL_SESSION_DIR/iter-7/browser-infra.json"
+[[ "$BQA_RC" -eq 0 ]] && assert "F: incident iteration exits 0 (infra is not a product failure)" pass \
+  || { assert "F: incident iteration exits 0 (rc=$BQA_RC)" fail; sed -n '1,40p' "$WORK/log-F.txt"; }
+[[ "$(token_journeys "$TOKEN_F")" == "J-02" ]] \
+  && assert "F: browser-infra.json lists exactly the owed journey the LLM lane never reached (J-02)" pass \
+  || assert "F: browser-infra.json lists exactly the owed journey (got: $(token_journeys "$TOKEN_F"))" fail
+grep -q '"detected_by": "postscan"' "$TOKEN_F" 2>/dev/null \
+  && assert "F: token detected_by=postscan" pass || assert "F: token detected_by=postscan" fail
+grep -q '^\*\*Browser QA Verdict:\*\* SKIPPED' "$UI_TEST_RESULTS" 2>/dev/null \
+  && assert "F: merged headline is SKIPPED — the replay PASS cannot satisfy the LLM lane's obligation" pass \
+  || { assert "F: merged headline is SKIPPED — the replay PASS cannot satisfy the LLM lane's obligation" fail; head -12 "$UI_TEST_RESULTS" 2>/dev/null | sed 's/^/        /'; }
+grep -E '^\| UT-J-01 ' "$UI_TEST_RESULTS" 2>/dev/null | grep -qF '| PASS |' \
+  && assert "F: the replay PASS row (J-01) survives intact" pass \
+  || { assert "F: the replay PASS row (J-01) survives intact" fail; sed -n '1,20p' "$UI_TEST_RESULTS" 2>/dev/null | sed 's/^/        /'; grep -i 'replay\|merge\|lane' "$WORK/log-F.txt" | sed 's/^/        LOG: /' | head -20; }
+! grep -qF '| FAIL |' "$UI_TEST_RESULTS" 2>/dev/null \
+  && assert "F: no journey marked FAIL because of infra" pass \
+  || assert "F: no journey marked FAIL because of infra" fail
+[[ "$(wc -l < "$STUB_CALLS" | tr -dc 0-9)" == "1" ]] \
+  && assert "F: exactly ONE browser-qa dispatch (no retry, no second agent)" pass \
+  || assert "F: exactly ONE browser-qa dispatch (got $(wc -l < "$STUB_CALLS" | tr -dc 0-9))" fail
+
+# ══ Scenario G: mixed — plan row PASS, regression journey infra-SKIP ══════════
+make_sandbox G "goal-rlf-iter-8"
+golden rlf "J-01"
+export GOAL_ITER_INDEX=8 STUB_BQA_INFRA=regr STUB_CALLS="$WORK/calls-G"
+: > "$STUB_CALLS"
+run_bqa "$WORK/log-G.txt" G
+TOKEN_G="$GOAL_SESSION_DIR/iter-8/browser-infra.json"
+[[ "$(token_journeys "$TOKEN_G")" == "J-02" ]] \
+  && assert "G: token names ONLY the infra-blocked journey (J-02); the passing plan row is not tokenized" pass \
+  || assert "G: token names ONLY the infra-blocked journey (got: $(token_journeys "$TOKEN_G"))" fail
+grep -q '^\*\*Browser QA Verdict:\*\* SKIPPED' "$UI_TEST_RESULTS" 2>/dev/null \
+  && assert "G: merged headline SKIPPED while an owed regression journey is infra-blocked" pass \
+  || assert "G: merged headline SKIPPED while an owed regression journey is infra-blocked" fail
+grep -E '^\| UT-01 ' "$UI_TEST_RESULTS" 2>/dev/null | grep -qF '| PASS |' \
+  && assert "G: the fresh plan-row PASS is recorded" pass || assert "G: the fresh plan-row PASS is recorded" fail
+[[ "$(wc -l < "$STUB_CALLS" | tr -dc 0-9)" == "1" ]] \
+  && assert "G: exactly ONE browser-qa dispatch" pass || assert "G: exactly ONE browser-qa dispatch" fail
+
+# ══ Scenario H: healthy with the knob on — PASS, no token, one dispatch ═══════
+make_sandbox H "goal-rlf-iter-9"
+golden rlf "J-01"
+export GOAL_ITER_INDEX=9 STUB_CALLS="$WORK/calls-H"
+unset STUB_BQA_INFRA
+: > "$STUB_CALLS"
+run_bqa "$WORK/log-H.txt" H
+[[ ! -f "$GOAL_SESSION_DIR/iter-9/browser-infra.json" ]] \
+  && assert "H: healthy run writes NO browser-infra token" pass || assert "H: healthy run writes NO browser-infra token" fail
+grep -q '^\*\*Browser QA Verdict:\*\* PASS' "$UI_TEST_RESULTS" 2>/dev/null && ! grep -q 'Fresh-evidence coverage' "$UI_TEST_RESULTS" \
+  && assert "H: healthy run merges PASS with no coverage note" pass || assert "H: healthy run merges PASS with no coverage note" fail
+[[ "$(wc -l < "$STUB_CALLS" | tr -dc 0-9)" == "1" ]] \
+  && assert "H: exactly ONE browser-qa dispatch — the healthy path's dispatch count is unchanged" pass \
+  || assert "H: exactly ONE browser-qa dispatch (got $(wc -l < "$STUB_CALLS" | tr -dc 0-9))" fail
+unset CHAIN_BQA_PREFLIGHT STUB_CALLS GOAL_SESSION_DIR GOAL_ITER_INDEX
+
+# ══ T1-T5: FULL-depth TARGET attribution (two targets, generic plan rows) ═════
+# Spec: Target journeys J-04, J-13; Required-still-passing J-01 (golden on
+# file → replay covers it). The only fresh evidence for the targets is the
+# primary dispatch; its test-plan rows are generic (UT-01 …), so each target
+# owes its own UT-J-NN row.
+export CHAIN_BQA_PREFLIGHT=true GOAL_SESSION_DIR="" GOAL_ITER_INDEX=""
+classify_of() { python3 "$ENGINE_ROOT/scripts/automation/lib/merge_ui_test_results.py" classify "$1" J-04 J-13 | awk -F'\t' '{printf "%s:%s ", $1, $2}'; }
+run_target_case() {  # <tag> <iter> <STUB_BQA_TARGET_ROWS> [<STUB_BQA_PLAN_INFRA>]
+  make_sandbox "$1" "goal-rlf-iter-$2" "J-04, J-13" "J-01"
+  golden rlf "J-01"
+  export GOAL_SESSION_DIR="$SBX/runs/goal-session-rlf" GOAL_ITER_INDEX="$2" STUB_CALLS="$WORK/calls-$1"
+  export STUB_BQA_TARGET_ROWS="$3" STUB_BQA_PLAN_INFRA="${4:-}"
+  : > "$STUB_CALLS"
+  run_bqa "$WORK/log-$1.txt" "$1"
+  TOKEN="$GOAL_SESSION_DIR/iter-$2/browser-infra.json"
+  unset STUB_BQA_TARGET_ROWS STUB_BQA_PLAN_INFRA
+}
+
+# T1 (F1): J-04 fresh PASS, J-13 has NO attributable row (only a generic UT-01 PASS).
+run_target_case T1 11 "J-04=PASS"
+[[ "$BQA_RC" -eq 0 ]] && assert "T1: exits 0" pass || { assert "T1: exits 0 (rc=$BQA_RC)" fail; sed -n '1,40p' "$WORK/log-T1.txt"; }
+grep -q '^\*\*Browser QA Verdict:\*\* SKIPPED' "$UI_TEST_RESULTS" 2>/dev/null \
+  && assert "T1: one target PASS + one target with no attributable row → merged SKIPPED (never PASS on a generic UT-01 PASS)" pass \
+  || { assert "T1: one target PASS + one target with no attributable row → merged SKIPPED (got: $(grep -m1 -oE 'Verdict:\*\* [A-Z]+' "$UI_TEST_RESULTS" 2>/dev/null))" fail; }
+[[ "$(classify_of "$LLM_RESULTS")" == "J-04:PASS J-13:MISSING " ]] \
+  && assert "T1: raw primary classifies J-04 PASS, J-13 MISSING" pass \
+  || assert "T1: raw primary classifies J-04 PASS, J-13 MISSING (got: $(classify_of "$LLM_RESULTS"))" fail
+grep -q 'J-13: MISSING' "$UI_TEST_RESULTS" 2>/dev/null \
+  && assert "T1: the merged coverage note names J-13 as MISSING" pass \
+  || assert "T1: the merged coverage note names J-13 as MISSING" fail
+[[ ! -f "$TOKEN" ]] && assert "T1: no browser-infra token (a missing row is not infra evidence)" pass \
+  || assert "T1: no browser-infra token (a missing row is not infra evidence; got $(token_journeys "$TOKEN"))" fail
+grep -E '^\| UT-J-01 ' "$UI_TEST_RESULTS" 2>/dev/null | grep -qF '| PASS |' \
+  && assert "T1: the replay PASS row (J-01) survives intact" pass || assert "T1: the replay PASS row (J-01) survives intact" fail
+grep -E '^\| UT-01 ' "$UI_TEST_RESULTS" 2>/dev/null | grep -qF '| PASS |' \
+  && assert "T1: the generic UT-01 test-plan row is retained" pass || assert "T1: the generic UT-01 test-plan row is retained" fail
+[[ "$(wc -l < "$STUB_CALLS" | tr -dc 0-9)" == "1" ]] && assert "T1: exactly ONE browser-qa dispatch" pass || assert "T1: exactly ONE browser-qa dispatch" fail
+grep -q '^- TARGET JOURNEY ATTRIBUTION.*J-04 J-13' "$WORK/prompt-T1.txt" \
+  && assert "T1: the dispatch prompt requires one UT-J-NN row per target (J-04 J-13)" pass \
+  || assert "T1: the dispatch prompt requires one UT-J-NN row per target (J-04 J-13)" fail
+[[ ! -f "$SBX/runs/$PHASE/.steps/browser-qa.done" ]] || true
+
+# T2 (F2): J-04 PASS + J-13 Chrome-SKIP.
+run_target_case T2 12 "J-04=PASS J-13=INFRA"
+grep -q '^\*\*Browser QA Verdict:\*\* SKIPPED' "$UI_TEST_RESULTS" 2>/dev/null \
+  && assert "T2: J-04 PASS + J-13 infra-SKIP → merged SKIPPED" pass \
+  || assert "T2: J-04 PASS + J-13 infra-SKIP → merged SKIPPED (got: $(grep -m1 -oE 'Verdict:\*\* [A-Z]+' "$UI_TEST_RESULTS" 2>/dev/null))" fail
+[[ "$(token_journeys "$TOKEN")" == "J-13" ]] \
+  && assert "T2: browser-infra.json journeys exactly [J-13] — J-04 is not pending-infra" pass \
+  || assert "T2: browser-infra.json journeys exactly [J-13] (got: $(token_journeys "$TOKEN"))" fail
+[[ "$(classify_of "$LLM_RESULTS")" == "J-04:PASS J-13:SKIP_INFRA " ]] \
+  && assert "T2: raw primary classifies J-04 PASS, J-13 SKIP_INFRA" pass \
+  || assert "T2: raw primary classifies J-04 PASS, J-13 SKIP_INFRA (got: $(classify_of "$LLM_RESULTS"))" fail
+[[ "$(wc -l < "$STUB_CALLS" | tr -dc 0-9)" == "1" ]] && assert "T2: exactly ONE browser-qa dispatch" pass || assert "T2: exactly ONE browser-qa dispatch" fail
+
+# T3 (F3): both targets PASS.
+run_target_case T3 13 "J-04=PASS J-13=PASS"
+grep -q '^\*\*Browser QA Verdict:\*\* PASS' "$UI_TEST_RESULTS" 2>/dev/null && ! grep -q 'Fresh-evidence coverage' "$UI_TEST_RESULTS" \
+  && assert "T3: both targets PASS → merged PASS, no coverage note" pass \
+  || assert "T3: both targets PASS → merged PASS (got: $(grep -m1 -oE 'Verdict:\*\* [A-Z]+' "$UI_TEST_RESULTS" 2>/dev/null))" fail
+[[ ! -f "$TOKEN" ]] && assert "T3: no browser-infra token" pass || assert "T3: no browser-infra token" fail
+[[ "$(wc -l < "$STUB_CALLS" | tr -dc 0-9)" == "1" ]] && assert "T3: exactly ONE browser-qa dispatch" pass || assert "T3: exactly ONE browser-qa dispatch" fail
+
+# T4 (F4): J-04 FAIL + J-13 infra-SKIP.
+run_target_case T4 14 "J-04=FAIL J-13=INFRA"
+grep -q '^\*\*Browser QA Verdict:\*\* FAIL' "$UI_TEST_RESULTS" 2>/dev/null \
+  && assert "T4: J-04 FAIL + J-13 infra → merged FAIL (a product defect dominates)" pass \
+  || assert "T4: J-04 FAIL + J-13 infra → merged FAIL (got: $(grep -m1 -oE 'Verdict:\*\* [A-Z]+' "$UI_TEST_RESULTS" 2>/dev/null))" fail
+grep -E '^\| UT-J-04 ' "$UI_TEST_RESULTS" 2>/dev/null | grep -qF '| FAIL |' \
+  && assert "T4: the J-04 FAIL row survives unchanged" pass || assert "T4: the J-04 FAIL row survives unchanged" fail
+[[ "$(token_journeys "$TOKEN")" == "J-13" ]] \
+  && assert "T4: token only J-13" pass || assert "T4: token only J-13 (got: $(token_journeys "$TOKEN"))" fail
+
+# T5: generic rows only — UT-01 PASS + UT-02 infra-SKIP, no UT-J-NN rows at all.
+run_target_case T5 15 "" 1
+grep -q '^\*\*Browser QA Verdict:\*\* SKIPPED' "$UI_TEST_RESULTS" 2>/dev/null \
+  && assert "T5: generic rows only (one PASS, one infra-SKIP) → merged SKIPPED, never PASS" pass \
+  || assert "T5: generic rows only → merged SKIPPED (got: $(grep -m1 -oE 'Verdict:\*\* [A-Z]+' "$UI_TEST_RESULTS" 2>/dev/null))" fail
+[[ "$(classify_of "$LLM_RESULTS")" == "J-04:MISSING J-13:MISSING " ]] \
+  && assert "T5: both targets classify MISSING (no attributable row)" pass \
+  || assert "T5: both targets classify MISSING (got: $(classify_of "$LLM_RESULTS"))" fail
+[[ ! -f "$TOKEN" ]] && assert "T5: no fabricated browser-infra token (the generic infra row cannot be attributed to a target)" pass \
+  || assert "T5: no fabricated browser-infra token (got $(token_journeys "$TOKEN"))" fail
+unset CHAIN_BQA_PREFLIGHT STUB_CALLS GOAL_SESSION_DIR GOAL_ITER_INDEX
+
+# ══ N1-N5: FULL depth WITHOUT an active replay lane ══════════════════════════
+export CHAIN_BQA_PREFLIGHT=true
+headline_of() { grep -m1 -E '^\*\*Browser QA Verdict:\*\*' "$1" 2>/dev/null | grep -oE 'PASS|FAIL|SKIPPED' | head -1 || true; }
+run_noreplay_case() {  # <tag> <iter> <STUB_BQA_TARGET_ROWS> [<required line>] [<golden journey>]
+  make_sandbox "$1" "goal-rlf-iter-$2" "J-04, J-13" "${4:-none — no prior passing journeys}"
+  [[ -n "${5:-}" ]] && golden rlf "$5"
+  export GOAL_SESSION_DIR="$SBX/runs/goal-session-rlf" GOAL_ITER_INDEX="$2" STUB_CALLS="$WORK/calls-$1"
+  export STUB_BQA_TARGET_ROWS="$3"
+  : > "$STUB_CALLS"
+  run_bqa "$WORK/log-$1.txt" "$1"
+  TOKEN="$GOAL_SESSION_DIR/iter-$2/browser-infra.json"
+  unset STUB_BQA_TARGET_ROWS
+}
+
+# N1: no replay, J-04 PASS + J-13 absent (only a generic UT-01 PASS beside it).
+run_noreplay_case N1 21 "J-04=PASS"
+[[ "$BQA_RC" -eq 0 ]] && assert "N1: exits 0" pass || { assert "N1: exits 0 (rc=$BQA_RC)" fail; sed -n '1,40p' "$WORK/log-N1.txt"; }
+grep -q "^Write your results to: $UI_TEST_RESULTS\$" "$WORK/prompt-N1.txt" && [[ ! -f "$REGRESSION_RESULTS" ]] \
+  && assert "N1: no replay lane engaged — the LLM lane wrote ui-test-results.md directly (no merge)" pass \
+  || assert "N1: no replay lane engaged — the LLM lane wrote ui-test-results.md directly (no merge)" fail
+[[ "$(headline_of "$UI_TEST_RESULTS")" == "SKIPPED" ]] \
+  && assert "N1: no-replay J-04 PASS + J-13 absent → headline SKIPPED (the agent's PASS headline does not stand)" pass \
+  || assert "N1: no-replay J-04 PASS + J-13 absent → headline SKIPPED (got: $(headline_of "$UI_TEST_RESULTS"))" fail
+grep -q '^\*\*Fresh-evidence coverage:\*\* INCOMPLETE.*J-13: MISSING' "$UI_TEST_RESULTS" 2>/dev/null \
+  && assert "N1: deterministic coverage note names J-13 MISSING" pass \
+  || assert "N1: deterministic coverage note names J-13 MISSING" fail
+[[ "$(classify_of "$UI_TEST_RESULTS")" == "J-04:PASS J-13:MISSING " ]] \
+  && assert "N1: raw primary classifies J-04 PASS, J-13 MISSING" pass \
+  || assert "N1: raw primary classifies J-04 PASS, J-13 MISSING (got: $(classify_of "$UI_TEST_RESULTS"))" fail
+[[ ! -f "$TOKEN" ]] && assert "N1: no browser-infra token (a missing row is not infra)" pass || assert "N1: no browser-infra token (got $(token_journeys "$TOKEN"))" fail
+grep -E '^\| UT-01 ' "$UI_TEST_RESULTS" 2>/dev/null | grep -qF '| PASS |' && grep -E '^\| UT-J-04 ' "$UI_TEST_RESULTS" 2>/dev/null | grep -qF '| PASS |' \
+  && assert "N1: the agent's rows are preserved untouched (UT-01 PASS, UT-J-04 PASS)" pass \
+  || assert "N1: the agent's rows are preserved untouched (UT-01 PASS, UT-J-04 PASS)" fail
+[[ "$(wc -l < "$STUB_CALLS" | tr -dc 0-9)" == "1" ]] && assert "N1: exactly ONE browser-qa dispatch" pass || assert "N1: exactly ONE browser-qa dispatch" fail
+
+# N2: no replay, J-04 PASS + J-13 Chrome-SKIP.
+run_noreplay_case N2 22 "J-04=PASS J-13=INFRA"
+[[ "$(headline_of "$UI_TEST_RESULTS")" == "SKIPPED" ]] \
+  && assert "N2: no-replay J-04 PASS + J-13 infra → headline SKIPPED" pass \
+  || assert "N2: no-replay J-04 PASS + J-13 infra → headline SKIPPED (got: $(headline_of "$UI_TEST_RESULTS"))" fail
+[[ "$(token_journeys "$TOKEN")" == "J-13" ]] \
+  && assert "N2: browser-infra.json journeys exactly [J-13]" pass || assert "N2: browser-infra.json journeys exactly [J-13] (got: $(token_journeys "$TOKEN"))" fail
+[[ "$(wc -l < "$STUB_CALLS" | tr -dc 0-9)" == "1" ]] && assert "N2: exactly ONE browser-qa dispatch" pass || assert "N2: exactly ONE browser-qa dispatch" fail
+
+# N3: no replay, both targets PASS.
+run_noreplay_case N3 23 "J-04=PASS J-13=PASS"
+[[ "$(headline_of "$UI_TEST_RESULTS")" == "PASS" ]] && ! grep -q 'Fresh-evidence coverage' "$UI_TEST_RESULTS" \
+  && assert "N3: no-replay both targets PASS → headline PASS, no coverage note" pass \
+  || assert "N3: no-replay both targets PASS → headline PASS (got: $(headline_of "$UI_TEST_RESULTS"))" fail
+[[ ! -f "$TOKEN" ]] && assert "N3: no browser-infra token" pass || assert "N3: no browser-infra token" fail
+[[ "$(wc -l < "$STUB_CALLS" | tr -dc 0-9)" == "1" ]] && assert "N3: exactly ONE browser-qa dispatch" pass || assert "N3: exactly ONE browser-qa dispatch" fail
+
+# N4: no replay, J-04 FAIL + J-13 infra (the agent's own headline says PASS).
+run_noreplay_case N4 24 "J-04=FAIL J-13=INFRA"
+[[ "$(headline_of "$UI_TEST_RESULTS")" == "FAIL" ]] \
+  && assert "N4: no-replay J-04 FAIL + J-13 infra → headline FAIL (a FAIL row outranks the agent's PASS headline)" pass \
+  || assert "N4: no-replay J-04 FAIL + J-13 infra → headline FAIL (got: $(headline_of "$UI_TEST_RESULTS"))" fail
+[[ "$(token_journeys "$TOKEN")" == "J-13" ]] && assert "N4: token only J-13" pass || assert "N4: token only J-13 (got: $(token_journeys "$TOKEN"))" fail
+grep -E '^\| UT-J-04 ' "$UI_TEST_RESULTS" 2>/dev/null | grep -qF '| FAIL |' \
+  && assert "N4: the J-04 FAIL row survives unchanged" pass || assert "N4: the J-04 FAIL row survives unchanged" fail
+
+# N5: replay explicitly disabled (golden on file, CHAIN_REGRESSION_REPLAY=false).
+export CHAIN_REGRESSION_REPLAY=false STUB_VERIFY_STAMP="$WORK/stamp-N5"
+run_noreplay_case N5 25 "J-04=PASS" "J-01" "J-01"
+unset CHAIN_REGRESSION_REPLAY STUB_VERIFY_STAMP
+[[ ! -f "$WORK/stamp-N5" ]] && grep -q "^Write your results to: $UI_TEST_RESULTS\$" "$WORK/prompt-N5.txt" \
+  && assert "N5: the hatch disabled replay (verify never invoked, results written directly)" pass \
+  || assert "N5: the hatch disabled replay (verify never invoked, results written directly)" fail
+[[ "$(headline_of "$UI_TEST_RESULTS")" == "SKIPPED" ]] && grep -q 'J-13: MISSING' "$UI_TEST_RESULTS" 2>/dev/null \
+  && assert "N5: CHAIN_REGRESSION_REPLAY=false cannot bypass coverage — J-13 MISSING → SKIPPED" pass \
+  || assert "N5: CHAIN_REGRESSION_REPLAY=false cannot bypass coverage (got: $(headline_of "$UI_TEST_RESULTS"))" fail
+unset CHAIN_BQA_PREFLIGHT STUB_CALLS GOAL_SESSION_DIR GOAL_ITER_INDEX
+
+# ══ FF1/FF2: the coverage gate fails CLOSED through the real full-depth script ═
+export CHAIN_BQA_PREFLIGHT=true
+full_fail_closed_asserts() {  # <tag> <raw-lane-file-that-must-survive>
+  local tag="$1" raw="$2"
+  [[ "$BQA_RC" -ne 0 ]] && assert "$tag: phase exits non-zero" pass || assert "$tag: phase exits non-zero (got rc=$BQA_RC)" fail
+  [[ "$(headline_of "$UI_TEST_RESULTS")" == "SKIPPED" ]] && grep -qi 'FRAMEWORK FAILURE' "$UI_TEST_RESULTS" 2>/dev/null \
+    && assert "$tag: results path holds the SKIPPED stub naming the FRAMEWORK failure (never the agent's PASS)" pass \
+    || assert "$tag: results path holds the SKIPPED stub (got headline: $(headline_of "$UI_TEST_RESULTS"))" fail
+  [[ -f "$raw" ]] && [[ "$(headline_of "$raw")" == "PASS" ]] \
+    && assert "$tag: the unverified agent output is preserved aside (not evidence)" pass \
+    || assert "$tag: the unverified agent output is preserved aside ($raw)" fail
+  ! grep -qF '| FAIL |' "$UI_TEST_RESULTS" && assert "$tag: no product FAIL fabricated" pass || assert "$tag: no product FAIL fabricated" fail
+  [[ ! -f "$TOKEN" ]] && assert "$tag: no browser-infra token fabricated" pass || assert "$tag: no browser-infra token fabricated" fail
+  [[ "$(wc -l < "$STUB_CALLS" | tr -dc 0-9)" == "1" ]] && assert "$tag: exactly ONE browser-qa dispatch" pass || assert "$tag: exactly ONE browser-qa dispatch" fail
+}
+# FF1: no replay, finalizer forced to fail (agent headline PASS, both targets PASS).
+export STUB_MERGE_WRAPPER=1 STUB_FINALIZE_RC=1
+run_noreplay_case FF1 26 "J-04=PASS J-13=PASS"
+unset STUB_FINALIZE_RC
+full_fail_closed_asserts FF1 "${UI_TEST_RESULTS%.md}.unverified.md"
+# FF2: replay active (golden J-01, required J-01) + owed targets, merge forced to fail.
+export STUB_MERGE_RC=1
+run_noreplay_case FF2 27 "J-04=PASS J-13=PASS" "J-01" "J-01"
+unset STUB_MERGE_RC STUB_MERGE_WRAPPER
+full_fail_closed_asserts FF2 "$LLM_RESULTS"
+unset CHAIN_BQA_PREFLIGHT STUB_CALLS GOAL_SESSION_DIR GOAL_ITER_INDEX
 
 echo ""
 echo "=== Results: $PASS passed, $FAIL failed ==="

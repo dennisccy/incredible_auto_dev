@@ -70,9 +70,13 @@ PASSING_STATUSES = {"passing", "already_passing"}
 _JOURNEY_HEADER_RE = re.compile(r"^(\s*)-\s+\*\*(J-\d+)\b", re.MULTILINE)
 _STUB_MARKER = "Coherence auditor produced no output"
 _VERDICT_RE = re.compile(r"^\*\*Verdict:\*\*\s*(\S+)", re.MULTILINE)
-# A table cell whose entire content is FAIL (avoids matching prose that
-# merely contains the word).
-_FAIL_CELL_RE = re.compile(r"\|\s*FAIL\s*\|")
+# A table cell that IS a FAIL verdict: the token leads the cell, may be wrapped
+# in markdown emphasis/backticks and may carry an annotation (`**FAIL**`,
+# `FAIL (step 3 timed out)`) — anti-pattern 28. Prose that merely contains the
+# word (`expect no FAILURE here`, `see FAIL below`) never matches, and neither
+# does a different word (`FAILURE`, the template placeholder `PASS/FAIL`).
+_FAIL_CELL_RE = re.compile(
+    r"\|\s*[*_`~]*FAIL[*_`~]*(?:\s*\||[\s(\[:;,\u2014\u2013-][^|]*\|)", re.IGNORECASE)
 # SPEED-15 rung 2: a journey deferred for wall-clock budget was NOT verified
 # this iteration — it keeps its prior status for scoring, but it must block
 # GOAL_ACHIEVED exactly like a FAIL until a later iteration re-verifies it.
@@ -453,6 +457,20 @@ def _self_test() -> int:
             "| UT-J-06 | J-06 regression re-check | regression | P2 | e | not run | DEFERRED-BUDGET | deferred: over iteration wall-clock budget |\n",
             encoding="utf-8")
         assert cmd_results(str(res_def)) == 1, "DEFERRED-BUDGET must block GOAL_ACHIEVED"
+        # anti-pattern 28: agents write **FAIL** / FAIL (annotation) — a styled
+        # FAIL cell must still block; sentence-shaped prose never matches.
+        res_bold = d / "r5.md"; res_bold.write_text(
+            "| T1 | n | ui | P1 | e | a | PASS | x.png |\n| T2 | n | ui | P1 | e | a | **FAIL** | y.png |\n",
+            encoding="utf-8")
+        assert cmd_results(str(res_bold)) == 1, "a bold **FAIL** cell must block GOAL_ACHIEVED"
+        res_annot = d / "r6.md"; res_annot.write_text(
+            "| T2 | n | ui | P1 | e | a | FAIL (step 3 timed out) | y.png |\n", encoding="utf-8")
+        assert cmd_results(str(res_annot)) == 1, "an annotated FAIL cell must block GOAL_ACHIEVED"
+        res_prose2 = d / "r7.md"; res_prose2.write_text(
+            "| T1 | see FAIL below | PASS |\n| T2 | n | ui | P1 | e | a | `PASS` | x.png |\n"
+            "| T3 | n | ui | P1 | e | a | PASS/FAIL | x.png |\n",
+            encoding="utf-8")
+        assert cmd_results(str(res_prose2)) == 0, "prose containing FAIL / the PASS/FAIL placeholder is not a FAIL cell"
 
         # regressions: J-01 passing→failing is caught; missing pre → 0
         post = d / "post.json"

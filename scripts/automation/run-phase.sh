@@ -370,6 +370,17 @@ _is_spec_field_unavailable() {
   local rc="$1"
   [[ $rc -eq ${SPEC_FIELD_UNAVAILABLE_EXIT_CODE:-78} ]]
 }
+# The browser evidence coverage gate could not be ESTABLISHED (lib/common.sh
+# BROWSER_EVIDENCE_GATE_UNAVAILABLE_EXIT_CODE): the deterministic finalizer/
+# merger that decides whether this iteration's browser results are trustworthy
+# failed, so browser-qa-phase.sh failed closed and exited this code. Not agent
+# quality, not infra, not transport: warning past it would record browser QA
+# complete (or promote SKIP_BROWSER_QA from the framework-failure stub) and run
+# demo, QA, audit and closure over unverified evidence. Fatal, like a signal.
+_is_browser_evidence_gate_unavailable() {
+  local rc="$1"
+  [[ $rc -eq ${BROWSER_EVIDENCE_GATE_UNAVAILABLE_EXIT_CODE:-79} ]]
+}
 
 # Guard a step's exit code for fatal, non-quality conditions that must STOP the
 # phase immediately instead of being retried or warned-past. Call right after a
@@ -400,6 +411,15 @@ _guard_step_rc() {
     log "    whole-document fallback and an empty journey set. Continuing would verify an iteration"
     log "    whose journey set was never established, so this is fatal rather than retried."
     log "    Reproduce:  python3 scripts/automation/lib/iter_spec.py field <spec> target_journeys"
+    exit "$rc"
+  fi
+  if _is_browser_evidence_gate_unavailable "$rc"; then
+    log "  $label: browser evidence coverage gate UNAVAILABLE (exit $rc) — aborting the phase WITHOUT advancing the checkpoint."
+    log "    The deterministic fresh-evidence finalizer/merger could not establish whether this iteration's browser"
+    log "    results are trustworthy — a framework/runtime fault, not a product defect and not browser infrastructure."
+    log "    The unverified results were quarantined where possible; nothing downstream may treat them as evidence,"
+    log "    so browser QA is NOT recorded complete and demo/QA/audit/closure do not run."
+    log "    Fix the fault named above, then resume — the browser QA step re-runs (this is not an approval)."
     exit "$rc"
   fi
 }

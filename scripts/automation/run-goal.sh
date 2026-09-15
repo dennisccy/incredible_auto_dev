@@ -1301,6 +1301,35 @@ preflight_host_guard() {
   [[ -n "$fail_reason" ]] || return 0
   _host_guard_pause "$fail_reason" "preflight"
 }
+# _host_guard_pump_target <heartbeat-file> — identify the interactive pump for
+# the iteration gate. Sets _hg_pump_target (a pid whose /proc status is
+# readable, or "") and _hg_pump_hb_age (seconds since the heartbeat, 999999
+# when absent). The CLI session root captured at engine launch wins (it
+# outlives short-lived heartbeat writers); else the heartbeat's pid= line when
+# the heartbeat is fresh. A heartbeat pid whose start time no longer matches
+# (pid recycled across a machine reset) is discarded, never verified, adopted,
+# or tasksetted.
+_hg_pump_target=""
+_hg_pump_hb_age=999999
+_host_guard_pump_target() {
+  local hb="$1" pump_pid="" hb_stt=""
+  _hg_pump_target=""; _hg_pump_hb_age=999999
+  if [[ -f "$hb" ]]; then
+    _hg_pump_hb_age=$(( EPOCHSECONDS - $(stat -c %Y "$hb" 2>/dev/null || echo 0) ))
+    pump_pid=$(sed -n 's/^pid=\([0-9][0-9]*\)$/\1/p' "$hb" 2>/dev/null | head -n 1)
+    hb_stt=$(sed -n 's/^starttime=\([0-9][0-9]*\)$/\1/p' "$hb" 2>/dev/null | head -n 1)
+    if [[ -n "$pump_pid" && -n "$hb_stt" ]] && ! hg_pid_matches "$pump_pid" "$hb_stt"; then
+      echo "[run-goal] host-guard: .pump-alive names pid $pump_pid, but that process is gone or was recycled (a machine reset reuses pids) — ignoring the stale heartbeat."
+      pump_pid=""
+    fi
+  fi
+  if [[ -n "${HOST_GUARD_PUMP_ROOT_PID:-}" && -r "/proc/${HOST_GUARD_PUMP_ROOT_PID}/status" ]]; then
+    _hg_pump_target="$HOST_GUARD_PUMP_ROOT_PID"
+  elif [[ -n "$pump_pid" && "$_hg_pump_hb_age" -le "${HOST_GUARD_PUMP_HB_FRESH:-180}" && -r "/proc/$pump_pid/status" ]]; then
+    _hg_pump_target="$pump_pid"
+  fi
+  return 0
+}
 host_guard_iteration_gate() {
   # Top-of-loop, never mid-iteration. (a) thermal cooldown: when the hwmon csv
   # is fresh and Tctl ≥ HOST_GUARD_TCTL_PAUSE, wait until ≤ _RESUME (bounded by
@@ -1308,7 +1337,10 @@ host_guard_iteration_gate() {
   # (b) interactive pump confinement: the systemd/taskset self-wrap cannot
   # confine agents dispatched INSIDE the foreground CLI session, so when
   # HOST_GUARD_REQUIRE_PUMP_CONFINED=1 verify the pump process's own cpuset and
-  # pause (resumable) if it is wider than the declared mask.
+  # pause (resumable) if it is wider than the declared mask. (b2) interactive
+  # pump headless policy: when HOST_GUARD_PUMP_HEADLESS_QA=1 verify the pump
+  # was LAUNCHED display-less (its Chrome MCP inherits that environment) and
+  # pause (resumable) before any model dispatch if it was not.
   local hg_env="$REPO_ROOT/project-extensions/host-guard/host-guard.env"
   [[ -f "$hg_env" ]] || return 0
   # shellcheck disable=SC1090
@@ -1338,29 +1370,23 @@ host_guard_iteration_gate() {
     sleep "$poll"; waited=$(( waited + poll ))
   done
 
+  # Pump identification, shared by the cpuset check (b) and the headless
+  # policy (b2) below — computed once per gate pass when either is armed.
+  local hb="${CHAIN_DISPATCH_DIR:-$GOAL_SESSION_DIR_LOCAL/dispatch}/.pump-alive"
+  local hb_age=999999 target=""
+  local _hg_headless_armed=0
+  if [[ "${HOST_GUARD_PUMP_HEADLESS_QA:-0}" == "1" && "${AGENT_BACKEND:-}" == "interactive" \
+        && "${CHAIN_BQA_HEADED:-0}" != "1" ]]; then
+    _hg_headless_armed=1
+  fi
+  if [[ "${AGENT_BACKEND:-}" == "interactive" ]] \
+     && [[ "${HOST_GUARD_REQUIRE_PUMP_CONFINED:-0}" == "1" || "$_hg_headless_armed" == "1" ]]; then
+    _host_guard_pump_target "$hb"
+    target="$_hg_pump_target"; hb_age="$_hg_pump_hb_age"
+  fi
+
   if [[ "${HOST_GUARD_REQUIRE_PUMP_CONFINED:-0}" == "1" && "${AGENT_BACKEND:-}" == "interactive" ]]; then
-    local hb="${CHAIN_DISPATCH_DIR:-$GOAL_SESSION_DIR_LOCAL/dispatch}/.pump-alive"
-    local pump_pid="" hb_age=999999 target="" width allowed_list allowed_n hb_stt=""
-    if [[ -f "$hb" ]]; then
-      hb_age=$(( EPOCHSECONDS - $(stat -c %Y "$hb" 2>/dev/null || echo 0) ))
-      pump_pid=$(sed -n 's/^pid=\([0-9][0-9]*\)$/\1/p' "$hb" 2>/dev/null | head -n 1)
-      # Pid-recycling defense across a machine reset: the heartbeat records the
-      # pump's start time, so a pid that now belongs to some other process — the
-      # normal case after a reboot reuses the pid space — is discarded instead of
-      # being verified, adopted, or (worse) tasksetted.
-      hb_stt=$(sed -n 's/^starttime=\([0-9][0-9]*\)$/\1/p' "$hb" 2>/dev/null | head -n 1)
-      if [[ -n "$pump_pid" && -n "$hb_stt" ]] && ! hg_pid_matches "$pump_pid" "$hb_stt"; then
-        echo "[run-goal] host-guard: .pump-alive names pid $pump_pid, but that process is gone or was recycled (a machine reset reuses pids) — ignoring the stale heartbeat."
-        pump_pid=""
-      fi
-    fi
-    # Verification handle: the CLI session root captured at engine launch wins
-    # (it outlives short-lived heartbeat writers); else the live heartbeat pid.
-    if [[ -n "${HOST_GUARD_PUMP_ROOT_PID:-}" && -r "/proc/${HOST_GUARD_PUMP_ROOT_PID}/status" ]]; then
-      target="$HOST_GUARD_PUMP_ROOT_PID"
-    elif [[ -n "$pump_pid" && "$hb_age" -le "${HOST_GUARD_PUMP_HB_FRESH:-180}" && -r "/proc/$pump_pid/status" ]]; then
-      target="$pump_pid"
-    fi
+    local width allowed_list allowed_n
     if [[ -n "$target" ]]; then
       width=$(_host_guard_mask_width "${HOST_GUARD_CPU_LIST:-}")
       allowed_list=$(awk -F'\t' '/^Cpus_allowed_list/{print $2}' "/proc/$target/status" 2>/dev/null)
@@ -1389,6 +1415,41 @@ host_guard_iteration_gate() {
       # A live pump we cannot even identify (no pid= line in the heartbeat AND
       # no CLI root captured at launch): loud pause, never a silent bypass.
       _host_guard_pause "cannot verify pump confinement: no usable pump pid ($hb has no pid= line and no CLI root was captured at engine launch) — re-enable the pump ident or set HOST_GUARD_REQUIRE_PUMP_CONFINED=0" "iteration_gate"
+    fi
+  fi
+
+  # (b2) interactive pump headless policy (HOST_GUARD_PUMP_HEADLESS_QA=1). The
+  # Chrome MCP that serves pump-dispatched browser QA is a child of the
+  # foreground CLI and decides headed-vs-headless from the environment it
+  # inherits at ITS start — so the engine's own strip_display_for_headless_qa
+  # (which unsets DISPLAY/WAYLAND_DISPLAY in the engine's browser lanes) cannot
+  # reach it, and a headed pump browser is the compositor-stress profile that
+  # hard-reset this host class (2026-08-07). The only fix is the launch itself:
+  # scripts/automation/host-guard-exec.sh strips both names before exec'ing the
+  # CLI. This check verifies that launch deterministically — /proc/<pump>/environ
+  # is the environment the pump was exec'd with — at the top of the loop, so a
+  # mislaunched pump pauses BEFORE the iteration's first model dispatch instead
+  # of burning a decomposer + developer + browser-agent run to find out. Never
+  # kills, restarts, or re-environments the user's CLI. CHAIN_BQA_HEADED=1 is
+  # the headed debugging escape; an unreadable environment pauses too — "cannot
+  # verify" is not "verified", same as the cpuset check above.
+  if [[ "$_hg_headless_armed" == "1" ]]; then
+    local hv
+    if [[ -n "$target" ]]; then
+      hv="$(hg_pump_display_verdict "$target")"
+      case "$hv" in
+        display-less)
+          echo "[run-goal] host-guard: interactive pump (pid $target) is display-less — pump browser QA will run headless (HOST_GUARD_PUMP_HEADLESS_QA=1)." ;;
+        display-bound:*)
+          write_session_summary "AWAITING_HOST_GUARD" "$CURRENT_ITER"
+          _host_guard_pause "interactive pump (pid $target) was launched with ${hv#display-bound: } while HOST_GUARD_PUMP_HEADLESS_QA=1 — its Chrome MCP would run a HEADED browser (the pump's own launch environment decides, not the engine's). Relaunch the foreground CLI via scripts/automation/host-guard-exec.sh (e.g. 'scripts/automation/host-guard-exec.sh claude' — it strips DISPLAY/WAYLAND_DISPLAY from birth), then resume. CHAIN_BQA_HEADED=1 is the headed debugging escape; HOST_GUARD_PUMP_HEADLESS_QA=0 disables the policy" "iteration_gate" ;;
+        *)
+          write_session_summary "AWAITING_HOST_GUARD" "$CURRENT_ITER"
+          _host_guard_pause "cannot verify the interactive pump's display environment (pid $target: ${hv#unreadable: }) while HOST_GUARD_PUMP_HEADLESS_QA=1 — refusing to guess. Relaunch the foreground CLI via scripts/automation/host-guard-exec.sh <cli> as the same user, or set HOST_GUARD_PUMP_HEADLESS_QA=0" "iteration_gate" ;;
+      esac
+    elif [[ "$hb_age" -le "${HOST_GUARD_PUMP_HB_FRESH:-180}" ]]; then
+      write_session_summary "AWAITING_HOST_GUARD" "$CURRENT_ITER"
+      _host_guard_pause "cannot verify the interactive pump's display environment: no usable pump pid ($hb has no pid= line and no live CLI root was captured at engine launch) while HOST_GUARD_PUMP_HEADLESS_QA=1 — re-enable the pump ident, relaunch via scripts/automation/host-guard-exec.sh <cli>, or set HOST_GUARD_PUMP_HEADLESS_QA=0" "iteration_gate"
     fi
   fi
 
@@ -3146,6 +3207,40 @@ PYEOF
     record_telemetry_event "halt" "$(jq -cn --arg n "$ITER_NAME" --arg rc "$_exec_rc" \
       '{reason:"GATE_BLOCKED_SPEC_FIELD_UNAVAILABLE", detected_at_step:"executor-spec-field", rc:($rc|tonumber), iter_name:$n}' \
       2>/dev/null || printf '{"reason":"GATE_BLOCKED_SPEC_FIELD_UNAVAILABLE","detected_at_step":"executor-spec-field","rc":%s}' "$_exec_rc")"
+    write_session_summary "GATE_BLOCKED" "$CURRENT_ITER"
+    explain_goal_status "GATE_BLOCKED" "$SESSION_ID" "$REPO_ROOT" >&2
+    exit 0
+  fi
+
+  # Browser evidence gate UNAVAILABLE (reserved rc, lib/common.sh): the
+  # deterministic fresh-evidence coverage gate (merge_ui_test_results.py
+  # finalize / merge with an owed journey set) could not be established for
+  # this iteration's browser results — a FRAMEWORK/runtime fault, not a product
+  # defect, not browser infrastructure, not agent quality. The executor already
+  # failed closed at the leaf (no checkpoint, unverified artifact quarantined,
+  # SKIPPED stub) — but a generic non-zero executor exit would still let this
+  # loop run the coherence auditor and the goal-evaluator over whatever
+  # artifact survived (if quarantine itself failed, the agent's raw PASS). So
+  # halt HERE, before any evaluation: resumable GATE_BLOCKED, current_iter not
+  # advanced (it only moves after the evaluator), nothing pushed as a
+  # successful iteration. `--resume` re-runs THIS iteration — the
+  # un-checkpointed browser step re-collects and re-finalizes the evidence —
+  # and is never an approval. Identical for the lean and the full pipeline
+  # (run-phase.sh propagates the same code through _guard_step_rc).
+  if [[ "$_exec_rc" -eq "${BROWSER_EVIDENCE_GATE_UNAVAILABLE_EXIT_CODE:-79}" ]]; then
+    echo "[run-goal] Browser evidence finalization could not be established for iteration $CURRENT_ITER (executor exit $_exec_rc) — halting." >&2
+    echo "[run-goal]   The deterministic fresh-evidence coverage gate (merge_ui_test_results.py finalize/merge) FAILED, so this" >&2
+    echo "[run-goal]   iteration's browser-qa results are UNVERIFIED. This is a framework/runtime fault — not a product defect" >&2
+    echo "[run-goal]   and not browser infrastructure. The iteration was NOT evaluated and was NOT advanced." >&2
+    echo "[run-goal]   Fix the framework/runtime error shown above (the executor printed the exact command), then resume:" >&2
+    echo "[run-goal]     /goal-resume $SESSION_ID" >&2
+    echo "[run-goal]   Resume re-runs the same iteration (the browser QA step was not checkpointed); it is not an approval." >&2
+    mkdir -p "$ITER_DIR" 2>/dev/null || true
+    printf 'reason=browser-evidence-gate-unavailable\nrc=%s\niter=%s\ndetected_at_step=executor-browser-evidence\n' \
+      "$_exec_rc" "$CURRENT_ITER" > "$ITER_DIR/browser-evidence-gate-unavailable" 2>/dev/null || true
+    record_telemetry_event "halt" "$(jq -cn --arg n "$ITER_NAME" --arg rc "$_exec_rc" \
+      '{reason:"GATE_BLOCKED_BROWSER_EVIDENCE", detected_at_step:"executor-browser-evidence", rc:($rc|tonumber), iter_name:$n}' \
+      2>/dev/null || printf '{"reason":"GATE_BLOCKED_BROWSER_EVIDENCE","detected_at_step":"executor-browser-evidence","rc":%s}' "$_exec_rc")"
     write_session_summary "GATE_BLOCKED" "$CURRENT_ITER"
     explain_goal_status "GATE_BLOCKED" "$SESSION_ID" "$REPO_ROOT" >&2
     exit 0

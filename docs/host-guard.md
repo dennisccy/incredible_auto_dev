@@ -24,6 +24,7 @@ disables everything.
 | `HOST_GUARD_TASKS_MAX` | fork-storm bound | `2048` |
 | `HOST_GUARD_REQUIRE_PUMP_CONFINED` | verify + auto-confine the interactive pump session each iteration | `1` |
 | `HOST_GUARD_ADOPT` | `0` disables the in-place auto-confine (pause immediately instead) | `1` (default) |
+| `HOST_GUARD_PUMP_HEADLESS_QA` | `1`: `host-guard-exec.sh` strips `DISPLAY`/`WAYLAND_DISPLAY` before exec'ing the pump CLI (its Chrome MCP then runs headless), and the iteration gate verifies the running pump was launched that way — pausing (resumable) before the iteration's first model dispatch if not | `0` (default) |
 | `HOST_GUARD_CLI_PATTERN` | regex matching the CLI process when walking up to the session root | `claude\|codex` (default) |
 | `HOST_GUARD_REQUIRE_MARKERS` + `HOST_GUARD_MARKER_FILES` | require HOST-GUARD cap blocks in listed launcher scripts | project-specific |
 | `HOST_GUARD_TCTL_PAUSE` / `_RESUME` / `_MAX_WAIT` | thermal gate thresholds (°C, °C, s) | `90` / `80` / `1800` |
@@ -320,6 +321,21 @@ decides at *its* start — headed when a display is present, headless when
 dispatch, dropping GPU compositing and the raster thread pool. Screenshots are
 unaffected. `CHAIN_BQA_HEADED=1` restores a visible browser for debugging.
 
+The interactive pump is the exception the lane cannot reach: its Chrome MCP is a
+child of the foreground CLI and inherits the CLI's launch environment, which no
+engine-side `unset` can change after the fact. `HOST_GUARD_PUMP_HEADLESS_QA=1`
+closes that gap at launch (`host-guard-exec.sh` unsets both names before exec'ing
+the CLI) and at every iteration boundary: the gate reads `/proc/<pump>/environ`
+— the environment the pump was exec'd with — and pauses `AWAITING_HOST_GUARD`
+(resumable) *before* the iteration's first model dispatch when `DISPLAY` or
+`WAYLAND_DISPLAY` is set, when the environment cannot be read (a gone or
+foreign-user pid, a zombie, no procfs — "cannot verify" is never "verified"), or
+when a live pump cannot be identified at all. It never kills, restarts or
+re-environments the CLI: the remedy is to relaunch through the wrapper and resume.
+A present-but-empty value counts as absent. `CHAIN_BQA_HEADED=1` disables the
+check for headed debugging; the policy is opt-in per machine, so hosts without
+procfs are unaffected.
+
 **Per-dispatch teardown (default-on, 2026-09-01).** Right after every browser
 dispatch returns, the engine closes the browser the step used
 (`qa_browser_step_teardown`, `lib/common.sh`; agents never clean up themselves
@@ -397,7 +413,11 @@ Pump browsers are made safe by affinity instead, which needs no name.
    cooldown between iterations (wait out heat-soak, bounded); pump-cpuset
    verification when `HOST_GUARD_REQUIRE_PUMP_CONFINED=1` (via the `pid=` line
    in `.pump-alive`, or the CLI root captured at engine launch) with automatic
-   in-place re-confinement, pausing only when that fails; then a re-check of the
+   in-place re-confinement, pausing only when that fails; pump display-environment
+   verification when `HOST_GUARD_PUMP_HEADLESS_QA=1` (same pump identification;
+   `/proc/<pump>/environ` must carry neither `DISPLAY` nor `WAYLAND_DISPLAY`,
+   pausing resumably before the first model dispatch otherwise — see the
+   headless paragraph under browser confinement); then a re-check of the
    machine-global budget and boost, since the *other* project's session may have
    started after this one's preflight.
 6. **Machine-global bound** (`lib/host-guard-registry.sh`) — the live-session
