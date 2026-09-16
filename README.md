@@ -22,7 +22,7 @@ The framework supports two modes:
 
 **Phase mode** (the original) — you author phase specs in `docs/phases/` and run them one at a time through the 11-step pipeline. Each phase is a discrete, gated unit of work with a human-defined scope. Use this when you have a clear roadmap and want a human gate between every phase. Entry point: `./scripts/automation/run-phase.sh <phase-name>`.
 
-**Goal mode** (added later, parallel to phase mode) — you author `docs/goal.md` once with **Must-have user journeys** and **Anti-goals**, then run `./scripts/automation/run-goal.sh`. The system loops `decompose → execute → evaluate` adaptively (lean cycle for small changes, full 11-step pipeline for risky ones) until an AI evaluator declares the goal achieved or a hard halt fires (max iterations, stall, regression). Quota exhaustion does NOT halt the loop — it pauses and auto-resumes when quota resets. Use this when you want autonomous, unattended development against a fixed product target. See [`docs/goal-mode-quickstart.md`](docs/goal-mode-quickstart.md) and [`.claude/architecture/goal-mode.md`](.claude/architecture/goal-mode.md).
+**Goal mode** (added later, parallel to phase mode) — you author `docs/goal.md` once with **Must-have user journeys** and **Anti-goals**, then run `./scripts/automation/run-goal.sh`. The system loops `decompose → execute → evaluate` adaptively (lean cycle for small changes, full 11-step pipeline for risky ones) until an AI evaluator declares the goal achieved or a hard halt fires (max iterations, stall, regression). Quota waiting is owned below the engine — an ordinary quota window pauses and auto-resumes within `claude_with_quota_retry`'s retry policy; if a full executor still exits quota-exhausted after that, the loop stops resumably before evaluation and you resume the session once quota is back. Use this when you want autonomous, unattended development against a fixed product target. See [`docs/goal-mode-quickstart.md`](docs/goal-mode-quickstart.md) and [`.claude/architecture/goal-mode.md`](.claude/architecture/goal-mode.md).
 
 The two modes share all agents and skills. They write to disjoint artifact namespaces (`runs/<phase>/` vs `runs/goal-session-<sid>/`) so you can use both in the same project without collision.
 
@@ -84,7 +84,7 @@ After baseline the decomposer drafts a coherence blueprint at `runs/goal-session
 
 Because per-iter push is on by default, goal mode checks at startup that a push to `origin` would authenticate, so an expired GitHub session can't stall a mid-run push on a credential prompt. Pushes are also run with `GIT_TERMINAL_PROMPT=0` so they fail fast (non-fatally) instead of hanging. Skip the startup check with `CHAIN_SKIP_GITHUB_PREFLIGHT=true`.
 
-Quota exhaustion is NOT a halt — the loop pauses and auto-resumes when the quota resets.
+Automatic quota waiting/retry is handled by the layers below the engine: an ordinary quota window pauses inside `claude_with_quota_retry` and resumes the same agent when the quota resets, within its retry policy. If a FULL executor still propagates `QUOTA_EXHAUSTED_EXIT_CODE` (75) to the engine after that handling has ended, the engine adds no wait of its own — it stops resumably before evaluation (`ABORTED`, halt reason `QUOTA_EXHAUSTED`, exit 75) with `runs/<iter>/status.json` kept; `--resume` re-runs that same iteration once quota is available.
 
 See [`docs/goal-mode-quickstart.md`](docs/goal-mode-quickstart.md) for the full guide.
 

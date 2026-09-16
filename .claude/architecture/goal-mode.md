@@ -17,7 +17,7 @@ Then `./scripts/automation/run-goal.sh` takes over: it generates iteration specs
 ## Components
 
 ```
-run-goal.sh         outer loop, halt logic, quota auto-resume, telemetry capture
+run-goal.sh         outer loop, halt logic, resumable quota stop, telemetry capture
 goal-iter-lean.sh   single lean iteration: developer → reviewer → browser-qa
 run-phase.sh        existing 11-step pipeline (used unchanged for full iterations,
                     invoked with --no-finalize so release runs only at session end)
@@ -91,7 +91,7 @@ After the evaluator runs, the verdict directly drives the loop:
 | `REGRESSION` | Halt with `REGRESSION_HALT` |
 | `STALLED` | Halt with `STALLED` (evaluator-driven, separate from hash-based detection above) |
 
-**Quota exhaustion is NOT a halt.** The wrapped `claude_with_quota_retry` library transparently sleeps until the quota resets, then resumes the same agent invocation. Telemetry records the quota pause for observability.
+**Quota waiting is owned below the engine.** The wrapped `claude_with_quota_retry` library transparently sleeps until the quota resets, then resumes the same agent invocation — within `CHAIN_CLAUDE_MAX_QUOTA_RETRIES`; long-duration (monthly/org) limits and `CHAIN_DISABLE_AUTO_WAIT=true` fail fast — and `run-phase.sh`'s `_run_step` and step retry loops wait and retry inside the phase. Telemetry records those quota pauses for observability. If a FULL executor (`run-phase.sh`) still propagates `QUOTA_EXHAUSTED_EXIT_CODE` (75) to the engine, the iteration is incomplete and the automatic handling below has ended: Goal Mode stops resumably before evaluation — no coherence auditor, no goal-evaluator, no `current_iter` advance, no per-iteration push — as session status `ABORTED` with halt reason `QUOTA_EXHAUSTED`, exits 75, and preserves the run-phase checkpoint (`runs/<iter>/status.json`). Resume after quota is available (`/goal-resume`); the same iteration continues from that checkpoint. The engine itself never waits for quota or re-dispatches the executor. Not covered: quota a run-phase step absorbs itself (a leaf SKIPPED stub, or a bounded step retry that moves on) never reaches the engine; `_run_step`'s own dev/review/QA/audit retry loops keep waiting and retrying inside `run-phase.sh` without a bound (they ignore `CHAIN_DISABLE_AUTO_WAIT`, and a long-duration limit hit there makes run-phase wait hourly rather than reach the engine); and the lean executor has no such handling — a lean exit 75 still proceeds to evaluation.
 
 **Per-iteration tmp hygiene.** The engine owns a per-run tmp dir (`lib/chain-tmp.sh`, exported as `TMPDIR`): session-scoped at startup, then rotated to `$CHAIN_TMP_ROOT/iad.goal-<sid>-iter-<N>.<pid>` (root default `~/.cache/iad`, not the quota'd tmpfs `/tmp`; ≤62-char TMPDIR, long ids hash-shortened) at each iteration boundary — immediately after `_join_showcase_tail`, because the previous iteration's async showcase tail keeps writing demo logs until that join (never clean right after the evaluator). The `[run-goal] Tmp cleanup: cleared …` log line marks the step. Both dispatch depths adopt the engine's dir (owner-guarded), and the engine's EXIT trap removes the final dir on any halt. A startup janitor reaps strays from crashed sessions across the root and legacy `/tmp`. See `.claude/anti-patterns/21-shared-tmp-accumulation.md`.
 
