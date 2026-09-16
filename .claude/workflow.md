@@ -301,14 +301,14 @@ Per-iteration code/test artifacts use the standard phase-mode paths (`runs/<iter
 | `BUDGET_EXHAUSTED` | `current_iter >= max_iterations` (only when `--max-iter N` is set; **no cap by default**) | `run-goal.sh --resume --max-iter N` (raised cap) |
 | `STALLED` (hash) | Last `stall_window` (default 3) journey-history hashes are identical | Edit `goal.md`, then `--resume` |
 | `REGRESSION_HALT` | Evaluator emitted `REGRESSION` | `run-goal.sh --resume --acknowledge-regression` |
-| `ABORTED` | SIGINT/SIGTERM | `run-goal.sh --resume --session-id <id>` |
-| Quota exhausted | (handled by `claude_with_quota_retry`) | NOT a halt — loop pauses and auto-resumes when quota resets |
+| `ABORTED` | SIGINT/SIGTERM, or a resumable mid-iteration stop that never evaluated the iteration (e.g. halt `QUOTA_EXHAUSTED`) | `run-goal.sh --resume --session-id <id>` (re-runs that iteration from its checkpoint) |
+| Quota exhausted | Lower layers first (`claude_with_quota_retry`, `run-phase.sh`); then a **FULL** executor that still exits `QUOTA_EXHAUSTED_EXIT_CODE` (75) | An ordinary quota window pauses and auto-resumes below the engine within its retry policy. If a FULL executor still exits 75, the iteration did not complete: the engine stops resumably before evaluation (`ABORTED`, halt `QUOTA_EXHAUSTED`, exit 75, checkpoints kept) — `run-goal.sh --resume --session-id <id>` once quota is back. A **lean** executor's 75 has no such arm yet: that iteration is still evaluated |
 
 ### Goal-mode retry policy
 
 - **Lean iteration developer→reviewer**: max 2 attempts (tighter than phase mode's 3 — lean cycles favor escalation over local thrashing).
 - **Full iteration**: full phase-mode retry policy (3 dev+review, 3 QA, 2 audit) applies via `run-phase.sh`.
-- **Quota retry**: every Claude call goes through `lib/quota-retry.sh::claude_with_quota_retry` which passes `--effort max` and handles quota exhaustion transparently.
+- **Quota retry**: every Claude call goes through `lib/quota-retry.sh::claude_with_quota_retry` which passes `--effort max` and handles ordinary quota windows transparently (bounded by `CHAIN_CLAUDE_MAX_QUOTA_RETRIES`; long-duration monthly/org limits and `CHAIN_DISABLE_AUTO_WAIT` fail fast). Goal mode adds no quota wait above that — see the halt table.
 
 ### Goal-mode telemetry
 

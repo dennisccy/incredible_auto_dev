@@ -1789,7 +1789,12 @@ if _prev_style != "$_STYLE_ARM":
     print("[run-goal] NOTE: output-style arm changed on resume (was '%s', now '%s') — telemetry before iter %s is a different arm."
           % (_prev_style, "$_STYLE_ARM", "$CURRENT_ITER"), file=_sys.stderr)
 d["output_styles"] = "$_STYLE_ARM"
-if "$RUN_MODE" == "resume" and d.get("status") in ("REGRESSION_HALT", "AWAITING_BLUEPRINT_APPROVAL", "AWAITING_PUMP", "AWAITING_INTENT_REVIEW", "AWAITING_GITHUB_AUTH", "AWAITING_DISK", "AWAITING_HOST_GUARD", "AWAITING_FULL_DEPTH", "GATE_BLOCKED"):
+# ABORTED belongs here with the other resumable stops: every stop that leaves the
+# iteration un-evaluated writes it (the interrupt trap, the FULL-executor quota
+# stop, a decomposer or evaluator abort), and each one is re-run by a resume — so
+# leaving it standing would report a session that is demonstrably working as
+# stopped until the evaluator finally overwrites it at the end of the iteration.
+if "$RUN_MODE" == "resume" and d.get("status") in ("REGRESSION_HALT", "AWAITING_BLUEPRINT_APPROVAL", "AWAITING_PUMP", "AWAITING_INTENT_REVIEW", "AWAITING_GITHUB_AUTH", "AWAITING_DISK", "AWAITING_HOST_GUARD", "AWAITING_FULL_DEPTH", "GATE_BLOCKED", "ABORTED"):
   d["status"] = "in_progress"
 import os as _os, tempfile as _tf
 _fd, _tmp = _tf.mkstemp(dir=_os.path.dirname("$SESSION_JSON") or ".", suffix=".sjtmp")

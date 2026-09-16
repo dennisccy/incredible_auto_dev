@@ -9,7 +9,7 @@
 #     re-dispatches: it stops resumably BEFORE the coherence auditor and the
 #     goal-evaluator (ABORTED, halt QUOTA_EXHAUSTED, exit 75) with current_iter
 #     unchanged, nothing pushed and the run-phase checkpoint kept, and --resume
-#     re-runs the SAME iteration from that checkpoint.
+#     re-runs the SAME iteration from that checkpoint as in_progress work.
 #
 # The rc path is REAL end to end; only the model, the step leaves and the quota
 # wait primitives are stubbed:
@@ -35,8 +35,10 @@
 #      review_passed, resume instructions printed
 #                               (RED on e3340e7: the engine waited and re-dispatched)
 #   B  quota cleared → --resume: the SAME iteration resumes from review_passed
-#      without redoing plan/dev/review; closure, then coherence → evaluator, then
-#      the advance and the push
+#      without redoing plan/dev/review; the resumed work runs as in_progress (the
+#      stop's ABORTED is normalized before the first dispatch, not left standing
+#      until the evaluator overwrites it); closure, then coherence → evaluator,
+#      then the advance and the push
 #   C  CHAIN_CLAUDE_MAX_QUOTA_RETRIES=1 spent by the REAL wrapper (two attempts,
 #      one wrapper wait): Goal Mode starts no fresh executor with a fresh retry
 #      budget — the quota a new budget would have consumed is left untouched
@@ -119,6 +121,11 @@ agent="${CHAIN_CURRENT_AGENT:-unknown}"
 iter="${GOAL_ITER_INDEX:-x}"
 prompt="$*"
 echo "$agent $iter" >> "$CANARY"
+# Session status AS SEEN BY the work in flight: a deterministic snapshot taken
+# at each dispatch, with no sleeping or polling (section B's resume window).
+if [[ -n "${STUB_SESSION_JSON:-}" && -f "$STUB_SESSION_JSON" && -n "${CANARY:-}" ]]; then
+  echo "$agent $iter $(python3 -c "import json,sys; print(json.load(open(sys.argv[1])).get('status','?'))" "$STUB_SESSION_JSON" 2>/dev/null || echo '?')" >> "$CANARY.status"
+fi
 field() { printf '%s\n' "$prompt" | sed -n "s|^$1||p" | head -n1; }
 # Agent-scoped quota wall for one iteration: each refusal spends one unit of the
 # count file, which disappears when the quota "resets". STUB_QUOTA_MSG overrides
@@ -319,9 +326,9 @@ eng_paths() {  # <sid> <fresh|resume>
   local f
   if [[ "$2" == "fresh" ]]; then
     rm -rf "$ENG_SESSION"
-    for f in "$CANARY" "$CANARY.quota" "$ENG_LOG" "$WAITS"; do : > "$f"; done
+    for f in "$CANARY" "$CANARY.quota" "$CANARY.status" "$ENG_LOG" "$WAITS"; do : > "$f"; done
   else
-    for f in "$CANARY" "$CANARY.quota" "$ENG_LOG" "$WAITS"; do echo "=== resume ===" >> "$f"; done
+    for f in "$CANARY" "$CANARY.quota" "$CANARY.status" "$ENG_LOG" "$WAITS"; do echo "=== resume ===" >> "$f"; done
   fi
 }
 run_engine() {  # <sid> <fresh|resume> <max-iter> [ENV=val ...] → ENG_RC
@@ -331,6 +338,7 @@ run_engine() {  # <sid> <fresh|resume> <max-iter> [ENV=val ...] → ENG_RC
   if [[ "$mode" == "resume" ]]; then args+=(--resume); fi
   ENG_RC=0; start_dummies
   ( cd "$ESBX" && exec env PATH="$STUB_DIR:$PATH" CANARY="$CANARY" STUB_WAIT_LOG="$WAITS" STUB_REMOTE="$REMOTE" \
+      STUB_SESSION_JSON="$ENG_SESSION/session.json" \
       "${ENGINE_ENV[@]}" "$@" timeout 300 bash scripts/automation/run-goal.sh "${args[@]}" ) >> "$ENG_LOG" 2>&1 || ENG_RC=$?
 }
 
@@ -390,11 +398,14 @@ _arm="$(awk '/-eq "\$\{QUOTA_EXHAUSTED_EXIT_CODE:-75\}" \]\]; then/ { f = 1 } f 
    && grep -qF 'exit "$_exec_rc"' <<<"$_arm" && ! grep -qE '(^|[^_[:alnum:]])(sleep|while|until)([^_[:alnum:]]|$)|run-phase\.sh"' <<<"$_arm" \
   && assert "W3: run-goal.sh owns no quota wait — no wait/sentinel/pause primitive anywhere, and the FULL quota arm exits without sleeping, looping or re-dispatching" pass \
   || assert "W3: engine-level quota wait remains (primitives: $(grep -noE '_sleep_until_epoch|_quota_check_sentinel|_quota_write_sentinel|_quota_clear_sentinel|_quota_pause_begin|_quota_pause_end|_full_executor_quota_wait' "$RG" | tr '\n' ' '); arm lines: $(wc -l <<<"$_arm"))" fail
-_obsolete='run-goal\.sh waits for the reset|waits for the quota reset and re-dispatches|the engine waits the (same )?way|FULL-executor wait|full-pipeline` for the engine|_full_executor_quota_wait|quota auto-resume'
-_docs=("$PAR" "$RP" "$RG" "$ENGINE_ROOT/.claude/architecture/pipeline.md" "$ENGINE_ROOT/.claude/architecture/goal-mode.md" "$ENGINE_ROOT/docs/goal-mode-telemetry.md")
-! grep -qE "$_obsolete" "${_docs[@]}" && ! grep -q 'no FULL-executor 75 arm' "$PAR" \
-  && assert "W4: no doc or comment it touches still describes an engine-level quota wait, re-dispatch, full-pipeline quota pause or quota auto-resume" pass \
-  || assert "W4: obsolete engine-wait wording remains: $(grep -noE "$_obsolete|no FULL-executor 75 arm" "${_docs[@]}" 2>/dev/null | sed "s|$ENGINE_ROOT/||" | tr '\n' ' ')" fail
+_obsolete='run-goal\.sh waits for the reset|waits for the quota reset and re-dispatches|the engine waits the (same )?way|FULL-executor wait|full-pipeline` for the engine|_full_executor_quota_wait|quota auto-resume|[Qq]uota exhaustion is NOT a halt|[Qq]uota[^.]{0,40}does NOT halt the loop|NOT a halt — loop pauses'
+_docs=("$PAR" "$RP" "$RG" "$ENGINE_ROOT/.claude/architecture/pipeline.md" "$ENGINE_ROOT/.claude/architecture/goal-mode.md" "$ENGINE_ROOT/docs/goal-mode-telemetry.md" \
+       "$ENGINE_ROOT/README.md" "$ENGINE_ROOT/docs/goal-mode-quickstart.md" "$ENGINE_ROOT/.claude/workflow.md")
+# Fail closed: a missing file makes grep exit 2, which `!` would read as "clean".
+_gone=""; for _d in "${_docs[@]}"; do [[ -f "$_d" ]] || _gone+=" ${_d#"$ENGINE_ROOT"/}"; done
+[[ -z "$_gone" ]] && ! grep -qE "$_obsolete" "${_docs[@]}" && ! grep -q 'no FULL-executor 75 arm' "$PAR" \
+  && assert "W4: no doc or comment it touches still describes an engine-level quota wait, re-dispatch, full-pipeline quota pause, or quota as something that never halts Goal Mode" pass \
+  || assert "W4: obsolete engine-wait wording remains:${_gone:+ (unreadable docs:$_gone)} $(grep -noE "$_obsolete|no FULL-executor 75 arm" "${_docs[@]}" 2>/dev/null | sed "s|$ENGINE_ROOT/||" | tr '\n' ' ')" fail
 
 # ══ A. fanout quota propagation through the REAL run-phase.sh ════════════════
 echo "── A: the post-dev fanout propagates quota exhaustion at iteration 1 ──"
@@ -436,18 +447,28 @@ grep -qF "Resuming session 'fa' from iter 1" "$BL" && grep -qF 'RESUMING from ch
          && "$(n_line 'review-phase.sh 1' "$BC")" == "0" && "$(n_line 'qa-phase.sh 1' "$BC")" == "1" ]] \
   && assert "B1: --resume re-ran the SAME iteration (1, $AP) from run-phase's review_passed checkpoint — plan/dev/review not redone, the fanout re-ran" pass \
   || assert "B1: resume path (dispatches=$(dispatches "$AP" "$BL") orchestrator=$(n_line 'orchestrator 1' "$BC") dev=$(n_line 'dev-phase.sh 1' "$BC") review=$(n_line 'review-phase.sh 1' "$BC") qa=$(n_line 'qa-phase.sh 1' "$BC"))" fail
+BS="$WORK/status-fa-resume.log"; segment_after_resume "$CANARY.status" > "$BS"
+# The resumed iteration dispatches qa (inside the re-run executor) → coherence
+# auditor → evaluator, so the first row and the QA row are the same dispatch
+# today; both are read anyway so the assertion survives a different first agent.
+_st_first="$(awk 'NR == 1 { print $3 }' "$BS")"
+_st_qa="$(awk '$1 == "qa" && $2 == "1" { print $3; exit }' "$BS")"
+_st_stale="$(awk '$3 == "ABORTED" { n++ } END { print n + 0 }' "$BS")"
+[[ "$_st_first" == "in_progress" && "$_st_qa" == "in_progress" && "$_st_stale" == "0" ]] \
+  && assert "B2: the stop was cleared before the resumed work ran — the resumed iteration's first dispatch (the QA agent inside the re-run executor) saw status in_progress, and none of its dispatches saw a stale ABORTED" pass \
+  || assert "B2: stale ABORTED during the resumed iteration (first dispatch=${_st_first:-none} QA inside the executor=${_st_qa:-none} dispatches still seeing ABORTED=$_st_stale) [$(tr '\n' '|' < "$BS")]" fail
 _cl="$(first_at 'phase-closure-check.sh 1' "$BC")"; _co="$(first_at 'coherence-auditor 1' "$BC")"; _ev="$(first_at 'goal-evaluator 1' "$BC")"
 [[ -n "$_cl" && -n "$_co" && -n "$_ev" && "$(n_line 'coherence-auditor 1' "$BC")" == "1" && "$(n_line 'goal-evaluator 1' "$BC")" == "1" \
    && "$(phase_step "$AP")" == "closure_passed" ]] && (( _cl < _co && _co < _ev )) \
-  && assert "B2: the executor completed (closure_passed); only then did the coherence auditor and the evaluator run, once each" pass \
-  || assert "B2: ordering (closure=${_cl:-none} coherence=${_co:-none} evaluator=${_ev:-none} step=$(phase_step "$AP"))" fail
+  && assert "B3: the executor completed (closure_passed); only then did the coherence auditor and the evaluator run, once each" pass \
+  || assert "B3: ordering (closure=${_cl:-none} coherence=${_co:-none} evaluator=${_ev:-none} step=$(phase_step "$AP"))" fail
 _evl="$(line_of 'Step 3: goal-evaluator' "$BL")"; _pul="$(line_of 'push-per-iter: pushed iter 1' "$BL")"
 [[ "$(sess current_iter)" == "2" && "$(sess last_verdict)" == "CONTINUE" && "$(sess status)" == "BUDGET_EXHAUSTED" \
    && "$(pushed_iter fa 1)" == "1" && -f "$ENG_SESSION/iter-1/.evaluated" && -n "$_evl" && -n "$_pul" ]] && (( _evl < _pul )) \
-  && assert "B3: only after that evaluation was current_iter advanced (2) and iteration 1 pushed — once" pass \
-  || assert "B3: final state (iter=$(sess current_iter) verdict=$(sess last_verdict) status=$(sess status) pushed=$(pushed_iter fa 1) evaluator line=${_evl:-none} push line=${_pul:-none} rc=$ENG_RC)" fail
+  && assert "B4: only after that evaluation was current_iter advanced (2) and iteration 1 pushed — once" pass \
+  || assert "B4: final state (iter=$(sess current_iter) verdict=$(sess last_verdict) status=$(sess status) pushed=$(pushed_iter fa 1) evaluator line=${_evl:-none} push line=${_pul:-none} rc=$ENG_RC)" fail
 [[ "$(segment_after_resume "$WAITS" | grep -c '^wait ' || true)" == "0" ]] \
-  && assert "B4: the resumed run waited for nothing either" pass || assert "B4: the resumed run recorded quota waits" fail
+  && assert "B5: the resumed run waited for nothing either" pass || assert "B5: the resumed run recorded quota waits" fail
 
 # ══ C. the wrapper's retry budget is not reset by Goal Mode ══════════════════
 echo "── C: CHAIN_CLAUDE_MAX_QUOTA_RETRIES=1 runs out inside the REAL wrapper ──"

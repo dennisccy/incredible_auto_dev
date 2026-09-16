@@ -77,7 +77,7 @@ This will:
 
 **Reviewing the blueprint (only if you passed `--require-blueprint-approval`):** open `runs/goal-session-my-app/state/blueprint.md` and check two things — (1) **Information Architecture**: are the nav sections sensible and does every feature have an obvious home? (2) **Data Contract**: is every "same-number-everywhere" value listed with exactly one source? Add any the AI missed; fix wrong sources. Edit the file directly, then `--resume` (resuming counts as approval).
 
-You can leave it running unattended. The framework's existing quota auto-resume (`claude_with_quota_retry`) handles API limits transparently — when the quota resets, the iteration resumes from where it paused.
+You can leave it running unattended. Automatic quota waiting is owned by the layers below the engine: `claude_with_quota_retry` pauses on an ordinary quota window and resumes the same agent when the quota resets, within its configured retry policy. If a full executor still exits quota-exhausted after that handling has ended (retries spent, a monthly/org limit, auto-wait off), the engine does not wait again — the session stops resumably before evaluation (`ABORTED`, halt `QUOTA_EXHAUSTED`, exit 75) with its checkpoints kept, and you `--resume` the same session once quota is available.
 
 **Run it interactively instead?** From a `claude` session, `/goal my-app` drives this same engine as interactive subagents — billed to your interactive plan allowance rather than the Agent SDK credit — with `/goal-status`, `/goal-resume`, `/goal-pause`, and `/goal-step` alongside. The pump stays quiet (watch `runs/goal-session-<sid>/engine.log`); Ctrl+C then `/goal-pause` pauses cleanly. Trade-offs (keep the session open; quota becomes a pause) and setup are in [`goal-mode-interactive.md`](goal-mode-interactive.md).
 
@@ -153,7 +153,7 @@ carry the isolation note, so an agent asked to run the app by hand would not be 
 
 ### Resume after laptop suspend or quota pause
 
-The framework already handles both transparently — quota exhaustion sleeps until reset, system suspends use wall-clock-aware sleeps. If you want to manually pause: Ctrl-C; the trap writes an `ABORTED` summary. Then:
+An ordinary quota window is handled below the engine (it sleeps until reset and retries the same agent), and system suspends use wall-clock-aware sleeps. When that handling ends and a full executor still exits quota-exhausted, the session stops resumably as `ABORTED`. Manual pause works the same way: Ctrl-C; the trap writes an `ABORTED` summary. Either way, resume the same session (it re-runs the interrupted iteration from its checkpoint):
 
 ```bash
 ./scripts/automation/run-goal.sh --resume --session-id my-app
