@@ -210,6 +210,27 @@ _FRONTEND_PORT="${CHAIN_FRONTEND_PORT:-3000}"
 BACKEND_HEALTH_URL="${CHAIN_BACKEND_HEALTH_URL:-http://localhost:${_BACKEND_PORT}/health}"
 FRONTEND_URL="${CHAIN_FRONTEND_URL:-http://localhost:${_FRONTEND_PORT}}"
 
+# HARD-5: demo-phase.sh was the one self-booting step script with NO teardown at
+# all — on the standalone path it started backend+frontend and left them running,
+# which is precisely the leak the old blind port sweeps existed to mop up later.
+# Give it the same pid-scoped trap qa-phase.sh and browser-qa-phase.sh use, so
+# the services it starts are cleaned up by the process that started them.
+# Suppressed under CHAIN_SHARED_SERVICES (the caller owns lifecycle for the
+# fanout) and under CHAIN_DEMO_KEEP_SERVICES=1 (an operator watching a live
+# walkthrough wants the app to stay up afterwards).
+QA_STARTED_PIDS=()
+_demo_cleanup_services() {
+  if [[ ${#QA_STARTED_PIDS[@]} -eq 0 ]]; then return; fi
+  echo "[demo] Stopping services started by the demo..."
+  local pid
+  for pid in "${QA_STARTED_PIDS[@]}"; do
+    _kill_pid_tree "$pid"
+  done
+}
+if [[ "${CHAIN_SHARED_SERVICES:-false}" != "true" && "${CHAIN_DEMO_KEEP_SERVICES:-0}" != "1" ]]; then
+  trap _demo_cleanup_services EXIT
+fi
+
 if [[ "${CHAIN_SHARED_SERVICES:-false}" != "true" ]]; then
   QA_BACKEND_LOG=$(_qa_log_path "demo-backend")
   QA_FRONTEND_LOG=$(_qa_log_path "demo-frontend")

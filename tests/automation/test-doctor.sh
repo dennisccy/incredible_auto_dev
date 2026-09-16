@@ -186,12 +186,16 @@ echo ""
 
 rc=0; out=$(run_doctor -- --list 2>&1) || rc=$?
 n=$(echo "$out" | grep -c '^[a-z0-9-]*$' || true)
-{ [[ $rc -eq 0 && $n -eq 20 ]]; } \
-  && assert "--list prints the 20 check keys" "pass" \
-  || assert "--list prints the 20 check keys (rc=$rc n=$n)" "fail"
+{ [[ $rc -eq 0 && $n -eq 21 ]]; } \
+  && assert "--list prints the 21 check keys" "pass" \
+  || assert "--list prints the 21 check keys (rc=$rc n=$n)" "fail"
 echo "$out" | grep -qx "tmp-health" && echo "$out" | grep -qx "chrome-exclusive" \
   && assert "--list includes the evidence-born checks" "pass" \
   || assert "--list includes the evidence-born checks" "fail"
+# HARD-5: the service-ownership row must be in the table, not just defined.
+echo "$out" | grep -qx "service-owners" \
+  && assert "--list includes the service-owners check (HARD-5)" "pass" \
+  || assert "--list includes the service-owners check (HARD-5)" "fail"
 
 rc=0; out=$(run_doctor -- --only jq 2>&1) || rc=$?
 rows=$(echo "$out" | grep -Ec '^  (PASS|WARN|FAIL|SKIP) ' || true)

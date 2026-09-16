@@ -69,8 +69,9 @@ if [[ "${EUID:-$(id -u)}" -eq 0 && -z "${CHAIN_DOCTOR_ALLOW_ROOT:-}" ]]; then
 fi
 
 CHECKS=(python3 node playwright chrome-mcp gh-auth git-remote disk timeout jq
-        pump-heartbeat engine-lock tmp-health chrome-exclusive mcp-affinity
-        host-guard cpu-boost reset-reason ras-logging ambient-env output-styles)
+        pump-heartbeat engine-lock service-owners tmp-health chrome-exclusive
+        mcp-affinity host-guard cpu-boost reset-reason ras-logging ambient-env
+        output-styles)
 
 # Run a command under GNU/uutils timeout when available (network probes must
 # degrade, never hang). $1 = seconds, rest = command.
@@ -306,6 +307,13 @@ check_pump_heartbeat() {
 # FAIL: a session crashed hard (SIGKILL skips the release trap); the next
 # engine start replaces it automatically — docs/TROUBLESHOOTING.md
 # ("Engine refuses to start — lock held") covers manual removal.
+# HARD-5 service ownership. The registry is NOT the kill authority (that is the
+# per-process environ stamp), so an unhealthy registry cannot cause an unsafe
+# kill — but it does mean records are unreliable, which the operator should see.
+check_service_owners() {
+  service_owner_doctor
+}
+
 check_engine_lock() {
   local locks=() l verdict state pid host age fresh="" stale=""
   for l in "$ROOT"/runs/goal-session-*/.engine.lock "$ROOT"/runs/.phase.lock; do

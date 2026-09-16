@@ -231,6 +231,50 @@ agents never close tabs themselves.
 | `clean_exit` | boolean | headless only — Chrome exited on its own after the close (no reap needed) |
 | `reaped` | number | headless only — browsers terminated by the lane-scoped reap (0 on a clean exit) |
 
+### Service ownership events (HARD-5)
+
+Written by `lib/service-owner.sh`. The framework terminates an app service only when
+`/proc/<pid>/environ` proves this lifecycle started it; these rows record every decision that
+was not a plain success.
+
+| Event | When | Key fields |
+|---|---|---|
+| `services_terminated` | a port's owned listeners were reaped | `port`, `caller`, `pids` |
+| `services_kill_refused` | a teardown declined — the listener is not provably ours | `port` or `pid`, `caller`, `verdict` (`FOREIGN`/`UNOWNED`/`UNREADABLE`), `record` |
+| `services_port_blocked` | a service could not start because an unowned process holds its port | `port`, `role`, `context` |
+| `services_terminate_incomplete` | something still listened after its owned processes were killed | `port`, `caller` |
+| `services_preserved` | a healthy, current application service was left running by a cleanup path | `port`, `caller` |
+| `services_released_for_restart` | a persistent service was released because a restart is verified required (unhealthy, or stale revision) | `port`, `caller` |
+| `services_record_unbound` | a record described a service that is no longer the listener; it was dropped and the occupant treated as ephemeral | `port`, `caller` |
+| `services_registry_error` | the ownership registry could not be created/written | `op` (`dir`/`write`), `port` |
+| `services_identity_unavailable` | no procfs identity could be minted, so this process refuses ALL terminations | `reason` |
+
+**Tripwire.** In a single-engine session on a checkout with no externally-started app services,
+`services_kill_refused` should be **0**. A non-zero count means either a concurrent owner on the
+same checkout's ports, or a pre-existing service the framework correctly declined to kill — check
+`verdict` to tell them apart. `services_port_blocked` is always operator-actionable: the run
+needed a port it may not reclaim, and the log names the holding pid and the remedies.
+
+`services_kill_refused` is the direct regression signal for the 2026-09-15 incident class: before
+HARD-5 these terminations happened silently and unconditionally, and nothing was recorded at all.
+
+`services_preserved` is the signal for the *second* class the review surfaced: ownership grants
+authority, not obligation. Seeing it on `kill_phase_servers` and `showcase-join` is the healthy
+steady state — the application stayed up across a phase boundary instead of being torn down and
+rebooted. `services_released_for_restart` rows are also normal while the developer agent changes
+code: each one means the running service was serving an older revision than the working tree and
+was replaced so the next step tested the fix, not the tree before it.
+`services_port_blocked` with a `reuse verification` context means an external service answered but
+could not be confirmed as the expected role — configure `CHAIN_SERVICE_VERIFY_<ROLE>` in
+`.claude/service-contracts.sh` or free the port.
+
+`services_record_unbound` means a registry record outlived the process it described and something
+else took the port. Expect it occasionally after a crash; a run producing it repeatedly on the
+same port is a service that keeps dying and being replaced — look at that service's log rather
+than at the ownership layer. A `services_kill_refused` carrying `"verdict":"REPLACED"` is the
+ownership-to-signal guard firing: the process verified a moment earlier was no longer the process
+at that pid when the signal was about to be sent, so nothing was signalled.
+
 ### Wall-time report and tripwire
 
 Where do the ~2 hours of an iteration go? Per-iteration wall breakdown (per-agent

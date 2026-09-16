@@ -5512,7 +5512,7 @@ Four root causes: governors read proxies instead of facts (HARD-1..3); ownership
   sign-off; an E13 re-plan that flips `none`→`allowed` without E16 blocking is a framework bug.
 
 ### HARD-4A · Engine identity token + lock-before-mutation ordering + owner-guarded `engine.pid`
-- **Priority:** P1 · **Effort:** M · **Risk:** MED · **Status:** TODO.
+- **Priority:** P1 · **Effort:** M · **Risk:** MED · **Status:** PARTIAL — sub-commit **A0 landed with HARD-5** (`lib/engine-identity.sh`: `engine_token_mint`/`engine_token_alive`/`engine_token_self`/`engine_proc_env`). **A1 remains TODO** (prologue reorder, lock-before-mutation ordering, owner-guarded `engine.pid`, signal-time takeover revalidation, `.engine.lock/token`).
 - **Problem:** a second engine start mutates live state (`--reset`, dispatch wipe, port reclaim)
   BEFORE the lock can refuse it; a refused start deletes the live engine's `engine.pid`; no
   child carries an engine identity.
@@ -5524,22 +5524,151 @@ Four root causes: governors read proxies instead of facts (HARD-1..3); ownership
   no channel/session/port mutation before the new engine owns the lock, and identity is
   revalidated immediately before EVERY signal (TERM and KILL) — pid, boot id and proc
   starttime must still match, else do not signal. Plan doc: "WP4A / HARD-4A".
+- **Concrete artifact for A1 (located during HARD-5, 2026-09-16, deliberately NOT fixed there):**
+  `run-goal.sh:349-356` is the last unsafe termination signal left in the framework. The resume
+  takeover authorizes `kill -TERM`/`kill -KILL` on the pid in `engine.pid` when it is alive AND
+  `grep -qa "run-goal" /proc/<pid>/cmdline` — a whole-cmdline substring match, i.e.
+  anti-pattern 30, with no starttime or boot-id check, so a recycled pid can be signalled. It
+  cannot reach an app service (the pid must come from `engine.pid`), which is why HARD-5 left it
+  alone rather than half-fixing it: a sound fix needs `.engine.lock/token` plus
+  `_takeover_identity_provable`, both of which are A1. `engine_token_alive` / `engine_proc_env`
+  already exist (A0 landed), so A1 has its primitives.
 - **DoD/Verify:** `tests/automation/test-engine-identity.sh` (A1–A4, A2b, A2c);
   `test-engine-lock.sh` unchanged. **Rollback:** none (a refused start touching nothing is not optional).
 
-### HARD-5 · Service ownership registry + ownership-aware kills + demo trap
-- **Priority:** P1 · **Effort:** M · **Risk:** MED · **Status:** TODO (after HARD-4A).
-- **Problem:** every service teardown is port/pattern-scoped and owner-blind (an orphaned
-  executor's EXIT trap killed the live engine's services, TenSteps 00:08:53).
-- **Change spec:** `lib/service-owner.sh` registry outside the repo; states `NO_RECORD | MINE |
-  DEAD | FOREIGN | GRACE | REGISTRY_ERROR` (NO_RECORD ≠ REGISTRY_ERROR; every registry failure
-  fails safe); gated kill sites; `demo-phase.sh` trap; doctor row. Owner-confirmed rollout:
-  `CHAIN_SERVICE_OWNERSHIP=warn` for one real session, then a separate flip to `enforce`. At
-  that flip, decide explicitly whether `NO_RECORD` becomes fail-safe/refuse unless
-  process-level evidence proves MINE/DEAD (legacy blind-kill semantics must not be carried
-  forever). Plan doc: "WP5 / HARD-5".
-- **DoD/Verify:** `tests/automation/test-service-ownership.sh` (B1–B11 incl. the required
-  orphan regression B2 with HARD-4C/6 disabled). **Rollback:** `CHAIN_SERVICE_OWNERSHIP=off`.
+### HARD-5 · Service ownership (environ stamp) + ownership-aware kills + demo trap
+- **Priority:** P1 · **Effort:** M · **Risk:** MED · **Status:** **DONE 2026-09-16** (rev 2).
+- **Problem:** every service teardown was port- or pattern-scoped and owner-blind, so a
+  pre-existing PRODUCT service on the checkout's deterministic offset ports was killed as if it
+  were a stray agent server. Proven twice: an orphaned executor's EXIT trap killed the live
+  engine's services (TenSteps 00:08:53), and a trading_workstation goal session repeatedly killed
+  the product's backend and frontend on :8319/:3319 (2026-09-15).
+- **CORRECTION to the approved plan (binding).** Rev 1's `NO_RECORD ⇒ allow (legacy)` migration
+  rule was **unsafe and is not implemented**. An externally-started service never acquires a
+  framework record, so `NO_RECORD` is its permanent steady state, not a migration state that ages
+  out — `NO_RECORD ⇒ allow` is therefore a standing licence to kill the operator's own stack. The
+  owner review question deferred to the warn→enforce flip is resolved **in the negative**:
+  `NO_RECORD ⇒ REFUSE`. The `warn`/`off` modes are also **not** implemented — a switch that
+  silently restores blind termination restores the incident. Rollback is `git revert`.
+- **Change spec (as built):** authority is a per-process procfs read, not a registry lookup.
+  `lib/engine-identity.sh` (HARD-4A **A0 only** — the genuine prerequisite, a pure addition) plus
+  `lib/service-owner.sh`. Two inherited stamps: `CHAIN_SERVICE_OWNER_SCOPE=<repo12>.<owner_token>`
+  ("spawned inside our lifecycle" — this is what makes an abandoned agent-started verification
+  server reapable without a blind sweep) and `CHAIN_SERVICE_INSTANCE` ("is the managed service we
+  launched"). `service_pid_ownership` → `MINE|DEAD|FOREIGN|UNOWNED|UNREADABLE`; only MINE/DEAD
+  authorize. `service_owner_terminate` is the ONLY sanctioned port teardown: every listener on the
+  port must be provably ours or the whole port is refused, and the kill is by pid tree, never by
+  port. `_find_free_port` removed — canonical ports are pinned, so a run can never silently test a
+  different service or break frontend↔backend pairing. Healthy unowned occupant ⇒ reused without
+  acquiring authority; unhealthy unowned occupant ⇒ concrete operational blocker, never a kill.
+  `demo-phase.sh` gains the pid-scoped EXIT trap it never had. The developer/qa agent contracts no
+  longer tell agents to `pkill -f`. Plan doc: "WP5 / HARD-5" (rev 2).
+- **Rev 3 (2026-09-16, after independent review of `e92827b`) — three further gaps closed:**
+  (1) *Ownership is not cleanup permission.* Records gained `lifecycle=persistent|ephemeral`,
+  `health_url` and the working-tree `revision`; `service_release` PRESERVES a healthy, current
+  application service across phase boundaries, iteration boundaries and Goal Mode completion, and
+  reaps only explicitly ephemeral services or ones whose restart is verified required (unhealthy,
+  or serving an older revision than the working tree — which is how the fresh-serving-tree
+  guarantee survives without a blind sweep). (2) *Check-to-signal PID reuse.* `TERM → sleep →
+  `kill -0` → KILL` escalated on existence, not identity; new `lib/proc_signal.py` pins every
+  process by **pidfd** before the first signal (reuse structurally impossible), falling back to
+  start-time revalidation before each signal. `_kill_pid_tree`, `_svc_kill_tree` and both
+  `kill_stale_*` helpers route through it. See anti-pattern 35. (3) *A healthy endpoint is not an
+  identity.* The backend's `ready_re` accepted ANY HTTP status; reuse now requires ownership plus
+  a matching revision, or the project's `CHAIN_SERVICE_VERIFY_<ROLE>` contract (body on stdin,
+  `<url> <port>` args, exit 0 = expected). Unverifiable ⇒ fail closed: dependency not claimed,
+  listener not killed, port not switched. Also `scripts/dev.sh` `DEV_FORCE=1` now targets
+  LISTENERS only — `lsof -ti :PORT` also matched established **client** sockets (verified), so the
+  override could `kill -9` a connected browser.
+- **Rev 4 (2026-09-16, after independent review of `c11082d`) — four seams where a check was not
+  carried through to the act:** (1) *Ownership-to-signal race.* `service_owner_terminate` dropped
+  the verified identity and `proc_signal.py` read process facts BEFORE opening the pidfd, so the
+  fd could pin a replacement the earlier read had vouched for. Now **pin first, then verify the
+  pinned process**, with the shell's verified identity and ownership stamp carried in
+  (`--identity`, `--require-env`); descendants must carry the same stamp or are skipped.
+  (2) *Persistent records unbound from the listener.* A registered backend could exit and an
+  agent's verification server take the port, inheriting `persistent` + the recorded revision and
+  being preserved as the application. `service_record_listener_bound` gates all persistent
+  metadata on the live listener carrying the record's `CHAIN_SERVICE_INSTANCE`; an unbound record
+  is dropped. (3) *HTTP 500 counted as healthy* — `^[1-5][0-9][0-9]$` is the boot gate's
+  *reachability* regex. Health is now its own contract: `CHAIN_SERVICE_HEALTHY_<ROLE>`, else the
+  recorded `health_re`, else `^[23]`. (4) *The contract was documented but not wired* —
+  `project-template.md` is sliced into agent prompts, never sourced. Added `service_contracts_load`
+  (called from `ensure_phase_ports`) reading `<project>/.claude/service-contracts.sh`, template at
+  `templates/service-contracts.sh`, `CHAIN_SERVICE_CONTRACTS_FILE` to relocate, environment wins.
+- **Rev 5 (2026-09-16, after independent review of `b38fe4a`) — three gaps:** (1) *Startup
+  reclamation bypassed the lifecycle policy.* `reclaim_canonical_phase_ports` still called
+  `service_owner_terminate`, and it runs BEFORE `ensure_phase_ports` — so after a completed
+  session the previous engine is dead, its services classify `DEAD` (= authority), and the next
+  session's first act killed the healthy app rev 3 had preserved. Now uses `service_release`, and
+  `service_contracts_load` moved into reclaim so contracts are in force before the session's first
+  lifecycle decision. (2) *Termination still not bound to the original decision.* The verdict was
+  followed by two further `/proc` reads, which a replacement satisfies self-consistently; empty
+  values disabled verification instead of refusing; and the no-Python fallback checked only start
+  times for descendants. Now `service_signal_tree` (spawned mode) REQUIRES identity+scope and
+  refuses without them, `service_terminate_listener` (discovery mode) delegates the whole decision
+  to `proc_signal.py` against the pinned process, `_start_service_with_retries` retains the
+  spawn-time identity, and the fallback holds descendants to the root's stamp. (3) *Health not
+  enforced everywhere.* External reuse checked identity only — a 500 carrying a valid marker was
+  accepted — and managed startup still used the permissive reachability regex as readiness. The
+  health contract now gates owned services, external services and fresh startups alike.
+- **Rev 6 (2026-09-16, after independent review of `fb0fcf1`) — one fail-closed gap:**
+  `service_contracts_load` set `_SERVICE_CONTRACTS_LOADED=1` BEFORE sourcing and both callers
+  swallowed its result, so a project with a legitimately non-2xx health contract could have a
+  healthy service terminated the moment that file failed to load — a configuration read failure
+  became a silent policy change. Now: the flag is set only on success; an existing-but-unreadable
+  file is an ERROR, not "no contracts"; the file is evaluated in a subshell and applied only if it
+  completes (no partial application; environment overrides still win); failure sets
+  `CHAIN_SERVICE_CONTRACTS_FAILED`, `reclaim_canonical_phase_ports` skips reclamation entirely,
+  and `service_restart_required` returns "not required" — an unknown health never authorizes
+  termination. Also fixed the `proc_signal.py` self-test assertion `_HAVE_PIDFD or True`, which
+  passed on every host; it now asserts a real pidfd is held where available and exercises the
+  fallback distinctly.
+- **Integration validation:** `tests/integration/service-lifecycle-integration.sh` (new,
+  operator-run, NOT in the offline suite — it binds real canonical ports). An isolated scratch
+  project with a real HTTP service across five sessions: **23/23** — survives both sweeps; a
+  different owner process reuses the SAME pid with no drift; a revision change forces a controlled
+  restart; an unowned incompatible listener survives and blocks; an abandoned agent server is
+  reaped; lifecycle telemetry records all of it. Re-run this after any vendored sync.
+- **DoD/Verify:** `tests/automation/test-service-ownership.sh` — 100 assertions over real
+  subprocesses on dynamic ports: B2 (an unowned listener survives every teardown path), B12
+  (static sweep: no `fuser -k`/`pkill`/`killall` under `scripts/automation/`), B13/B14, and the
+  rev-3 C-series C1–C9 (preserve healthy app services, reap ephemeral leaks, detect stale
+  revisions, signal-time identity, fail-closed reuse, DEV_FORCE scope) and the rev-4 D-series
+  D1–D4 (ownership carried into the signal incl. replacement-between-check-and-signal; stale
+  record cannot adopt a replacement listener; 500 is not healthy; external service reusable via
+  the contract file with no manual intervention) and the rev-5 E-series E1-E3 (two consecutive
+  lifecycles preserve the app across a session boundary; verification cannot be disabled by empty
+  values nor satisfied by a replacement; health gates every reuse and startup path; a forked subshell —
+  which cannot carry an environ stamp, since environ is frozen at the last exec — is reaped via a
+  verified kernel parent link while a non-child is refused). Plus
+  `lib/proc_signal.py --self-test` (16 checks). Both wired into `run-evals.sh`.
+  **Rollback:** `git revert` (no weakening knob).
+- **Vendored sync (owed; per `.claude/maintenance-protocol.md` §3.4 — per-file over the changed-file
+  list, never a whole-tree copy).** Copy into each product's `incredible_auto_dev/`:
+  `scripts/automation/lib/{engine-identity.sh,service-owner.sh,proc_signal.py}` (new),
+  `templates/service-contracts.sh` (new), `tests/integration/service-lifecycle-integration.sh` (new),
+  `scripts/automation/lib/common.sh`, `scripts/automation/{run-goal,run-phase,goal-iter-lean,dev-phase,browser-qa-phase,demo-phase,doctor,run-evals}.sh`,
+  `tests/automation/{test-service-ownership.sh (new),test-doctor.sh}`,
+  `agents/{developer,qa}/{body.md,agent.yaml}` + `.claude/agents/{developer,qa}.md`,
+  `.claude/anti-patterns/{34-*,35-*}.md` + its README, and the docs files.
+  **Each product must also create its own `.claude/service-contracts.sh`** from
+  `templates/service-contracts.sh` and fill in `CHAIN_SERVICE_VERIFY_{BACKEND,FRONTEND}` (and
+  `CHAIN_SERVICE_HEALTHY_<ROLE>` if its readiness response is not 2xx/3xx). That file is the
+  runtime mechanism — `.claude/project-template.md` documents the contract for agents but is
+  never sourced, so declaring it only there has no effect.
+  Without it, a run that meets an externally-started service on the project's ports stops with a
+  named blocker instead of testing an unverified service — which is the intended fail-closed
+  behaviour, but the operator should choose it knowingly.
+  **Do NOT copy `scripts/dev.sh`** — it is one of the three per-project templates a deployment
+  localizes (§3.4), so each product must apply the ownership-aware port block to its own copy by
+  hand. Until it does, that product's `dev.sh` can still blind-kill a running Goal Mode session's
+  services; the pipeline is safe either way, since the pipeline never blind-kills anything.
+  **Verify in each product after syncing:** `bash tests/automation/test-service-ownership.sh`
+  (expect 30/30) and `bash scripts/automation/doctor.sh --only service-owners`.
+- **Follow-up owed:** one real single-engine session with `services_kill_refused` = 0 as the field
+  tripwire; the vendored sync above.
+
 
 ### HARD-6 · Dispatch channel identity + pump claim guard + waiter self-check
 - **Priority:** P1 · **Effort:** M · **Risk:** MED · **Status:** TODO (after HARD-4A).

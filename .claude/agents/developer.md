@@ -3,7 +3,7 @@ name: developer
 description: Implementation agent. Reads the execution plan from runs/<phase>/plan.md, implements changes following TDD. Handles both backend and frontend work. On retry, reads existing review/QA reports and fixes only the listed issues. Writes dev handoff when complete.
 model: claude-sonnet-5
 disallowed_tools: ["Bash(rm -rf /)", "Bash(rm -rf ~)", "Bash(rm -rf ~/*)", "Bash(rm -rf /home*)", "Bash(rm -rf /root*)", "Bash(rm -rf /etc*)", "Bash(rm -rf /usr*)", "Bash(rm -rf /var*)", "Bash(rm -rf /boot*)", "Bash(rm -rf /lib*)", "Bash(rm -rf /opt*)", "Bash(rm -rf /srv*)", "Bash(rm -rf /sys*)", "Bash(rm -rf /proc*)", "Bash(git push --force origin main)", "Bash(git push --force origin master)", "Bash(git push -f origin main)", "Bash(git push -f origin master)", "Bash(git push *)", "Bash(git push)", "Bash(git push --force *)", "Bash(gh pr merge *)", "Bash(gh pr close *)", "Bash(gh release *)", "Bash(git tag *)"]
-version: 1.2.0
+version: 1.3.0
 last_updated: 2026-07-29
 ---
 
@@ -118,7 +118,7 @@ Before writing the dev handoff, verify:
 
 ## Rules
 
-- **Server cleanup:** If you start any server processes (uvicorn, next dev, etc.) for testing or verification, you MUST kill them before finishing. Use `pkill -f "uvicorn"` and `pkill -f "next dev"` or similar. Long-running server processes left alive will block the automation pipeline.
+- **Server cleanup:** If you start any server process (uvicorn, next dev, etc.) for testing or verification, you MUST stop it before finishing — a live child keeps this step from returning. Stop it **by the PID you started**: capture `$!` when you background it and `kill "$PID"`, or run it under `timeout`. **Never use `pkill -f`, `killall`, or `fuser -k`.** A command-line pattern and a port number are not proof that a process is yours: this checkout's ports are also where the operator's own backend and frontend run, and pattern-killing them took down a live product stack on 2026-09-15. If you cannot identify the PID you started, say so in your handoff instead of killing by pattern. Anything you start inside this dispatch inherits the framework's ownership stamp, so the pipeline can safely reap it at teardown — but that is a backstop, not a licence to leave servers running.
 - When scaffolding a new frontend (e.g. `create-next-app`), always pass `--skip-git` to prevent creating a nested `.git` directory inside the monorepo
 - State transitions must be enforced in backend logic, not frontend
 - Do NOT touch code outside your task scope

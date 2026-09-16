@@ -244,7 +244,7 @@ Include:
 
 **Step 5b: Kill any servers you started**
 
-If you started backend or frontend servers during testing (uvicorn, next dev, etc.), you MUST kill them before finishing. Use `pkill -f "uvicorn.*--port"` and `pkill -f "next dev"` or similar. Long-running server processes left alive will block the automation pipeline — the parent script cannot proceed to the next step while child processes are still running.
+If you started backend or frontend servers during testing (uvicorn, next dev, etc.), you MUST stop them before finishing — the parent script cannot proceed while child processes are still running. Stop each one **by the PID you started** (capture `$!` when backgrounding, then `kill "$PID"`), or run it under `timeout`. **Never use `pkill -f`, `killall`, or `fuser -k`.** A matching command line or port is not proof of ownership — this project's ports are also where the operator's own stack runs, and pattern-killing them took down a live product backend and frontend on 2026-09-15. If you cannot identify the PID you started, record that in the QA report rather than killing by pattern. Servers you start inside this dispatch inherit the framework's ownership stamp, so teardown can safely reap them as a backstop.
 
 **Step 6: Update status.json**
 

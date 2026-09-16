@@ -314,6 +314,12 @@ source "$(dirname "${BASH_SOURCE[0]}")/checkpoint.sh"
 # chain_tmp_cleanup, chain_tmp_rotate, chain_tmp_janitor)
 # shellcheck source=chain-tmp.sh
 source "$(dirname "${BASH_SOURCE[0]}")/chain-tmp.sh"
+# Service ownership + lifecycle authority (HARD-5). Defines the ONLY sanctioned
+# port-scoped teardown (service_owner_terminate) and the per-process ownership
+# verdict it is built on. Everything in this file that used to kill by port or
+# by command-line pattern now goes through it.
+# shellcheck source=service-owner.sh
+source "$(dirname "${BASH_SOURCE[0]}")/service-owner.sh"
 
 # Deterministic port offset (0..999) derived from the project directory so that
 # multiple projects sharing this subtree each land in their own port range.
@@ -327,36 +333,48 @@ _project_port_offset() {
   echo $((16#$hex % 1000))
 }
 
-# Scan upward from $1 to find the first port not currently LISTENing.
-# Handles the case where the hashed preferred port is already in use (e.g. a
-# previous run of the same project left a server behind).
-_find_free_port() {
-  local port="$1"
-  local attempts=0
-  while [[ $attempts -lt 100 ]]; do
-    if ! ss -tln 2>/dev/null | grep -q ":${port} "; then
-      echo "$port"
-      return 0
-    fi
-    port=$((port + 1))
-    attempts=$((attempts + 1))
-  done
-  echo "$1"
-}
-
 # Assign CHAIN_BACKEND_PORT and CHAIN_FRONTEND_PORT deterministically per-project.
-# Respects any caller-provided values; otherwise picks free ports based on
-# 8000 + hash($REPO_ROOT) for backend and 3000 + same-hash for frontend.
+# Respects any caller-provided values; otherwise PINS the canonical offset pair
+# (8000 + hash($REPO_ROOT) / 3000 + same hash).
 # Idempotent — safe to call from both run-phase.sh and dev.sh.
+#
+# HARD-5: the previous implementation scanned UPWARD from the canonical port
+# past anything already LISTENing (`_find_free_port`, removed). That drift is
+# now forbidden, for two independent reasons:
+#
+#   1. It silently tested a DIFFERENT service. A drifted backend on 8320 while
+#      the real app answers on 8319 means the whole run exercised a port nobody
+#      uses — and a still-responding frontend keeps the OLD backend port baked
+#      into its dev proxy, which is the empty-UI bug commit 299f203 chased.
+#      Frontend and backend drift independently, so the pairing breaks too.
+#   2. It made the old blind port sweep look necessary: reclaiming the canonical
+#      port by force was the only way to stop the drift. With ownership-aware
+#      teardown the honest options are better — reuse a healthy occupant, or
+#      report a blocker.
+#
+# Occupancy is therefore NOT resolved by moving. `ensure_services_running`
+# decides per port: healthy occupant => reuse it; our own orphan => reclaim it;
+# unowned and unhealthy => a concrete operational blocker.
 ensure_phase_ports() {
   local offset
   offset=$(_project_port_offset)
-  if [[ -z "${CHAIN_BACKEND_PORT:-}" ]]; then
-    export CHAIN_BACKEND_PORT=$(_find_free_port $((8000 + offset)))
+  # Establish this process tree as a lifecycle owner before any service can be
+  # started or torn down. Idempotent and inheritance-preserving, so a child
+  # script never fragments ownership of services its parent booted.
+  service_owner_scope_init "$REPO_ROOT" "${CHAIN_SERVICE_OWNER_KIND:-pipeline}" || true
+  # Load the project's service contracts (reuse verification + health regexes)
+  # before anything can probe, reuse or tear down a service. Documentation in
+  # project-template.md is for agents; THIS is what reaches the shell.
+  # Loud, but not fatal here: ensure_phase_ports only ASSIGNS ports. The
+  # termination-capable paths (reclaim, service_release, restart_required) each
+  # fail closed on CHAIN_SERVICE_CONTRACTS_FAILED, so a broken contract degrades
+  # to "preserve and report", never to "terminate on default rules".
+  if ! service_contracts_load; then
+    log "  WARNING: the project's service contracts could not be loaded — service health cannot be evaluated, so running services will be preserved rather than judged. See the [services] ERROR above."
   fi
-  if [[ -z "${CHAIN_FRONTEND_PORT:-}" ]]; then
-    export CHAIN_FRONTEND_PORT=$(_find_free_port $((3000 + offset)))
-  fi
+  [[ -z "${CHAIN_BACKEND_PORT:-}" ]]  && export CHAIN_BACKEND_PORT=$((8000 + offset))
+  [[ -z "${CHAIN_FRONTEND_PORT:-}" ]] && export CHAIN_FRONTEND_PORT=$((3000 + offset))
+  return 0
 }
 
 # Pin the QA browser's identity for this project (and lane). The Chrome MCP
@@ -788,14 +806,28 @@ The verdict line MUST appear first and start exactly with:
   return $_rc
 }
 
-# Kill any servers started by agents on the assigned phase ports.
-# Call between pipeline steps to prevent zombie servers from blocking the next step.
+# Release the app services this session owns on the assigned phase ports.
+# Call between pipeline steps so a server this session started cannot block the
+# next step (the original reason this helper exists — an agent's abandoned
+# `uvicorn`/`next dev` kept a step from returning).
+#
+# HARD-5: this used to be `fuser -k -9 <port>/tcp`, which killed whatever held
+# the port. On a checkout whose product stack binds the same deterministic
+# offset ports, "whatever held the port" was the product's live backend and
+# frontend — the 2026-09-15 trading_workstation incident (:8319/:3319).
+#
+# It now delegates to service_owner_terminate, which kills only processes whose
+# /proc/<pid>/environ proves this session started them (directly, or via an
+# agent running inside our dispatch) — and refuses the port entirely otherwise.
+# Always returns 0: a refusal is a logged fact for the caller's step, never a
+# pipeline failure, and every call site historically ignored the return value.
 kill_phase_servers() {
-  local backend_port="${CHAIN_BACKEND_PORT:-8000}"
-  local frontend_port="${CHAIN_FRONTEND_PORT:-3000}"
-  for port in $backend_port $frontend_port; do
-    fuser -k -9 "$port/tcp" 2>/dev/null || true
+  local port
+  for port in "${CHAIN_BACKEND_PORT:-}" "${CHAIN_FRONTEND_PORT:-}"; do
+    [[ -n "$port" ]] || continue
+    service_release "$port" "kill_phase_servers" || true
   done
+  return 0
 }
 
 # Reclaim this project's *canonical* offset ports before a fresh standalone
@@ -809,14 +841,43 @@ kill_phase_servers() {
 # freshly-started, mutually-aligned frontend+backend pair every run.
 # Only safe for standalone runs that own these ports; the pipeline (run-phase.sh)
 # must NOT call this mid-run. No-op when CHAIN_*_PORT are already pinned by caller.
+#
+# HARD-5: this was the EARLIEST kill in a goal session and the one that made the
+# port collision certain rather than accidental — it freed the canonical pair
+# with `fuser -k -9` at engine start, so the (now removed) free-port scan always
+# landed back on exactly the ports the product uses. It now reclaims only
+# processes this session can prove it owns; an unowned occupant is left running
+# and reported, and `ensure_phase_ports` pins the canonical ports regardless so
+# a healthy occupant is simply reused.
 reclaim_canonical_phase_ports() {
   [[ -n "${CHAIN_BACKEND_PORT:-}" || -n "${CHAIN_FRONTEND_PORT:-}" ]] && return 0
-  local offset
+  local offset port
   offset=$(_project_port_offset)
+  service_owner_scope_init "$REPO_ROOT" "${CHAIN_SERVICE_OWNER_KIND:-pipeline}" || true
+  # Contracts BEFORE the first lifecycle decision. This is the earliest point in
+  # a session where the framework decides whether a running service lives or
+  # dies, and that decision consults the health contract — loading it later (in
+  # ensure_phase_ports) meant the very first decision was made without it.
+  # Fail closed BEFORE the first decision that could terminate anything. If the
+  # project's contracts cannot be loaded we do not know what it considers
+  # healthy, and reclaiming on default rules can kill a service the project
+  # regards as perfectly fine. Skip reclamation entirely and say so.
+  if ! service_contracts_load; then
+    log "  Canonical-port reclamation SKIPPED: the project's service contracts could not be loaded, so no service can be safely judged. Fix .claude/service-contracts.sh (or remove it to accept the defaults); nothing has been terminated."
+    return 0
+  fi
+  # Policy-aware, exactly like every other sweep. Using service_owner_terminate
+  # here bypassed the lifecycle policy: after a completed session the previous
+  # engine is gone, so its services classify as DEAD — which is termination
+  # AUTHORITY — and the next session's startup killed the healthy application
+  # the previous session had deliberately preserved.
   for port in $((8000 + offset)) $((3000 + offset)); do
-    fuser -k -9 "$port/tcp" 2>/dev/null || true
+    if ! service_release "$port" "reclaim_canonical_phase_ports"; then
+      # Not ours. Say so once, here, so a later "port busy" or a reused
+      # foreign app is explained rather than mysterious.
+      log "  Canonical port $port is held by a process this session does not own — left running; it will be reused if healthy."
+    fi
   done
-  sleep 1
   return 0
 }
 
@@ -859,29 +920,31 @@ _pid_tree() {
 # CHAIN_KILL_GRACE_SECONDS (default 2s). The whole tree is snapshotted BEFORE
 # signalling so reparented grandchildren stay reachable for the KILL sweep.
 # Best-effort and set -e/-u safe; no-op on empty/dead PID. Benefits every caller.
+# HARD-5 follow-up: the TERM -> sleep -> `kill -0` -> KILL sequence that used to
+# live here checked EXISTENCE before escalating, not IDENTITY. A pid that exits
+# during the grace window and is recycled received the KILL. Every caller now
+# gets identity-bound signalling (pidfd where available, start-time revalidation
+# otherwise) from service_signal_tree. Behaviour is otherwise unchanged: whole
+# tree snapshotted before the first signal, TERM, grace, KILL for survivors.
+# _kill_pid_tree <pid> [spawn_identity] [expected_scope]
+# When the caller remembers what it spawned, it passes those values and they are
+# enforced against the pinned process. Otherwise they are read here — safe only
+# because every such caller passes a DIRECT, un-`wait`ed child, whose pid the
+# kernel cannot recycle while the parent still holds it.
 _kill_pid_tree() {
-  local pid="${1:-}"
+  local pid="${1:-}" ident="${2:-}" scope="${3:-}"
   [[ -z "$pid" ]] && return 0
-
-  local -a tree=()
-  local p
-  while IFS= read -r p; do [[ -n "$p" ]] && tree+=("$p"); done < <(_pid_tree "$pid")
-
-  # Phase 1: TERM everything (children first, then the root).
-  for p in ${tree[@]+"${tree[@]}"}; do
-    kill -TERM "$p" 2>/dev/null || true
-  done
-
-  # Phase 2: brief grace so well-behaved processes exit on their own.
-  local grace="${CHAIN_KILL_GRACE_SECONDS:-2}"
-  [[ "$grace" =~ ^[0-9]+$ ]] || grace=2
-  [[ "$grace" -gt 0 ]] && sleep "$grace"
-
-  # Phase 3: KILL any survivor in the original tree (best-effort). Use `if` so a
-  # dead-pid `kill -0` (non-zero) never trips the caller's `set -e` mid-loop.
-  for p in ${tree[@]+"${tree[@]}"}; do
-    if kill -0 "$p" 2>/dev/null; then kill -KILL "$p" 2>/dev/null || true; fi
-  done
+  [[ -n "$ident" ]] || ident="$(service_pid_starttime "$pid")"
+  [[ -n "$scope" ]] || scope="$(engine_proc_env "$pid" CHAIN_SERVICE_OWNER_SCOPE 2>/dev/null || true)"
+  if [[ -n "$scope" ]]; then
+    # A service we exec'd: its environ carries our ownership stamp.
+    service_signal_tree "$pid" "${CHAIN_KILL_GRACE_SECONDS:-2}" "$ident" "$scope"
+  else
+    # A subshell we FORKED (`( … ) &`): environ is frozen at the parent's exec,
+    # so there is no stamp to find. The parent link is the proof instead, and it
+    # is checked against the pinned process — not skipped.
+    service_signal_child "$pid" "${CHAIN_KILL_GRACE_SECONDS:-2}" "$ident"
+  fi
   return 0
 }
 
@@ -954,14 +1017,60 @@ _start_service_with_retries() {
   # Nothing to start with — leave it to upstream handling (callers tolerate this).
   [[ -z "$start_cmd" || -z "$health_url" ]] && return 0
 
-  local code
-  code=$(curl -s -o /dev/null -w "%{http_code}" "$health_url" 2>/dev/null || true)
-  if [[ "$code" =~ $ready_re ]]; then
-    return 0   # already healthy — idempotent fast path, no spawn
-  fi
+  # Bounded probe. A listener that accepts but never replies (a wedged service,
+  # or an unrelated process holding the port) would otherwise block this curl —
+  # and therefore the whole pipeline — indefinitely.
+  local _probe_max="${CHAIN_HEALTH_PROBE_TIMEOUT:-10}"
 
   local target_port
   target_port=$(_url_port "$health_url")
+
+  # The health contract, resolved once for this role: CHAIN_SERVICE_HEALTHY_<ROLE>
+  # else ^[23]. `ready_re` stays the REACHABILITY gate (any HTTP status proves the
+  # server is routing, which matters for projects with no /health route); it is
+  # no longer accepted as proof that the application is serving.
+  local _health_re; _health_re="$(service_health_regex "$role")"
+
+  local code
+  code=$(curl -s -o /dev/null --max-time "$_probe_max" -w "%{http_code}" "$health_url" 2>/dev/null || true)
+  if [[ "$code" =~ $ready_re ]]; then
+    # SOMETHING is answering. That is not the same as "the dependency is
+    # satisfied": the backend's ready_re is `^[1-5][0-9][0-9]$`, so literally any
+    # HTTP status counted as ready, and even a 200 proves neither that this is
+    # the service we need nor that it runs the revision under test.
+    case "$(service_reuse_decision "$role" "$health_url" "$target_port" "$code")" in
+      REUSE)
+        # Ours and current, or external and positively verified by the project's
+        # CHAIN_SERVICE_VERIFY_<ROLE> contract. Reusing never acquires
+        # termination authority over a service we did not start.
+        return 0 ;;
+      RESTART)
+        # Ours, but stale (older revision than the working tree) or never
+        # registered as a managed service. Fall through to the spawn loop, whose
+        # pre-spawn reclaim is ownership-checked.
+        echo "[ensure_services_running] $role on port ${target_port:-?} is ours but not current — restarting it so this run tests the working tree." >&2 ;;
+      *)
+        # Not ours and not verifiable. Do NOT claim the dependency is satisfied,
+        # do NOT kill it, and do NOT quietly bind somewhere else.
+        service_port_blocker "$target_port" "$role" "$role reuse verification"
+        local _vv="CHAIN_SERVICE_VERIFY_$(printf '%s' "$role" | tr '[:lower:]-' '[:upper:]_')"
+        if ! [[ "$code" =~ $_health_re ]]; then
+          local _hv2="CHAIN_SERVICE_HEALTHY_$(printf '%s' "$role" | tr '[:lower:]-' '[:upper:]_')"
+          _svc_log "  Port ${target_port} answers with status ${code}, which does not satisfy the health contract ${_health_re} — it is reachable but not serving. This session cannot restart a service it does not own."
+          _svc_log "  If ${code} is a legitimate readiness response here, declare it: ${_hv2}='^(2|3|${code})'."
+          printf -v "$tail_var" '%s' "port ${target_port} answers ${code}, which fails the health contract ${_health_re}; refusing to treat the dependency as satisfied"
+          return 1
+        fi
+        _svc_log "  Port ${target_port} answers (status ${code}) but this session cannot verify it is the expected $role."
+        if [[ -z "${!_vv:-}" ]]; then
+          _svc_log "  No reuse contract is configured. Set ${_vv} (response body on stdin, \"<url> <port>\" as args, exit 0 = expected service) in .claude/project-template.md, or stop the listener and let this run own the $role."
+        else
+          _svc_log "  ${_vv} ran and rejected it."
+        fi
+        printf -v "$tail_var" '%s' "port ${target_port} answers but could not be verified as the expected ${role}; refusing to treat the dependency as satisfied (set ${_vv} or free the port)"
+        return 1 ;;
+    esac
+  fi
 
   # Frontend self-heal bookkeeping. `healed` ensures we clear `.next` AT MOST
   # once and grant exactly ONE guaranteed-cold rebuild attempt — so a heal is
@@ -987,17 +1096,47 @@ _start_service_with_retries() {
     fi
     echo "[ensure_services_running] $role not healthy (status: ${code:-none}) — start attempt ${attempt}/${max_attempts}..." >&2
 
-    # Clear anything squatting this role's port / single-instance lock first.
-    # pre_hook (kill_stale_next_dev_server / kill_stale_backend_server) is
-    # cwd-scoped so it also reclaims a DRIFTED orphan on a neighbour port.
+    # Clear anything this session OWNS on the role's port / single-instance lock
+    # first. pre_hook (kill_stale_next_dev_server / kill_stale_backend_server)
+    # is now ownership-gated internally; the port sweep below is too.
     if [[ -n "$pre_hook" ]]; then eval "$pre_hook" >&2 2>&1 || true; fi
-    [[ -n "$target_port" ]] && { fuser -k -9 "${target_port}/tcp" 2>/dev/null || true; }
+
+    # HARD-5: this was `fuser -k -9 <port>/tcp` — an unconditional pre-spawn
+    # kill of whatever held the port. It is now a gated reclaim, and when the
+    # port is held by something we cannot prove we own we STOP: we neither kill
+    # it nor quietly bind elsewhere. An unhealthy unowned listener is an
+    # operational blocker for a human, not a process to force out of the way.
+    if [[ -n "$target_port" ]]; then
+      if ! service_owner_terminate "$target_port" "start-$role"; then
+        service_port_blocker "$target_port" "$role" "$role startup"
+        printf -v "$tail_var" '%s' "port ${target_port} is held by a process this session does not own; refusing to terminate it (see the [services] BLOCKED lines above)"
+        return 1
+      fi
+    fi
 
     : >"$log_path" 2>/dev/null || true   # fresh log so the failure tail is THIS attempt's
-    $start_cmd >"$log_path" 2>&1 &
+
+    # Ownership acquisition. CHAIN_SERVICE_INSTANCE marks THIS boot; the
+    # inherited CHAIN_SERVICE_OWNER_SCOPE marks our lifecycle. environ is
+    # inherited across fork AND exec, so both stamps are present on the launcher,
+    # on whatever it exec's, and on every child it forks — which is what makes a
+    # later teardown provable without touching the port or the command line.
+    local instance; instance="$(service_instance_mint)"
+    CHAIN_SERVICE_INSTANCE="$instance" $start_cmd >"$log_path" 2>&1 &
     pid=$!
+    # Remember the identity AT SPAWN. Re-reading it at teardown time would ask
+    # "who is at this pid now?", which a replacement answers self-consistently;
+    # the question that matters is "is this still the process I started?".
+    local spawn_ident; spawn_ident="$(service_pid_starttime "$pid")"
+    # Register with the facts a later sweep needs: that this is the APPLICATION
+    # (persistent), where to probe it, and which revision it is serving.
+    [[ -n "$target_port" ]] && service_owner_register "$target_port" "$role" "$pid" \
+      "$instance" "persistent" "$health_url" "$(service_tree_revision)" \
+      "$(service_health_regex "$role")"
     # QA_STARTED_PIDS is declared by qa-phase.sh / browser-qa-phase.sh but NOT by
     # demo-phase.sh — guard so the append is safe whether or not it pre-exists.
+    # These pids are ours by construction (we just spawned them), so the
+    # pid-scoped traps that consume this array need no further proof.
     if declare -p QA_STARTED_PIDS >/dev/null 2>&1; then
       QA_STARTED_PIDS+=("$pid")
     else
@@ -1006,10 +1145,16 @@ _start_service_with_retries() {
 
     waited=0
     while [[ $waited -lt $attempt_timeout ]]; do
-      code=$(curl -s -o /dev/null -w "%{http_code}" "$health_url" 2>/dev/null || true)
+      code=$(curl -s -o /dev/null --max-time "$_probe_max" -w "%{http_code}" "$health_url" 2>/dev/null || true)
       if [[ "$code" =~ $ready_re ]]; then
-        echo "[ensure_services_running] $role is ready (attempt ${attempt}, ${waited}s)." >&2
-        return 0
+        # Reachable. Ready only if it also satisfies the health contract — a
+        # freshly spawned service answering 500 is up, not serving, and calling
+        # it ready hands the next step a broken dependency.
+        if [[ "$code" =~ $_health_re ]]; then
+          echo "[ensure_services_running] $role is ready (attempt ${attempt}, ${waited}s)." >&2
+          return 0
+        fi
+        _svc_vlog "$role reachable on ${target_port:-?} with status ${code}, which does not satisfy the health contract ${_health_re}"
       fi
       # A frontend dev server that is UP but serving 5xx from a corrupt `.next`
       # will never recover on its own — stop waiting out the budget; the retry
@@ -1053,8 +1198,13 @@ _start_service_with_retries() {
 
     # Alive-but-not-serving, dead, or corrupt: tear down before the next attempt
     # so we never leave a half-started/wedged server holding the port.
-    _kill_pid_tree "$pid"
-    [[ -n "$target_port" ]] && { fuser -k -9 "${target_port}/tcp" 2>/dev/null || true; }
+    # `$pid` is ours by construction — we spawned it three lines up — so the
+    # pid-scoped tree kill needs no further proof. The follow-up port sweep does:
+    # it used to be an unconditional `fuser -k -9` that could reach a listener we
+    # never started (e.g. our spawn failed to bind because the product's service
+    # was already there, and we then killed the product's service).
+    _kill_pid_tree "$pid" "$spawn_ident" "${CHAIN_SERVICE_OWNER_SCOPE:-}"
+    [[ -n "$target_port" ]] && { service_owner_terminate "$target_port" "start-$role-retry" || true; }
 
     # Frontend self-heal: a corrupt `.next` (typically a `next build` that
     # clobbered the running `next dev`) never recovers on its own. Clear it so the
@@ -1079,6 +1229,11 @@ _start_service_with_retries() {
   [[ -f "$log_path" ]] && tail_txt="$(tail -n 20 "$log_path" 2>/dev/null || true)"
   printf -v "$tail_var" '%s' "$tail_txt"
   echo "[ensure_services_running] $role failed to become healthy after ${max_attempts} attempt(s) (log: $log_path)." >&2
+  if [[ -n "${code:-}" && "$code" =~ $ready_re ]] && ! [[ "$code" =~ $_health_re ]]; then
+    local _hv="CHAIN_SERVICE_HEALTHY_$(printf '%s' "$role" | tr '[:lower:]-' '[:upper:]_')"
+    echo "[ensure_services_running]   It answered with status ${code}, so it IS reachable — it just does not satisfy the health contract ${_health_re}." >&2
+    echo "[ensure_services_running]   If ${code} is a legitimate readiness response for this project, declare it: ${_hv}='^(2|3|${code})' in .claude/service-contracts.sh." >&2
+  fi
   return 1
 }
 
@@ -1761,23 +1916,37 @@ try:
     print(json.load(open('$lock')).get('pid',''))
 except Exception:
     pass" 2>/dev/null)
+    # HARD-5: a pid recorded in someone else's lock file is not ours to signal.
+    # The lock is a hint about WHICH process to consider, never authority to
+    # kill it — the same checkout is shared by every engine and by the operator.
     if [[ -n "$lock_pid" ]] && kill -0 "$lock_pid" 2>/dev/null; then
-      kill -TERM "$lock_pid" 2>/dev/null || true
-      sleep 1
-      kill -KILL "$lock_pid" 2>/dev/null || true
-      killed_any=1
+      if service_pid_kill_allowed "$lock_pid" "kill_stale_next_dev_server(lock)"; then
+        # Identity captured BEFORE the first signal and revalidated before the
+        # KILL escalation: a bare TERM/sleep/KILL can escalate onto a pid that
+        # exited during the grace window and was recycled.
+        service_signal_tree "$lock_pid" 2 "$(service_pid_starttime "$lock_pid")" \
+          "$(engine_proc_env "$lock_pid" CHAIN_SERVICE_OWNER_SCOPE 2>/dev/null || true)"
+        killed_any=1
+      else
+        # Leave the lock file alone too: removing it would let a second
+        # `next dev` start against a directory whose owner is still live.
+        return 0
+      fi
     fi
     rm -f "$lock" 2>/dev/null || true
   fi
 
-  # 2. Kill any next-server process whose cwd is this frontend dir
+  # 2. Reclaim any next-server process whose cwd is this frontend dir AND which
+  #    this session can prove it started. cwd alone was the old test and it is
+  #    not ownership: every engine and every operator shell on this host has the
+  #    same checkout, so "same cwd" matched the product's own dev server.
   local pid cwd
   for pid in $(pgrep -f "next-server" 2>/dev/null); do
     cwd=$(readlink "/proc/$pid/cwd" 2>/dev/null || echo "")
     if [[ -n "$cwd" && "$cwd" == "$fe_dir"* ]]; then
-      kill -TERM "$pid" 2>/dev/null || true
-      sleep 1
-      kill -KILL "$pid" 2>/dev/null || true
+      service_pid_kill_allowed "$pid" "kill_stale_next_dev_server(cwd)" || continue
+      service_signal_tree "$pid" 2 "$(service_pid_starttime "$pid")" \
+        "$(engine_proc_env "$pid" CHAIN_SERVICE_OWNER_SCOPE 2>/dev/null || true)"
       killed_any=1
     fi
   done
@@ -1799,12 +1968,16 @@ kill_stale_backend_server() {
   local be_dir="${1:-$REPO_ROOT/apps/backend}"
   local killed_any=0
   local pid cwd
+  # HARD-5: cwd narrows the candidate set; it never authorizes the kill. The
+  # product's own uvicorn runs from this very directory.
   for pid in $(pgrep -f "uvicorn" 2>/dev/null); do
     cwd=$(readlink "/proc/$pid/cwd" 2>/dev/null || echo "")
     if [[ -n "$cwd" && "$cwd" == "$be_dir"* ]]; then
-      _kill_pid_tree "$pid"   # uvicorn + its reloader/worker children
-      sleep 1
-      kill -KILL "$pid" 2>/dev/null || true
+      service_pid_kill_allowed "$pid" "kill_stale_backend_server(cwd)" || continue
+      # uvicorn + its reloader/worker children, identity- AND ownership-validated
+      # against the PINNED process at signal time.
+      service_signal_tree "$pid" 2 "$(service_pid_starttime "$pid")" \
+        "$(engine_proc_env "$pid" CHAIN_SERVICE_OWNER_SCOPE 2>/dev/null || true)"
       killed_any=1
     fi
   done

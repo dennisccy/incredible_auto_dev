@@ -121,20 +121,28 @@ elif [[ -f "$REPO_ROOT/docs/goal.md" ]]; then
   GOAL_CONTEXT_LINE="Project goal: docs/goal.md  <-- read Must-have user journeys and Anti-goals"
 fi
 
-# ── Cleanup: kill any server processes started by the dev agent ──────────
-# The dev agent may start uvicorn/next dev for verification.  These are
+# ── Cleanup: release server processes started by the dev agent ───────────
+# The dev agent may start uvicorn/next dev for verification. These are
 # long-running servers that block the agent from exiting if not cleaned up.
+#
+# HARD-5: this used to be three `pkill -f` command-line patterns plus
+# `fuser -k` on both assigned ports. Neither is ownership. The port belongs to
+# the project, not to this run, and a command line is a haystack — so on a
+# checkout whose product stack binds the same offset ports this trap killed the
+# product's backend and frontend on EVERY developer dispatch (35 times in the
+# 2026-09-15 trading_workstation session).
+#
+# The legitimate requirement it served is preserved: anything the dev agent
+# started ran inside THIS dispatch, so it inherited CHAIN_SERVICE_OWNER_SCOPE
+# and is provably ours — service_owner_terminate still reaps it. A listener that
+# predates us is left alone.
 cleanup_dev_servers() {
-  echo "[dev-phase] Cleaning up any leftover server processes..."
-  local _be_port="${CHAIN_BACKEND_PORT:-8000}"
-  local _fe_port="${CHAIN_FRONTEND_PORT:-3000}"
-  # Kill uvicorn/next processes bound to this project's assigned ports only
-  # (avoids killing neighbor projects running on different ports).
-  pkill -f "uvicorn main:app.*--port ${_be_port}" 2>/dev/null || true
-  pkill -f "next dev -p ${_fe_port}" 2>/dev/null || true
-  pkill -f "next-server.*:${_fe_port}" 2>/dev/null || true
-  fuser -k "${_be_port}/tcp" "${_fe_port}/tcp" 2>/dev/null || true
-  sleep 2
+  echo "[dev-phase] Releasing server processes started by this dispatch..."
+  local _port
+  for _port in "${CHAIN_BACKEND_PORT:-}" "${CHAIN_FRONTEND_PORT:-}"; do
+    [[ -n "$_port" ]] || continue
+    service_release "$_port" "dev-phase-exit" || true
+  done
 }
 trap cleanup_dev_servers EXIT
 
