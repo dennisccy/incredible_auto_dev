@@ -188,3 +188,39 @@ application and reused as the dependency simply because it answers 200 and the w
 not changed. The current occupant is treated as ephemeral: reaped if this session owns it,
 refused if not. The stale record is dropped. Nothing is wrong; this line is the framework
 declining to believe a record it can no longer tie to a live process.
+
+## "is ours but not current" / services restarting at the start of a session
+
+Since rev 5 the canonical-port reclaim at session start obeys the same lifecycle policy as every
+other sweep, so a healthy application left running by a previous session is **preserved**, not
+killed and rebooted. You should see `services_preserved` rather than a fresh boot.
+
+It is still released and restarted when a restart is *verified* necessary:
+
+* the service is **unhealthy** by the health contract (see above), or
+* it is serving an **older revision** than the working tree — the code changed since it started,
+  so reusing it would verify the tree as it was before the change.
+
+If you see a restart you did not expect, check which of those two applies: `service-owner.sh
+classify <port>` shows the record, and the log line names the reason.
+
+## "refusing to signal ... missing identity/scope"
+
+Verification is never skipped when a proof is absent. A termination request that cannot name both
+the identity it verified and the ownership scope it expects is **refused**, not downgraded to an
+unchecked kill. For a process that has already exited this is the correct no-op. If you see it for
+a live process, the caller lost track of what it spawned — that is a framework bug worth reporting,
+not something to work around.
+
+## Why some framework processes are proven by parent link rather than by stamp
+
+Two different proofs, because two different spawn mechanics:
+
+| What the framework started | Proof used | Why |
+|---|---|---|
+| a **service** (start script, `exec`s) | `CHAIN_SERVICE_OWNER_SCOPE` in `/proc/<pid>/environ` | environ is captured at exec, so the stamp is present on the process and every descendant |
+| a **forked subshell** (`( … ) &` — the parallel lanes, the showcase tail) | the kernel parent link (`--require-ppid`) | environ is frozen at the parent's own exec, so a runtime-exported stamp is absent from a process that never exec'd |
+
+Both are verified against the *pinned* process, so neither is a shortcut. If you are extending a
+teardown path, pick the proof that matches how the target was created — requiring an environ stamp
+from a forked subshell makes the framework unable to clean up after itself.

@@ -351,12 +351,19 @@ service_signal_tree() {
   local pid="${1:-}" grace="${2:-${CHAIN_KILL_GRACE_SECONDS:-2}}" want="${3:-}" scope="${4:-}"
   [[ "$pid" =~ ^[0-9]+$ ]] || return 0
   [[ "$grace" =~ ^[0-9]+$ ]] || grace=2
+  # SPAWNED MODE. Both the remembered identity and the expected ownership scope
+  # are REQUIRED. An empty value used to mean "omit that flag", i.e. silently
+  # drop the check — the opposite of what a missing proof should do. A missing
+  # identity also covers "the process is already gone", where refusing is the
+  # correct no-op.
+  if [[ -z "$want" || -z "$scope" ]]; then
+    _svc_vlog "refusing to signal pid $pid: missing $( [[ -z "$want" ]] && printf identity || printf scope ) — verification cannot be skipped"
+    return 1
+  fi
   local helper="$(dirname "${BASH_SOURCE[0]}")/proc_signal.py"
   if [[ -f "$helper" ]] && command -v python3 >/dev/null 2>&1; then
-    local -a args=(tree "$pid" --grace "$grace")
-    [[ -n "$want" ]]  && args+=(--identity "$want")
-    [[ -n "$scope" ]] && args+=(--require-env "CHAIN_SERVICE_OWNER_SCOPE=$scope")
-    python3 "$helper" "${args[@]}" 2>/dev/null
+    python3 "$helper" tree "$pid" --grace "$grace" \
+      --identity "$want" --require-env "CHAIN_SERVICE_OWNER_SCOPE=$scope" 2>/dev/null
     local rc=$?
     [[ $rc -eq 3 ]] && return 1     # verification failed: nothing was signalled
     return 0
@@ -369,21 +376,31 @@ service_signal_tree() {
   if [[ -n "$scope" ]]; then
     [[ "$(engine_proc_env "$pid" CHAIN_SERVICE_OWNER_SCOPE 2>/dev/null)" == "$scope" ]] || return 1
   fi
+  # Descendants are held to the SAME ownership stamp as the root. Checking only
+  # their start times (as this loop used to) verifies "still the same process"
+  # while saying nothing about whose process it is — so an unstamped child in
+  # the tree was signalled purely for being there.
   local -a tree=() ids=()
   while IFS= read -r p; do
     [[ -n "$p" ]] || continue
     now="$(service_pid_starttime "$p")"
     [[ -n "$now" ]] || continue
+    [[ "$(engine_proc_env "$p" CHAIN_SERVICE_OWNER_SCOPE 2>/dev/null)" == "$scope" ]] || {
+      _svc_vlog "fallback: skipping pid $p in the tree of $pid — it does not carry our ownership stamp"
+      continue
+    }
     tree+=("$p"); ids+=("$now")
   done < <(_svc_pid_tree "$pid")
   local i
-  for i in "${!tree[@]}"; do
-    [[ "$(service_pid_starttime "${tree[$i]}")" == "${ids[$i]}" ]] \
+  for i in ${!tree[@]+"${!tree[@]}"}; do
+    [[ "$(service_pid_starttime "${tree[$i]}")" == "${ids[$i]}" \
+       && "$(engine_proc_env "${tree[$i]}" CHAIN_SERVICE_OWNER_SCOPE 2>/dev/null)" == "$scope" ]] \
       && kill -TERM "${tree[$i]}" 2>/dev/null || true
   done
   [[ "$grace" -gt 0 ]] && sleep "$grace"
-  for i in "${!tree[@]}"; do
-    [[ "$(service_pid_starttime "${tree[$i]}")" == "${ids[$i]}" ]] \
+  for i in ${!tree[@]+"${!tree[@]}"}; do
+    [[ "$(service_pid_starttime "${tree[$i]}")" == "${ids[$i]}" \
+       && "$(engine_proc_env "${tree[$i]}" CHAIN_SERVICE_OWNER_SCOPE 2>/dev/null)" == "$scope" ]] \
       && kill -KILL "${tree[$i]}" 2>/dev/null || true
   done
   return 0
@@ -395,6 +412,91 @@ service_signal_tree() {
 # performed — which is precisely how the ownership-to-signal race survived a
 # round of hardening. Signalling helpers that accept a pid ALONE are a trap:
 # call service_signal_tree with the identity and scope you verified.
+
+# service_signal_child <pid> [grace] [identity] — CHILD MODE.
+#
+# For a process this shell FORKED rather than exec'd — `( ... ) &` — there is no
+# usable environ stamp: /proc's environ is frozen at the last exec, and a forked
+# subshell never execs, so a variable the parent exported at runtime is absent
+# from the child's environ. Requiring a stamp there does not make the teardown
+# safer, it just makes it refuse to reap our own forks.
+#
+# The honest proof for that case is the kernel's parent link, and it is strong:
+# an un-`wait`ed child's pid cannot be recycled while the parent still holds it.
+# proc_signal.py verifies it AFTER pinning, so it is a real check and not a
+# bypass. rc 0 signalled (or nothing to do), rc 1 refused.
+service_signal_child() {
+  local pid="${1:-}" grace="${2:-${CHAIN_KILL_GRACE_SECONDS:-2}}" want="${3:-}"
+  [[ "$pid" =~ ^[0-9]+$ ]] || return 0
+  [[ "$grace" =~ ^[0-9]+$ ]] || grace=2
+  [[ -n "$want" ]] || want="$(service_pid_starttime "$pid")"
+  [[ -n "$want" ]] || return 1          # already gone: nothing to signal
+  local me="${BASHPID:-$$}"
+  local helper="$(dirname "${BASH_SOURCE[0]}")/proc_signal.py"
+  if [[ -f "$helper" ]] && command -v python3 >/dev/null 2>&1; then
+    python3 "$helper" tree "$pid" --grace "$grace" \
+      --identity "$want" --require-ppid "$me" 2>/dev/null
+    local rc=$?
+    [[ $rc -eq 3 ]] && return 1
+    return 0
+  fi
+  # Fallback: verify the parent link, then hold each signal to the start time.
+  local ppid; ppid="$(awk '{print $4}' "/proc/$pid/stat" 2>/dev/null)"
+  [[ "$ppid" == "$me" ]] || return 1
+  local p now
+  local -a tree=() ids=()
+  while IFS= read -r p; do
+    [[ -n "$p" ]] || continue
+    now="$(service_pid_starttime "$p")"
+    [[ -n "$now" ]] || continue
+    tree+=("$p"); ids+=("$now")
+  done < <(_svc_pid_tree "$pid")
+  local i
+  for i in ${!tree[@]+"${!tree[@]}"}; do
+    [[ "$(service_pid_starttime "${tree[$i]}")" == "${ids[$i]}" ]] \
+      && kill -TERM "${tree[$i]}" 2>/dev/null || true
+  done
+  [[ "$grace" -gt 0 ]] && sleep "$grace"
+  for i in ${!tree[@]+"${!tree[@]}"}; do
+    [[ "$(service_pid_starttime "${tree[$i]}")" == "${ids[$i]}" ]] \
+      && kill -KILL "${tree[$i]}" 2>/dev/null || true
+  done
+  return 0
+}
+
+# service_terminate_listener <pid> [grace] — DISCOVERY MODE.
+#
+# For a pid the framework did NOT spawn (a listener it just found), there is no
+# trustworthy prior identity to carry. Reading the ownership stamp in the shell
+# and handing it back to the signaller proves nothing: a process that replaced
+# the one we looked at supplies its own self-consistent stamp and satisfies the
+# very check it should fail. So the ownership decision is delegated to
+# proc_signal.py, which pins the process and decides against the PINNED object —
+# one observation, no gap. rc 0 signalled (or nothing to do), rc 1 refused.
+service_terminate_listener() {
+  local pid="${1:-}" grace="${2:-${CHAIN_KILL_GRACE_SECONDS:-2}}"
+  [[ "$pid" =~ ^[0-9]+$ ]] || return 0
+  [[ "$grace" =~ ^[0-9]+$ ]] || grace=2
+  local scope="${CHAIN_SERVICE_OWNER_SCOPE:-}"
+  [[ -n "$scope" ]] || { _svc_vlog "refusing: no ownership scope for this process"; return 1; }
+  local helper="$(dirname "${BASH_SOURCE[0]}")/proc_signal.py"
+  if [[ -f "$helper" ]] && command -v python3 >/dev/null 2>&1; then
+    python3 "$helper" tree "$pid" --grace "$grace" \
+      --owner-scope "$scope" --owner-repo "$(service_repo_hash)" 2>/dev/null
+    local rc=$?
+    [[ $rc -eq 3 ]] && return 1
+    return 0
+  fi
+  # Fallback: one read, then hold every signal to exactly that stamp.
+  local found; found="$(engine_proc_env "$pid" CHAIN_SERVICE_OWNER_SCOPE 2>/dev/null)"
+  [[ -n "$found" ]] || return 1
+  if [[ "$found" != "$scope" ]]; then
+    local their_repo="${found%%.*}" their_tok="${found#*.}"
+    [[ "$their_repo" == "$(service_repo_hash)" ]] || return 1
+    engine_token_alive "$their_tok" >/dev/null 2>&1 && return 1   # live foreign owner
+  fi
+  service_signal_tree "$pid" "$grace" "$(service_pid_starttime "$pid")" "$found"
+}
 
 # ── Lifecycle policy ─────────────────────────────────────────────────────────
 # Ownership answers "may this process be terminated by us?".
@@ -643,10 +745,10 @@ service_verify_reuse() {
     | bash -c "$verifier" "verify-$role" "$url" "$port" >/dev/null 2>&1
 }
 
-# service_reuse_decision <role> <url> <port> — echoes REUSE | RESTART | BLOCKED.
-# Called only when the endpoint is already answering.
+# service_reuse_decision <role> <url> <port> [observed_status] — echoes
+# REUSE | RESTART | BLOCKED. Called only when the endpoint is already answering.
 service_reuse_decision() {
-  local role="${1:-}" url="${2:-}" port="${3:-}"
+  local role="${1:-}" url="${2:-}" port="${3:-}" code="${4:-}"
   [[ "$port" =~ ^[0-9]+$ ]] || { echo "REUSE"; return 0; }   # portless URL: as before
 
   local -a pids=()
@@ -685,7 +787,17 @@ service_reuse_decision() {
     echo "RESTART"; return 0
   fi
 
-  # Not ours. A healthy endpoint is not an identity — require the contract.
+  # Not ours. Identity and health are SEPARATE requirements and both must hold.
+  # A verifier matches a marker in the body; a service can emit that marker in a
+  # 500 error page, so passing identity alone would accept a broken dependency.
+  # We cannot restart someone else's service, so failing either check is BLOCKED.
+  [[ -n "$code" ]] || code=$(curl -s -o /dev/null \
+      --max-time "${CHAIN_HEALTH_PROBE_TIMEOUT:-10}" -w "%{http_code}" "$url" 2>/dev/null || true)
+  local hre; hre="$(service_health_regex "$role")"
+  if ! [[ "$code" =~ $hre ]]; then
+    _svc_vlog "external $role on port $port answered ${code:-none}, which does not satisfy the health contract ${hre}"
+    echo "BLOCKED"; return 0
+  fi
   service_verify_reuse "$role" "$url" "$port"
   case $? in
     0) echo "REUSE" ;;
@@ -752,8 +864,7 @@ service_owner_terminate() {
   for p in "${pids[@]}"; do
     verdict="$(service_pid_ownership "$p")"
     case "$verdict" in
-      MINE|DEAD)
-        owned+=("${p}|$(service_pid_starttime "$p")|$(engine_proc_env "$p" CHAIN_SERVICE_OWNER_SCOPE 2>/dev/null)") ;;
+      MINE|DEAD) owned+=("$p") ;;
       GONE)      continue ;;   # already exited; nothing to authorize or kill
       *)
         local rec_state cmd
@@ -768,10 +879,13 @@ service_owner_terminate() {
     esac
   done
 
-  local _entry _p_pid _p_ident _p_scope _refused=0
-  for _entry in ${owned[@]+"${owned[@]}"}; do
-    IFS='|' read -r _p_pid _p_ident _p_scope <<< "$_entry"
-    if ! service_signal_tree "$_p_pid" "${CHAIN_KILL_GRACE_SECONDS:-2}" "$_p_ident" "$_p_scope"; then
+  # NOTE: the verdict above is advisory — it exists to produce a good refusal
+  # message. The AUTHORITATIVE decision is made inside service_terminate_listener
+  # against the pinned process, so nothing read here can be stale by the time the
+  # signal is sent.
+  local _p_pid _refused=0
+  for _p_pid in ${owned[@]+"${owned[@]}"}; do
+    if ! service_terminate_listener "$_p_pid" "${CHAIN_KILL_GRACE_SECONDS:-2}"; then
       _refused=$((_refused + 1))
       _svc_log "kill refused ($caller): pid $_p_pid on port $port no longer matches what was verified — it was replaced or recycled between the ownership check and the signal; nothing was signalled."
       _svc_event "services_kill_refused" \

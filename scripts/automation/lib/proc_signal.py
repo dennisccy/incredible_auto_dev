@@ -79,6 +79,23 @@ def proc_starttime(pid):
     return fields[19] if len(fields) >= 20 else ""
 
 
+def proc_ppid(pid):
+    """Field 4 of /proc/<pid>/stat (parent pid), or None."""
+    try:
+        with open("/proc/%d/stat" % int(pid), "rb") as fh:
+            data = fh.read().decode("utf-8", "replace")
+    except (OSError, ValueError):
+        return None
+    idx = data.rfind(")")
+    if idx < 0:
+        return None
+    fields = data[idx + 2:].split()
+    try:
+        return int(fields[1]) if len(fields) >= 2 else None
+    except ValueError:
+        return None
+
+
 def identity(pid):
     """Stable identity for a pid within this boot. '' when the pid is gone."""
     return proc_starttime(pid)
@@ -127,6 +144,53 @@ def descendants(root):
 
     walk(int(root))
     return ordered
+
+
+def _boot8():
+    try:
+        with open("/proc/sys/kernel/random/boot_id") as fh:
+            return fh.read()[:8]
+    except OSError:
+        return ""
+
+
+def token_alive(tok):
+    """Mirror of engine_token_alive: True when alive OR unprovable.
+
+    Conservative on purpose — only a PROVABLY dead owner makes its services
+    reclaimable, so an identity we cannot evaluate never authorizes anything.
+    """
+    parts = (tok or "").split(".")
+    if len(parts) < 3 or not parts[0].isdigit():
+        return True                                   # unparseable => unprovable
+    pid, stt, boot = parts[0], parts[1], parts[2]
+    cur = _boot8()
+    if boot and cur and boot != cur:
+        return False                                  # previous boot
+    if not os.path.exists("/proc/%s" % pid):
+        return False
+    now = proc_starttime(int(pid))
+    if stt and now and stt != now:
+        return False                                  # pid recycled
+    return True
+
+
+def scope_acceptable(scope, owner_scope, owner_repo):
+    """Is this ownership stamp one we may act on?
+
+    Either it is OUR scope, or it belongs to the same project and its owner is
+    provably dead (that lineage's orphan). Anything else — including an absent
+    stamp — is not ours.
+    """
+    if not scope:
+        return False
+    if owner_scope and scope == owner_scope:
+        return True
+    if owner_repo:
+        prefix = owner_repo + "."
+        if scope.startswith(prefix) and not token_alive(scope[len(prefix):]):
+            return True
+    return False
 
 
 def proc_env(pid, name):
@@ -223,7 +287,8 @@ class Target:
             self.fd = None
 
 
-def signal_tree(root, grace=2.0, expect_identity=None, require_env=None):
+def signal_tree(root, grace=2.0, expect_identity=None, require_env=None,
+                owner_scope=None, owner_repo=None, require_ppid=None):
     """PIN the root, re-verify it, then TERM/grace/KILL the verified tree.
 
     `expect_identity` is the start time captured when the caller made its
@@ -242,6 +307,44 @@ def signal_tree(root, grace=2.0, expect_identity=None, require_env=None):
     if not root_t.start:
         root_t.close()
         return (0, 0, 0)                      # already gone: clean no-op
+
+    # CHILD MODE. An environ stamp cannot identify a forked subshell: /proc's
+    # environ reflects the environment at the last EXEC, and `( ... ) &` never
+    # execs, so a variable the parent exported at runtime is simply absent from
+    # the child's environ. For those the honest proof is the kernel's own
+    # parent link — and it is a strong one, because an un-`wait`ed child's pid
+    # cannot be recycled while the parent still holds it. Verified here, after
+    # pinning, like every other check. Descendants are then taken as that root's
+    # tree: we proved the root is ours, and its children are its own.
+    if require_ppid is not None:
+        actual = proc_ppid(root)
+        if actual != int(require_ppid):
+            root_t.close()
+            sys.stderr.write(
+                "[proc_signal] refusing to signal pid %d: it is not a child of %s "
+                "(parent is %s) — the process was replaced or is not ours\n"
+                % (root, require_ppid, actual))
+            raise SystemExit(3)
+
+    # DISCOVERY MODE. The caller has a pid it did not spawn (a listener it just
+    # found) and no trustworthy prior identity for it. Reading the ownership
+    # stamp in the shell and passing it back would be worthless: a replacement
+    # would supply its own self-consistent stamp and satisfy the check it was
+    # supposed to fail. So the ownership decision is made HERE, once, against
+    # the pinned process — a single observation, no gap to race.
+    accepted_scope = None
+    if owner_scope or owner_repo:
+        found = proc_env(root, "CHAIN_SERVICE_OWNER_SCOPE")
+        if not scope_acceptable(found, owner_scope, owner_repo):
+            root_t.close()
+            sys.stderr.write(
+                "[proc_signal] refusing to signal pid %d: ownership stamp %r is not ours "
+                "and not a provably-dead owner of this project\n" % (root, found))
+            raise SystemExit(3)
+        accepted_scope = found
+        require_env = list(require_env or []) + \
+            ["CHAIN_SERVICE_OWNER_SCOPE=" + accepted_scope]
+
     if not root_t.satisfies(expect_identity, require_env):
         detail = []
         if expect_identity:
@@ -432,6 +535,9 @@ def main(argv):
         grace = 2.0
         expect = None
         require_env = []
+        owner_scope = None
+        owner_repo = None
+        require_ppid = None
         i = 3
         while i < len(argv):
             if argv[i] == "--grace" and i + 1 < len(argv):
@@ -440,10 +546,25 @@ def main(argv):
                 expect = argv[i + 1]; i += 2
             elif argv[i] == "--require-env" and i + 1 < len(argv):
                 require_env.append(argv[i + 1]); i += 2
+            elif argv[i] == "--owner-scope" and i + 1 < len(argv):
+                owner_scope = argv[i + 1]; i += 2
+            elif argv[i] == "--owner-repo" and i + 1 < len(argv):
+                owner_repo = argv[i + 1]; i += 2
+            elif argv[i] == "--require-ppid" and i + 1 < len(argv):
+                require_ppid = argv[i + 1]; i += 2
             else:
                 i += 1
+        # Refuse to signal on no evidence at all: a caller must either name the
+        # identity it remembers (spawned mode) or ask for an ownership decision
+        # against the pinned process (discovery mode).
+        if not expect and not require_env and not owner_scope and not owner_repo \
+                and require_ppid is None:
+            sys.stderr.write("[proc_signal] refusing: no identity and no ownership "
+                             "criteria supplied — verification cannot be skipped\n")
+            return 3
         try:
-            termed, killed, skipped = signal_tree(pid, grace, expect, require_env)
+            termed, killed, skipped = signal_tree(pid, grace, expect, require_env,
+                                                  owner_scope, owner_repo, require_ppid)
         except SystemExit as e:
             return e.code
         except (ValueError, OSError) as e:

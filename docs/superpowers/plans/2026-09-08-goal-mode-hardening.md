@@ -410,6 +410,37 @@ Stage all thirteen as `HARD-1 … HARD-11` (with `HARD-4A/4B/4C`) in a new roadm
 >    precedence so CI can override one run. Generic: no product-specific behaviour in the
 >    framework.
 
+> **REVISION 5 — 2026-09-16, after independent review of `b38fe4a`. Three gaps closed.**
+>
+> 1. **Startup reclamation bypassed the lifecycle policy.** `reclaim_canonical_phase_ports` still
+>    called `service_owner_terminate` directly, and it runs BEFORE `ensure_phase_ports`. After a
+>    completed session the previous engine is gone, so its services classify `DEAD` — which is
+>    termination AUTHORITY — and the next session's very first act killed the healthy application
+>    rev 3 had deliberately preserved at completion. Net effect across two sessions: still killed.
+>    It now uses `service_release` like every other sweep, and `service_contracts_load` moved into
+>    reclaim so the contracts are in force BEFORE the first lifecycle decision of a session
+>    (previously they arrived one function too late).
+> 2. **Termination was still not bound to the original ownership decision.** `service_owner_terminate`
+>    took a verdict and then made TWO further `/proc` reads for identity and scope; a process that
+>    replaced the verified one between those reads supplies its own self-consistent pair and
+>    satisfies the very check it should fail. Empty values also *omitted* the flags, i.e. disabled
+>    verification rather than refusing. And the Python-unavailable fallback checked only start
+>    times for descendants, so an unstamped child in the tree was signalled for being there.
+>    Now: `service_signal_tree` (**spawned mode**) REQUIRES both identity and scope and refuses
+>    when either is missing; `service_terminate_listener` (**discovery mode**) delegates the whole
+>    ownership decision to `proc_signal.py`, which pins the process and decides against the pinned
+>    object — one observation, no gap; `_start_service_with_retries` retains the identity captured
+>    AT SPAWN; and the fallback holds every descendant to the root's ownership stamp.
+>    `proc_signal.py` also refuses outright when given neither an identity nor ownership criteria.
+> 3. **Health was not enforced on every path.** External reuse ran only
+>    `CHAIN_SERVICE_VERIFY_<ROLE>`, so a 500 response containing a valid service marker passed
+>    identity and was accepted as the dependency; and the managed-startup loop still treated the
+>    permissive reachability regex as readiness, so a freshly spawned service answering 500 was
+>    declared ready. The health contract now gates all three paths — existing framework-owned
+>    services (via `service_restart_required`), externally started services (identity AND health,
+>    separately), and newly started managed services (reachable ⇒ keep waiting; healthy ⇒ ready).
+>    A non-2xx readiness response remains supported only by declaring it.
+
 1. **Problem.** Every service teardown was port-scoped or command-line-scoped and owner-blind:
    `kill_phase_servers` (`lib/common.sh:793`), `reclaim_canonical_phase_ports` (`:812`),
    `_bqa_kill_port_servers` (`goal-iter-lean.sh:192`, from the EXIT trap and the fork reaps),
@@ -559,6 +590,18 @@ Stage all thirteen as `HARD-1 … HARD-11` (with `HARD-4A/4B/4C`) in a new roadm
     correctly identified EXTERNAL service is reused with no manual intervention via the contract
     file, a contract-rejected one still fails closed un-killed, `ensure_phase_ports` loads the
     file automatically, and an explicit environment value beats it.
+    **Rev 5 (E-series):** E1 two consecutive lifecycles — session 1 completes leaving a healthy
+    app, session 2's canonical reclaim preserves it (E1b) and the project contract is already in
+    force at that first decision (E1c; both verified to fail when only the reclaim line is
+    reverted); E2 empty identity and empty scope each REFUSE rather than disabling verification,
+    a foreign-scoped process is refused at signal time, terminate no longer re-derives identity
+    after its verdict, and the Python-unavailable fallback refuses an unstamped descendant;
+    E3 an external 500 carrying a valid identity marker is not accepted, a freshly spawned 500
+    service is not declared ready and is not leaked, and an explicit health contract still admits
+    a 404 readiness response; E4 a FORKED subshell provably carries no runtime-exported stamp
+    (environ is frozen at the last exec), is nonetheless reaped via the verified kernel parent
+    link, and a double-forked process reparented to init is refused — the gap that broke the
+    SPEED-2 fork reap when rev 5 first made the stamp mandatory everywhere.
     Plus `lib/proc_signal.py --self-test` (16 checks) in `run-evals.sh`.
 12. **Migration/rollout.** Default on, single mode. No `warn`, no `off` (see the revision note).
 13. **Observability.** `services_kill_refused` must be 0 in a single-engine session with no

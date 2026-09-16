@@ -5596,15 +5596,35 @@ Four root causes: governors read proxies instead of facts (HARD-1..3); ownership
   `project-template.md` is sliced into agent prompts, never sourced. Added `service_contracts_load`
   (called from `ensure_phase_ports`) reading `<project>/.claude/service-contracts.sh`, template at
   `templates/service-contracts.sh`, `CHAIN_SERVICE_CONTRACTS_FILE` to relocate, environment wins.
-- **DoD/Verify:** `tests/automation/test-service-ownership.sh` — 72 assertions over real
+- **Rev 5 (2026-09-16, after independent review of `b38fe4a`) — three gaps:** (1) *Startup
+  reclamation bypassed the lifecycle policy.* `reclaim_canonical_phase_ports` still called
+  `service_owner_terminate`, and it runs BEFORE `ensure_phase_ports` — so after a completed
+  session the previous engine is dead, its services classify `DEAD` (= authority), and the next
+  session's first act killed the healthy app rev 3 had preserved. Now uses `service_release`, and
+  `service_contracts_load` moved into reclaim so contracts are in force before the session's first
+  lifecycle decision. (2) *Termination still not bound to the original decision.* The verdict was
+  followed by two further `/proc` reads, which a replacement satisfies self-consistently; empty
+  values disabled verification instead of refusing; and the no-Python fallback checked only start
+  times for descendants. Now `service_signal_tree` (spawned mode) REQUIRES identity+scope and
+  refuses without them, `service_terminate_listener` (discovery mode) delegates the whole decision
+  to `proc_signal.py` against the pinned process, `_start_service_with_retries` retains the
+  spawn-time identity, and the fallback holds descendants to the root's stamp. (3) *Health not
+  enforced everywhere.* External reuse checked identity only — a 500 carrying a valid marker was
+  accepted — and managed startup still used the permissive reachability regex as readiness. The
+  health contract now gates owned services, external services and fresh startups alike.
+- **DoD/Verify:** `tests/automation/test-service-ownership.sh` — 94 assertions over real
   subprocesses on dynamic ports: B2 (an unowned listener survives every teardown path), B12
   (static sweep: no `fuser -k`/`pkill`/`killall` under `scripts/automation/`), B13/B14, and the
   rev-3 C-series C1–C9 (preserve healthy app services, reap ephemeral leaks, detect stale
   revisions, signal-time identity, fail-closed reuse, DEV_FORCE scope) and the rev-4 D-series
   D1–D4 (ownership carried into the signal incl. replacement-between-check-and-signal; stale
   record cannot adopt a replacement listener; 500 is not healthy; external service reusable via
-  the contract file with no manual intervention). Plus `lib/proc_signal.py --self-test`
-  (16 checks). Both wired into `run-evals.sh`.
+  the contract file with no manual intervention) and the rev-5 E-series E1-E3 (two consecutive
+  lifecycles preserve the app across a session boundary; verification cannot be disabled by empty
+  values nor satisfied by a replacement; health gates every reuse and startup path; a forked subshell —
+  which cannot carry an environ stamp, since environ is frozen at the last exec — is reaped via a
+  verified kernel parent link while a non-child is refused). Plus
+  `lib/proc_signal.py --self-test` (16 checks). Both wired into `run-evals.sh`.
   **Rollback:** `git revert` (no weakening knob).
 - **Vendored sync (owed; per `.claude/maintenance-protocol.md` §3.4 — per-file over the changed-file
   list, never a whole-tree copy).** Copy into each product's `incredible_auto_dev/`:

@@ -848,8 +848,18 @@ reclaim_canonical_phase_ports() {
   local offset port
   offset=$(_project_port_offset)
   service_owner_scope_init "$REPO_ROOT" "${CHAIN_SERVICE_OWNER_KIND:-pipeline}" || true
+  # Contracts BEFORE the first lifecycle decision. This is the earliest point in
+  # a session where the framework decides whether a running service lives or
+  # dies, and that decision consults the health contract — loading it later (in
+  # ensure_phase_ports) meant the very first decision was made without it.
+  service_contracts_load || true
+  # Policy-aware, exactly like every other sweep. Using service_owner_terminate
+  # here bypassed the lifecycle policy: after a completed session the previous
+  # engine is gone, so its services classify as DEAD — which is termination
+  # AUTHORITY — and the next session's startup killed the healthy application
+  # the previous session had deliberately preserved.
   for port in $((8000 + offset)) $((3000 + offset)); do
-    if ! service_owner_terminate "$port" "reclaim_canonical_phase_ports"; then
+    if ! service_release "$port" "reclaim_canonical_phase_ports"; then
       # Not ours. Say so once, here, so a later "port busy" or a reused
       # foreign app is explained rather than mysterious.
       log "  Canonical port $port is held by a process this session does not own — left running; it will be reused if healthy."
@@ -903,17 +913,25 @@ _pid_tree() {
 # gets identity-bound signalling (pidfd where available, start-time revalidation
 # otherwise) from service_signal_tree. Behaviour is otherwise unchanged: whole
 # tree snapshotted before the first signal, TERM, grace, KILL for survivors.
+# _kill_pid_tree <pid> [spawn_identity] [expected_scope]
+# When the caller remembers what it spawned, it passes those values and they are
+# enforced against the pinned process. Otherwise they are read here — safe only
+# because every such caller passes a DIRECT, un-`wait`ed child, whose pid the
+# kernel cannot recycle while the parent still holds it.
 _kill_pid_tree() {
-  local pid="${1:-}"
+  local pid="${1:-}" ident="${2:-}" scope="${3:-}"
   [[ -z "$pid" ]] && return 0
-  # Carry BOTH the identity and the ownership stamp. Callers pass pids they
-  # spawned themselves (QA_STARTED_PIDS, the showcase fork, a just-started
-  # service), so the stamp is always present — and requiring it means a pid that
-  # was replaced between being recorded and being reaped cannot inherit the
-  # decision. Empty scope (identity unavailable) degrades to identity-only.
-  service_signal_tree "$pid" "${CHAIN_KILL_GRACE_SECONDS:-2}" \
-    "$(service_pid_starttime "$pid")" \
-    "$(engine_proc_env "$pid" CHAIN_SERVICE_OWNER_SCOPE 2>/dev/null || true)"
+  [[ -n "$ident" ]] || ident="$(service_pid_starttime "$pid")"
+  [[ -n "$scope" ]] || scope="$(engine_proc_env "$pid" CHAIN_SERVICE_OWNER_SCOPE 2>/dev/null || true)"
+  if [[ -n "$scope" ]]; then
+    # A service we exec'd: its environ carries our ownership stamp.
+    service_signal_tree "$pid" "${CHAIN_KILL_GRACE_SECONDS:-2}" "$ident" "$scope"
+  else
+    # A subshell we FORKED (`( … ) &`): environ is frozen at the parent's exec,
+    # so there is no stamp to find. The parent link is the proof instead, and it
+    # is checked against the pinned process — not skipped.
+    service_signal_child "$pid" "${CHAIN_KILL_GRACE_SECONDS:-2}" "$ident"
+  fi
   return 0
 }
 
@@ -994,6 +1012,12 @@ _start_service_with_retries() {
   local target_port
   target_port=$(_url_port "$health_url")
 
+  # The health contract, resolved once for this role: CHAIN_SERVICE_HEALTHY_<ROLE>
+  # else ^[23]. `ready_re` stays the REACHABILITY gate (any HTTP status proves the
+  # server is routing, which matters for projects with no /health route); it is
+  # no longer accepted as proof that the application is serving.
+  local _health_re; _health_re="$(service_health_regex "$role")"
+
   local code
   code=$(curl -s -o /dev/null --max-time "$_probe_max" -w "%{http_code}" "$health_url" 2>/dev/null || true)
   if [[ "$code" =~ $ready_re ]]; then
@@ -1001,7 +1025,7 @@ _start_service_with_retries() {
     # satisfied": the backend's ready_re is `^[1-5][0-9][0-9]$`, so literally any
     # HTTP status counted as ready, and even a 200 proves neither that this is
     # the service we need nor that it runs the revision under test.
-    case "$(service_reuse_decision "$role" "$health_url" "$target_port")" in
+    case "$(service_reuse_decision "$role" "$health_url" "$target_port" "$code")" in
       REUSE)
         # Ours and current, or external and positively verified by the project's
         # CHAIN_SERVICE_VERIFY_<ROLE> contract. Reusing never acquires
@@ -1017,6 +1041,13 @@ _start_service_with_retries() {
         # do NOT kill it, and do NOT quietly bind somewhere else.
         service_port_blocker "$target_port" "$role" "$role reuse verification"
         local _vv="CHAIN_SERVICE_VERIFY_$(printf '%s' "$role" | tr '[:lower:]-' '[:upper:]_')"
+        if ! [[ "$code" =~ $_health_re ]]; then
+          local _hv2="CHAIN_SERVICE_HEALTHY_$(printf '%s' "$role" | tr '[:lower:]-' '[:upper:]_')"
+          _svc_log "  Port ${target_port} answers with status ${code}, which does not satisfy the health contract ${_health_re} — it is reachable but not serving. This session cannot restart a service it does not own."
+          _svc_log "  If ${code} is a legitimate readiness response here, declare it: ${_hv2}='^(2|3|${code})'."
+          printf -v "$tail_var" '%s' "port ${target_port} answers ${code}, which fails the health contract ${_health_re}; refusing to treat the dependency as satisfied"
+          return 1
+        fi
         _svc_log "  Port ${target_port} answers (status ${code}) but this session cannot verify it is the expected $role."
         if [[ -z "${!_vv:-}" ]]; then
           _svc_log "  No reuse contract is configured. Set ${_vv} (response body on stdin, \"<url> <port>\" as args, exit 0 = expected service) in .claude/project-template.md, or stop the listener and let this run own the $role."
@@ -1080,6 +1111,10 @@ _start_service_with_retries() {
     local instance; instance="$(service_instance_mint)"
     CHAIN_SERVICE_INSTANCE="$instance" $start_cmd >"$log_path" 2>&1 &
     pid=$!
+    # Remember the identity AT SPAWN. Re-reading it at teardown time would ask
+    # "who is at this pid now?", which a replacement answers self-consistently;
+    # the question that matters is "is this still the process I started?".
+    local spawn_ident; spawn_ident="$(service_pid_starttime "$pid")"
     # Register with the facts a later sweep needs: that this is the APPLICATION
     # (persistent), where to probe it, and which revision it is serving.
     [[ -n "$target_port" ]] && service_owner_register "$target_port" "$role" "$pid" \
@@ -1099,8 +1134,14 @@ _start_service_with_retries() {
     while [[ $waited -lt $attempt_timeout ]]; do
       code=$(curl -s -o /dev/null --max-time "$_probe_max" -w "%{http_code}" "$health_url" 2>/dev/null || true)
       if [[ "$code" =~ $ready_re ]]; then
-        echo "[ensure_services_running] $role is ready (attempt ${attempt}, ${waited}s)." >&2
-        return 0
+        # Reachable. Ready only if it also satisfies the health contract — a
+        # freshly spawned service answering 500 is up, not serving, and calling
+        # it ready hands the next step a broken dependency.
+        if [[ "$code" =~ $_health_re ]]; then
+          echo "[ensure_services_running] $role is ready (attempt ${attempt}, ${waited}s)." >&2
+          return 0
+        fi
+        _svc_vlog "$role reachable on ${target_port:-?} with status ${code}, which does not satisfy the health contract ${_health_re}"
       fi
       # A frontend dev server that is UP but serving 5xx from a corrupt `.next`
       # will never recover on its own — stop waiting out the budget; the retry
@@ -1149,7 +1190,7 @@ _start_service_with_retries() {
     # it used to be an unconditional `fuser -k -9` that could reach a listener we
     # never started (e.g. our spawn failed to bind because the product's service
     # was already there, and we then killed the product's service).
-    _kill_pid_tree "$pid"
+    _kill_pid_tree "$pid" "$spawn_ident" "${CHAIN_SERVICE_OWNER_SCOPE:-}"
     [[ -n "$target_port" ]] && { service_owner_terminate "$target_port" "start-$role-retry" || true; }
 
     # Frontend self-heal: a corrupt `.next` (typically a `next build` that
@@ -1175,6 +1216,11 @@ _start_service_with_retries() {
   [[ -f "$log_path" ]] && tail_txt="$(tail -n 20 "$log_path" 2>/dev/null || true)"
   printf -v "$tail_var" '%s' "$tail_txt"
   echo "[ensure_services_running] $role failed to become healthy after ${max_attempts} attempt(s) (log: $log_path)." >&2
+  if [[ -n "${code:-}" && "$code" =~ $ready_re ]] && ! [[ "$code" =~ $_health_re ]]; then
+    local _hv="CHAIN_SERVICE_HEALTHY_$(printf '%s' "$role" | tr '[:lower:]-' '[:upper:]_')"
+    echo "[ensure_services_running]   It answered with status ${code}, so it IS reachable — it just does not satisfy the health contract ${_health_re}." >&2
+    echo "[ensure_services_running]   If ${code} is a legitimate readiness response for this project, declare it: ${_hv}='^(2|3|${code})' in .claude/service-contracts.sh." >&2
+  fi
   return 1
 }
 

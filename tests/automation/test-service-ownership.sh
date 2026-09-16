@@ -722,10 +722,10 @@ echo
 # identity captured before the first signal.
 echo "-- C5: signal-time identity validation (check-to-signal PID reuse gap)"
 C5_PORT="$(free_port)"
-start_listener "$C5_PORT"
+start_listener "$C5_PORT" "CHAIN_SERVICE_OWNER_SCOPE=$OUR_SCOPE"
 C5_PID="$LISTENER_PID"
-# Correct identity => the signal is delivered.
-service_signal_tree "$C5_PID" 1 "$(service_pid_starttime "$C5_PID")" >/dev/null 2>&1
+# Correct identity AND scope => the signal is delivered.
+service_signal_tree "$C5_PID" 1 "$(service_pid_starttime "$C5_PID")" "$OUR_SCOPE" >/dev/null 2>&1
 settle
 if port_answers "$C5_PORT"; then
   assert "C5a a correctly-identified process IS signalled" fail
@@ -734,9 +734,9 @@ else
 fi
 # Wrong identity (simulating a recycled pid) => no signal at all.
 C5B_PORT="$(free_port)"
-start_listener "$C5B_PORT"
+start_listener "$C5B_PORT" "CHAIN_SERVICE_OWNER_SCOPE=$OUR_SCOPE"
 C5B_PID="$LISTENER_PID"
-service_signal_tree "$C5B_PID" 1 "999999999-not-this-process" >/dev/null 2>&1
+service_signal_tree "$C5B_PID" 1 "999999999-not-this-process" "$OUR_SCOPE" >/dev/null 2>&1
 settle
 if port_answers "$C5B_PORT"; then
   assert "C5b a pid whose identity no longer matches is NOT signalled" pass
@@ -769,7 +769,7 @@ fi
 _unbound=$(grep -hn 'service_signal_tree "' \
              "$ENGINE_ROOT/scripts/automation/lib/service-owner.sh" \
              "$ENGINE_ROOT/scripts/automation/lib/common.sh" 2>/dev/null \
-           | grep -vE 'service_pid_starttime|_p_ident|\\$' || true)
+           | grep -vE 'service_pid_starttime|_p_ident|\$ident|\\$' || true)
 if [[ -z "$_unbound" ]]; then
   assert "C6d every library signal call carries a verified identity" pass
 else
@@ -909,11 +909,14 @@ else
   assert "D1d an unstamped process was signalled" fail
 fi
 # And the integration seam: terminate must hand identity + scope onward.
-if grep -qE 'service_signal_tree "\$_p_pid" .*"\$_p_ident"|owned\+=\("\$p:' \
-     <(sed -n '/^service_owner_terminate()/,/^}/p' "$ENGINE_ROOT/scripts/automation/lib/service-owner.sh"); then
-  assert "D1e service_owner_terminate carries identity into signalling" pass
+# terminate must delegate to the ATOMIC discovery path, and must not re-derive
+# identity/scope in the shell after its (advisory) verdict.
+_term_body=$(sed -n '/^service_owner_terminate()/,/^}/p' "$ENGINE_ROOT/scripts/automation/lib/service-owner.sh")
+if grep -q 'service_terminate_listener' <<<"$_term_body" \
+   && ! grep -qE 'owned\+=\("\$\{?p\}?\|' <<<"$_term_body"; then
+  assert "D1e terminate delegates the decision to the pinned-process path" pass
 else
-  assert "D1e service_owner_terminate still discards the verified identity" fail
+  assert "D1e terminate still makes the decision from stale shell reads" fail
 fi
 echo
 
@@ -1086,6 +1089,368 @@ if grep -q "VERIFY=operator-override" "$WORK/d4g.log"; then
   assert "D4g an explicit environment override beats the contract file" pass
 else
   assert "D4g the contract file clobbered an explicit override" fail
+fi
+echo
+
+# ═══════════════════════════════════════════════════════════════════════════
+# E-series — third review follow-up. Startup reclamation must obey the same
+# lifecycle policy as every other sweep; the ownership DECISION and the SIGNAL
+# must be one atomic act; and application health must gate every reuse and
+# startup path, not just some.
+# ═══════════════════════════════════════════════════════════════════════════
+
+# ── E1: two consecutive lifecycles — the app survives the next session's start ─
+# Session 1 completes leaving a healthy application running (rev 3 preserves it
+# at the end). Session 2 then starts and reclaims the canonical ports. Because
+# session 1's engine is gone, its scope token is DEAD — which is termination
+# AUTHORITY — so a policy-blind reclaim kills the very service the previous
+# session was careful to preserve.
+echo "-- E1: a healthy app survives the NEXT session's canonical-port reclaim"
+# Pick a project root whose CANONICAL offset ports are free on this host, so the
+# scenario exercises the real reclaim path instead of being skipped.
+E1_ROOT=""; E1_OFF=""
+for _try in $(seq 1 40); do
+  _cand="$WORK/e1proj-$_try"
+  _hex="$(printf '%s' "$_cand" | sha1sum | cut -c1-4)"
+  _off=$(( 16#$_hex % 1000 ))
+  if ! port_answers $((8000 + _off)) && ! port_answers $((3000 + _off))      && ! service_port_is_listening $((8000 + _off)) && ! service_port_is_listening $((3000 + _off)); then
+    E1_ROOT="$_cand"; E1_OFF="$_off"; break
+  fi
+done
+E1_BE=$((8000 + ${E1_OFF:-0}))
+if [[ -z "$E1_ROOT" ]]; then
+  assert "E1 could not find a free canonical port pair on this host" fail
+else
+  mkdir -p "$E1_ROOT"
+  git init -q "$E1_ROOT" 2>/dev/null || true
+  echo v1 > "$E1_ROOT/src.txt"
+  E1_PREV_REPO_ROOT="$REPO_ROOT"
+  PROJECT_ROOT="$E1_ROOT"
+  # service_repo_hash derives the registry path from REPO_ROOT, so registration
+  # and the reclaim subshell must agree on it — otherwise the reclaim sees
+  # NO_RECORD and the scenario proves nothing.
+  export REPO_ROOT="$E1_ROOT"
+  # ---- session 1: a separate, LIVE owner boots the app, then exits ----
+  setsid sleep 300 >/dev/null 2>&1 &
+  E1_ENGINE=$!
+  DUMMY_PIDS+=("$E1_ENGINE")
+  E1_TOKEN="$(engine_token_mint "$E1_ENGINE")"
+  E1_SCOPE="$(service_owner_scope_value "$PROJECT_ROOT" "$E1_TOKEN")"
+  E1_INSTANCE="$(service_instance_mint)"
+  start_listener "$E1_BE" "CHAIN_SERVICE_OWNER_SCOPE=$E1_SCOPE" "CHAIN_SERVICE_INSTANCE=$E1_INSTANCE"
+  E1_APP="$LISTENER_PID"
+  service_owner_write_as "$E1_BE" "backend" "$E1_APP" "$E1_INSTANCE" "$E1_TOKEN" \
+    "persistent" "http://127.0.0.1:$E1_BE/" "$(service_tree_revision)" '^[23]'
+  # session 1 ends: its engine dies, the app is deliberately left running
+  kill -KILL "$E1_ENGINE" 2>/dev/null; wait "$E1_ENGINE" 2>/dev/null
+  sleep 0.3
+  assert_eq "E1a after session 1 the record is a DEAD owner (kill authority)" "DEAD" \
+    "$(service_owner_classify "$E1_BE" | cut -d: -f1)"
+  # ---- session 2 starts and reclaims the canonical ports ----
+  ( set +e
+    export CHAIN_SERVICE_REGISTRY_DIR="$CHAIN_SERVICE_REGISTRY_DIR"
+    unset CHAIN_BACKEND_PORT CHAIN_FRONTEND_PORT CHAIN_SERVICE_OWNER_SCOPE CHAIN_SERVICE_OWNER_TOKEN
+    source "$SBX/scripts/automation/lib/common.sh" >/dev/null 2>&1
+    # common.sh assigns REPO_ROOT from its OWN path, so the project root has to
+    # be set AFTER sourcing or the reclaim targets a different offset entirely.
+    export REPO_ROOT="$PROJECT_ROOT"
+    reclaim_canonical_phase_ports
+  ) >"$WORK/e1.log" 2>&1
+  settle
+  if pid_alive "$E1_APP" && port_answers "$E1_BE"; then
+    assert "E1b the healthy app survives the next session's reclaim" pass
+  else
+    assert "E1b the next session's reclaim KILLED the preserved app" fail
+  fi
+  # ---- contracts must be loaded BEFORE that first lifecycle decision ----
+  # A 404-readiness app is healthy only if the project's contract is already in
+  # effect when reclaim decides. Reclaim runs before ensure_phase_ports, so a
+  # contract loaded only there arrives too late.
+  E1_FE=$((3000 + E1_OFF))
+  if ! port_answers "$E1_FE"; then
+    mkdir -p "$PROJECT_ROOT/.claude"
+    printf '%s\n' "export CHAIN_SERVICE_HEALTHY_FRONTEND='^(2|3|404)'" \
+      > "$PROJECT_ROOT/.claude/service-contracts.sh"
+    # Owned by a DEAD owner of THIS repo lineage — same shape as E1b, so the
+    # reclaim has genuine authority and only the lifecycle policy (plus the
+    # contract that makes a 404 readiness response healthy) can save it.
+    setsid sleep 120 >/dev/null 2>&1 &
+    E1F_ENGINE=$!
+    DUMMY_PIDS+=("$E1F_ENGINE")
+    E1F_TOKEN="$(engine_token_mint "$E1F_ENGINE")"
+    E1F_SCOPE="$(service_owner_scope_value "$PROJECT_ROOT" "$E1F_TOKEN")"
+    E1F_INSTANCE="$(service_instance_mint)"
+    start_coded_listener "$E1_FE" 404 "no root route" \
+      "CHAIN_SERVICE_OWNER_SCOPE=$E1F_SCOPE" "CHAIN_SERVICE_INSTANCE=$E1F_INSTANCE"
+    E1_FEPID="$LISTENER_PID"
+    service_owner_write_as "$E1_FE" "frontend" "$E1_FEPID" "$E1F_INSTANCE" "$E1F_TOKEN" \
+      "persistent" "http://127.0.0.1:$E1_FE/" "$(service_tree_revision)" '^[23]'
+    kill -KILL "$E1F_ENGINE" 2>/dev/null; wait "$E1F_ENGINE" 2>/dev/null
+    sleep 0.3
+    ( set +e
+      unset CHAIN_BACKEND_PORT CHAIN_FRONTEND_PORT CHAIN_SERVICE_HEALTHY_FRONTEND
+      unset CHAIN_SERVICE_OWNER_SCOPE CHAIN_SERVICE_OWNER_TOKEN _SERVICE_CONTRACTS_LOADED
+      source "$SBX/scripts/automation/lib/common.sh" >/dev/null 2>&1
+      export REPO_ROOT="$PROJECT_ROOT"
+      reclaim_canonical_phase_ports
+    ) >"$WORK/e1c.log" 2>&1
+    settle
+    if pid_alive "$E1_FEPID"; then
+      assert "E1c contracts are in effect before the first lifecycle decision" pass
+    else
+      assert "E1c reclaim decided health before loading the project contract" fail
+    fi
+    rm -f "$PROJECT_ROOT/.claude/service-contracts.sh"
+  else
+    assert "E1c skipped: canonical port $E1_FE busy" pass
+  fi
+  export REPO_ROOT="${E1_PREV_REPO_ROOT:-$REPO_ROOT}"
+fi
+echo
+
+# ── E2: the ownership decision and the signal must be ONE act ────────────────
+echo "-- E2: verification cannot be satisfied by a replacement's own identity"
+# A missing identity must REFUSE, not silently disable verification.
+E2_PORT="$(free_port)"
+start_listener "$E2_PORT" "CHAIN_SERVICE_OWNER_SCOPE=$OUR_SCOPE"
+E2_PID="$LISTENER_PID"
+service_signal_tree "$E2_PID" 1 "" "$OUR_SCOPE" >/dev/null 2>&1
+e2a_rc=$?
+settle
+assert_eq "E2a an empty identity refuses (does not disable verification)" "1" "$e2a_rc"
+if pid_alive "$E2_PID"; then
+  assert "E2b the process survives an unverifiable request" pass
+else
+  assert "E2b an unverifiable request still killed the process" fail
+fi
+# A missing required scope must likewise refuse.
+E2C_PORT="$(free_port)"
+start_listener "$E2C_PORT" "CHAIN_SERVICE_OWNER_SCOPE=$OUR_SCOPE"
+E2C_PID="$LISTENER_PID"
+service_signal_tree "$E2C_PID" 1 "$(service_pid_starttime "$E2C_PID")" "" >/dev/null 2>&1
+e2c_rc=$?
+settle
+assert_eq "E2c an empty required scope refuses" "1" "$e2c_rc"
+if pid_alive "$E2C_PID"; then
+  assert "E2d the process survives a scopeless request" pass
+else
+  assert "E2d a scopeless request still killed the process" fail
+fi
+# A foreign-scoped process must be refused even when the caller asserts ours.
+E2E_PORT="$(free_port)"
+start_listener "$E2E_PORT" "CHAIN_SERVICE_OWNER_SCOPE=somebody.else.scope"
+E2E_PID="$LISTENER_PID"
+service_signal_tree "$E2E_PID" 1 "$(service_pid_starttime "$E2E_PID")" "$OUR_SCOPE" >/dev/null 2>&1
+e2e_rc=$?
+settle
+assert_eq "E2e a foreign-scoped process is refused at signal time" "1" "$e2e_rc"
+if pid_alive "$E2E_PID"; then
+  assert "E2f the foreign-scoped process survives" pass
+else
+  assert "E2f the foreign-scoped process was KILLED" fail
+fi
+# The shell must not re-derive identity/scope after the verdict.
+if grep -qE 'owned\+=\("\$\{p\}\|\$\(service_pid_starttime' \
+     <(sed -n '/^service_owner_terminate()/,/^}/p' "$ENGINE_ROOT/scripts/automation/lib/service-owner.sh"); then
+  assert "E2g terminate still re-reads identity/scope after the verdict" fail
+else
+  assert "E2g terminate does not re-derive identity after its verdict" pass
+fi
+# Python-unavailable fallback: descendants must still be ownership-checked.
+E2H_DIR="$WORK/nopy/lib"
+mkdir -p "$E2H_DIR"
+cp "$ENGINE_ROOT/scripts/automation/lib/service-owner.sh" \
+   "$ENGINE_ROOT/scripts/automation/lib/engine-identity.sh" "$E2H_DIR/"   # NO proc_signal.py
+E2H_LOG="$WORK/e2h.log"
+(
+  set +e
+  export REPO_ROOT="$PROJECT_ROOT"
+  # The re-source guards are plain variables and a subshell inherits them, so
+  # without clearing them the sandbox copy is skipped and the REAL library (with
+  # proc_signal.py beside it) stays in scope — exercising the python path
+  # instead of the fallback this scenario exists to test.
+  unset _SERVICE_OWNER_SOURCED _ENGINE_IDENTITY_SOURCED
+  # shellcheck source=/dev/null
+  source "$E2H_DIR/service-owner.sh"
+  echo "HELPER=$([[ -f "$E2H_DIR/proc_signal.py" ]] && echo present || echo absent)"
+  export CHAIN_SERVICE_OWNER_SCOPE="$OUR_SCOPE"
+  # stamped parent, UNSTAMPED child
+  python3 -c "
+import subprocess,sys,os,time
+e=dict(os.environ); e.pop('CHAIN_SERVICE_OWNER_SCOPE',None)
+c=subprocess.Popen([sys.executable,'-c','import time; time.sleep(25)'],env=e)
+print(c.pid, flush=True)
+time.sleep(25)
+" > "$WORK/e2h-kid.txt" &
+  _root=$!
+  sleep 1.5
+  _kid=$(head -1 "$WORK/e2h-kid.txt" 2>/dev/null)
+  echo "ROOT=$_root KID=$_kid TREE=$(_svc_pid_tree "$_root" | tr '\n' ' ')"
+  echo "KID_SCOPE=[$(engine_proc_env "$_kid" CHAIN_SERVICE_OWNER_SCOPE 2>/dev/null)]"
+  [[ -n "$_kid" ]] || { echo "PROBE_BROKEN"; exit 0; }
+  service_signal_tree "$_root" 1 "$(service_pid_starttime "$_root")" "$OUR_SCOPE"
+  sleep 1
+  echo "KID_ALIVE=$(kill -0 "$_kid" 2>/dev/null && echo yes || echo no)"
+  kill -KILL "$_root" "$_kid" 2>/dev/null
+) >"$E2H_LOG" 2>&1
+sed -n 's/^/    [e2h] /p' "$E2H_LOG" 2>/dev/null | head -6
+if ! grep -q 'HELPER=absent' "$E2H_LOG" || ! grep -q 'KID_SCOPE=\[\]' "$E2H_LOG"; then
+  assert "E2h setup invalid: fallback path or unstamped child not established" fail
+elif grep -q "PROBE_BROKEN" "$E2H_LOG"; then
+  assert "E2h probe could not establish a child process (test is unreliable)" fail
+elif grep -q "KID_ALIVE=yes" "$E2H_LOG"; then
+  assert "E2h fallback path also refuses to signal an unstamped descendant" pass
+else
+  assert "E2h fallback path signalled an unstamped descendant (see $E2H_LOG)" fail
+fi
+echo
+
+# ── E3: application health gates EVERY reuse and startup path ────────────────
+echo "-- E3: health is enforced on external reuse and on fresh startup"
+# External service with a VALID identity marker but a 500 response.
+E3_PORT="$(free_port)"
+start_coded_listener "$E3_PORT" 500 '{"service":"iad-demo-api","err":"db down"}'
+E3_PID="$LISTENER_PID"
+E3_LOG="$WORK/e3.log"
+(
+  set +e
+  export REPO_ROOT="$SBX"
+  source "$SBX/scripts/automation/lib/common.sh" >/dev/null 2>&1
+  export CHAIN_SERVICE_VERIFY_BACKEND='grep -q iad-demo-api'
+  _start_service_with_retries "backend" "http://127.0.0.1:$E3_PORT/" "true" \
+    "$WORK/e3-svc.log" 2 1 QA_BACKEND_LOG_TAIL "" '^[1-5][0-9][0-9]$'
+  echo "RC=$?"
+) >"$E3_LOG" 2>&1
+settle
+if grep -q "^RC=0" "$E3_LOG"; then
+  assert "E3a a 500 external service with a valid marker was ACCEPTED" fail
+else
+  assert "E3a identity alone cannot make a 500 external service acceptable" pass
+fi
+if port_answers "$E3_PORT"; then
+  assert "E3b the unhealthy external service was left running" pass
+else
+  assert "E3b the unhealthy external service was KILLED" fail
+fi
+# A NEWLY SPAWNED managed service that comes up 500 must not count as ready.
+E3C_PORT="$(free_port)"
+cat > "$WORK/boot500.sh" <<BOOT
+#!/usr/bin/env bash
+# Record the pid so the suite can reap it even when the assertion FAILS — a
+# regression here means the framework accepted a 500 as ready and left the
+# service running, which must not leak a process onto the developer's machine.
+echo \$\$ > "$WORK/boot500.pid"
+exec python3 -c "
+import sys
+from http.server import BaseHTTPRequestHandler, HTTPServer
+class H(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(500); self.send_header('Content-Length','5'); self.end_headers()
+        self.wfile.write(b'boom!')
+    def log_message(self,*a): pass
+HTTPServer(('127.0.0.1', $E3C_PORT), H).serve_forever()
+"
+BOOT
+chmod +x "$WORK/boot500.sh"
+E3C_LOG="$WORK/e3c.log"
+(
+  set +e
+  export REPO_ROOT="$SBX"
+  source "$SBX/scripts/automation/lib/common.sh" >/dev/null 2>&1
+  _start_service_with_retries "backend" "http://127.0.0.1:$E3C_PORT/" "bash $WORK/boot500.sh" \
+    "$WORK/e3c-svc.log" 6 1 QA_BACKEND_LOG_TAIL "" '^[1-5][0-9][0-9]$'
+  echo "RC=$?"
+) >"$E3C_LOG" 2>&1
+[[ -s "$WORK/boot500.pid" ]] && DUMMY_PIDS+=("$(cat "$WORK/boot500.pid")")
+if grep -q "^RC=0" "$E3C_LOG"; then
+  assert "E3c a freshly spawned 500 service was declared READY" fail
+else
+  assert "E3c a freshly spawned 500 service is not declared ready" pass
+fi
+# The framework must also not leave it running once it has refused it.
+if [[ -s "$WORK/boot500.pid" ]] && pid_alive "$(cat "$WORK/boot500.pid")"; then
+  assert "E3c2 the refused service was left running (leaked)" fail
+else
+  assert "E3c2 the refused service was torn down, not leaked" pass
+fi
+# And the explicit contract still makes a non-2xx readiness response legitimate.
+E3D_PORT="$(free_port)"
+start_coded_listener "$E3D_PORT" 404 '{"service":"iad-demo-api"}'
+E3D_PID="$LISTENER_PID"
+E3D_LOG="$WORK/e3d.log"
+(
+  set +e
+  export REPO_ROOT="$SBX"
+  source "$SBX/scripts/automation/lib/common.sh" >/dev/null 2>&1
+  export CHAIN_SERVICE_VERIFY_BACKEND='grep -q iad-demo-api'
+  export CHAIN_SERVICE_HEALTHY_BACKEND='^(2|3|404)'
+  _start_service_with_retries "backend" "http://127.0.0.1:$E3D_PORT/" "true" \
+    "$WORK/e3d-svc.log" 2 1 QA_BACKEND_LOG_TAIL "" '^[1-5][0-9][0-9]$'
+  echo "RC=$?"
+) >"$E3D_LOG" 2>&1
+if grep -q "^RC=0" "$E3D_LOG"; then
+  assert "E3d an explicit health contract still admits a 404 readiness response" pass
+else
+  assert "E3d the explicit health contract was ignored (see $E3D_LOG)" fail
+fi
+echo
+
+# ── E4: a FORKED subshell has no environ stamp — parent link is the proof ────
+# /proc's environ is frozen at the last exec. `( … ) &` never execs, so a
+# variable the parent exported at RUNTIME is absent from the child's environ.
+# Requiring an ownership stamp there does not make teardown safer; it makes the
+# framework refuse to reap its own forks — which is exactly what broke the
+# SPEED-2 fork reap. The honest proof is the kernel parent link, verified
+# against the pinned process.
+echo "-- E4: forked subshells are reaped by parent link, not by environ stamp"
+( trap "" TERM; _x=0; while [ $_x -lt 60 ]; do _x=$((_x+1)); sleep 0.2; done ) &
+E4_FORK=$!
+DUMMY_PIDS+=("$E4_FORK")
+sleep 0.5
+if [[ -z "$(engine_proc_env "$E4_FORK" CHAIN_SERVICE_OWNER_SCOPE 2>/dev/null)" ]]; then
+  assert "E4a premise: a forked subshell carries no runtime-exported stamp" pass
+else
+  assert "E4a premise broken: the fork DOES carry a stamp (test is not exercising the gap)" fail
+fi
+service_signal_child "$E4_FORK" 2 >/dev/null 2>&1
+e4_rc=$?
+settle
+assert_eq "E4b our own fork is reaped via the parent link" "0" "$e4_rc"
+if pid_alive "$E4_FORK"; then
+  assert "E4c the fork was NOT reaped (framework cannot clean up after itself)" fail
+else
+  assert "E4c the fork was reaped" pass
+fi
+# A process that is NOT our child and carries no stamp must still be refused.
+# Double-fork so the target is genuinely reparented to init — it must not be a
+# child of this shell, or the parent-link proof would legitimately succeed.
+python3 -c "
+import os, sys, time
+pid = os.fork()
+if pid == 0:
+    os.setsid()
+    p2 = os.fork()
+    if p2 == 0:
+        time.sleep(60); os._exit(0)
+    open(sys.argv[1], 'w').write(str(p2)); os._exit(0)
+os.waitpid(pid, 0)
+" "$WORK/orphan.pid" 2>/dev/null
+sleep 0.5
+E4_ORPHAN="$(cat "$WORK/orphan.pid" 2>/dev/null)"
+if [[ -n "$E4_ORPHAN" ]]; then
+  DUMMY_PIDS+=("$E4_ORPHAN")
+  service_signal_child "$E4_ORPHAN" 1 >/dev/null 2>&1
+  e4d_rc=$?
+  settle
+  assert_eq "E4d a process that is not our child is refused" "1" "$e4d_rc"
+  if pid_alive "$E4_ORPHAN"; then
+    assert "E4e the non-child process survives" pass
+  else
+    assert "E4e a non-child process was signalled" fail
+  fi
+  kill -KILL "$E4_ORPHAN" 2>/dev/null || true
+else
+  assert "E4d/E4e skipped: could not establish a non-child probe process" fail
 fi
 echo
 
