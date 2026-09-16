@@ -39,10 +39,13 @@ Usage
         Print the stable identity string for a pid (empty if it is gone).
 
     proc_signal.py tree <pid> [--grace SECONDS] [--identity ID]
+                              [--require-env NAME=VALUE]...
         TERM the pid and all descendants, wait up to SECONDS for them to exit,
-        then KILL the survivors — every signal identity-checked. When --identity
-        is given it must match the root's current identity or NOTHING is
-        signalled (exit 3).
+        then KILL the survivors. The root is PINNED first and only then checked
+        against --identity and every --require-env stamp; if it does not match,
+        NOTHING is signalled (exit 3). Descendants must carry the same stamps or
+        they are skipped, so a process that merely appears in the tree is never
+        signalled on the strength of its parent.
 
     proc_signal.py --self-test
 
@@ -126,20 +129,65 @@ def descendants(root):
     return ordered
 
 
+def proc_env(pid, name):
+    """Value of one variable in a process's launch environment, or None."""
+    try:
+        with open("/proc/%d/environ" % int(pid), "rb") as fh:
+            raw = fh.read()
+    except (OSError, ValueError):
+        return None
+    prefix = (name + "=").encode()
+    for entry in raw.split(b"\0"):
+        if entry.startswith(prefix):
+            return entry[len(prefix):].decode("utf-8", "replace")
+    return None
+
+
 class Target:
-    """A process pinned by pidfd where possible, by starttime otherwise."""
+    """A process PINNED by pidfd, whose facts are read only after pinning.
+
+    Ordering matters and is the whole point. `pidfd_open` holds a reference to
+    the kernel's `struct pid`, which keeps that pid NUMBER allocated for as long
+    as the fd is open. So:
+
+        1. open the pidfd      -> the pid can no longer be recycled
+        2. read /proc/<pid>/*  -> now provably describes the pinned process
+        3. signal via the fd   -> reaches that same process, or nothing
+
+    Reading the facts first (as this class used to) and opening the fd after
+    leaves a window in which the process exits, the pid is reused, and the fd
+    ends up pinning a stranger that the earlier read had vouched for. That is
+    the ownership-to-signal race: the verification and the act must be about
+    the same pinned object, and pinning has to come first.
+
+    Without pidfd support there is nothing to pin, so `verified` falls back to
+    a start-time comparison and the guarantee degrades to "very small window"
+    rather than "impossible" — see the module docstring.
+    """
 
     __slots__ = ("pid", "start", "fd")
 
     def __init__(self, pid):
         self.pid = int(pid)
-        self.start = proc_starttime(pid)
         self.fd = None
-        if _HAVE_PIDFD and self.start:
+        if _HAVE_PIDFD:
             try:
                 self.fd = os.pidfd_open(self.pid, 0)
             except (OSError, ValueError):
                 self.fd = None
+        # Read AFTER pinning, so these facts describe the pinned process.
+        self.start = proc_starttime(self.pid)
+
+    def satisfies(self, expect_identity=None, require_env=None):
+        """Re-verify the PINNED process against the caller's expectations."""
+        if expect_identity:
+            if not self.start or self.start != expect_identity:
+                return False
+        for item in (require_env or []):
+            name, _, want = item.partition("=")
+            if proc_env(self.pid, name) != want:
+                return False
+        return True
 
     def alive(self):
         if not self.start:
@@ -175,24 +223,56 @@ class Target:
             self.fd = None
 
 
-def signal_tree(root, grace=2.0, expect_identity=None):
-    """TERM the tree, wait, KILL survivors. Every signal identity-checked.
+def signal_tree(root, grace=2.0, expect_identity=None, require_env=None):
+    """PIN the root, re-verify it, then TERM/grace/KILL the verified tree.
 
-    Returns (termed, killed, skipped). Raises SystemExit(3) on identity mismatch.
+    `expect_identity` is the start time captured when the caller made its
+    ownership decision. `require_env` is a list of "NAME=VALUE" stamps that the
+    pinned process must still carry — this is how an OWNERSHIP decision made in
+    the shell is re-established here, against the pinned process, instead of
+    being trusted across the gap.
+
+    Returns (termed, killed, skipped). Raises SystemExit(3) when the root fails
+    verification, in which case NOTHING is signalled.
     """
     root = int(root)
-    if expect_identity is not None and expect_identity != "":
-        if identity(root) != expect_identity:
-            sys.stderr.write(
-                "[proc_signal] refusing to signal pid %d: identity no longer matches "
-                "(expected %s, found %s) — the pid was recycled or the process is gone\n"
-                % (root, expect_identity, identity(root) or "<gone>"))
-            raise SystemExit(3)
 
-    # Snapshot and PIN the whole tree BEFORE the first signal, so a child that
-    # gets reparented while we work is still reachable by its own pidfd.
-    targets = [Target(p) for p in descendants(root)]
-    targets = [t for t in targets if t.start]      # drop already-dead entries
+    # Pin the root FIRST, then verify it. Verifying before pinning is the race.
+    root_t = Target(root)
+    if not root_t.start:
+        root_t.close()
+        return (0, 0, 0)                      # already gone: clean no-op
+    if not root_t.satisfies(expect_identity, require_env):
+        detail = []
+        if expect_identity:
+            detail.append("identity expected %s, found %s"
+                          % (expect_identity, root_t.start or "<gone>"))
+        for item in (require_env or []):
+            name, _, want = item.partition("=")
+            got = proc_env(root, name)
+            if got != want:
+                detail.append("%s expected %r, found %r" % (name, want, got))
+        root_t.close()
+        sys.stderr.write(
+            "[proc_signal] refusing to signal pid %d: the pinned process does not match "
+            "what was verified (%s) — it was replaced, recycled, or is not ours\n"
+            % (root, "; ".join(detail) or "verification failed"))
+        raise SystemExit(3)
+
+    # Snapshot and PIN the rest of the tree, then hold each descendant to the
+    # SAME ownership stamps. environ is inherited, so a genuine descendant
+    # carries them; anything that does not is not ours to signal.
+    targets = [root_t]
+    for p in descendants(root):
+        if p == root:
+            continue
+        t = Target(p)
+        if not t.start or not t.satisfies(None, require_env):
+            t.close()
+            continue
+        targets.append(t)
+    # children before their parent
+    targets.sort(key=lambda t: 0 if t.pid != root else 1)
 
     termed = sum(1 for t in targets if t.send(signal.SIGTERM))
 
@@ -286,6 +366,51 @@ def _self_test():
     p.wait(timeout=5)
     check("TERM-ignoring process was killed", p.poll() is not None)
 
+    print("[proc_signal self-test] ownership stamp is re-verified AFTER pinning")
+    env = dict(os.environ); env["IAD_SELFTEST_STAMP"] = "expected-value"
+    p = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"], env=env)
+    time.sleep(0.3)
+    try:
+        signal_tree(p.pid, grace=2.0, require_env=["IAD_SELFTEST_STAMP=expected-value"])
+        p.wait(timeout=5)
+        check("matching stamp is signalled", p.poll() is not None)
+    finally:
+        if p.poll() is None:
+            p.kill(); p.wait()
+    p = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])   # no stamp
+    time.sleep(0.3)
+    try:
+        try:
+            signal_tree(p.pid, grace=0.2, require_env=["IAD_SELFTEST_STAMP=expected-value"])
+            check("missing stamp raises SystemExit(3)", False)
+        except SystemExit as e:
+            check("missing stamp raises SystemExit(3)", e.code == 3)
+        time.sleep(0.2)
+        check("unstamped process survived", p.poll() is None)
+    finally:
+        if p.poll() is None:
+            p.kill(); p.wait()
+
+    print("[proc_signal self-test] a descendant without the stamp is not signalled")
+    env2 = dict(os.environ); env2["IAD_SELFTEST_STAMP"] = "expected-value"
+    script = ("import subprocess,sys,os,time\n"
+              "e=dict(os.environ); e.pop('IAD_SELFTEST_STAMP',None)\n"
+              "c=subprocess.Popen([sys.executable,'-c','import time; time.sleep(30)'],env=e)\n"
+              "print(c.pid, flush=True)\n"
+              "time.sleep(30)\n")
+    p = subprocess.Popen([sys.executable, "-c", script], env=env2, stdout=subprocess.PIPE)
+    kid = int(p.stdout.readline().strip())
+    time.sleep(0.5)
+    signal_tree(p.pid, grace=2.0, require_env=["IAD_SELFTEST_STAMP=expected-value"])
+    p.wait(timeout=5)
+    time.sleep(0.3)
+    check("stamped root was signalled", p.poll() is not None)
+    check("unstamped descendant was spared", identity(kid) != "")
+    try:
+        os.kill(kid, signal.SIGKILL)
+    except OSError:
+        pass
+
     print("[proc_signal self-test] already-dead pid is a clean no-op")
     p = subprocess.Popen([sys.executable, "-c", "pass"])
     p.wait()
@@ -306,16 +431,19 @@ def main(argv):
         pid = argv[2]
         grace = 2.0
         expect = None
+        require_env = []
         i = 3
         while i < len(argv):
             if argv[i] == "--grace" and i + 1 < len(argv):
                 grace = float(argv[i + 1]); i += 2
             elif argv[i] == "--identity" and i + 1 < len(argv):
                 expect = argv[i + 1]; i += 2
+            elif argv[i] == "--require-env" and i + 1 < len(argv):
+                require_env.append(argv[i + 1]); i += 2
             else:
                 i += 1
         try:
-            termed, killed, skipped = signal_tree(pid, grace, expect)
+            termed, killed, skipped = signal_tree(pid, grace, expect, require_env)
         except SystemExit as e:
             return e.code
         except (ValueError, OSError) as e:

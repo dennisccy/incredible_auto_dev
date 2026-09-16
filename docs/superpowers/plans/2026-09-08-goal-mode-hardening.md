@@ -373,6 +373,43 @@ Stage all thirteen as `HARD-1 … HARD-11` (with `HARD-4A/4B/4C`) in a new roadm
 > It now selects listeners only (`-sTCP:LISTEN`), prints each pid and command line before
 > signalling, signals through the identity-validated path, and fails if the port is still held.
 
+> **REVISION 4 — 2026-09-16, after independent review of `c11082d`. Four seams closed.**
+>
+> Rev 3 fixed *what* to terminate and *when*. Review found the checks were still not carried
+> through to the acts that depended on them:
+>
+> 1. **Ownership-to-signal race.** `service_owner_terminate` verified ownership and then passed
+>    only a PID to `_svc_kill_tree`; the validated identity was dropped, and `proc_signal.py`
+>    signalled without one when none was given. Worse, `Target.__init__` read the process facts
+>    and opened the pidfd *afterwards* — so the fd could end up pinning a process that the earlier
+>    read had vouched for and that had since been replaced. A pidfd protects the process it
+>    actually opens; it does not prove that is the process whose ownership was verified. Fixed by
+>    inverting the order — **pin first, then read and verify the pinned process** (a pidfd holds
+>    `struct pid`, so the pid number cannot be recycled while it is open) — and by carrying the
+>    verified identity *and* ownership stamp from the shell into the signaller
+>    (`--identity`, `--require-env CHAIN_SERVICE_OWNER_SCOPE=<scope>`). Descendants must carry the
+>    same stamp or they are skipped, so nothing is signalled merely for appearing in the tree.
+> 2. **Persistent records were not bound to the actual listener.** `service_release` and
+>    `service_reuse_decision` trusted a port's `lifecycle=persistent` record without checking that
+>    the current listener carried the record's `CHAIN_SERVICE_INSTANCE`. A registered backend
+>    exits, an agent's verification server takes the port, answers 200, the tree has not changed —
+>    and the leak inherited the application's lifecycle and revision identity, so it was preserved
+>    as the app and reused as the dependency. `service_record_listener_bound` now gates every use
+>    of persistent metadata, and an unbound record is dropped rather than believed.
+> 3. **HTTP 500 counted as healthy.** `service_service_healthy` accepted `^[1-5][0-9][0-9]$` — the
+>    boot gate's deliberately permissive *reachability* regex. Reachability, identity and health
+>    are now three separate questions: health uses `CHAIN_SERVICE_HEALTHY_<ROLE>`, else the
+>    `health_re` recorded at registration, else `^[23]`. Applications whose valid readiness is not
+>    2xx remain supported — they declare it.
+> 4. **The contract was documented but not wired.** `.claude/project-template.md` is sliced into
+>    agent prompts and never sourced, so `CHAIN_SERVICE_VERIFY_<ROLE>` declared there never
+>    reached the shell — the fail-closed reuse rule was unreachable in practice. Added
+>    `service_contracts_load` (sourced from `ensure_phase_ports`) reading
+>    `<project>/.claude/service-contracts.sh`, with `templates/service-contracts.sh` as the
+>    starting point, `CHAIN_SERVICE_CONTRACTS_FILE` to relocate it, and environment values taking
+>    precedence so CI can override one run. Generic: no product-specific behaviour in the
+>    framework.
+
 1. **Problem.** Every service teardown was port-scoped or command-line-scoped and owner-blind:
    `kill_phase_servers` (`lib/common.sh:793`), `reclaim_canonical_phase_ports` (`:812`),
    `_bqa_kill_port_servers` (`goal-iter-lean.sh:192`, from the EXIT trap and the fork reaps),
@@ -513,7 +550,16 @@ Stage all thirteen as `HARD-1 … HARD-11` (with `HARD-4A/4B/4C`) in a new roadm
     `_svc_kill_tree` contain no unvalidated escalation; C7 a healthy-but-rejected service fails
     closed and is left running; C8 an unowned service with no contract fails closed, un-killed
     and without a port switch; C9 `DEV_FORCE` spares a process merely CONNECTED to the port.
-    Plus `lib/proc_signal.py --self-test` (11 checks) in `run-evals.sh`.
+    **Rev 4 (D-series):** D1 the identity verified at check time gates the signal — a REPLACEMENT
+    between verification and signalling is refused, an unstamped pinned process is refused
+    (exit 3), and `service_owner_terminate` is pinned to carry identity+scope onward; D2 a stale
+    persistent record cannot adopt a replacement listener (reuse says RESTART, cleanup reaps);
+    D3 a 500 is not healthy, is restart-required, is not reused and is not preserved, while an
+    explicit `CHAIN_SERVICE_HEALTHY_<ROLE>` still admits a non-2xx readiness response; D4 a
+    correctly identified EXTERNAL service is reused with no manual intervention via the contract
+    file, a contract-rejected one still fails closed un-killed, `ensure_phase_ports` loads the
+    file automatically, and an explicit environment value beats it.
+    Plus `lib/proc_signal.py --self-test` (16 checks) in `run-evals.sh`.
 12. **Migration/rollout.** Default on, single mode. No `warn`, no `off` (see the revision note).
 13. **Observability.** `services_kill_refused` must be 0 in a single-engine session with no
     foreign services; doctor row `service-owners`; `service-owner.sh status|classify|owns|doctor`.

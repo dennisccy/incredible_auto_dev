@@ -68,6 +68,11 @@ for PORT in $BACKEND_PORT $FRONTEND_PORT; do
     done
     for p in $PIDS; do
       if command -v service_signal_tree >/dev/null 2>&1; then
+        # Identity is bound (a recycled pid cannot inherit this signal), but NO
+        # ownership stamp is required here: DEV_FORCE exists precisely to
+        # reclaim a port this stack does not own, and the operator has stated
+        # that intent for this invocation. Scope is overridden deliberately,
+        # not dropped by accident.
         service_signal_tree "$p" 2 "$(service_pid_starttime "$p")" || true
       else
         kill -TERM "$p" 2>/dev/null || true

@@ -245,6 +245,7 @@ was not a plain success.
 | `services_terminate_incomplete` | something still listened after its owned processes were killed | `port`, `caller` |
 | `services_preserved` | a healthy, current application service was left running by a cleanup path | `port`, `caller` |
 | `services_released_for_restart` | a persistent service was released because a restart is verified required (unhealthy, or stale revision) | `port`, `caller` |
+| `services_record_unbound` | a record described a service that is no longer the listener; it was dropped and the occupant treated as ephemeral | `port`, `caller` |
 | `services_registry_error` | the ownership registry could not be created/written | `op` (`dir`/`write`), `port` |
 | `services_identity_unavailable` | no procfs identity could be minted, so this process refuses ALL terminations | `reason` |
 
@@ -264,8 +265,15 @@ rebooted. `services_released_for_restart` rows are also normal while the develop
 code: each one means the running service was serving an older revision than the working tree and
 was replaced so the next step tested the fix, not the tree before it.
 `services_port_blocked` with a `reuse verification` context means an external service answered but
-could not be confirmed as the expected role — configure `CHAIN_SERVICE_VERIFY_<ROLE>` or free the
-port.
+could not be confirmed as the expected role — configure `CHAIN_SERVICE_VERIFY_<ROLE>` in
+`.claude/service-contracts.sh` or free the port.
+
+`services_record_unbound` means a registry record outlived the process it described and something
+else took the port. Expect it occasionally after a crash; a run producing it repeatedly on the
+same port is a service that keeps dying and being replaced — look at that service's log rather
+than at the ownership layer. A `services_kill_refused` carrying `"verdict":"REPLACED"` is the
+ownership-to-signal guard firing: the process verified a moment earlier was no longer the process
+at that pid when the signal was about to be sent, so nothing was signalled.
 
 ### Wall-time report and tripwire
 

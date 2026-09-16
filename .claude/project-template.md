@@ -136,16 +136,37 @@ about which revision it is serving.
   contract the run stops with a named blocker rather than testing an unknown
   service — it will not kill it and will not silently move to another port.
 
+**Where this is configured.** This file is sliced into agent prompts and is
+never sourced, so declaring a contract here alone has no effect on the shell
+that enforces it. The runtime mechanism is:
+
 ```
-Verify backend:  <e.g., CHAIN_SERVICE_VERIFY_BACKEND='jq -e .service=="myapp-api"'>
-Verify frontend: <e.g., CHAIN_SERVICE_VERIFY_FRONTEND='grep -q "<title>MyApp"'>
+<project>/.claude/service-contracts.sh     ← copy templates/service-contracts.sh
 ```
 
-The command receives the response body on **stdin** and `<url> <port>` as
-arguments; **exit 0 means "this is the expected service"**. The variable name is
-`CHAIN_SERVICE_VERIFY_` + the role in upper case (`BACKEND`, `FRONTEND`).
-Prefer a check that also pins the build (a version field, a build hash) so a
-stale external instance is rejected rather than accepted.
+The framework sources it from `ensure_phase_ports`, before anything probes,
+reuses or tears down a service. Values already in the environment win, so an
+operator or CI can override a single run. `CHAIN_SERVICE_CONTRACTS_FILE`
+relocates the file.
+
+```bash
+export CHAIN_SERVICE_VERIFY_BACKEND='jq -e ".service == \"myapp-api\""'
+export CHAIN_SERVICE_VERIFY_FRONTEND='grep -q "<title>MyApp"'
+export CHAIN_SERVICE_HEALTHY_BACKEND='^[23]'      # only if not 2xx/3xx
+```
+
+The verify command receives the response body on **stdin** and `<url> <port>`
+as arguments; **exit 0 means "this is the expected service"**. Prefer a check
+that also pins the build (a version field, a build hash) so a stale external
+instance is rejected rather than accepted.
+
+**Health is separate from readiness.** The boot gate's readiness regex is
+deliberately permissive (any HTTP status proves the server is routing, which
+matters for projects with no `/health` route). Health — "is the application
+actually serving?" — defaults to 2xx/3xx and decides whether a running service
+is preserved and reused. Set `CHAIN_SERVICE_HEALTHY_<ROLE>` only if your valid
+readiness response is not 2xx/3xx; without it a service returning 500 is
+treated as needing a restart, which is the safe reading.
 
 ---
 

@@ -5580,23 +5580,45 @@ Four root causes: governors read proxies instead of facts (HARD-1..3); ownership
   listener not killed, port not switched. Also `scripts/dev.sh` `DEV_FORCE=1` now targets
   LISTENERS only — `lsof -ti :PORT` also matched established **client** sockets (verified), so the
   override could `kill -9` a connected browser.
-- **DoD/Verify:** `tests/automation/test-service-ownership.sh` — 52 assertions over real
+- **Rev 4 (2026-09-16, after independent review of `c11082d`) — four seams where a check was not
+  carried through to the act:** (1) *Ownership-to-signal race.* `service_owner_terminate` dropped
+  the verified identity and `proc_signal.py` read process facts BEFORE opening the pidfd, so the
+  fd could pin a replacement the earlier read had vouched for. Now **pin first, then verify the
+  pinned process**, with the shell's verified identity and ownership stamp carried in
+  (`--identity`, `--require-env`); descendants must carry the same stamp or are skipped.
+  (2) *Persistent records unbound from the listener.* A registered backend could exit and an
+  agent's verification server take the port, inheriting `persistent` + the recorded revision and
+  being preserved as the application. `service_record_listener_bound` gates all persistent
+  metadata on the live listener carrying the record's `CHAIN_SERVICE_INSTANCE`; an unbound record
+  is dropped. (3) *HTTP 500 counted as healthy* — `^[1-5][0-9][0-9]$` is the boot gate's
+  *reachability* regex. Health is now its own contract: `CHAIN_SERVICE_HEALTHY_<ROLE>`, else the
+  recorded `health_re`, else `^[23]`. (4) *The contract was documented but not wired* —
+  `project-template.md` is sliced into agent prompts, never sourced. Added `service_contracts_load`
+  (called from `ensure_phase_ports`) reading `<project>/.claude/service-contracts.sh`, template at
+  `templates/service-contracts.sh`, `CHAIN_SERVICE_CONTRACTS_FILE` to relocate, environment wins.
+- **DoD/Verify:** `tests/automation/test-service-ownership.sh` — 72 assertions over real
   subprocesses on dynamic ports: B2 (an unowned listener survives every teardown path), B12
   (static sweep: no `fuser -k`/`pkill`/`killall` under `scripts/automation/`), B13/B14, and the
   rev-3 C-series C1–C9 (preserve healthy app services, reap ephemeral leaks, detect stale
-  revisions, signal-time identity, fail-closed reuse, DEV_FORCE scope). Plus
-  `lib/proc_signal.py --self-test`. Both wired into `run-evals.sh`.
+  revisions, signal-time identity, fail-closed reuse, DEV_FORCE scope) and the rev-4 D-series
+  D1–D4 (ownership carried into the signal incl. replacement-between-check-and-signal; stale
+  record cannot adopt a replacement listener; 500 is not healthy; external service reusable via
+  the contract file with no manual intervention). Plus `lib/proc_signal.py --self-test`
+  (16 checks). Both wired into `run-evals.sh`.
   **Rollback:** `git revert` (no weakening knob).
 - **Vendored sync (owed; per `.claude/maintenance-protocol.md` §3.4 — per-file over the changed-file
   list, never a whole-tree copy).** Copy into each product's `incredible_auto_dev/`:
   `scripts/automation/lib/{engine-identity.sh,service-owner.sh,proc_signal.py}` (new),
+  `templates/service-contracts.sh` (new),
   `scripts/automation/lib/common.sh`, `scripts/automation/{run-goal,run-phase,goal-iter-lean,dev-phase,browser-qa-phase,demo-phase,doctor,run-evals}.sh`,
   `tests/automation/{test-service-ownership.sh (new),test-doctor.sh}`,
   `agents/{developer,qa}/{body.md,agent.yaml}` + `.claude/agents/{developer,qa}.md`,
   `.claude/anti-patterns/{34-*,35-*}.md` + its README, and the docs files.
-  **Each product must also add its own `CHAIN_SERVICE_VERIFY_BACKEND` /
-  `CHAIN_SERVICE_VERIFY_FRONTEND` to its `.claude/project-template.md`** (the framework file is a
-  template; copy the new "Service reuse contract" section, then fill in project-specific checks).
+  **Each product must also create its own `.claude/service-contracts.sh`** from
+  `templates/service-contracts.sh` and fill in `CHAIN_SERVICE_VERIFY_{BACKEND,FRONTEND}` (and
+  `CHAIN_SERVICE_HEALTHY_<ROLE>` if its readiness response is not 2xx/3xx). That file is the
+  runtime mechanism — `.claude/project-template.md` documents the contract for agents but is
+  never sourced, so declaring it only there has no effect.
   Without it, a run that meets an externally-started service on the project's ports stops with a
   named blocker instead of testing an unverified service — which is the intended fail-closed
   behaviour, but the operator should choose it knowingly.

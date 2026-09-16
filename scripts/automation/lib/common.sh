@@ -362,6 +362,10 @@ ensure_phase_ports() {
   # started or torn down. Idempotent and inheritance-preserving, so a child
   # script never fragments ownership of services its parent booted.
   service_owner_scope_init "$REPO_ROOT" "${CHAIN_SERVICE_OWNER_KIND:-pipeline}" || true
+  # Load the project's service contracts (reuse verification + health regexes)
+  # before anything can probe, reuse or tear down a service. Documentation in
+  # project-template.md is for agents; THIS is what reaches the shell.
+  service_contracts_load || true
   [[ -z "${CHAIN_BACKEND_PORT:-}" ]]  && export CHAIN_BACKEND_PORT=$((8000 + offset))
   [[ -z "${CHAIN_FRONTEND_PORT:-}" ]] && export CHAIN_FRONTEND_PORT=$((3000 + offset))
   return 0
@@ -902,8 +906,14 @@ _pid_tree() {
 _kill_pid_tree() {
   local pid="${1:-}"
   [[ -z "$pid" ]] && return 0
+  # Carry BOTH the identity and the ownership stamp. Callers pass pids they
+  # spawned themselves (QA_STARTED_PIDS, the showcase fork, a just-started
+  # service), so the stamp is always present — and requiring it means a pid that
+  # was replaced between being recorded and being reaped cannot inherit the
+  # decision. Empty scope (identity unavailable) degrades to identity-only.
   service_signal_tree "$pid" "${CHAIN_KILL_GRACE_SECONDS:-2}" \
-    "$(service_pid_starttime "$pid")"
+    "$(service_pid_starttime "$pid")" \
+    "$(engine_proc_env "$pid" CHAIN_SERVICE_OWNER_SCOPE 2>/dev/null || true)"
   return 0
 }
 
@@ -1073,7 +1083,8 @@ _start_service_with_retries() {
     # Register with the facts a later sweep needs: that this is the APPLICATION
     # (persistent), where to probe it, and which revision it is serving.
     [[ -n "$target_port" ]] && service_owner_register "$target_port" "$role" "$pid" \
-      "$instance" "persistent" "$health_url" "$(service_tree_revision)"
+      "$instance" "persistent" "$health_url" "$(service_tree_revision)" \
+      "$(service_health_regex "$role")"
     # QA_STARTED_PIDS is declared by qa-phase.sh / browser-qa-phase.sh but NOT by
     # demo-phase.sh — guard so the append is safe whether or not it pre-exists.
     # These pids are ours by construction (we just spawned them), so the
@@ -1854,7 +1865,8 @@ except Exception:
         # Identity captured BEFORE the first signal and revalidated before the
         # KILL escalation: a bare TERM/sleep/KILL can escalate onto a pid that
         # exited during the grace window and was recycled.
-        service_signal_tree "$lock_pid" 2 "$(service_pid_starttime "$lock_pid")"
+        service_signal_tree "$lock_pid" 2 "$(service_pid_starttime "$lock_pid")" \
+          "$(engine_proc_env "$lock_pid" CHAIN_SERVICE_OWNER_SCOPE 2>/dev/null || true)"
         killed_any=1
       else
         # Leave the lock file alone too: removing it would let a second
@@ -1874,7 +1886,8 @@ except Exception:
     cwd=$(readlink "/proc/$pid/cwd" 2>/dev/null || echo "")
     if [[ -n "$cwd" && "$cwd" == "$fe_dir"* ]]; then
       service_pid_kill_allowed "$pid" "kill_stale_next_dev_server(cwd)" || continue
-      service_signal_tree "$pid" 2 "$(service_pid_starttime "$pid")"
+      service_signal_tree "$pid" 2 "$(service_pid_starttime "$pid")" \
+        "$(engine_proc_env "$pid" CHAIN_SERVICE_OWNER_SCOPE 2>/dev/null || true)"
       killed_any=1
     fi
   done
@@ -1902,8 +1915,10 @@ kill_stale_backend_server() {
     cwd=$(readlink "/proc/$pid/cwd" 2>/dev/null || echo "")
     if [[ -n "$cwd" && "$cwd" == "$be_dir"* ]]; then
       service_pid_kill_allowed "$pid" "kill_stale_backend_server(cwd)" || continue
-      # uvicorn + its reloader/worker children, identity-validated at signal time.
-      service_signal_tree "$pid" 2 "$(service_pid_starttime "$pid")"
+      # uvicorn + its reloader/worker children, identity- AND ownership-validated
+      # against the PINNED process at signal time.
+      service_signal_tree "$pid" 2 "$(service_pid_starttime "$pid")" \
+        "$(engine_proc_env "$pid" CHAIN_SERVICE_OWNER_SCOPE 2>/dev/null || true)"
       killed_any=1
     fi
   done

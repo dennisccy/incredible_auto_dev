@@ -136,3 +136,55 @@ lifecycle policy does not require it. A healthy application service on the curre
 survives phase boundaries, iteration boundaries and Goal Mode completion — look for
 `services_preserved` in telemetry. Only ephemeral services (an agent's abandoned verification
 server) and services needing a verified restart are reaped.
+
+## Configuring the service contracts (where they actually live)
+
+`.claude/project-template.md` is sliced into agent **prompts**. Nothing sources it, so a contract
+declared only there never reaches the shell that enforces it. The runtime mechanism is a file the
+framework sources from `ensure_phase_ports`, before anything probes, reuses or tears down a
+service:
+
+```bash
+cp incredible_auto_dev/templates/service-contracts.sh .claude/service-contracts.sh
+$EDITOR .claude/service-contracts.sh
+```
+
+```bash
+export CHAIN_SERVICE_VERIFY_BACKEND='jq -e ".service == \"myapp-api\""'   # body on stdin
+export CHAIN_SERVICE_HEALTHY_BACKEND='^(2|3|404)'                        # only if not 2xx/3xx
+```
+
+Values already in the environment win, so CI or an operator can override one run without editing
+the file. `CHAIN_SERVICE_CONTRACTS_FILE` relocates it. Check what a run actually picked up:
+
+```bash
+bash -c 'REPO_ROOT=$PWD; source incredible_auto_dev/scripts/automation/lib/service-owner.sh;
+         service_contracts_load; echo "${CHAIN_SERVICE_VERIFY_BACKEND:-<unset>}"'
+```
+
+## "status 500 ... does not satisfy the health contract"
+
+Reachability, identity and health are three different questions and the framework now keeps them
+apart:
+
+| Question | Mechanism | Default |
+|---|---|---|
+| Is a socket open and speaking HTTP? | the boot gate's readiness regex | permissive — any status (`^[1-5][0-9][0-9]$` for the backend), because some projects have no `/health` route |
+| Is it the service we expect? | `CHAIN_SERVICE_VERIFY_<ROLE>` | none — an unowned service without a contract fails closed |
+| Is the application actually serving? | `CHAIN_SERVICE_HEALTHY_<ROLE>` | `^[23]` |
+
+A service returning 500 is reachable but **not healthy**, so it is not preserved across a phase
+boundary and not reused as a satisfied dependency — it is restarted. If your application's valid
+readiness response genuinely is not 2xx/3xx, say so explicitly with
+`CHAIN_SERVICE_HEALTHY_<ROLE>`; the framework will not infer it, because inferring it is what let
+a 500 pass as healthy.
+
+## "the ownership record describes a service that is no longer the listener"
+
+A registered service exited and something else took its port. The record's `persistent` lifecycle
+and recorded revision describe the process that is gone, so they are **not** applied to whatever
+is there now — otherwise an agent's abandoned verification server would be preserved as the
+application and reused as the dependency simply because it answers 200 and the working tree has
+not changed. The current occupant is treated as ephemeral: reaped if this session owns it,
+refused if not. The stale record is dropped. Nothing is wrong; this line is the framework
+declining to believe a record it can no longer tie to a live process.

@@ -12,12 +12,24 @@ HARD-5 added a genuine ownership check in front of exactly this sequence and sti
 
 The same structure appears far from process control: a permission checked before a retry loop, a path `stat`ed before it is opened, a lock validated before a long operation. Wherever the gap exists, the question is not "did I have the right?" but "do I still have it, now, for *this* object?"
 
+**The second-order trap — verifying, then pinning.** Adopting a pinning primitive does not by
+itself close the gap; the ORDER does. A first pass at this fix read the process's facts and then
+opened the pidfd, which pins whatever occupies the pid *at open time* — possibly a replacement
+that the earlier read had vouched for. A pidfd protects the process it actually opens; it does
+not prove that is the process you verified. The same pass also let the verified identity be
+dropped at the call boundary: ownership was established in one function and only a bare pid was
+handed to the next. So the rule has two halves: **pin first, then verify the pinned object**, and
+**carry the verification with the handle** — a helper that accepts a pid alone will silently
+discard whatever its caller proved. Delete such helpers rather than documenting them.
+
 **Prevention:**
 - Bind the act to a **stable identity**, not a reusable handle. For processes on Linux that is `pidfd_open(2)`: the fd refers to that exact process for its own lifetime, so `pidfd_send_signal` cannot be redirected by reuse — the race becomes structurally impossible rather than merely narrow.
 - Where no such primitive exists, **revalidate immediately before every act**, not once before the sequence. `/proc/<pid>/stat` field 22 (start time) distinguishes a recycled pid from the original. This leaves a residual window between the read and the syscall; treat it as a fallback, not the design.
 - Capture identity **before the first signal** and pin the whole set, so a child reparented mid-teardown is still reachable by its own pinned handle rather than being re-discovered from a parent that no longer exists.
 - When the identity no longer matches, the correct action is **nothing at all** — skip the signal and say so. Escalating "just in case" is the bug.
 - Treat `kill -0`, "the file was there a moment ago", and "we checked at the top of the function" as smells whenever a sleep, a retry, or a network round-trip sits between check and use.
+- Order the primitive correctly: acquire the handle that pins the object, *then* read and verify through it. `open()` then `fstat()`, not `stat()` then `open()`; `pidfd_open()` then read `/proc/<pid>`, not the reverse.
+- Make the signature refuse the unsafe call. If a function can be invoked with just an identifier, it will be — pass the proof as a required argument so dropping it is a visible change, not an omission.
 
 **Example (bad):** `kill -TERM "$p"; sleep 2; kill -0 "$p" && kill -KILL "$p"` — existence, not identity, across a two-second gap.
 **Example (good):** `service_signal_tree <pid> <grace> <identity>` → `lib/proc_signal.py`, which opens a pidfd per process before signalling, and refuses to signal at all when the root's recorded start time no longer matches.

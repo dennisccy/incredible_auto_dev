@@ -139,7 +139,35 @@ while True:
   sleep 0.4
 }
 
+# start_coded_listener <port> <status> <body> [VAR=VAL ...] — a listener whose
+# every response carries the given status and body. Lets a scenario distinguish
+# "a socket is open" from "the application is healthy" from "it is the RIGHT
+# application", which the framework must now treat as three separate questions.
+start_coded_listener() {
+  local port="$1" status="$2" body="$3"; shift 3
+  env -u CHAIN_SERVICE_OWNER_SCOPE -u CHAIN_SERVICE_INSTANCE "$@" python3 -c "
+import sys
+from http.server import BaseHTTPRequestHandler, HTTPServer
+st=int(sys.argv[2]); body=sys.argv[3].encode()
+class H(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(st); self.send_header('Content-Length',str(len(body))); self.end_headers()
+        self.wfile.write(body)
+    def log_message(self,*a): pass
+HTTPServer(('127.0.0.1',int(sys.argv[1])),H).serve_forever()
+" "$port" "$status" "$body" >/dev/null 2>&1 &
+  LISTENER_PID=$!
+  DUMMY_PIDS+=("$LISTENER_PID")
+  local i=0
+  while [[ $i -lt 50 ]]; do
+    curl -s -o /dev/null --max-time 2 "http://127.0.0.1:$port/" 2>/dev/null && break
+    sleep 0.1; i=$((i + 1))
+  done
+}
+
 port_answers() { curl -s -o /dev/null --max-time 2 "http://127.0.0.1:$1/" 2>/dev/null; }
+# port_status <port> — the HTTP status, or 000 when nothing answers.
+port_status() { curl -s -o /dev/null --max-time 2 -w "%{http_code}" "http://127.0.0.1:$1/" 2>/dev/null || echo 000; }
 pid_alive()    { kill -0 "$1" 2>/dev/null; }
 
 # settle — give a teardown path time to actually kill before we assert survival,
@@ -731,11 +759,22 @@ if grep -q 'service_signal_tree\|service_signal_pid' \
 else
   assert "C6b kill_stale_backend_server still uses a bare TERM/sleep/KILL" fail
 fi
-if grep -qE 'kill -(KILL|9)' \
-     <(sed -n '/^_svc_kill_tree()/,/^}/p' "$ENGINE_ROOT/scripts/automation/lib/service-owner.sh"); then
-  assert "C6c _svc_kill_tree still escalates with an unvalidated kill" fail
+# No helper may accept a pid ALONE and signal it: that shape is how a verified
+# decision gets dropped on the way to the act.
+if grep -q '^_svc_kill_tree()' "$ENGINE_ROOT/scripts/automation/lib/service-owner.sh"; then
+  assert "C6c an unbound pid-only kill helper still exists" fail
 else
-  assert "C6c _svc_kill_tree has no unvalidated escalation" pass
+  assert "C6c no unbound pid-only kill helper remains" pass
+fi
+_unbound=$(grep -hn 'service_signal_tree "' \
+             "$ENGINE_ROOT/scripts/automation/lib/service-owner.sh" \
+             "$ENGINE_ROOT/scripts/automation/lib/common.sh" 2>/dev/null \
+           | grep -vE 'service_pid_starttime|_p_ident|\\$' || true)
+if [[ -z "$_unbound" ]]; then
+  assert "C6d every library signal call carries a verified identity" pass
+else
+  assert "C6d a library signal call omits the identity" fail
+  printf '    %s\n' "$_unbound"
 fi
 echo
 
@@ -820,6 +859,234 @@ else
   assert "C9 DEV_FORCE killed an unrelated CONNECTED client" fail
 fi
 kill -TERM "$C9_CLIENT" 2>/dev/null || true
+echo
+
+# ═══════════════════════════════════════════════════════════════════════════
+# D-series — second review follow-up. Three seams where a check was performed
+# but not carried through to the act that depended on it.
+# ═══════════════════════════════════════════════════════════════════════════
+
+# ── D1: the identity verified during the ownership check must gate the signal ─
+# service_owner_terminate verified ownership and then passed only a PID onward.
+# The validated identity was dropped, so the signal targeted whatever occupied
+# that pid at signal time. This exercises REPLACEMENT between verification and
+# signalling — not a mismatch that already existed before the call.
+echo "-- D1: identity verified at check time gates the signal"
+D1_PORT="$(free_port)"
+D1_INSTANCE="$(service_instance_mint)"
+start_listener "$D1_PORT" "CHAIN_SERVICE_OWNER_SCOPE=$OUR_SCOPE" "CHAIN_SERVICE_INSTANCE=$D1_INSTANCE"
+D1_OLD_PID="$LISTENER_PID"
+D1_OLD_IDENT="$(service_pid_starttime "$D1_OLD_PID")"
+# The verified process goes away and something else takes the port — exactly the
+# window between "ownership verified" and "signal sent".
+kill -KILL "$D1_OLD_PID" 2>/dev/null; wait "$D1_OLD_PID" 2>/dev/null
+sleep 0.5
+start_listener "$D1_PORT" "CHAIN_SERVICE_OWNER_SCOPE=$OUR_SCOPE"
+D1_NEW_PID="$LISTENER_PID"
+# Signalling with the OLD identity must hit nothing at all.
+service_signal_tree "$D1_NEW_PID" 1 "$D1_OLD_IDENT" >/dev/null 2>&1
+d1_rc=$?
+settle
+assert_eq "D1a signalling with a superseded identity is refused" "1" "$d1_rc"
+if pid_alive "$D1_NEW_PID"; then
+  assert "D1b the replacement process survives" pass
+else
+  assert "D1b the replacement process was KILLED via a stale identity" fail
+fi
+# The ownership decision must also be re-verified against the PINNED process.
+D1C_PORT="$(free_port)"
+start_listener "$D1C_PORT"                       # no scope stamp at all
+D1C_PID="$LISTENER_PID"
+python3 "$ENGINE_ROOT/scripts/automation/lib/proc_signal.py" tree "$D1C_PID" \
+  --grace 1 --identity "$(service_pid_starttime "$D1C_PID")" \
+  --require-env "CHAIN_SERVICE_OWNER_SCOPE=$OUR_SCOPE" >/dev/null 2>&1
+d1c_rc=$?
+settle
+assert_eq "D1c signalling refuses when the pinned process lacks the required stamp" "3" "$d1c_rc"
+if pid_alive "$D1C_PID"; then
+  assert "D1d the unstamped process survives post-pin verification" pass
+else
+  assert "D1d an unstamped process was signalled" fail
+fi
+# And the integration seam: terminate must hand identity + scope onward.
+if grep -qE 'service_signal_tree "\$_p_pid" .*"\$_p_ident"|owned\+=\("\$p:' \
+     <(sed -n '/^service_owner_terminate()/,/^}/p' "$ENGINE_ROOT/scripts/automation/lib/service-owner.sh"); then
+  assert "D1e service_owner_terminate carries identity into signalling" pass
+else
+  assert "D1e service_owner_terminate still discards the verified identity" fail
+fi
+echo
+
+# ── D2: a persistent record must be bound to the ACTUAL listener ─────────────
+# Registered service exits, its record survives, a different scope-owned
+# verification server takes the port and answers 200. Without record-to-process
+# correlation the leak inherits "persistent" and the previous revision identity,
+# so it is preserved as though it were the application.
+echo "-- D2: a stale persistent record cannot adopt a replacement listener"
+D2_PORT="$(free_port)"
+D2_INSTANCE="$(service_instance_mint)"
+start_listener "$D2_PORT" "CHAIN_SERVICE_OWNER_SCOPE=$OUR_SCOPE" "CHAIN_SERVICE_INSTANCE=$D2_INSTANCE"
+D2_APP_PID="$LISTENER_PID"
+service_owner_register "$D2_PORT" "backend" "$D2_APP_PID" "$D2_INSTANCE" \
+  "persistent" "http://127.0.0.1:$D2_PORT/" "$(service_tree_revision)"
+kill -KILL "$D2_APP_PID" 2>/dev/null; wait "$D2_APP_PID" 2>/dev/null
+sleep 0.5
+# A DIFFERENT scope-owned process (an agent's verification server) takes the port.
+start_listener "$D2_PORT" "CHAIN_SERVICE_OWNER_SCOPE=$OUR_SCOPE"
+D2_LEAK_PID="$LISTENER_PID"
+assert_eq "D2a the reuse decision refuses to trust the stale record" "RESTART" \
+  "$(service_reuse_decision backend "http://127.0.0.1:$D2_PORT/" "$D2_PORT")"
+service_release "$D2_PORT" "kill_phase_servers" >/dev/null 2>&1
+settle
+if port_answers "$D2_PORT"; then
+  assert "D2b the replacement inherited 'persistent' and was PRESERVED" fail
+else
+  assert "D2b the replacement is treated as ephemeral and reaped" pass
+fi
+echo
+
+# ── D3: HTTP 500 is reachability, not health ─────────────────────────────────
+echo "-- D3: an owned service returning 500 is not a healthy dependency"
+D3_PORT="$(free_port)"
+D3_INSTANCE="$(service_instance_mint)"
+start_coded_listener "$D3_PORT" 500 "boom" \
+  "CHAIN_SERVICE_OWNER_SCOPE=$OUR_SCOPE" "CHAIN_SERVICE_INSTANCE=$D3_INSTANCE"
+D3_PID="$LISTENER_PID"
+service_owner_register "$D3_PORT" "backend" "$D3_PID" "$D3_INSTANCE" \
+  "persistent" "http://127.0.0.1:$D3_PORT/" "$(service_tree_revision)"
+assert_eq "D3a the service really is returning 500" "500" "$(port_status "$D3_PORT")"
+if service_service_healthy "$D3_PORT"; then
+  assert "D3b a 500 response is classified as HEALTHY" fail
+else
+  assert "D3b a 500 response is not classified as healthy" pass
+fi
+if service_restart_required "$D3_PORT"; then
+  assert "D3c an unhealthy owned service is restart-required" pass
+else
+  assert "D3c an unhealthy owned service was left as-is" fail
+fi
+assert_eq "D3d the reuse decision refuses a 500 backend" "RESTART" \
+  "$(service_reuse_decision backend "http://127.0.0.1:$D3_PORT/" "$D3_PORT")"
+service_release "$D3_PORT" "kill_phase_servers" >/dev/null 2>&1
+settle
+if port_answers "$D3_PORT"; then
+  assert "D3e the 500 service was PRESERVED as healthy" fail
+else
+  assert "D3e the 500 service was released for restart" pass
+fi
+# A project whose valid readiness is not 2xx must be able to say so EXPLICITLY.
+D3F_PORT="$(free_port)"
+D3F_INSTANCE="$(service_instance_mint)"
+start_coded_listener "$D3F_PORT" 404 "no health route here" \
+  "CHAIN_SERVICE_OWNER_SCOPE=$OUR_SCOPE" "CHAIN_SERVICE_INSTANCE=$D3F_INSTANCE"
+D3F_PID="$LISTENER_PID"
+service_owner_register "$D3F_PORT" "backend" "$D3F_PID" "$D3F_INSTANCE" \
+  "persistent" "http://127.0.0.1:$D3F_PORT/" "$(service_tree_revision)"
+if CHAIN_SERVICE_HEALTHY_BACKEND='^(2|3|404)' service_service_healthy "$D3F_PORT"; then
+  assert "D3f an explicit health contract admits a non-2xx readiness response" pass
+else
+  assert "D3f an explicit health contract was ignored" fail
+fi
+echo
+
+# ── D4: the verification contract must be configurable, not just documented ──
+# .claude/project-template.md is prose fed to agents; nothing sources it, so a
+# contract declared only there never reaches the shell. A real deployment needs
+# a supported mechanism and an external service must be reusable without any
+# manual process intervention.
+echo "-- D4: an external service is reusable via a real configuration mechanism"
+D4_PORT="$(free_port)"
+start_coded_listener "$D4_PORT" 200 '{"service":"iad-demo-api","rev":"abc"}'   # EXTERNAL: unstamped
+D4_PID="$LISTENER_PID"
+mkdir -p "$SBX/.claude"
+cat > "$SBX/.claude/service-contracts.sh" <<'CONTRACT'
+# Project service contracts (sourced by the framework).
+export CHAIN_SERVICE_VERIFY_BACKEND='grep -q iad-demo-api'
+export CHAIN_SERVICE_HEALTHY_BACKEND='^[23]'
+CONTRACT
+D4_LOG="$WORK/d4.log"
+(
+  set +e
+  export REPO_ROOT="$SBX"
+  # shellcheck source=/dev/null
+  source "$SBX/scripts/automation/lib/common.sh" >/dev/null 2>&1
+  # No manual export of CHAIN_SERVICE_VERIFY_* — the framework must pick up the
+  # project's contract file by itself.
+  service_contracts_load
+  _start_service_with_retries "backend" "http://127.0.0.1:$D4_PORT/" "true" \
+    "$WORK/d4-svc.log" 2 1 QA_BACKEND_LOG_TAIL "" '^[1-5][0-9][0-9]$'
+  echo "RC=$?"
+) >"$D4_LOG" 2>&1
+settle
+if grep -q "^RC=0" "$D4_LOG"; then
+  assert "D4a a verified external service is reused with no manual intervention" pass
+else
+  assert "D4a a verified external service was NOT reused (see $D4_LOG)" fail
+fi
+if port_answers "$D4_PORT"; then
+  assert "D4b the external service was left running, unowned" pass
+else
+  assert "D4b the external service was KILLED" fail
+fi
+assert_eq "D4c reusing it acquired no ownership record" "NO_RECORD" \
+  "$(CHAIN_SERVICE_REGISTRY_DIR="$CHAIN_SERVICE_REGISTRY_DIR" service_owner_classify "$D4_PORT" | cut -d: -f1)"
+# Negative: the same mechanism must still reject a service the contract denies.
+D4E_PORT="$(free_port)"
+start_coded_listener "$D4E_PORT" 200 '{"service":"somebody-elses-api"}'
+D4E_PID="$LISTENER_PID"
+D4E_LOG="$WORK/d4e.log"
+(
+  set +e
+  export REPO_ROOT="$SBX"
+  # shellcheck source=/dev/null
+  source "$SBX/scripts/automation/lib/common.sh" >/dev/null 2>&1
+  service_contracts_load
+  _start_service_with_retries "backend" "http://127.0.0.1:$D4E_PORT/" "true" \
+    "$WORK/d4e-svc.log" 2 1 QA_BACKEND_LOG_TAIL "" '^[1-5][0-9][0-9]$'
+  echo "RC=$?"
+) >"$D4E_LOG" 2>&1
+settle
+if grep -q "^RC=0" "$D4E_LOG"; then
+  assert "D4d a contract-rejected external service was accepted" fail
+else
+  assert "D4d a contract-rejected external service fails closed" pass
+fi
+if port_answers "$D4E_PORT"; then
+  assert "D4e the rejected service was left running (not killed)" pass
+else
+  assert "D4e the rejected service was KILLED" fail
+fi
+# The mechanism existing is not the same as it being WIRED. A deployment must
+# get its contracts without anyone calling the loader by hand.
+(
+  set +e
+  export REPO_ROOT="$SBX"
+  unset CHAIN_SERVICE_VERIFY_BACKEND CHAIN_SERVICE_HEALTHY_BACKEND
+  # shellcheck source=/dev/null
+  source "$SBX/scripts/automation/lib/common.sh" >/dev/null 2>&1
+  CHAIN_BACKEND_PORT=1 CHAIN_FRONTEND_PORT=2 ensure_phase_ports >/dev/null 2>&1
+  echo "VERIFY=${CHAIN_SERVICE_VERIFY_BACKEND:-<unset>}"
+) >"$WORK/d4f.log" 2>&1
+if grep -q "VERIFY=grep -q iad-demo-api" "$WORK/d4f.log"; then
+  assert "D4f ensure_phase_ports loads the project contract automatically" pass
+else
+  assert "D4f the contract file is not wired into the pipeline (see $WORK/d4f.log)" fail
+fi
+# An explicit environment value must beat the file, so CI can override per run.
+(
+  set +e
+  export REPO_ROOT="$SBX"
+  export CHAIN_SERVICE_VERIFY_BACKEND="operator-override"
+  # shellcheck source=/dev/null
+  source "$SBX/scripts/automation/lib/common.sh" >/dev/null 2>&1
+  service_contracts_load
+  echo "VERIFY=${CHAIN_SERVICE_VERIFY_BACKEND}"
+) >"$WORK/d4g.log" 2>&1
+if grep -q "VERIFY=operator-override" "$WORK/d4g.log"; then
+  assert "D4g an explicit environment override beats the contract file" pass
+else
+  assert "D4g the contract file clobbered an explicit override" fail
+fi
 echo
 
 echo "== summary: $PASS passed, $FAIL failed =="
