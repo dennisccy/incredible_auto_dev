@@ -231,6 +231,30 @@ agents never close tabs themselves.
 | `clean_exit` | boolean | headless only — Chrome exited on its own after the close (no reap needed) |
 | `reaped` | number | headless only — browsers terminated by the lane-scoped reap (0 on a clean exit) |
 
+### Service ownership events (HARD-5)
+
+Written by `lib/service-owner.sh`. The framework terminates an app service only when
+`/proc/<pid>/environ` proves this lifecycle started it; these rows record every decision that
+was not a plain success.
+
+| Event | When | Key fields |
+|---|---|---|
+| `services_terminated` | a port's owned listeners were reaped | `port`, `caller`, `pids` |
+| `services_kill_refused` | a teardown declined — the listener is not provably ours | `port` or `pid`, `caller`, `verdict` (`FOREIGN`/`UNOWNED`/`UNREADABLE`), `record` |
+| `services_port_blocked` | a service could not start because an unowned process holds its port | `port`, `role`, `context` |
+| `services_terminate_incomplete` | something still listened after its owned processes were killed | `port`, `caller` |
+| `services_registry_error` | the ownership registry could not be created/written | `op` (`dir`/`write`), `port` |
+| `services_identity_unavailable` | no procfs identity could be minted, so this process refuses ALL terminations | `reason` |
+
+**Tripwire.** In a single-engine session on a checkout with no externally-started app services,
+`services_kill_refused` should be **0**. A non-zero count means either a concurrent owner on the
+same checkout's ports, or a pre-existing service the framework correctly declined to kill — check
+`verdict` to tell them apart. `services_port_blocked` is always operator-actionable: the run
+needed a port it may not reclaim, and the log names the holding pid and the remedies.
+
+`services_kill_refused` is the direct regression signal for the 2026-09-15 incident class: before
+HARD-5 these terminations happened silently and unconditionally, and nothing was recorded at all.
+
 ### Wall-time report and tripwire
 
 Where do the ~2 hours of an iteration go? Per-iteration wall breakdown (per-agent

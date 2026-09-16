@@ -209,15 +209,22 @@ echo "[browser-qa] Resolved ports: frontend=${FRONTEND_URL} backend=${BACKEND_HE
 # branch against the SAME shared services — with no frontend to probe, the cause of
 # spurious demo SKIPs. Only reclaim stale servers when this script owns them.
 if [[ "${CHAIN_SHARED_SERVICES:-false}" != "true" ]]; then
-  echo "[browser-qa] Clearing any stale Next.js dev server for this project..."
+  echo "[browser-qa] Clearing any stale Next.js dev server this session owns..."
   kill_stale_next_dev_server
-  FRONTEND_STATUS=$(curl -s -o /dev/null -w "%{http_code}" "$FRONTEND_URL" 2>/dev/null || true)
+  # HARD-5: this block used to kill a frontend that answered 2xx/3xx — i.e. a
+  # provably HEALTHY listener — purely to guarantee the API URL baked into it
+  # matched ours, using `lsof -ti tcp:<port>` as the target list. On a shared
+  # offset port that is the product's own frontend. Restarting it is only
+  # legitimate when we started it; otherwise we reuse what is there and say so,
+  # because silently testing a differently-configured frontend is the other
+  # failure this rule exists to prevent.
+  FRONTEND_STATUS=$(curl -s -o /dev/null --max-time "${CHAIN_HEALTH_PROBE_TIMEOUT:-10}" -w "%{http_code}" "$FRONTEND_URL" 2>/dev/null || true)
   if [[ "$FRONTEND_STATUS" =~ ^[23] ]]; then
-    STALE_PIDS=$(lsof -ti "tcp:${_FRONTEND_PORT}" 2>/dev/null || true)
-    if [[ -n "$STALE_PIDS" ]]; then
-      echo "[browser-qa] Killing stale frontend on port ${_FRONTEND_PORT} to ensure correct API URL..."
-      kill -TERM $STALE_PIDS 2>/dev/null || true
-      sleep 2
+    if service_owner_terminate "${_FRONTEND_PORT}" "browser-qa-stale-frontend"; then
+      echo "[browser-qa] Restarted our own frontend on port ${_FRONTEND_PORT} so the API URL matches this run."
+      sleep 1
+    else
+      echo "[browser-qa] Frontend on port ${_FRONTEND_PORT} is healthy but not owned by this session — reusing it as-is. If its API base URL differs from :${_BACKEND_PORT}, restart it yourself before trusting these results."
     fi
   fi
 fi

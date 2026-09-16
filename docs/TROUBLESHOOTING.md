@@ -57,3 +57,51 @@ SIGKILLed or crashed session never costs more than that warning on restart.
 **Preflight visibility:** `scripts/automation/doctor.sh --only engine-lock` —
 PASS (no locks), WARN (fresh lock, names the holder — legitimate when a
 session is running, including the one running the doctor), FAIL (stale lock).
+
+## "port N is held by a process this session does not own" (service ownership)
+
+**Symptom.** A run stops with `[services] BLOCKED (<role> startup): port <N> is required for the
+<role> but is held by a process this session does not own`, followed by the holding pid and its
+command line. Or a teardown logs `[services] kill refused (<caller>): port <N> is held by pid <P>
+(<comm>) which is UNOWNED/FOREIGN`.
+
+**What it means.** Since HARD-5 the framework terminates an app service only when
+`/proc/<pid>/environ` proves *this* lifecycle started it. It is telling you, truthfully, that
+something else owns that port. Before HARD-5 it would have run `fuser -k -9` and killed it —
+which is how a goal session killed a live product backend and frontend on 2026-09-15.
+
+**This is usually correct behaviour, not a bug.** The normal causes, in order:
+
+1. **You started the stack yourself** (`scripts/dev.sh`, an IDE task, a product-side pump). If it
+   is **healthy**, the framework reuses it and you will never see this message — the blocker only
+   appears when the existing service is *unhealthy*, and the framework cannot fix someone else's
+   broken service. Restart it yourself, then re-run.
+2. **A second run on the same checkout.** Ports come from `sha1(project_root)`, so two concurrent
+   runs of one project share them. `FOREIGN` names the other owner. Stop that run first.
+3. **An orphan from a pre-HARD-5 run**, or from any process started outside the framework. It
+   carries no ownership stamp so it is never reclaimed automatically. Stop it once, by pid:
+   `kill <pid>` (the blocker message prints the pid and the command line). Everything started
+   after this change is stamped, so this does not recur.
+
+**What NOT to do.** Do not "fix" it with `fuser -k` or `pkill -f`. That is the defect this layer
+removes: a port and a command line are not proof of ownership, and on a shared checkout they name
+the operator's own services.
+
+**Inspecting ownership.**
+
+```bash
+scripts/automation/lib/service-owner.sh status          # registry + this shell's scope
+scripts/automation/lib/service-owner.sh classify 8319   # record state for a port
+scripts/automation/lib/service-owner.sh owns 12345      # MINE|DEAD|FOREIGN|UNOWNED|UNREADABLE
+scripts/automation/doctor.sh --only service-owners      # one PASS/WARN/FAIL row
+```
+
+**Registry problems.** The registry (`~/.cache/iad/services/<repo12>/`) is *observability*, not
+the kill authority, so a corrupt registry can neither authorize an unsafe kill nor wedge a run. A
+malformed record is reported by the doctor and removed with
+`service-owner.sh repair <port>` after it prints the record for confirmation.
+
+**Operator override in `scripts/dev.sh` only.** `dev.sh` refuses to clear a port it does not own
+and prints the holder. Re-run it as `DEV_FORCE=1 ./scripts/dev.sh` to override deliberately for
+that invocation. There is no equivalent switch anywhere in the pipeline: a knob that silently
+restored blind termination would restore the incident.

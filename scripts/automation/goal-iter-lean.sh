@@ -182,6 +182,7 @@ chain_tmp_init "$ITER_NAME"
 # invocation owns its dir (under run-goal.sh the engine already ran both).
 if [[ "${CHAIN_TMPDIR_OWNER_PID:-}" == "$$" ]]; then
   chain_tmp_janitor
+  service_registry_janitor   # HARD-5: sweep dead ownership records
   chain_tmp_disk_guard || true
 fi
 
@@ -189,13 +190,19 @@ fi
 # Port sweep factored out (same commands, same order) so the SPEED-2 review-FAIL
 # reap can reuse it: a finished fork's servers are orphaned to init and survive
 # a fork-tree kill, yet the post-fix boot must start servers on the FIXED tree.
+# HARD-5: was `pkill -f <pattern>` ×3 + `fuser -k` on both ports. Both are
+# owner-blind, and this helper runs from the EXIT trap — which Bash also runs on
+# an untrapped SIGTERM, so even a tree-killed orphan reached it and swept ports
+# it had no claim on. Now only processes whose environ proves this iteration
+# started them are reaped; the fork-reap callers keep working because a fork
+# inherits our scope, so everything it booted is still provably ours.
 _bqa_kill_port_servers() {
-  local _be_port="${CHAIN_BACKEND_PORT:-8000}"
-  local _fe_port="${CHAIN_FRONTEND_PORT:-3000}"
-  pkill -f "uvicorn main:app.*--port ${_be_port}" 2>/dev/null || true
-  pkill -f "next dev -p ${_fe_port}" 2>/dev/null || true
-  pkill -f "next-server.*:${_fe_port}" 2>/dev/null || true
-  fuser -k "${_be_port}/tcp" "${_fe_port}/tcp" 2>/dev/null || true
+  local _port
+  for _port in "${CHAIN_BACKEND_PORT:-}" "${CHAIN_FRONTEND_PORT:-}"; do
+    [[ -n "$_port" ]] || continue
+    service_owner_terminate "$_port" "goal-iter-lean" || true
+  done
+  return 0
 }
 
 cleanup_iter_servers() {

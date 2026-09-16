@@ -5512,7 +5512,7 @@ Four root causes: governors read proxies instead of facts (HARD-1..3); ownership
   sign-off; an E13 re-plan that flips `none`→`allowed` without E16 blocking is a framework bug.
 
 ### HARD-4A · Engine identity token + lock-before-mutation ordering + owner-guarded `engine.pid`
-- **Priority:** P1 · **Effort:** M · **Risk:** MED · **Status:** TODO.
+- **Priority:** P1 · **Effort:** M · **Risk:** MED · **Status:** PARTIAL — sub-commit **A0 landed with HARD-5** (`lib/engine-identity.sh`: `engine_token_mint`/`engine_token_alive`/`engine_token_self`/`engine_proc_env`). **A1 remains TODO** (prologue reorder, lock-before-mutation ordering, owner-guarded `engine.pid`, signal-time takeover revalidation, `.engine.lock/token`).
 - **Problem:** a second engine start mutates live state (`--reset`, dispatch wipe, port reclaim)
   BEFORE the lock can refuse it; a refused start deletes the live engine's `engine.pid`; no
   child carries an engine identity.
@@ -5524,22 +5524,64 @@ Four root causes: governors read proxies instead of facts (HARD-1..3); ownership
   no channel/session/port mutation before the new engine owns the lock, and identity is
   revalidated immediately before EVERY signal (TERM and KILL) — pid, boot id and proc
   starttime must still match, else do not signal. Plan doc: "WP4A / HARD-4A".
+- **Concrete artifact for A1 (located during HARD-5, 2026-09-16, deliberately NOT fixed there):**
+  `run-goal.sh:349-356` is the last unsafe termination signal left in the framework. The resume
+  takeover authorizes `kill -TERM`/`kill -KILL` on the pid in `engine.pid` when it is alive AND
+  `grep -qa "run-goal" /proc/<pid>/cmdline` — a whole-cmdline substring match, i.e.
+  anti-pattern 30, with no starttime or boot-id check, so a recycled pid can be signalled. It
+  cannot reach an app service (the pid must come from `engine.pid`), which is why HARD-5 left it
+  alone rather than half-fixing it: a sound fix needs `.engine.lock/token` plus
+  `_takeover_identity_provable`, both of which are A1. `engine_token_alive` / `engine_proc_env`
+  already exist (A0 landed), so A1 has its primitives.
 - **DoD/Verify:** `tests/automation/test-engine-identity.sh` (A1–A4, A2b, A2c);
   `test-engine-lock.sh` unchanged. **Rollback:** none (a refused start touching nothing is not optional).
 
-### HARD-5 · Service ownership registry + ownership-aware kills + demo trap
-- **Priority:** P1 · **Effort:** M · **Risk:** MED · **Status:** TODO (after HARD-4A).
-- **Problem:** every service teardown is port/pattern-scoped and owner-blind (an orphaned
-  executor's EXIT trap killed the live engine's services, TenSteps 00:08:53).
-- **Change spec:** `lib/service-owner.sh` registry outside the repo; states `NO_RECORD | MINE |
-  DEAD | FOREIGN | GRACE | REGISTRY_ERROR` (NO_RECORD ≠ REGISTRY_ERROR; every registry failure
-  fails safe); gated kill sites; `demo-phase.sh` trap; doctor row. Owner-confirmed rollout:
-  `CHAIN_SERVICE_OWNERSHIP=warn` for one real session, then a separate flip to `enforce`. At
-  that flip, decide explicitly whether `NO_RECORD` becomes fail-safe/refuse unless
-  process-level evidence proves MINE/DEAD (legacy blind-kill semantics must not be carried
-  forever). Plan doc: "WP5 / HARD-5".
-- **DoD/Verify:** `tests/automation/test-service-ownership.sh` (B1–B11 incl. the required
-  orphan regression B2 with HARD-4C/6 disabled). **Rollback:** `CHAIN_SERVICE_OWNERSHIP=off`.
+### HARD-5 · Service ownership (environ stamp) + ownership-aware kills + demo trap
+- **Priority:** P1 · **Effort:** M · **Risk:** MED · **Status:** **DONE 2026-09-16** (rev 2).
+- **Problem:** every service teardown was port- or pattern-scoped and owner-blind, so a
+  pre-existing PRODUCT service on the checkout's deterministic offset ports was killed as if it
+  were a stray agent server. Proven twice: an orphaned executor's EXIT trap killed the live
+  engine's services (TenSteps 00:08:53), and a trading_workstation goal session repeatedly killed
+  the product's backend and frontend on :8319/:3319 (2026-09-15).
+- **CORRECTION to the approved plan (binding).** Rev 1's `NO_RECORD ⇒ allow (legacy)` migration
+  rule was **unsafe and is not implemented**. An externally-started service never acquires a
+  framework record, so `NO_RECORD` is its permanent steady state, not a migration state that ages
+  out — `NO_RECORD ⇒ allow` is therefore a standing licence to kill the operator's own stack. The
+  owner review question deferred to the warn→enforce flip is resolved **in the negative**:
+  `NO_RECORD ⇒ REFUSE`. The `warn`/`off` modes are also **not** implemented — a switch that
+  silently restores blind termination restores the incident. Rollback is `git revert`.
+- **Change spec (as built):** authority is a per-process procfs read, not a registry lookup.
+  `lib/engine-identity.sh` (HARD-4A **A0 only** — the genuine prerequisite, a pure addition) plus
+  `lib/service-owner.sh`. Two inherited stamps: `CHAIN_SERVICE_OWNER_SCOPE=<repo12>.<owner_token>`
+  ("spawned inside our lifecycle" — this is what makes an abandoned agent-started verification
+  server reapable without a blind sweep) and `CHAIN_SERVICE_INSTANCE` ("is the managed service we
+  launched"). `service_pid_ownership` → `MINE|DEAD|FOREIGN|UNOWNED|UNREADABLE`; only MINE/DEAD
+  authorize. `service_owner_terminate` is the ONLY sanctioned port teardown: every listener on the
+  port must be provably ours or the whole port is refused, and the kill is by pid tree, never by
+  port. `_find_free_port` removed — canonical ports are pinned, so a run can never silently test a
+  different service or break frontend↔backend pairing. Healthy unowned occupant ⇒ reused without
+  acquiring authority; unhealthy unowned occupant ⇒ concrete operational blocker, never a kill.
+  `demo-phase.sh` gains the pid-scoped EXIT trap it never had. The developer/qa agent contracts no
+  longer tell agents to `pkill -f`. Plan doc: "WP5 / HARD-5" (rev 2).
+- **DoD/Verify:** `tests/automation/test-service-ownership.sh` — 30 assertions over real
+  subprocesses on dynamic ports, including the required B2 regression (an unowned listener
+  survives every teardown path) and B12's static sweep (no `fuser -k`/`pkill`/`killall` left under
+  `scripts/automation/`). Wired into `run-evals.sh`. **Rollback:** `git revert` (no weakening knob).
+- **Vendored sync (owed; per `.claude/maintenance-protocol.md` §3.4 — per-file over the changed-file
+  list, never a whole-tree copy).** Copy into each product's `incredible_auto_dev/`:
+  `scripts/automation/lib/{engine-identity.sh,service-owner.sh}` (new),
+  `scripts/automation/lib/common.sh`, `scripts/automation/{run-goal,run-phase,goal-iter-lean,dev-phase,browser-qa-phase,demo-phase,doctor,run-evals}.sh`,
+  `tests/automation/test-service-ownership.sh` (new), `agents/{developer,qa}/{body.md,agent.yaml}`
+  + `.claude/agents/{developer,qa}.md`, and the docs/anti-pattern files.
+  **Do NOT copy `scripts/dev.sh`** — it is one of the three per-project templates a deployment
+  localizes (§3.4), so each product must apply the ownership-aware port block to its own copy by
+  hand. Until it does, that product's `dev.sh` can still blind-kill a running Goal Mode session's
+  services; the pipeline is safe either way, since the pipeline never blind-kills anything.
+  **Verify in each product after syncing:** `bash tests/automation/test-service-ownership.sh`
+  (expect 30/30) and `bash scripts/automation/doctor.sh --only service-owners`.
+- **Follow-up owed:** one real single-engine session with `services_kill_refused` = 0 as the field
+  tripwire; the vendored sync above.
+
 
 ### HARD-6 · Dispatch channel identity + pump claim guard + waiter self-check
 - **Priority:** P1 · **Effort:** M · **Risk:** MED · **Status:** TODO (after HARD-4A).

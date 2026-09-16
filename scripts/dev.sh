@@ -14,25 +14,55 @@ _offset=$((16#$_offset % 1000))
 BACKEND_PORT="${CHAIN_BACKEND_PORT:-$((8000 + _offset))}"
 FRONTEND_PORT="${CHAIN_FRONTEND_PORT:-$((3000 + _offset))}"
 
-# Kill processes occupying the ports and wait until they are free
+# ── Reclaim the ports (HARD-5: ownership-aware) ─────────────────────────────
+# This used to `kill -9` every pid on the port and then `fuser -k -9` in a loop.
+# That is the same owner-blind termination the pipeline was hardened against:
+# it will happily kill a running Goal Mode session's app, or any unrelated
+# service that happens to sit on this project's deterministic offset ports.
+#
+# Now: processes this dev stack provably started (including the orphans of a
+# previous dev.sh whose launcher has since died) are reclaimed automatically.
+# Anything else is reported and NOT killed — unless the operator states intent
+# explicitly for this invocation with DEV_FORCE=1, which is deliberate,
+# per-run, and loud rather than a silent default.
+_SO_LIB="$ROOT_DIR/incredible_auto_dev/scripts/automation/lib/service-owner.sh"
+[ -f "$_SO_LIB" ] || _SO_LIB="$ROOT_DIR/scripts/automation/lib/service-owner.sh"
+if [ -f "$_SO_LIB" ]; then
+  # REPO_ROOT must be EXPORTED, not set as a one-command prefix: every later
+  # service_repo_hash() call derives the registry path and the repo-lineage check
+  # from it, and a prefix assignment would leave those falling back to $PWD.
+  export REPO_ROOT="$ROOT_DIR"
+  # shellcheck source=/dev/null
+  . "$_SO_LIB"
+  service_owner_scope_init "$_port_root" "dev.sh" || true
+fi
+
 for PORT in $BACKEND_PORT $FRONTEND_PORT; do
-  PIDS=$(lsof -ti :$PORT 2>/dev/null | sort -u || true)
-  if [ -n "$PIDS" ]; then
-    echo "Killing processes on port $PORT: $PIDS"
-    kill -9 $PIDS 2>/dev/null || true
-  fi
-  # Also kill via fuser (catches child processes lsof may list under a different PID)
-  fuser -k -9 $PORT/tcp 2>/dev/null || true
-  # Wait until port is fully released: no owning process AND no lingering socket
-  for i in $(seq 1 50); do
-    if ! lsof -ti :$PORT >/dev/null 2>&1 && \
-       ! ss -tlnH sport = :$PORT 2>/dev/null | grep -q .; then
-      break
+  if command -v service_owner_terminate >/dev/null 2>&1; then
+    if service_owner_terminate "$PORT" "dev.sh"; then
+      continue
     fi
-    # On each iteration, re-kill anything that's still holding the port
-    fuser -k -9 $PORT/tcp 2>/dev/null || true
-    sleep 0.1
-  done
+  fi
+  # Still occupied by something we cannot prove is ours.
+  PIDS=$(lsof -ti :$PORT 2>/dev/null | sort -u || true)
+  [ -n "$PIDS" ] || continue
+  if [ "${DEV_FORCE:-0}" = "1" ]; then
+    echo "DEV_FORCE=1: terminating unowned processes on port $PORT: $PIDS"
+    kill -9 $PIDS 2>/dev/null || true
+    for i in $(seq 1 50); do
+      ss -tlnH sport = :$PORT 2>/dev/null | grep -q . || break
+      sleep 0.1
+    done
+  else
+    echo "ERROR: port $PORT is held by a process this dev stack does not own:" >&2
+    for p in $PIDS; do
+      echo "  pid $p: $(tr '\0' ' ' < "/proc/$p/cmdline" 2>/dev/null | cut -c1-120)" >&2
+    done
+    echo "  Refusing to kill it. This may be a running Goal Mode session, another" >&2
+    echo "  developer stack, or an unrelated service." >&2
+    echo "  Stop it yourself, or re-run with DEV_FORCE=1 to override deliberately." >&2
+    exit 1
+  fi
 done
 
 # Start backend

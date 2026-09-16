@@ -1953,6 +1953,11 @@ fi
 # would otherwise push _find_free_port onto a neighbour port — the whole session
 # then drifts (e.g. the demo polls 3836 while the live app is on 3835) and the
 # walkthrough is wrongly SKIPPED. No-op when CHAIN_*_PORT are already pinned.
+# HARD-5: the engine is the lifecycle owner for the whole session. Everything it
+# execs from here on — run-phase.sh, goal-iter-lean.sh, the step scripts, the
+# forked showcase tail, and every agent dispatch — inherits this scope, so a
+# server an AGENT starts inside a dispatch is still provably ours at teardown.
+export CHAIN_SERVICE_OWNER_KIND="goal-engine"
 reclaim_canonical_phase_ports
 ensure_phase_ports
 
@@ -2207,6 +2212,9 @@ run_doctor_preflight
 # at each iteration boundary below. Janitor sweeps strays from crashed runs.
 chain_tmp_init "goal-${SESSION_ID}"
 chain_tmp_janitor
+# HARD-5: drop ownership records whose owner AND service are both gone, so a
+# dead session's record can never be mistaken for a live claim on a port.
+service_registry_janitor
 
 # Disk-space preflight (REL-13): sweep aggressively under pressure; pause
 # (AWAITING_DISK) only when the tmp root's filesystem is still critically low.

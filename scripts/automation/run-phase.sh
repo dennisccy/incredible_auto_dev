@@ -83,6 +83,11 @@ ensure_cli_assets_synced "$CHAIN_CLI"
 # Helpers live in lib/common.sh (already sourced). Explicit CHAIN_*_PORT wins.
 # Reclaim canonical ports first so an orphaned server from a prior run can't push
 # the assignment onto a neighbour port (port drift). No-op when CHAIN_*_PORT set.
+# HARD-5: name this process tree's ownership kind before the first port call, so
+# every service record and every refusal message says which lifecycle owns what.
+# ensure_phase_ports / reclaim_canonical_phase_ports mint the scope itself;
+# a phase run nested inside a goal engine simply inherits the engine's scope.
+export CHAIN_SERVICE_OWNER_KIND="${CHAIN_SERVICE_OWNER_KIND:-phase-runner}"
 reclaim_canonical_phase_ports
 ensure_phase_ports
 
@@ -501,6 +506,7 @@ chain_tmp_init "$PHASE"
 # Sweep strays from crashed/legacy runs — only when this run owns its dir
 # (top-level invocation; the goal engine already ran the janitor).
 [[ "${CHAIN_TMPDIR_OWNER_PID:-}" == "$$" ]] && chain_tmp_janitor
+service_registry_janitor   # HARD-5: sweep dead ownership records
 # Disk guard (REL-13), soft mode: sweep aggressively under pressure and warn.
 # run-phase has no session.json authority, so it never pauses here — the goal
 # engine's --enforce checks own the AWAITING_DISK pause.
@@ -1119,8 +1125,12 @@ else
 fi
 echo ""
 
-# Kill any servers left behind by UX regression
-kill_phase_servers
+# HARD-5: the sweep that used to sit here ("kill any servers left behind by UX
+# regression") is REMOVED as redundant. ux-regression-phase.sh never boots a
+# service — it has no ensure_services_running call and no start-* invocation —
+# and neither do the audit and closure steps that follow. Nothing can have
+# started a service since Step 7's sweep, so this call could only ever act on
+# something it did not start. Fewer termination sites is the point.
 
 # ── Step 9/11: Post-phase audit loop ─────────────────────────────────────────
 iter_budget_check "audit"
