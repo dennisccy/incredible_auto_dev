@@ -101,9 +101,28 @@ cleanup_test_processes() {
   return 0
 }
 
-# Works on success, on an assertion failure, and on interruption.
-trap 'cleanup_test_processes; rm -rf "$BASE"' EXIT
-trap 'cleanup_test_processes; rm -rf "$BASE"; exit 130' INT TERM
+# The decoy exists to prove cleanup_test_processes does NOT kill on a
+# command-line match, so it must stay outside that function. It still has to be
+# reaped on every exit path, or an interruption between its creation and §7
+# leaves it running after the scratch directory is gone. Hence a SEPARATE,
+# identity-verified reaper, invoked after the cleanup under test.
+DECOY_CLEANED=0
+cleanup_decoy() {
+  [[ "$DECOY_CLEANED" == "1" ]] && return 0
+  DECOY_CLEANED=1
+  [[ -n "${DECOY_PID:-}" && -n "${DECOY_ID:-}" ]] || return 0
+  # Identity, not existence: never signal a pid that is gone or recycled.
+  [[ "$(service_pid_starttime "$DECOY_PID")" == "$DECOY_ID" ]] || return 0
+  service_signal_child "$DECOY_PID" 2 "$DECOY_ID" >/dev/null 2>&1 || true
+  return 0
+}
+
+# Works on success, on an assertion failure, and on interruption. Order matters:
+# the cleanup UNDER TEST runs first, then the decoy's own reaper — so the
+# property §7 asserts (the decoy survives cleanup_test_processes) still holds on
+# the normal path, while no exit path can leak it.
+trap 'cleanup_test_processes; cleanup_decoy; rm -rf "$BASE"' EXIT
+trap 'cleanup_test_processes; cleanup_decoy; rm -rf "$BASE"; exit 130' INT TERM
 
 git init -q "$ROOT"
 echo "rev-1" > "$ROOT/apps/backend/app.py"
@@ -380,8 +399,9 @@ fi
 _left=0
 for _p in "$PF_BE" "$PF_FE"; do service_port_is_listening "$_p" && _left=$((_left+1)); done
 chk "no test service left listening"  "0"  "$_left"
-# Reap the decoy the same way: by its identity, captured at launch.
-service_signal_child "$DECOY_PID" 2 "$DECOY_ID" >/dev/null 2>&1 || true
+# Reap the decoy through its own identity-verified path (the same one the traps
+# use, so the normal and interrupted paths are not two different mechanisms).
+cleanup_decoy
 sleep 0.5
 if kill -0 "$DECOY_PID" 2>/dev/null; then
   bad "the decoy could not be reaped by identity"
