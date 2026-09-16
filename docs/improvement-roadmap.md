@@ -5563,16 +5563,43 @@ Four root causes: governors read proxies instead of facts (HARD-1..3); ownership
   acquiring authority; unhealthy unowned occupant ⇒ concrete operational blocker, never a kill.
   `demo-phase.sh` gains the pid-scoped EXIT trap it never had. The developer/qa agent contracts no
   longer tell agents to `pkill -f`. Plan doc: "WP5 / HARD-5" (rev 2).
-- **DoD/Verify:** `tests/automation/test-service-ownership.sh` — 30 assertions over real
-  subprocesses on dynamic ports, including the required B2 regression (an unowned listener
-  survives every teardown path) and B12's static sweep (no `fuser -k`/`pkill`/`killall` left under
-  `scripts/automation/`). Wired into `run-evals.sh`. **Rollback:** `git revert` (no weakening knob).
+- **Rev 3 (2026-09-16, after independent review of `e92827b`) — three further gaps closed:**
+  (1) *Ownership is not cleanup permission.* Records gained `lifecycle=persistent|ephemeral`,
+  `health_url` and the working-tree `revision`; `service_release` PRESERVES a healthy, current
+  application service across phase boundaries, iteration boundaries and Goal Mode completion, and
+  reaps only explicitly ephemeral services or ones whose restart is verified required (unhealthy,
+  or serving an older revision than the working tree — which is how the fresh-serving-tree
+  guarantee survives without a blind sweep). (2) *Check-to-signal PID reuse.* `TERM → sleep →
+  `kill -0` → KILL` escalated on existence, not identity; new `lib/proc_signal.py` pins every
+  process by **pidfd** before the first signal (reuse structurally impossible), falling back to
+  start-time revalidation before each signal. `_kill_pid_tree`, `_svc_kill_tree` and both
+  `kill_stale_*` helpers route through it. See anti-pattern 35. (3) *A healthy endpoint is not an
+  identity.* The backend's `ready_re` accepted ANY HTTP status; reuse now requires ownership plus
+  a matching revision, or the project's `CHAIN_SERVICE_VERIFY_<ROLE>` contract (body on stdin,
+  `<url> <port>` args, exit 0 = expected). Unverifiable ⇒ fail closed: dependency not claimed,
+  listener not killed, port not switched. Also `scripts/dev.sh` `DEV_FORCE=1` now targets
+  LISTENERS only — `lsof -ti :PORT` also matched established **client** sockets (verified), so the
+  override could `kill -9` a connected browser.
+- **DoD/Verify:** `tests/automation/test-service-ownership.sh` — 52 assertions over real
+  subprocesses on dynamic ports: B2 (an unowned listener survives every teardown path), B12
+  (static sweep: no `fuser -k`/`pkill`/`killall` under `scripts/automation/`), B13/B14, and the
+  rev-3 C-series C1–C9 (preserve healthy app services, reap ephemeral leaks, detect stale
+  revisions, signal-time identity, fail-closed reuse, DEV_FORCE scope). Plus
+  `lib/proc_signal.py --self-test`. Both wired into `run-evals.sh`.
+  **Rollback:** `git revert` (no weakening knob).
 - **Vendored sync (owed; per `.claude/maintenance-protocol.md` §3.4 — per-file over the changed-file
   list, never a whole-tree copy).** Copy into each product's `incredible_auto_dev/`:
-  `scripts/automation/lib/{engine-identity.sh,service-owner.sh}` (new),
+  `scripts/automation/lib/{engine-identity.sh,service-owner.sh,proc_signal.py}` (new),
   `scripts/automation/lib/common.sh`, `scripts/automation/{run-goal,run-phase,goal-iter-lean,dev-phase,browser-qa-phase,demo-phase,doctor,run-evals}.sh`,
-  `tests/automation/test-service-ownership.sh` (new), `agents/{developer,qa}/{body.md,agent.yaml}`
-  + `.claude/agents/{developer,qa}.md`, and the docs/anti-pattern files.
+  `tests/automation/{test-service-ownership.sh (new),test-doctor.sh}`,
+  `agents/{developer,qa}/{body.md,agent.yaml}` + `.claude/agents/{developer,qa}.md`,
+  `.claude/anti-patterns/{34-*,35-*}.md` + its README, and the docs files.
+  **Each product must also add its own `CHAIN_SERVICE_VERIFY_BACKEND` /
+  `CHAIN_SERVICE_VERIFY_FRONTEND` to its `.claude/project-template.md`** (the framework file is a
+  template; copy the new "Service reuse contract" section, then fill in project-specific checks).
+  Without it, a run that meets an externally-started service on the project's ports stops with a
+  named blocker instead of testing an unverified service — which is the intended fail-closed
+  behaviour, but the operator should choose it knowingly.
   **Do NOT copy `scripts/dev.sh`** — it is one of the three per-project templates a deployment
   localizes (§3.4), so each product must apply the ownership-aware port block to its own copy by
   hand. Until it does, that product's `dev.sh` can still blind-kill a running Goal Mode session's

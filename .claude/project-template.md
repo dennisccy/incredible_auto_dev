@@ -122,6 +122,31 @@ Start backend:  <e.g., bash scripts/start-backend.sh> (or set CHAIN_START_BACKEN
 Start frontend: <e.g., bash scripts/start-frontend.sh> (or set CHAIN_START_FRONTEND_CMD env var)
 ```
 
+### Service reuse contract (HARD-5)
+
+When a service is ALREADY answering on this project's port, the framework must
+decide whether that satisfies the dependency. A 2xx is not an answer to that
+question: any process can return 200, and a correct endpoint still says nothing
+about which revision it is serving.
+
+* A service **this run started** is reused when its recorded revision still
+  matches the working tree, and restarted when it does not. Nothing to configure.
+* A service **someone else started** (your own `scripts/dev.sh`, an IDE task, a
+  product-side pump) is reused **only if you say how to recognise it**. Without a
+  contract the run stops with a named blocker rather than testing an unknown
+  service — it will not kill it and will not silently move to another port.
+
+```
+Verify backend:  <e.g., CHAIN_SERVICE_VERIFY_BACKEND='jq -e .service=="myapp-api"'>
+Verify frontend: <e.g., CHAIN_SERVICE_VERIFY_FRONTEND='grep -q "<title>MyApp"'>
+```
+
+The command receives the response body on **stdin** and `<url> <port>` as
+arguments; **exit 0 means "this is the expected service"**. The variable name is
+`CHAIN_SERVICE_VERIFY_` + the role in upper case (`BACKEND`, `FRONTEND`).
+Prefer a check that also pins the build (a version field, a build hash) so a
+stale external instance is rejected rather than accepted.
+
 ---
 
 ## PHASE SPECS

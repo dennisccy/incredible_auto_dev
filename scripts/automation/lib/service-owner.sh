@@ -214,8 +214,13 @@ service_port_is_listening() {
 # ── Registry records (advisory) ──────────────────────────────────────────────
 _svc_rec_field() { sed -n "s/^${2}=//p" "$1" 2>/dev/null | head -n1; }
 
-service_owner_write_as() { # <port> <role> <service_pid> <instance> <owner_token>
+# service_owner_write_as <port> <role> <pid> <instance> <owner_token>
+#                        [lifecycle] [health_url] [revision]
+# lifecycle defaults to "persistent": this writer is only reached from the
+# managed-service boot path, and those ARE the application.
+service_owner_write_as() {
   local port="$1" role="$2" pid="$3" inst="$4" tok="$5"
+  local lifecycle="${6:-persistent}" health_url="${7:-}" revision="${8:-}"
   local dir rec tmp
   dir="$(service_registry_dir)"
   mkdir -p "$dir" 2>/dev/null || {
@@ -234,6 +239,9 @@ service_owner_write_as() { # <port> <role> <service_pid> <instance> <owner_token
     echo "owner_kind=${CHAIN_SERVICE_OWNER_KIND:-standalone}"
     echo "scope=$(service_owner_scope_value "" "$tok")"
     echo "instance=$inst"
+    echo "lifecycle=$lifecycle"
+    echo "health_url=$health_url"
+    echo "revision=$revision"
     echo "service_pid=$pid"
     echo "service_starttime=$(_engine_starttime "$pid")"
     echo "boot_id=$(_engine_boot8)"
@@ -254,7 +262,17 @@ service_owner_write_as() { # <port> <role> <service_pid> <instance> <owner_token
 }
 
 service_owner_write() { # <port> <role> <service_pid> <instance>
-  service_owner_write_as "$1" "$2" "$3" "$4" "${CHAIN_SERVICE_OWNER_TOKEN:-$(engine_token_self)}"
+  service_owner_write_as "$1" "$2" "$3" "$4" \
+    "${CHAIN_SERVICE_OWNER_TOKEN:-$(engine_token_self)}"
+}
+
+# service_owner_register <port> <role> <pid> <instance> <lifecycle> <health_url> <revision>
+# The full-fidelity registration used by the managed-service boot path: it is
+# what lets a later sweep tell a persistent application service from a stray
+# verification server, and a current service from one serving stale code.
+service_owner_register() {
+  service_owner_write_as "$1" "$2" "$3" "$4" \
+    "${CHAIN_SERVICE_OWNER_TOKEN:-$(engine_token_self)}" "${5:-persistent}" "${6:-}" "${7:-}"
 }
 
 service_owner_release() {
@@ -302,17 +320,254 @@ _svc_pid_tree() {
   printf '%s\n' "$p"
 }
 
-_svc_kill_tree() {
-  local pid="${1:-}" p grace="${CHAIN_KILL_GRACE_SECONDS:-2}"
-  [[ -n "$pid" ]] || return 0
-  local -a tree=()
-  while IFS= read -r p; do [[ -n "$p" ]] && tree+=("$p"); done < <(_svc_pid_tree "$pid")
-  for p in ${tree[@]+"${tree[@]}"}; do kill -TERM "$p" 2>/dev/null || true; done
+# service_pid_starttime <pid> — the pid's stable within-boot identity, or "".
+service_pid_starttime() { _engine_starttime "${1:-}"; }
+
+# service_signal_tree <pid> [grace_seconds] [expected_identity]
+#
+# Terminate a process and its descendants with identity bound at SIGNAL time.
+#
+# The idiom this replaces — snapshot pids, TERM, sleep, `kill -0`, KILL — checks
+# EXISTENCE before the escalation, not IDENTITY. A target that exits during the
+# grace window and has its pid recycled receives the KILL, and an ownership
+# check performed before the sequence cannot prevent that: the check happens
+# once, the signals happen seconds later.
+#
+# lib/proc_signal.py pins every process by pidfd before the first signal, so a
+# recycled pid is structurally unreachable; without pidfd it revalidates the
+# start time immediately before each signal. When `expected_identity` is given
+# and no longer matches, NOTHING is signalled.
+#
+# Best-effort and set -e safe. Always returns 0 except on identity refusal (1).
+service_signal_tree() {
+  local pid="${1:-}" grace="${2:-${CHAIN_KILL_GRACE_SECONDS:-2}}" want="${3:-}"
+  [[ "$pid" =~ ^[0-9]+$ ]] || return 0
   [[ "$grace" =~ ^[0-9]+$ ]] || grace=2
-  [[ "$grace" -gt 0 ]] && sleep "$grace"
-  for p in ${tree[@]+"${tree[@]}"}; do
-    if kill -0 "$p" 2>/dev/null; then kill -KILL "$p" 2>/dev/null || true; fi
+  local helper="$(dirname "${BASH_SOURCE[0]}")/proc_signal.py"
+  if [[ -f "$helper" ]] && command -v python3 >/dev/null 2>&1; then
+    local -a args=(tree "$pid" --grace "$grace")
+    [[ -n "$want" ]] && args+=(--identity "$want")
+    python3 "$helper" "${args[@]}" 2>/dev/null
+    local rc=$?
+    [[ $rc -eq 3 ]] && return 1     # identity mismatch: nothing was signalled
+    return 0
+  fi
+  # Fallback: same guarantee, weaker window. Revalidate before EVERY signal.
+  local p now
+  if [[ -n "$want" ]]; then
+    [[ "$(service_pid_starttime "$pid")" == "$want" ]] || return 1
+  fi
+  local -a tree=() ids=()
+  while IFS= read -r p; do
+    [[ -n "$p" ]] || continue
+    now="$(service_pid_starttime "$p")"
+    [[ -n "$now" ]] || continue
+    tree+=("$p"); ids+=("$now")
+  done < <(_svc_pid_tree "$pid")
+  local i
+  for i in "${!tree[@]}"; do
+    [[ "$(service_pid_starttime "${tree[$i]}")" == "${ids[$i]}" ]] \
+      && kill -TERM "${tree[$i]}" 2>/dev/null || true
   done
+  [[ "$grace" -gt 0 ]] && sleep "$grace"
+  for i in "${!tree[@]}"; do
+    [[ "$(service_pid_starttime "${tree[$i]}")" == "${ids[$i]}" ]] \
+      && kill -KILL "${tree[$i]}" 2>/dev/null || true
+  done
+  return 0
+}
+
+# Back-compat shim: every existing caller gets identity-safe signalling.
+_svc_kill_tree() { service_signal_tree "${1:-}" "${CHAIN_KILL_GRACE_SECONDS:-2}"; }
+
+# ── Lifecycle policy ─────────────────────────────────────────────────────────
+# Ownership answers "may this process be terminated by us?".
+# Lifecycle policy answers "SHOULD it be?" — a different question, and the one
+# that decides whether a healthy application service survives a phase boundary.
+#
+#   persistent  the application itself (backend / frontend). Survives phase
+#               boundaries, iteration boundaries and Goal Mode completion while
+#               it is healthy and serving the current revision.
+#   ephemeral   anything else we own on the port — chiefly a verification server
+#               an agent started and abandoned. Always reaped.
+#
+# A persistent service is released ONLY when the restart is VERIFIED to be
+# required: it is unhealthy, or it is serving a revision older than the working
+# tree (it would otherwise hand the next step results from pre-fix code).
+
+# service_tree_revision — a content hash of the WORKING TREE (not HEAD), so an
+# uncommitted fix by the developer agent changes it. "" outside a git repo.
+#
+# Self-sufficient on purpose: it must not depend on lib/checkpoint.sh having
+# been sourced, because it is consulted from teardown paths that source only
+# this file. Prefers chain_tree_hash when it IS available (identical algorithm,
+# plus that function's configured excludes).
+service_tree_revision() {
+  local h=''
+  if declare -F chain_tree_hash >/dev/null 2>&1; then
+    h="$(chain_tree_hash "${REPO_ROOT:-$PWD}" 2>/dev/null || printf '')"
+    [[ -n "$h" ]] && { printf '%s' "$h"; return 0; }
+  fi
+  local root="${REPO_ROOT:-$PWD}" idx
+  git -C "$root" rev-parse --git-dir >/dev/null 2>&1 || { printf ''; return 0; }
+  idx="$(mktemp "${TMPDIR:-/tmp}/svc-tree-index.XXXXXX")" || { printf ''; return 0; }
+  rm -f "$idx"            # git add wants to create the index itself
+  if GIT_INDEX_FILE="$idx" git -C "$root" add -A -- . 2>/dev/null; then
+    h="$(GIT_INDEX_FILE="$idx" git -C "$root" write-tree 2>/dev/null || printf '')"
+  fi
+  rm -f "$idx"
+  printf '%s' "$h"
+}
+
+# service_service_healthy <port> — probe the health URL recorded at boot.
+# rc 0 healthy, 1 not healthy, 2 no recorded URL (cannot tell).
+service_service_healthy() {
+  local port="${1:-}" rec url code
+  rec="$(service_owner_record_path "$port")"
+  [[ -r "$rec" ]] || return 2
+  url="$(_svc_rec_field "$rec" health_url)"
+  [[ -n "$url" ]] || return 2
+  code=$(curl -s -o /dev/null --max-time "${CHAIN_HEALTH_PROBE_TIMEOUT:-10}" \
+          -w "%{http_code}" "$url" 2>/dev/null || true)
+  [[ "$code" =~ ^[1-5][0-9][0-9]$ ]]
+}
+
+# service_restart_required <port> — rc 0 when a restart is PROVEN necessary.
+# Unprovable is not proven: a missing revision on either side means we preserve
+# (the reviewer's contract is "explicitly ephemeral, or a VERIFIED restart").
+service_restart_required() {
+  local port="${1:-}" rec rev_then rev_now rc=0
+  rec="$(service_owner_record_path "$port")"
+  [[ -r "$rec" ]] || return 1
+  service_service_healthy "$port" || rc=$?
+  [[ $rc -eq 1 ]] && return 0                 # unhealthy: restart is required
+  rev_then="$(_svc_rec_field "$rec" revision)"
+  rev_now="$(service_tree_revision)"
+  if [[ -z "$rev_then" || -z "$rev_now" ]]; then
+    # No revision on one side (a project outside git). Freshness cannot be
+    # PROVEN stale, and the contract is "explicitly ephemeral, or a VERIFIED
+    # restart" — so preserve, and say why, rather than guess either way.
+    _svc_vlog "port $port: cannot verify the serving revision (no git tree hash) — preserving the running service; code-freshness enforcement needs a git working tree"
+    return 1
+  fi
+  [[ "$rev_then" != "$rev_now" ]]
+}
+
+# service_release <port> <caller> — POLICY-aware cleanup, the verb the pipeline's
+# between-step sweeps use. Ownership is still required to touch anything.
+#   rc 0  the port is in an acceptable state to proceed: nothing of ours there,
+#         a healthy current persistent service PRESERVED, or ours terminated.
+#   rc 1  refused — a listener we cannot prove we own is still there.
+service_release() {
+  local port="${1:-}" caller="${2:-unknown}"
+  [[ "$port" =~ ^[0-9]+$ ]] || return 0
+
+  local -a pids=()
+  local p
+  while IFS= read -r p; do [[ -n "$p" ]] && pids+=("$p"); done < <(service_listener_pids "$port")
+  if [[ ${#pids[@]} -eq 0 ]]; then
+    service_owner_terminate "$port" "$caller"        # handles records + invisible listeners
+    return $?
+  fi
+
+  # Every listener must be ours before policy even becomes relevant.
+  local verdict
+  for p in "${pids[@]}"; do
+    verdict="$(service_pid_ownership "$p")"
+    case "$verdict" in
+      MINE|DEAD|GONE) ;;
+      *) service_owner_terminate "$port" "$caller"; return $? ;;   # reuses the refusal path
+    esac
+  done
+
+  local rec lifecycle
+  rec="$(service_owner_record_path "$port")"
+  lifecycle=""
+  [[ -r "$rec" ]] && lifecycle="$(_svc_rec_field "$rec" lifecycle)"
+
+  if [[ "$lifecycle" == "persistent" ]]; then
+    if service_restart_required "$port"; then
+      _svc_log "releasing the $( _svc_rec_field "$rec" role ) on port $port ($caller): a restart is required (unhealthy, or serving an older revision than the working tree)."
+      _svc_event "services_released_for_restart" \
+        "$(printf '{"port":%s,"caller":"%s"}' "$port" "$caller")"
+      service_owner_terminate "$port" "$caller"
+      return $?
+    fi
+    _svc_vlog "preserving the healthy application service on port $port ($caller) — ownership permits termination, lifecycle policy does not require it"
+    _svc_event "services_preserved" \
+      "$(printf '{"port":%s,"caller":"%s"}' "$port" "$caller")"
+    return 0
+  fi
+
+  # Unrecorded but scope-owned (an agent's abandoned verification server), or an
+  # explicitly ephemeral service: always reaped. This is the requirement the old
+  # blind port sweep actually served.
+  service_owner_terminate "$port" "$caller"
+  return $?
+}
+
+# ── Reuse verification ───────────────────────────────────────────────────────
+# A 2xx (or any `ready_re` match) proves SOMETHING is listening. It does not
+# prove it is the service we need, nor that it runs the revision under test.
+#
+# Contract: the project supplies CHAIN_SERVICE_VERIFY_<ROLE> (e.g.
+# CHAIN_SERVICE_VERIFY_BACKEND). It is run with the response body on stdin and
+# "<url> <port>" as arguments; exit 0 means "this is the expected service".
+# Declare it in .claude/project-template.md so every run inherits it.
+#
+# rc 0 verified · 1 verifier ran and rejected · 2 no verifier configured.
+service_verify_reuse() {
+  local role="${1:-}" url="${2:-}" port="${3:-}"
+  local var="CHAIN_SERVICE_VERIFY_$(printf '%s' "$role" | tr '[:lower:]-' '[:upper:]_')"
+  local verifier="${!var:-}"
+  [[ -n "$verifier" ]] || return 2
+  curl -s --max-time "${CHAIN_HEALTH_PROBE_TIMEOUT:-10}" "$url" 2>/dev/null \
+    | bash -c "$verifier" "verify-$role" "$url" "$port" >/dev/null 2>&1
+}
+
+# service_reuse_decision <role> <url> <port> — echoes REUSE | RESTART | BLOCKED.
+# Called only when the endpoint is already answering.
+service_reuse_decision() {
+  local role="${1:-}" url="${2:-}" port="${3:-}"
+  [[ "$port" =~ ^[0-9]+$ ]] || { echo "REUSE"; return 0; }   # portless URL: as before
+
+  local -a pids=()
+  local p
+  while IFS= read -r p; do [[ -n "$p" ]] && pids+=("$p"); done < <(service_listener_pids "$port")
+
+  local ours=1
+  if [[ ${#pids[@]} -eq 0 ]]; then
+    ours=0                      # listening but invisible to us => not ours
+  else
+    for p in "${pids[@]}"; do
+      case "$(service_pid_ownership "$p")" in
+        MINE|DEAD|GONE) ;;
+        *) ours=0; break ;;
+      esac
+    done
+  fi
+
+  if [[ $ours -eq 1 ]]; then
+    local rec lifecycle
+    rec="$(service_owner_record_path "$port")"
+    lifecycle=""
+    [[ -r "$rec" ]] && lifecycle="$(_svc_rec_field "$rec" lifecycle)"
+    # Ours and registered as the managed service: reuse only when it is current.
+    if [[ "$lifecycle" == "persistent" ]]; then
+      if service_restart_required "$port"; then echo "RESTART"; else echo "REUSE"; fi
+      return 0
+    fi
+    # Ours but never registered as a managed service (an agent leak that happens
+    # to answer): we cannot vouch for its configuration or revision. Replace it.
+    echo "RESTART"; return 0
+  fi
+
+  # Not ours. A healthy endpoint is not an identity — require the contract.
+  service_verify_reuse "$role" "$url" "$port"
+  case $? in
+    0) echo "REUSE" ;;
+    *) echo "BLOCKED" ;;
+  esac
   return 0
 }
 

@@ -815,7 +815,7 @@ kill_phase_servers() {
   local port
   for port in "${CHAIN_BACKEND_PORT:-}" "${CHAIN_FRONTEND_PORT:-}"; do
     [[ -n "$port" ]] || continue
-    service_owner_terminate "$port" "kill_phase_servers" || true
+    service_release "$port" "kill_phase_servers" || true
   done
   return 0
 }
@@ -893,29 +893,17 @@ _pid_tree() {
 # CHAIN_KILL_GRACE_SECONDS (default 2s). The whole tree is snapshotted BEFORE
 # signalling so reparented grandchildren stay reachable for the KILL sweep.
 # Best-effort and set -e/-u safe; no-op on empty/dead PID. Benefits every caller.
+# HARD-5 follow-up: the TERM -> sleep -> `kill -0` -> KILL sequence that used to
+# live here checked EXISTENCE before escalating, not IDENTITY. A pid that exits
+# during the grace window and is recycled received the KILL. Every caller now
+# gets identity-bound signalling (pidfd where available, start-time revalidation
+# otherwise) from service_signal_tree. Behaviour is otherwise unchanged: whole
+# tree snapshotted before the first signal, TERM, grace, KILL for survivors.
 _kill_pid_tree() {
   local pid="${1:-}"
   [[ -z "$pid" ]] && return 0
-
-  local -a tree=()
-  local p
-  while IFS= read -r p; do [[ -n "$p" ]] && tree+=("$p"); done < <(_pid_tree "$pid")
-
-  # Phase 1: TERM everything (children first, then the root).
-  for p in ${tree[@]+"${tree[@]}"}; do
-    kill -TERM "$p" 2>/dev/null || true
-  done
-
-  # Phase 2: brief grace so well-behaved processes exit on their own.
-  local grace="${CHAIN_KILL_GRACE_SECONDS:-2}"
-  [[ "$grace" =~ ^[0-9]+$ ]] || grace=2
-  [[ "$grace" -gt 0 ]] && sleep "$grace"
-
-  # Phase 3: KILL any survivor in the original tree (best-effort). Use `if` so a
-  # dead-pid `kill -0` (non-zero) never trips the caller's `set -e` mid-loop.
-  for p in ${tree[@]+"${tree[@]}"}; do
-    if kill -0 "$p" 2>/dev/null; then kill -KILL "$p" 2>/dev/null || true; fi
-  done
+  service_signal_tree "$pid" "${CHAIN_KILL_GRACE_SECONDS:-2}" \
+    "$(service_pid_starttime "$pid")"
   return 0
 }
 
@@ -993,30 +981,42 @@ _start_service_with_retries() {
   # and therefore the whole pipeline — indefinitely.
   local _probe_max="${CHAIN_HEALTH_PROBE_TIMEOUT:-10}"
 
+  local target_port
+  target_port=$(_url_port "$health_url")
+
   local code
   code=$(curl -s -o /dev/null --max-time "$_probe_max" -w "%{http_code}" "$health_url" 2>/dev/null || true)
   if [[ "$code" =~ $ready_re ]]; then
-    # Already healthy — idempotent fast path, no spawn.
-    #
-    # HARD-5: reusing a healthy service does NOT acquire termination authority
-    # over it. If it is a pre-existing product/external service we simply use it
-    # and never record ourselves as its owner; the ownership stamp already in
-    # its environ (or its absence) remains the single source of truth. Recording
-    # here would be exactly the "assume the port is ours" mistake.
-    local _fp; _fp=$(_url_port "$health_url")
-    if [[ -n "$_fp" ]]; then
-      local _own; _own="$(service_owner_classify "$_fp")"
-      case "$_own" in
-        MINE) : ;;                                  # our record, still accurate
-        NO_RECORD|GRACE|REGISTRY_ERROR*) : ;;       # not ours to claim
-        *) _svc_vlog "reusing a healthy $role on port $_fp owned elsewhere ($_own) — no ownership acquired" ;;
-      esac
-    fi
-    return 0
+    # SOMETHING is answering. That is not the same as "the dependency is
+    # satisfied": the backend's ready_re is `^[1-5][0-9][0-9]$`, so literally any
+    # HTTP status counted as ready, and even a 200 proves neither that this is
+    # the service we need nor that it runs the revision under test.
+    case "$(service_reuse_decision "$role" "$health_url" "$target_port")" in
+      REUSE)
+        # Ours and current, or external and positively verified by the project's
+        # CHAIN_SERVICE_VERIFY_<ROLE> contract. Reusing never acquires
+        # termination authority over a service we did not start.
+        return 0 ;;
+      RESTART)
+        # Ours, but stale (older revision than the working tree) or never
+        # registered as a managed service. Fall through to the spawn loop, whose
+        # pre-spawn reclaim is ownership-checked.
+        echo "[ensure_services_running] $role on port ${target_port:-?} is ours but not current — restarting it so this run tests the working tree." >&2 ;;
+      *)
+        # Not ours and not verifiable. Do NOT claim the dependency is satisfied,
+        # do NOT kill it, and do NOT quietly bind somewhere else.
+        service_port_blocker "$target_port" "$role" "$role reuse verification"
+        local _vv="CHAIN_SERVICE_VERIFY_$(printf '%s' "$role" | tr '[:lower:]-' '[:upper:]_')"
+        _svc_log "  Port ${target_port} answers (status ${code}) but this session cannot verify it is the expected $role."
+        if [[ -z "${!_vv:-}" ]]; then
+          _svc_log "  No reuse contract is configured. Set ${_vv} (response body on stdin, \"<url> <port>\" as args, exit 0 = expected service) in .claude/project-template.md, or stop the listener and let this run own the $role."
+        else
+          _svc_log "  ${_vv} ran and rejected it."
+        fi
+        printf -v "$tail_var" '%s' "port ${target_port} answers but could not be verified as the expected ${role}; refusing to treat the dependency as satisfied (set ${_vv} or free the port)"
+        return 1 ;;
+    esac
   fi
-
-  local target_port
-  target_port=$(_url_port "$health_url")
 
   # Frontend self-heal bookkeeping. `healed` ensures we clear `.next` AT MOST
   # once and grant exactly ONE guaranteed-cold rebuild attempt — so a heal is
@@ -1070,7 +1070,10 @@ _start_service_with_retries() {
     local instance; instance="$(service_instance_mint)"
     CHAIN_SERVICE_INSTANCE="$instance" $start_cmd >"$log_path" 2>&1 &
     pid=$!
-    [[ -n "$target_port" ]] && service_owner_write "$target_port" "$role" "$pid" "$instance"
+    # Register with the facts a later sweep needs: that this is the APPLICATION
+    # (persistent), where to probe it, and which revision it is serving.
+    [[ -n "$target_port" ]] && service_owner_register "$target_port" "$role" "$pid" \
+      "$instance" "persistent" "$health_url" "$(service_tree_revision)"
     # QA_STARTED_PIDS is declared by qa-phase.sh / browser-qa-phase.sh but NOT by
     # demo-phase.sh — guard so the append is safe whether or not it pre-exists.
     # These pids are ours by construction (we just spawned them), so the
@@ -1848,9 +1851,10 @@ except Exception:
     # kill it — the same checkout is shared by every engine and by the operator.
     if [[ -n "$lock_pid" ]] && kill -0 "$lock_pid" 2>/dev/null; then
       if service_pid_kill_allowed "$lock_pid" "kill_stale_next_dev_server(lock)"; then
-        kill -TERM "$lock_pid" 2>/dev/null || true
-        sleep 1
-        kill -KILL "$lock_pid" 2>/dev/null || true
+        # Identity captured BEFORE the first signal and revalidated before the
+        # KILL escalation: a bare TERM/sleep/KILL can escalate onto a pid that
+        # exited during the grace window and was recycled.
+        service_signal_tree "$lock_pid" 2 "$(service_pid_starttime "$lock_pid")"
         killed_any=1
       else
         # Leave the lock file alone too: removing it would let a second
@@ -1870,9 +1874,7 @@ except Exception:
     cwd=$(readlink "/proc/$pid/cwd" 2>/dev/null || echo "")
     if [[ -n "$cwd" && "$cwd" == "$fe_dir"* ]]; then
       service_pid_kill_allowed "$pid" "kill_stale_next_dev_server(cwd)" || continue
-      kill -TERM "$pid" 2>/dev/null || true
-      sleep 1
-      kill -KILL "$pid" 2>/dev/null || true
+      service_signal_tree "$pid" 2 "$(service_pid_starttime "$pid")"
       killed_any=1
     fi
   done
@@ -1900,9 +1902,8 @@ kill_stale_backend_server() {
     cwd=$(readlink "/proc/$pid/cwd" 2>/dev/null || echo "")
     if [[ -n "$cwd" && "$cwd" == "$be_dir"* ]]; then
       service_pid_kill_allowed "$pid" "kill_stale_backend_server(cwd)" || continue
-      _kill_pid_tree "$pid"   # uvicorn + its reloader/worker children
-      sleep 1
-      kill -KILL "$pid" 2>/dev/null || true
+      # uvicorn + its reloader/worker children, identity-validated at signal time.
+      service_signal_tree "$pid" 2 "$(service_pid_starttime "$pid")"
       killed_any=1
     fi
   done

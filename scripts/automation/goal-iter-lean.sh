@@ -200,7 +200,7 @@ _bqa_kill_port_servers() {
   local _port
   for _port in "${CHAIN_BACKEND_PORT:-}" "${CHAIN_FRONTEND_PORT:-}"; do
     [[ -n "$_port" ]] || continue
-    service_owner_terminate "$_port" "goal-iter-lean" || true
+    service_release "$_port" "goal-iter-lean" || true
   done
   return 0
 }

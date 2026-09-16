@@ -337,6 +337,42 @@ Stage all thirteen as `HARD-1 … HARD-11` (with `HARD-4A/4B/4C`) in a new roadm
 > implemented: a switch that silently restores blind termination restores the incident. There is
 > no knob that weakens this layer; rollback is `git revert`.
 
+> **REVISION 3 — 2026-09-16, after independent review of `e92827b`. Three gaps closed.**
+>
+> Rev 2 established WHO may terminate a process. Review showed that is only half a lifecycle:
+>
+> 1. **Ownership is not cleanup permission.** `kill_phase_servers` still ran unconditionally after
+>    the fanout, after QA, and in the final-summary path — so a healthy application service the
+>    framework legitimately owned was still torn down between phases and at session end, and
+>    rebooted moments later. Ownership answers *may we*; a **lifecycle policy** answers *should
+>    we*. Records now carry `lifecycle=persistent|ephemeral`, plus the `health_url` and the
+>    working-tree `revision` the service is serving. `service_release` preserves a healthy,
+>    current persistent service and reaps only (a) explicitly ephemeral services — chiefly an
+>    agent's abandoned verification server — or (b) a service whose restart is VERIFIED required
+>    (unhealthy, or serving a revision older than the working tree, which is what preserves the
+>    fresh-serving-tree guarantee the old blind sweep was really buying).
+> 2. **Check-to-signal PID reuse.** `service_owner_terminate` verified ownership and then called
+>    `_svc_kill_tree`, which TERMed, slept, and escalated on `kill -0` — existence, not identity.
+>    A target that exits during the grace window and has its pid recycled received the `SIGKILL`;
+>    an ownership check placed *before* the sequence widens that gap rather than closing it. The
+>    stale-server helpers had the same `TERM; sleep; KILL` shape. All signalling now goes through
+>    `lib/proc_signal.py`, which pins every process by **pidfd** before the first signal (reuse
+>    becomes structurally impossible) and falls back to start-time revalidation before *each*
+>    signal where pidfd is unavailable. See anti-pattern 35.
+> 3. **A healthy endpoint is not an identity.** The reuse fast path accepted anything matching
+>    `ready_re` — for the backend that regex is `^[1-5][0-9][0-9]$`, i.e. **any HTTP status**. A
+>    service we started is now reused only while its recorded revision matches the working tree;
+>    a service someone else started is reused only if the project's
+>    `CHAIN_SERVICE_VERIFY_<ROLE>` contract confirms it (response body on stdin, `<url> <port>`
+>    as args, exit 0 = expected). Unverifiable ⇒ **fail closed**: the dependency is not claimed
+>    satisfied, the listener is not killed, and the port is not silently switched.
+>
+> Also tightened: `scripts/dev.sh`'s `DEV_FORCE=1` selected targets with `lsof -ti :PORT`, which
+> matches **established client sockets too** — verified: with a listener and a separate client on
+> one port, that command returned both pids, so the override would `kill -9` a connected browser.
+> It now selects listeners only (`-sTCP:LISTEN`), prints each pid and command line before
+> signalling, signals through the identity-validated path, and fails if the port is still held.
+
 1. **Problem.** Every service teardown was port-scoped or command-line-scoped and owner-blind:
    `kill_phase_servers` (`lib/common.sh:793`), `reclaim_canonical_phase_ports` (`:812`),
    `_bqa_kill_port_servers` (`goal-iter-lean.sh:192`, from the EXIT trap and the fork reaps),
@@ -369,6 +405,13 @@ Stage all thirteen as `HARD-1 … HARD-11` (with `HARD-4A/4B/4C`) in a new roadm
    reclaim its port and the port is **not** silently switched: the framework reports a concrete
    operational blocker. Pid-scoped teardown of processes a script itself spawned
    (`QA_STARTED_PIDS`) is always allowed — those are ours by construction.
+   **Rev 3 additions.** (i) Ownership grants authority, not obligation: a healthy persistent
+   application service is PRESERVED across phase boundaries, iteration boundaries and Goal Mode
+   completion, and released only when explicitly ephemeral or when a restart is verified
+   required. (ii) Identity must hold at SIGNAL time, not merely at check time — every signal is
+   bound to a pidfd, or to a start time revalidated immediately before it. (iii) A responding
+   endpoint never by itself satisfies a dependency: reuse requires ownership plus a matching
+   revision, or a positive project-supplied verification.
 6. **Proposed change (as built).**
    - **Prerequisite.** `lib/engine-identity.sh` — HARD-4A's sub-commit **A0** only
      (`engine_token_mint` / `engine_token_alive` / `engine_token_self`, plus `engine_proc_env`),
@@ -460,7 +503,17 @@ Stage all thirteen as `HARD-1 … HARD-11` (with `HARD-4A/4B/4C`) in a new roadm
     termination; B10 retry against an unowned unhealthy listener ⇒ no kill + concrete blocker;
     B11 healthy unowned occupant reused and canonical ports do not drift; B12 static sweep — no
     `fuser -k` / `pkill` / `killall` anywhere under `scripts/automation/`, none in `scripts/dev.sh`
-    outside the explicit `DEV_FORCE` gate.
+    outside the explicit `DEV_FORCE` gate; B13 an invisible (other-user) listener is refused, not
+    reported clear; B14 the real `dev.sh` refuses an unowned port.
+    **Rev 3 (C-series):** C1/C2 a healthy owned application service survives phase cleanup AND
+    the final-summary path, record retained; C3 an ephemeral agent leak is still reaped (the
+    discriminating counterpart — proves the policy is not simply inert); C4 a stale-revision
+    service is detected and released for restart; C5 a correctly-identified process is signalled
+    while one whose identity no longer matches is not; C6 the stale-server helpers and
+    `_svc_kill_tree` contain no unvalidated escalation; C7 a healthy-but-rejected service fails
+    closed and is left running; C8 an unowned service with no contract fails closed, un-killed
+    and without a port switch; C9 `DEV_FORCE` spares a process merely CONNECTED to the port.
+    Plus `lib/proc_signal.py --self-test` (11 checks) in `run-evals.sh`.
 12. **Migration/rollout.** Default on, single mode. No `warn`, no `off` (see the revision note).
 13. **Observability.** `services_kill_refused` must be 0 in a single-engine session with no
     foreign services; doctor row `service-owners`; `service-owner.sh status|classify|owns|doctor`.

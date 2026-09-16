@@ -243,6 +243,8 @@ was not a plain success.
 | `services_kill_refused` | a teardown declined — the listener is not provably ours | `port` or `pid`, `caller`, `verdict` (`FOREIGN`/`UNOWNED`/`UNREADABLE`), `record` |
 | `services_port_blocked` | a service could not start because an unowned process holds its port | `port`, `role`, `context` |
 | `services_terminate_incomplete` | something still listened after its owned processes were killed | `port`, `caller` |
+| `services_preserved` | a healthy, current application service was left running by a cleanup path | `port`, `caller` |
+| `services_released_for_restart` | a persistent service was released because a restart is verified required (unhealthy, or stale revision) | `port`, `caller` |
 | `services_registry_error` | the ownership registry could not be created/written | `op` (`dir`/`write`), `port` |
 | `services_identity_unavailable` | no procfs identity could be minted, so this process refuses ALL terminations | `reason` |
 
@@ -254,6 +256,16 @@ needed a port it may not reclaim, and the log names the holding pid and the reme
 
 `services_kill_refused` is the direct regression signal for the 2026-09-15 incident class: before
 HARD-5 these terminations happened silently and unconditionally, and nothing was recorded at all.
+
+`services_preserved` is the signal for the *second* class the review surfaced: ownership grants
+authority, not obligation. Seeing it on `kill_phase_servers` and `showcase-join` is the healthy
+steady state — the application stayed up across a phase boundary instead of being torn down and
+rebooted. `services_released_for_restart` rows are also normal while the developer agent changes
+code: each one means the running service was serving an older revision than the working tree and
+was replaced so the next step tested the fix, not the tree before it.
+`services_port_blocked` with a `reuse verification` context means an external service answered but
+could not be confirmed as the expected role — configure `CHAIN_SERVICE_VERIFY_<ROLE>` or free the
+port.
 
 ### Wall-time report and tripwire
 

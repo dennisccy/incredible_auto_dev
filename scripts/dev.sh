@@ -44,17 +44,45 @@ for PORT in $BACKEND_PORT $FRONTEND_PORT; do
     fi
   fi
   # Still occupied by something we cannot prove is ours.
-  PIDS=$(lsof -ti :$PORT 2>/dev/null | sort -u || true)
+  #
+  # Select LISTENERS ONLY. The previous `lsof -ti :$PORT` matched every socket
+  # on that port in either direction, so an established CLIENT — a browser or a
+  # curl talking to the app — was in the kill list purely for being connected.
+  # Verified: with a listener and a separate client on one port, `lsof -ti :P`
+  # returned both pids; `-sTCP:LISTEN` returned only the server.
+  if command -v service_listener_pids >/dev/null 2>&1; then
+    PIDS=$(service_listener_pids "$PORT" | tr '\n' ' ')
+  else
+    PIDS=$(lsof -ti "tcp:$PORT" -sTCP:LISTEN 2>/dev/null | sort -u || true)
+  fi
+  PIDS=$(echo $PIDS)
   [ -n "$PIDS" ] || continue
   if [ "${DEV_FORCE:-0}" = "1" ]; then
-    echo "DEV_FORCE=1: terminating unowned processes on port $PORT: $PIDS"
-    kill -9 $PIDS 2>/dev/null || true
+    # DEV_FORCE is explicit operator intent to reclaim THIS port, not a licence
+    # to signal arbitrary pids. Scope: listeners on this port only; each one
+    # named before it is signalled; identity bound at signal time so a pid that
+    # exits mid-teardown and is recycled cannot inherit the KILL.
+    echo "DEV_FORCE=1: reclaiming port $PORT. Listeners that will be terminated:"
+    for p in $PIDS; do
+      echo "    pid $p: $(tr '\0' ' ' < "/proc/$p/cmdline" 2>/dev/null | cut -c1-120)"
+    done
+    for p in $PIDS; do
+      if command -v service_signal_tree >/dev/null 2>&1; then
+        service_signal_tree "$p" 2 "$(service_pid_starttime "$p")" || true
+      else
+        kill -TERM "$p" 2>/dev/null || true
+      fi
+    done
     for i in $(seq 1 50); do
       ss -tlnH sport = :$PORT 2>/dev/null | grep -q . || break
       sleep 0.1
     done
+    if ss -tlnH sport = :$PORT 2>/dev/null | grep -q .; then
+      echo "ERROR: port $PORT is still held after DEV_FORCE reclaim — not proceeding." >&2
+      exit 1
+    fi
   else
-    echo "ERROR: port $PORT is held by a process this dev stack does not own:" >&2
+    echo "ERROR: port $PORT is held by a listener this dev stack does not own:" >&2
     for p in $PIDS; do
       echo "  pid $p: $(tr '\0' ' ' < "/proc/$p/cmdline" 2>/dev/null | cut -c1-120)" >&2
     done

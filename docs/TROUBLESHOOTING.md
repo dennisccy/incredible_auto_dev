@@ -105,3 +105,34 @@ malformed record is reported by the doctor and removed with
 and prints the holder. Re-run it as `DEV_FORCE=1 ./scripts/dev.sh` to override deliberately for
 that invocation. There is no equivalent switch anywhere in the pipeline: a knob that silently
 restored blind termination would restore the incident.
+
+## "port N answers but could not be verified as the expected backend/frontend"
+
+**Symptom.** A run stops with `[services] BLOCKED (<role> reuse verification)` and
+`port N answers (status 200) but this session cannot verify it is the expected <role>`.
+
+**What it means.** Something is already serving on the port, this session did not start it, and
+the project has not said how to recognise it. A 2xx proves a socket is open — not that it is your
+API, and not that it runs the revision under test. Rather than test an unknown service, the run
+stops. It does **not** kill the listener and does **not** move to another port (that would break
+frontend/backend pairing and silently test something else).
+
+**Fix, in order of preference.**
+
+1. **Declare the contract** in `.claude/project-template.md` (section "Service reuse contract"):
+   `CHAIN_SERVICE_VERIFY_BACKEND` / `CHAIN_SERVICE_VERIFY_FRONTEND`. The command gets the response
+   body on stdin and `<url> <port>` as arguments; exit 0 means "this is the expected service".
+   Pin the build where you can, so a stale external instance is rejected rather than accepted.
+2. **Let the framework own it**: stop your own stack and re-run. A service the run starts is
+   registered, reused while its revision matches the working tree, and restarted when it does not.
+3. **Move your stack off the project's offset ports** if you want it running alongside.
+
+**Related: "is ours but not current — restarting it".** Not an error. The service this run started
+is serving an older revision than the working tree (the developer agent changed code), so it is
+being replaced. Without this a phase would verify the tree as it was *before* the fix.
+
+**Related: services staying up between phases.** Also intended. Ownership permits termination;
+lifecycle policy does not require it. A healthy application service on the current revision now
+survives phase boundaries, iteration boundaries and Goal Mode completion — look for
+`services_preserved` in telemetry. Only ephemeral services (an agent's abandoned verification
+server) and services needing a verified restart are reaped.

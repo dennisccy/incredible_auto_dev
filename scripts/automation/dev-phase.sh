@@ -141,7 +141,7 @@ cleanup_dev_servers() {
   local _port
   for _port in "${CHAIN_BACKEND_PORT:-}" "${CHAIN_FRONTEND_PORT:-}"; do
     [[ -n "$_port" ]] || continue
-    service_owner_terminate "$_port" "dev-phase-exit" || true
+    service_release "$_port" "dev-phase-exit" || true
   done
 }
 trap cleanup_dev_servers EXIT

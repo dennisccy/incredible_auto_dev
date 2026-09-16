@@ -164,6 +164,10 @@ source "$ENGINE_ROOT/scripts/automation/lib/service-owner.sh"
 PROJECT_ROOT="$WORK/proj"
 mkdir -p "$PROJECT_ROOT"
 export REPO_ROOT="$PROJECT_ROOT"
+# A real project is a git working tree, and that is where the serving-revision
+# check gets its signal, so the sandbox must be one too.
+git init -q "$PROJECT_ROOT" 2>/dev/null || true
+echo "v1" > "$PROJECT_ROOT/src.txt"
 
 # This test process acts as the lifecycle owner.
 export CHAIN_ENGINE_TOKEN="$(engine_token_mint "$$")"
@@ -609,6 +613,213 @@ if grep -q "does not own" "$WORK/b14.log" 2>/dev/null; then
 else
   assert "B14c dev.sh refusal message missing (see $WORK/b14.log)" fail
 fi
+echo
+
+# ═══════════════════════════════════════════════════════════════════════════
+# C-series — review follow-up (2026-09-16). Ownership says WHO MAY terminate;
+# lifecycle policy says WHETHER termination is appropriate. Identity must hold
+# at SIGNAL time, not just at check time. A healthy endpoint is not proof that
+# it is the right service at the right revision.
+# ═══════════════════════════════════════════════════════════════════════════
+
+# ── C1: a healthy OWNED application service survives between-phase cleanup ───
+echo "-- C1: healthy owned app service survives phase cleanup"
+C1_PORT="$(free_port)"
+C1_INSTANCE="$(service_instance_mint)"
+start_listener "$C1_PORT" "CHAIN_SERVICE_OWNER_SCOPE=$OUR_SCOPE" "CHAIN_SERVICE_INSTANCE=$C1_INSTANCE"
+C1_PID="$LISTENER_PID"
+service_owner_register "$C1_PORT" "backend" "$C1_PID" "$C1_INSTANCE" \
+  "persistent" "http://127.0.0.1:$C1_PORT/" "$(service_tree_revision)"
+service_release "$C1_PORT" "kill_phase_servers" >/dev/null 2>&1
+settle
+if port_answers "$C1_PORT"; then
+  assert "C1a healthy owned app service survives kill_phase_servers" pass
+else
+  assert "C1a phase cleanup KILLED a healthy owned app service" fail
+fi
+assert_eq "C1b its ownership record is retained" "MINE" "$(service_owner_classify "$C1_PORT" | cut -d: -f1)"
+echo
+
+# ── C2: it also survives the final-summary path ──────────────────────────────
+echo "-- C2: healthy owned app service survives Goal Mode completion"
+service_release "$C1_PORT" "showcase-join" >/dev/null 2>&1
+settle
+if port_answers "$C1_PORT"; then
+  assert "C2 app service survives the final summary teardown" pass
+else
+  assert "C2 final summary KILLED a healthy owned app service" fail
+fi
+echo
+
+# ── C3: an EPHEMERAL leak (scope-owned, unrecorded) is still reaped ──────────
+echo "-- C3: ephemeral agent-started leak is still reaped"
+C3_PORT="$(free_port)"
+start_listener "$C3_PORT" "CHAIN_SERVICE_OWNER_SCOPE=$OUR_SCOPE"
+C3_PID="$LISTENER_PID"
+service_release "$C3_PORT" "dev-phase-exit" >/dev/null 2>&1
+settle
+if port_answers "$C3_PORT"; then
+  assert "C3 ephemeral leak was NOT reaped (policy too permissive)" fail
+else
+  assert "C3 ephemeral leak reaped" pass
+fi
+echo
+
+# ── C4: a stale-revision service IS restarted (verified restart required) ────
+echo "-- C4: stale-revision owned service is released for restart"
+C4_PORT="$(free_port)"
+C4_INSTANCE="$(service_instance_mint)"
+start_listener "$C4_PORT" "CHAIN_SERVICE_OWNER_SCOPE=$OUR_SCOPE" "CHAIN_SERVICE_INSTANCE=$C4_INSTANCE"
+C4_PID="$LISTENER_PID"
+service_owner_register "$C4_PORT" "backend" "$C4_PID" "$C4_INSTANCE" \
+  "persistent" "http://127.0.0.1:$C4_PORT/" "revision-from-an-older-tree"
+if service_restart_required "$C4_PORT"; then
+  assert "C4a stale revision is detected as restart-required" pass
+else
+  assert "C4a stale revision NOT detected (services would serve old code)" fail
+fi
+service_release "$C4_PORT" "kill_phase_servers" >/dev/null 2>&1
+settle
+if port_answers "$C4_PORT"; then
+  assert "C4b stale-revision service was NOT released (stale code would be tested)" fail
+else
+  assert "C4b stale-revision service released for restart" pass
+fi
+echo
+
+# ── C5: identity must hold at SIGNAL time, not just at check time ────────────
+# The old sequence was: snapshot pids -> TERM -> sleep -> `kill -0` -> KILL.
+# `kill -0` proves existence, not identity, so a pid that exits during the grace
+# window and is recycled receives the KILL. Signalling must be bound to a stable
+# identity captured before the first signal.
+echo "-- C5: signal-time identity validation (check-to-signal PID reuse gap)"
+C5_PORT="$(free_port)"
+start_listener "$C5_PORT"
+C5_PID="$LISTENER_PID"
+# Correct identity => the signal is delivered.
+service_signal_tree "$C5_PID" 1 "$(service_pid_starttime "$C5_PID")" >/dev/null 2>&1
+settle
+if port_answers "$C5_PORT"; then
+  assert "C5a a correctly-identified process IS signalled" fail
+else
+  assert "C5a a correctly-identified process IS signalled" pass
+fi
+# Wrong identity (simulating a recycled pid) => no signal at all.
+C5B_PORT="$(free_port)"
+start_listener "$C5B_PORT"
+C5B_PID="$LISTENER_PID"
+service_signal_tree "$C5B_PID" 1 "999999999-not-this-process" >/dev/null 2>&1
+settle
+if port_answers "$C5B_PORT"; then
+  assert "C5b a pid whose identity no longer matches is NOT signalled" pass
+else
+  assert "C5b stale identity STILL killed the process (reuse gap open)" fail
+fi
+echo
+
+# ── C6: the stale-server helpers use the same validated signalling ───────────
+echo "-- C6: stale-server helpers revalidate identity before escalating"
+if grep -q 'service_signal_tree\|service_signal_pid' \
+     <(sed -n '/^kill_stale_next_dev_server()/,/^}/p' "$ENGINE_ROOT/scripts/automation/lib/common.sh"); then
+  assert "C6a kill_stale_next_dev_server signals via the validated path" pass
+else
+  assert "C6a kill_stale_next_dev_server still uses a bare TERM/sleep/KILL" fail
+fi
+if grep -q 'service_signal_tree\|service_signal_pid' \
+     <(sed -n '/^kill_stale_backend_server()/,/^}/p' "$ENGINE_ROOT/scripts/automation/lib/common.sh"); then
+  assert "C6b kill_stale_backend_server signals via the validated path" pass
+else
+  assert "C6b kill_stale_backend_server still uses a bare TERM/sleep/KILL" fail
+fi
+if grep -qE 'kill -(KILL|9)' \
+     <(sed -n '/^_svc_kill_tree()/,/^}/p' "$ENGINE_ROOT/scripts/automation/lib/service-owner.sh"); then
+  assert "C6c _svc_kill_tree still escalates with an unvalidated kill" fail
+else
+  assert "C6c _svc_kill_tree has no unvalidated escalation" pass
+fi
+echo
+
+# ── C7: a healthy but WRONG service is not accepted as the dependency ────────
+echo "-- C7: healthy-but-wrong service fails closed (not reused, not killed)"
+C7_PORT="$(free_port)"
+start_listener "$C7_PORT"          # answers 200, but is NOT our backend
+C7_LOG="$WORK/c7.log"
+(
+  set +e
+  export REPO_ROOT="$SBX"
+  # shellcheck source=/dev/null
+  source "$SBX/scripts/automation/lib/common.sh" >/dev/null 2>&1
+  # Project-supplied verifier that this listener cannot satisfy.
+  export CHAIN_SERVICE_VERIFY_BACKEND="grep -q iad-backend-marker"
+  _start_service_with_retries "backend" "http://127.0.0.1:$C7_PORT/" "true" \
+    "$WORK/c7-svc.log" 2 1 QA_BACKEND_LOG_TAIL "" '^[1-5][0-9][0-9]$'
+  echo "RC=$?"
+) >"$C7_LOG" 2>&1
+settle
+if grep -q "^RC=0" "$C7_LOG"; then
+  assert "C7a healthy-but-unverified service was ACCEPTED as the dependency" fail
+else
+  assert "C7a healthy-but-unverified service is not accepted (fails closed)" pass
+fi
+if port_answers "$C7_PORT"; then
+  assert "C7b the unverified service was left running (not killed)" pass
+else
+  assert "C7b the unverified service was KILLED" fail
+fi
+echo
+
+# ── C8: unowned healthy service with NO verification contract ⇒ fail closed ──
+echo "-- C8: unverifiable external service is not silently trusted"
+C8_PORT="$(free_port)"
+start_listener "$C8_PORT"
+C8_LOG="$WORK/c8.log"
+(
+  set +e
+  export REPO_ROOT="$SBX"
+  # shellcheck source=/dev/null
+  source "$SBX/scripts/automation/lib/common.sh" >/dev/null 2>&1
+  unset CHAIN_SERVICE_VERIFY_BACKEND
+  _start_service_with_retries "backend" "http://127.0.0.1:$C8_PORT/" "true" \
+    "$WORK/c8-svc.log" 2 1 QA_BACKEND_LOG_TAIL "" '^[1-5][0-9][0-9]$'
+  echo "RC=$?"
+) >"$C8_LOG" 2>&1
+settle
+if grep -q "^RC=0" "$C8_LOG"; then
+  assert "C8a unowned unverifiable service silently accepted" fail
+else
+  assert "C8a unowned unverifiable service fails closed" pass
+fi
+if port_answers "$C8_PORT"; then
+  assert "C8b it was left running, not killed and not port-switched" pass
+else
+  assert "C8b it was KILLED" fail
+fi
+echo
+
+# ── C9: DEV_FORCE must not reach processes merely CONNECTED to the port ──────
+# `lsof -ti :PORT` matches established client sockets too, so the override would
+# kill an unrelated client (e.g. a browser talking to the app).
+echo "-- C9: DEV_FORCE targets listeners only, never connected clients"
+C9_PORT="$(free_port)"
+start_listener "$C9_PORT"
+C9_SRV="$LISTENER_PID"
+python3 -c "
+import socket,sys,time
+c=socket.socket(); c.connect(('127.0.0.1',int(sys.argv[1]))); time.sleep(30)
+" "$C9_PORT" >/dev/null 2>&1 &
+C9_CLIENT=$!
+DUMMY_PIDS+=("$C9_CLIENT")
+sleep 1
+C9_FREE="$(free_port)"
+CHAIN_BACKEND_PORT="$C9_PORT" CHAIN_FRONTEND_PORT="$C9_FREE" DEV_FORCE=1 \
+  bash "$DEVSBX/scripts/dev.sh" >"$WORK/c9.log" 2>&1 || true
+settle
+if pid_alive "$C9_CLIENT"; then
+  assert "C9 DEV_FORCE spared a process merely connected to the port" pass
+else
+  assert "C9 DEV_FORCE killed an unrelated CONNECTED client" fail
+fi
+kill -TERM "$C9_CLIENT" 2>/dev/null || true
 echo
 
 echo "== summary: $PASS passed, $FAIL failed =="
