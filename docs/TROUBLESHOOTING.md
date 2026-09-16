@@ -224,3 +224,28 @@ Two different proofs, because two different spawn mechanics:
 Both are verified against the *pinned* process, so neither is a shortcut. If you are extending a
 teardown path, pick the proof that matches how the target was created — requiring an environ stamp
 from a forked subshell makes the framework unable to clean up after itself.
+
+## "the service contracts file failed to load" / "Canonical-port reclamation SKIPPED"
+
+The framework could not load `.claude/service-contracts.sh`, so it does not know what this project
+considers healthy. Rather than fall back to the defaults — which can reclassify a perfectly healthy
+service as unhealthy and terminate it — it **fails closed**:
+
+* nothing from the broken file is applied (it is evaluated in a subshell first, so there is no
+  half-applied configuration);
+* canonical-port reclamation is skipped entirely — nothing is terminated;
+* `service_restart_required` answers "not required", so running services are preserved;
+* the error names the file and the exit status.
+
+Fix the file, or delete it if you are happy with the defaults (`^[23]` for health, and no reuse of
+externally-started services). Check what a run would load:
+
+```bash
+bash -c 'REPO_ROOT=$PWD; source incredible_auto_dev/scripts/automation/lib/service-owner.sh;
+         service_contracts_load; echo rc=$?;
+         echo "HEALTHY=${CHAIN_SERVICE_HEALTHY_BACKEND:-<unset>}"'
+```
+
+A file that is **absent** is fine and silent — that is the documented "no contracts" state. A file
+that exists but cannot be read is an error, because it is configuration you meant the framework to
+honour and it could not.

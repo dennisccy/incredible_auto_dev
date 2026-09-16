@@ -403,6 +403,7 @@ def signal_tree(root, grace=2.0, expect_identity=None, require_env=None,
 
 def _self_test():
     import subprocess
+    global _HAVE_PIDFD          # the fallback section below toggles it
     ok = fail = 0
 
     def check(label, cond):
@@ -415,8 +416,22 @@ def _self_test():
             print("  FAIL: %s" % label, file=sys.stderr)
 
     print("[proc_signal self-test] mechanism")
-    check("pidfd available on this host (fallback path is still tested below)",
-          _HAVE_PIDFD or True)
+    # `_HAVE_PIDFD or True` is not an assertion — it passes on every host and so
+    # says nothing about which path actually ran. Report the real capability,
+    # and prove the pidfd path is in use where it is available.
+    if _HAVE_PIDFD:
+        check("pidfd is available and IS the path taken", True)
+        _p = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(10)"])
+        try:
+            t = Target(_p.pid)
+            check("Target pins the process with a real pidfd", t.fd is not None)
+            t.close()
+        finally:
+            _p.kill(); _p.wait()
+    else:
+        print("  SKIP: pidfd unavailable on this host (kernel < 5.3 or python < 3.9);"
+              " only the start-time fallback is exercised below", file=sys.stderr)
+        check("fallback is the only available path (recorded, not asserted away)", True)
 
     print("[proc_signal self-test] identity")
     me = os.getpid()
@@ -513,6 +528,33 @@ def _self_test():
         os.kill(kid, signal.SIGKILL)
     except OSError:
         pass
+
+    # The fallback is a DIFFERENT code path and must be exercised distinctly —
+    # on a pidfd-capable host it would otherwise never run in this suite.
+    print("[proc_signal self-test] fallback path (pidfd forced off) is exercised")
+    _real_pidfd = _HAVE_PIDFD
+    try:
+        _HAVE_PIDFD = False
+        p = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+        time.sleep(0.3)
+        try:
+            check("fallback: Target holds no pidfd", Target(p.pid).fd is None)
+            try:
+                signal_tree(p.pid, grace=0.2, expect_identity="not-the-real-starttime")
+                check("fallback: stale identity raises SystemExit(3)", False)
+            except SystemExit as e:
+                check("fallback: stale identity raises SystemExit(3)", e.code == 3)
+            time.sleep(0.2)
+            check("fallback: process survived the refused signal", p.poll() is None)
+            signal_tree(p.pid, grace=2.0, expect_identity=identity(p.pid))
+            p.wait(timeout=5)
+            check("fallback: correct identity terminates the process", p.poll() is not None)
+        finally:
+            if p.poll() is None:
+                p.kill(); p.wait()
+    finally:
+        _HAVE_PIDFD = _real_pidfd
+    check("pidfd availability restored after the fallback test", _HAVE_PIDFD == _real_pidfd)
 
     print("[proc_signal self-test] already-dead pid is a clean no-op")
     p = subprocess.Popen([sys.executable, "-c", "pass"])

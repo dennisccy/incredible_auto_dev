@@ -1454,5 +1454,133 @@ else
 fi
 echo
 
+# ═══════════════════════════════════════════════════════════════════════════
+# F-series — fourth review follow-up. A contract that fails to load must not
+# silently downgrade the lifecycle policy to defaults.
+# ═══════════════════════════════════════════════════════════════════════════
+
+echo "-- F1: a failed contract load fails closed, it does not fall back to defaults"
+
+# Find a project root whose canonical pair is free, so this is a real lifecycle.
+F1_ROOT=""; F1_OFF=""
+for _try in $(seq 1 40); do
+  _cand="$WORK/f1proj-$_try"
+  _hex="$(printf '%s' "$_cand" | sha1sum | cut -c1-4)"
+  _off=$(( 16#$_hex % 1000 ))
+  if ! service_port_is_listening $((8000 + _off)) && ! service_port_is_listening $((3000 + _off)); then
+    F1_ROOT="$_cand"; F1_OFF="$_off"; break
+  fi
+done
+if [[ -z "$F1_ROOT" ]]; then
+  assert "F1 could not find a free canonical port pair" fail
+else
+  mkdir -p "$F1_ROOT/.claude"; git init -q "$F1_ROOT" 2>/dev/null || true
+  echo v1 > "$F1_ROOT/src.txt"
+  F1_PREV_ROOT="$REPO_ROOT"; export REPO_ROOT="$F1_ROOT"
+  F1_BE=$((8000 + F1_OFF))
+
+  # A contract file that FAILS before it can set the health variable. This is
+  # the dangerous shape: the project legitimately needs a non-2xx health regex,
+  # and without it the default ^[23] calls the service unhealthy.
+  cat > "$F1_ROOT/.claude/service-contracts.sh" <<'BROKEN'
+echo "[contract] simulated failure before any declaration" >&2
+return 1
+export CHAIN_SERVICE_HEALTHY_BACKEND='^(2|3|404)'
+BROKEN
+
+  # ---- loader behaviour ----
+  ( set +e
+    unset _SERVICE_CONTRACTS_LOADED CHAIN_SERVICE_HEALTHY_BACKEND
+    service_contracts_load
+    echo "RC=$?"
+    echo "FLAG=${_SERVICE_CONTRACTS_LOADED:-<unset>}"
+    echo "VAR=${CHAIN_SERVICE_HEALTHY_BACKEND:-<unset>}"
+  ) >"$WORK/f1load.log" 2>&1
+  grep -q "^RC=0" "$WORK/f1load.log" \
+    && assert "F1a a failed contract load still reported success" fail \
+    || assert "F1a a failed contract load reports failure" pass
+  grep -q "^FLAG=1" "$WORK/f1load.log" \
+    && assert "F1b failure marked the contracts as loaded (a retry would skip)" fail \
+    || assert "F1b failure does not mark the contracts loaded" pass
+
+  # ---- partial application ----
+  cat > "$F1_ROOT/.claude/service-contracts.sh" <<'PARTIAL'
+export CHAIN_SERVICE_VERIFY_BACKEND='applied-before-the-failure'
+return 1
+export CHAIN_SERVICE_HEALTHY_BACKEND='^(2|3|404)'
+PARTIAL
+  ( set +e
+    unset _SERVICE_CONTRACTS_LOADED CHAIN_SERVICE_VERIFY_BACKEND CHAIN_SERVICE_HEALTHY_BACKEND
+    service_contracts_load
+    echo "VERIFY=${CHAIN_SERVICE_VERIFY_BACKEND:-<unset>}"
+  ) >"$WORK/f1partial.log" 2>&1
+  grep -q "VERIFY=<unset>" "$WORK/f1partial.log" \
+    && assert "F1c a failed load leaves NO partially applied configuration" pass \
+    || assert "F1c a failed load left partial configuration applied" fail
+
+  # ---- present but unreadable is an error, not "no contracts" ----
+  cat > "$F1_ROOT/.claude/service-contracts.sh" <<'OK2'
+export CHAIN_SERVICE_HEALTHY_BACKEND='^(2|3|404)'
+OK2
+  chmod 000 "$F1_ROOT/.claude/service-contracts.sh" 2>/dev/null || true
+  ( set +e
+    unset _SERVICE_CONTRACTS_LOADED CHAIN_SERVICE_HEALTHY_BACKEND
+    service_contracts_load
+    echo "RC=$?"
+  ) >"$WORK/f1unread.log" 2>&1
+  grep -q "^RC=0" "$WORK/f1unread.log" \
+    && assert "F1d an unreadable contract file was treated as 'no contracts'" fail \
+    || assert "F1d an unreadable contract file is an error, not 'no contracts'" pass
+  chmod 644 "$F1_ROOT/.claude/service-contracts.sh" 2>/dev/null || true
+
+  # ---- THE LIFECYCLE CONSEQUENCE ----
+  # Session A leaves a healthy (per its contract) 404-readiness service running.
+  cat > "$F1_ROOT/.claude/service-contracts.sh" <<'BROKEN2'
+echo "[contract] simulated failure before any declaration" >&2
+return 1
+export CHAIN_SERVICE_HEALTHY_BACKEND='^(2|3|404)'
+BROKEN2
+  setsid sleep 300 >/dev/null 2>&1 &
+  F1_ENGINE=$!; DUMMY_PIDS+=("$F1_ENGINE")
+  F1_TOKEN="$(engine_token_mint "$F1_ENGINE")"
+  F1_SCOPE="$(service_owner_scope_value "$F1_ROOT" "$F1_TOKEN")"
+  F1_INST="$(service_instance_mint)"
+  start_coded_listener "$F1_BE" 404 "no root route" \
+    "CHAIN_SERVICE_OWNER_SCOPE=$F1_SCOPE" "CHAIN_SERVICE_INSTANCE=$F1_INST"
+  F1_APP="$LISTENER_PID"
+  # Record written WITHOUT a health_re — the shape produced by any path that did
+  # not resolve one (a record from an earlier revision, or one written while the
+  # contract was unavailable). Health then resolves from the environment, which
+  # is exactly what the contract file is supposed to supply.
+  service_owner_write_as "$F1_BE" "backend" "$F1_APP" "$F1_INST" "$F1_TOKEN" \
+    "persistent" "http://127.0.0.1:$F1_BE/" "$(service_tree_revision)" ''
+  kill -KILL "$F1_ENGINE" 2>/dev/null; wait "$F1_ENGINE" 2>/dev/null
+  sleep 0.3
+  # Session B starts; its contract load fails before the health variable exists.
+  ( set +e
+    export CHAIN_SERVICE_REGISTRY_DIR="$CHAIN_SERVICE_REGISTRY_DIR"
+    unset CHAIN_BACKEND_PORT CHAIN_FRONTEND_PORT CHAIN_SERVICE_OWNER_SCOPE \
+          CHAIN_SERVICE_OWNER_TOKEN CHAIN_SERVICE_HEALTHY_BACKEND _SERVICE_CONTRACTS_LOADED
+    source "$SBX/scripts/automation/lib/common.sh" >/dev/null 2>&1
+    export REPO_ROOT="$F1_ROOT"
+    reclaim_canonical_phase_ports
+  ) >"$WORK/f1reclaim.log" 2>&1
+  settle
+  if pid_alive "$F1_APP"; then
+    assert "F1e a broken contract does not cause the existing service to be killed" pass
+  else
+    assert "F1e a broken contract downgraded health to defaults and KILLED the service" fail
+  fi
+  # The FRAMEWORK must report it — not merely the fixture's own stderr.
+  if grep -qE '^\[services\].*(contract|service-contracts)' "$WORK/f1reclaim.log"; then
+    assert "F1f the framework reports the contract failure" pass
+  else
+    assert "F1f the framework swallowed the contract failure (see $WORK/f1reclaim.log)" fail
+  fi
+  rm -f "$F1_ROOT/.claude/service-contracts.sh"
+  export REPO_ROOT="${F1_PREV_ROOT:-$REPO_ROOT}"
+fi
+echo
+
 echo "== summary: $PASS passed, $FAIL failed =="
 [[ $FAIL -eq 0 ]]

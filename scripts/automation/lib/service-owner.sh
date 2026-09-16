@@ -610,6 +610,12 @@ service_restart_required() {
   local port="${1:-}" rec rev_then rev_now rc=0
   rec="$(service_owner_record_path "$port")"
   [[ -r "$rec" ]] || return 1
+  # If the project's contracts could not be loaded we do not know what "healthy"
+  # means here, and an unknown must not become a reason to terminate. Preserve.
+  if [[ -n "${CHAIN_SERVICE_CONTRACTS_FAILED:-}" ]]; then
+    _svc_log "port $port: service contracts are unusable, so health cannot be evaluated — preserving the running service rather than judging it by defaults."
+    return 1
+  fi
   service_service_healthy "$port" || rc=$?
   [[ $rc -eq 1 ]] && return 0                 # unhealthy: restart is required
   rev_then="$(_svc_rec_field "$rec" revision)"
@@ -708,21 +714,73 @@ service_release() {
 service_contracts_load() {
   [[ -n "${_SERVICE_CONTRACTS_LOADED:-}" ]] && return 0
   local f="${CHAIN_SERVICE_CONTRACTS_FILE:-${REPO_ROOT:-$PWD}/.claude/service-contracts.sh}"
+
+  # No file at all is a legitimate state: the project declares no contracts and
+  # the defaults apply. That is the ONLY benign absence.
+  if [[ ! -e "$f" ]]; then
+    _SERVICE_CONTRACTS_LOADED=1
+    return 0
+  fi
+  # A file that EXISTS but cannot be read is not "no contracts" — it is a
+  # configuration the framework was meant to honour and cannot. Treating it as
+  # absent silently swaps the project's health contract for the default, which
+  # can reclassify a perfectly healthy service as unhealthy and terminate it.
+  if [[ ! -r "$f" ]]; then
+    _svc_log "ERROR: the service contracts file exists but is not readable: $f"
+    export CHAIN_SERVICE_CONTRACTS_FAILED=1
+    _svc_event "services_contracts_error" "$(printf '{"op":"read","file":"%s"}' "$f")"
+    return 1
+  fi
+
+  # Evaluate in a SUBSHELL first and apply nothing until it succeeds. Sourcing
+  # directly would leave a file that fails halfway partially applied — some
+  # exports in effect, the rest missing — which is a worse configuration than
+  # either "loaded" or "not loaded", and impossible for a caller to reason about.
+  # The probe writes to a FILE, not a command substitution: bash strips NUL
+  # bytes from `$(...)`, which would collapse every NUL-separated entry into one
+  # and silently apply a single malformed variable.
+  local probe rc=0
+  probe="$(mktemp "${TMPDIR:-/tmp}/svc-contracts.XXXXXX")" || {
+    _svc_log "ERROR: cannot create a temporary file to evaluate $f"
+    export CHAIN_SERVICE_CONTRACTS_FAILED=1
+    return 1
+  }
+  bash -c '
+    set -uo pipefail
+    # shellcheck source=/dev/null
+    source "$1" || exit 1
+    for _v in ${!CHAIN_SERVICE_@}; do
+      case "$_v" in
+        CHAIN_SERVICE_VERIFY_*|CHAIN_SERVICE_HEALTHY_*) printf "%s=%s\0" "$_v" "${!_v}" ;;
+      esac
+    done > "$2"
+  ' _ "$f" "$probe" || rc=$?
+  if [[ $rc -ne 0 ]]; then
+    rm -f "$probe" 2>/dev/null || true
+    _svc_log "ERROR: the service contracts file failed to load (exit $rc): $f"
+    _svc_log "  Nothing from it has been applied. Service health and reuse decisions would"
+    _svc_log "  otherwise silently fall back to defaults, which can terminate a service this"
+    _svc_log "  project considers healthy. Fix the file, or remove it to accept the defaults."
+    export CHAIN_SERVICE_CONTRACTS_FAILED=1
+    _svc_event "services_contracts_error" "$(printf '{"op":"source","file":"%s","rc":%d}' "$f" "$rc")"
+    return 1
+  fi
+
+  # Apply, but never over an existing value: an explicit environment override
+  # (operator or CI, for one invocation) outranks the file.
+  local entry name value applied=0
+  while IFS= read -r -d '' entry; do
+    [[ -n "$entry" ]] || continue
+    name="${entry%%=*}"; value="${entry#*=}"
+    [[ "$name" =~ ^CHAIN_SERVICE_(VERIFY|HEALTHY)_[A-Z0-9_]+$ ]] || continue
+    [[ -n "${!name:-}" ]] && continue
+    export "$name=$value"
+    applied=$((applied + 1))
+  done < "$probe"
+  rm -f "$probe" 2>/dev/null || true
+  unset CHAIN_SERVICE_CONTRACTS_FAILED
   _SERVICE_CONTRACTS_LOADED=1
-  [[ -r "$f" ]] || return 0
-  # Pre-existing environment wins: snapshot, source, restore anything that was
-  # already set so an explicit override is never clobbered by the file.
-  local -a names=() n prev
-  while IFS= read -r n; do names+=("$n"); done < <(
-    grep -oE 'CHAIN_SERVICE_(VERIFY|HEALTHY)_[A-Z0-9_]+' "$f" 2>/dev/null | sort -u)
-  local -A kept=()
-  for n in ${names[@]+"${names[@]}"}; do
-    [[ -n "${!n:-}" ]] && kept["$n"]="${!n}"
-  done
-  # shellcheck source=/dev/null
-  source "$f" || { _svc_log "WARNING: failed to load service contracts from $f"; return 1; }
-  for n in "${!kept[@]}"; do export "$n=${kept[$n]}"; done
-  _svc_vlog "service contracts loaded from $f (${#names[@]} declaration(s))"
+  _svc_vlog "service contracts loaded from $f ($applied applied)"
   return 0
 }
 

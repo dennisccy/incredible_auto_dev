@@ -365,7 +365,13 @@ ensure_phase_ports() {
   # Load the project's service contracts (reuse verification + health regexes)
   # before anything can probe, reuse or tear down a service. Documentation in
   # project-template.md is for agents; THIS is what reaches the shell.
-  service_contracts_load || true
+  # Loud, but not fatal here: ensure_phase_ports only ASSIGNS ports. The
+  # termination-capable paths (reclaim, service_release, restart_required) each
+  # fail closed on CHAIN_SERVICE_CONTRACTS_FAILED, so a broken contract degrades
+  # to "preserve and report", never to "terminate on default rules".
+  if ! service_contracts_load; then
+    log "  WARNING: the project's service contracts could not be loaded — service health cannot be evaluated, so running services will be preserved rather than judged. See the [services] ERROR above."
+  fi
   [[ -z "${CHAIN_BACKEND_PORT:-}" ]]  && export CHAIN_BACKEND_PORT=$((8000 + offset))
   [[ -z "${CHAIN_FRONTEND_PORT:-}" ]] && export CHAIN_FRONTEND_PORT=$((3000 + offset))
   return 0
@@ -852,7 +858,14 @@ reclaim_canonical_phase_ports() {
   # a session where the framework decides whether a running service lives or
   # dies, and that decision consults the health contract — loading it later (in
   # ensure_phase_ports) meant the very first decision was made without it.
-  service_contracts_load || true
+  # Fail closed BEFORE the first decision that could terminate anything. If the
+  # project's contracts cannot be loaded we do not know what it considers
+  # healthy, and reclaiming on default rules can kill a service the project
+  # regards as perfectly fine. Skip reclamation entirely and say so.
+  if ! service_contracts_load; then
+    log "  Canonical-port reclamation SKIPPED: the project's service contracts could not be loaded, so no service can be safely judged. Fix .claude/service-contracts.sh (or remove it to accept the defaults); nothing has been terminated."
+    return 0
+  fi
   # Policy-aware, exactly like every other sweep. Using service_owner_terminate
   # here bypassed the lifecycle policy: after a completed session the previous
   # engine is gone, so its services classify as DEAD — which is termination

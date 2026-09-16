@@ -5612,7 +5612,25 @@ Four root causes: governors read proxies instead of facts (HARD-1..3); ownership
   enforced everywhere.* External reuse checked identity only — a 500 carrying a valid marker was
   accepted — and managed startup still used the permissive reachability regex as readiness. The
   health contract now gates owned services, external services and fresh startups alike.
-- **DoD/Verify:** `tests/automation/test-service-ownership.sh` — 94 assertions over real
+- **Rev 6 (2026-09-16, after independent review of `fb0fcf1`) — one fail-closed gap:**
+  `service_contracts_load` set `_SERVICE_CONTRACTS_LOADED=1` BEFORE sourcing and both callers
+  swallowed its result, so a project with a legitimately non-2xx health contract could have a
+  healthy service terminated the moment that file failed to load — a configuration read failure
+  became a silent policy change. Now: the flag is set only on success; an existing-but-unreadable
+  file is an ERROR, not "no contracts"; the file is evaluated in a subshell and applied only if it
+  completes (no partial application; environment overrides still win); failure sets
+  `CHAIN_SERVICE_CONTRACTS_FAILED`, `reclaim_canonical_phase_ports` skips reclamation entirely,
+  and `service_restart_required` returns "not required" — an unknown health never authorizes
+  termination. Also fixed the `proc_signal.py` self-test assertion `_HAVE_PIDFD or True`, which
+  passed on every host; it now asserts a real pidfd is held where available and exercises the
+  fallback distinctly.
+- **Integration validation:** `tests/integration/service-lifecycle-integration.sh` (new,
+  operator-run, NOT in the offline suite — it binds real canonical ports). An isolated scratch
+  project with a real HTTP service across five sessions: **23/23** — survives both sweeps; a
+  different owner process reuses the SAME pid with no drift; a revision change forces a controlled
+  restart; an unowned incompatible listener survives and blocks; an abandoned agent server is
+  reaped; lifecycle telemetry records all of it. Re-run this after any vendored sync.
+- **DoD/Verify:** `tests/automation/test-service-ownership.sh` — 100 assertions over real
   subprocesses on dynamic ports: B2 (an unowned listener survives every teardown path), B12
   (static sweep: no `fuser -k`/`pkill`/`killall` under `scripts/automation/`), B13/B14, and the
   rev-3 C-series C1–C9 (preserve healthy app services, reap ephemeral leaks, detect stale
@@ -5629,7 +5647,7 @@ Four root causes: governors read proxies instead of facts (HARD-1..3); ownership
 - **Vendored sync (owed; per `.claude/maintenance-protocol.md` §3.4 — per-file over the changed-file
   list, never a whole-tree copy).** Copy into each product's `incredible_auto_dev/`:
   `scripts/automation/lib/{engine-identity.sh,service-owner.sh,proc_signal.py}` (new),
-  `templates/service-contracts.sh` (new),
+  `templates/service-contracts.sh` (new), `tests/integration/service-lifecycle-integration.sh` (new),
   `scripts/automation/lib/common.sh`, `scripts/automation/{run-goal,run-phase,goal-iter-lean,dev-phase,browser-qa-phase,demo-phase,doctor,run-evals}.sh`,
   `tests/automation/{test-service-ownership.sh (new),test-doctor.sh}`,
   `agents/{developer,qa}/{body.md,agent.yaml}` + `.claude/agents/{developer,qa}.md`,

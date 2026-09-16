@@ -441,6 +441,34 @@ Stage all thirteen as `HARD-1 … HARD-11` (with `HARD-4A/4B/4C`) in a new roadm
 >    separately), and newly started managed services (reachable ⇒ keep waiting; healthy ⇒ ready).
 >    A non-2xx readiness response remains supported only by declaring it.
 
+> **REVISION 6 — 2026-09-16, after independent review of `fb0fcf1`. One fail-closed gap + the
+> integration validation.**
+>
+> **Contract-loading failure silently changed lifecycle policy.** `service_contracts_load` set
+> `_SERVICE_CONTRACTS_LOADED=1` *before* sourcing, and both callers ignored its result with
+> `|| true`. So for a project whose health contract is legitimately non-2xx: session A leaves a
+> healthy service; session B's contract fails to load; reclaim proceeds on the DEFAULT `^[23]`;
+> the service is reclassified unhealthy and terminated. A failure to read configuration became a
+> silent change of policy. Fixed: the loaded flag is set only on success; a file that exists but
+> cannot be read is an ERROR, not "no contracts"; the file is evaluated in a SUBSHELL and applied
+> only if it completes, so a half-failing file leaves nothing partially applied (existing
+> environment values still win); failure sets `CHAIN_SERVICE_CONTRACTS_FAILED` and is reported;
+> `reclaim_canonical_phase_ports` SKIPS reclamation entirely on failure, and
+> `service_restart_required` returns "not required" — an unknown health is never a reason to
+> terminate. (Implementation note: the probe writes to a temp file, because bash strips NUL bytes
+> from `$(...)` and NUL-separated entries would collapse into one malformed variable.)
+>
+> Also: the `proc_signal.py` self-test asserted `_HAVE_PIDFD or True`, which passes on every host
+> and proved nothing. It now reports the real capability, asserts a live `Target` actually holds a
+> pidfd where available, and exercises the fallback distinctly by forcing `_HAVE_PIDFD = False`.
+>
+> **Integration validation** (`tests/integration/service-lifecycle-integration.sh`, 23 assertions,
+> operator-run, not in the offline suite): an isolated scratch project with a real HTTP service,
+> driven through five sessions — the app survives both sweeps; a genuinely different owner process
+> reuses the SAME pid with no drift; a revision change forces a controlled restart on the same
+> port; an unowned incompatible listener survives and produces a blocker; an abandoned
+> agent-started server is reaped; and all of it appears in the lifecycle telemetry.
+
 1. **Problem.** Every service teardown was port-scoped or command-line-scoped and owner-blind:
    `kill_phase_servers` (`lib/common.sh:793`), `reclaim_canonical_phase_ports` (`:812`),
    `_bqa_kill_port_servers` (`goal-iter-lean.sh:192`, from the EXIT trap and the fork reaps),
