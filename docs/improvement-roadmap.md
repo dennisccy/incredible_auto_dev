@@ -5574,7 +5574,7 @@ Four root causes: governors read proxies instead of facts (HARD-1..3); ownership
     malformed format still counts as mutating (a malformed line never makes a journey less
     restrictive). (5) Declarations are parsed with a correctly-bounded block splitter — see
     CAND-JOURNEY-BLOCKS in §16 for the pre-existing `_journey_blocks` quirk it avoids.
-  - *Verify:* `bash tests/automation/test-side-effects.sh` (285 checks after revision 6, incl. the
+  - *Verify:* `bash tests/automation/test-side-effects.sh` (287 checks after revision 7, incl. the
     exact TenSteps iteration-9 contradiction, the none→allowed tripwire, E15 fail-closed with zero
     dispatch in block AND warn mode, the real lean executor with a fake Playwright) · self-tests of
     `demo_runner.py`, `goal_gate.py`, `goal_lint.py`, `iter_spec.py`, `artifact_schemas.py` ·
@@ -5807,9 +5807,52 @@ Four root causes: governors read proxies instead of facts (HARD-1..3); ownership
       positive (safe direction, as in `a57c633`); the passive "no ledger rows are created" stays
       unscanned; negations that invert word order ("at no point is a new run launched") and
       prohibitions phrased only through a subordinate clause are not read; a stray fence in a spec
-      with an even number of fence lines leaves no unclosed opener, so the suspicion signal misses
-      it (no real spec or goal.md has one); the 612-spec corpus holds only 6 activity lines, so the
+      leaves no unclosed opener when a later info-string block absorbs it, so the
+      suspicion signal misses it (see revision 7, which drops the signal); the 612-spec corpus holds only 6 activity lines, so the
       real-world false-positive rate of the negation rule is still unmeasured.
+  - *Revision 7 (2026-09-17, after a sixth adversarial review of `97d9868`; RED: the revised suite
+    fails 8 checks against `97d9868`, GREEN 287/0):* the sixth round found the pattern of
+    rounds 3–5 again — revision 6's suspicion gate missed a stray fence whose shift a later ```` ```bash ````
+    block absorbs (no unclosed opener remains; the "even number of fence lines" caveat misjudged it),
+    and its redesigned negation engine missed 50 of 159 new realistic prohibitions, 39 of which an earlier
+    revision caught. Revision 7 stops tuning heuristics and adopts a rule the decomposer contract states
+    word for word (the reviewer's suggestion):
+    - **The negation rule (Critical):** on an OUT OF SCOPE item, naming an activity (creating / editing /
+      deleting / writing / appending / adding / inserting ledger rows; launching / starting / triggering a
+      new run) is a prohibition; on a TC or DEFINITION OF DONE item, a SENTENCE that names one and contains
+      ANY negation word is a prohibition, wherever the negation stands — except a negation about data
+      called "pre-existing" (object or subject; an activity joined to that object by "or" still counts)
+      and a sentence that states a refused request ("… responds 400", "… is rejected", "… raises
+      `…Refused`", a `refusal_…` field, "given an invalid / expired / unknown …"). Idioms ("not only",
+      "whether or not") are not negations. An item's wrapped continuation lines — indented, or lazy at
+      column 0 below a TC line — are scanned with it (a prohibition split over a hard wrap was missed by
+      every earlier revision), a sentence ends at `;` or at `.!?` before a space (never inside
+      `run.py`), and the passive "no run is launched / created" and "no ledger rows are created" count
+      too. The E16 text and the decomposer contract spell the rule and the rewrite out. Measured: the
+      372-line labelled table (review rounds 4–6 plus the implementer's; L18o) has no missed
+      prohibition; 101 lines the reviewers labelled clean are now prohibitions BY THE RULE (an activity
+      and a negation in one sentence — "no error appears when launching a new run"), the cost of a
+      stateable rule. Over the 612 real specs no prohibition is lost; 9 lines are added — 5 genuine
+      TenSteps prohibitions, 2 plan-literal patterns surfaced by joining wrapped lines ("no write to …",
+      "no new version row"), 2 lines the rule reads as prohibitions ("… WITHOUT modifying `default`", "…
+      (never a hard-coded id)").
+    - **Fence-blind reads, unconditional again (Critical):** the prohibition scan always merges a
+      fence-ignoring pass (`fence_blind`), the policy intent always falls back to a fence- and
+      comment-ignoring reading, and a journey header read as fenced always makes a defined id ambiguous
+      (only a stated `mutating` counts; its values stay `stated_values`, never `declared`; the prompts call
+      a conflict POSSIBLE). The contract therefore forbids copying a rejected section heading or policy
+      line into a spec, even inside a code fence; goal-lint's duplicate-id ERROR already covers a fenced
+      example that reuses a real journey id.
+    - **Found while testing:** an extra view measured a fenced header's indent from its dash, not its line,
+      so a template indented inside another journey borrowed that journey's declaration (D8o).
+    - **Minor:** an ambiguous id's conflict and goal-lint reading are honest (M-1, M-2); "append-only" is
+      not an activity; a numbered OUT OF SCOPE item and a hyphen-free imperative are listed forms, noun
+      forms count only at the start of an item (M-3); unattributed lines keep a hash in the digest (M-5);
+      every negation scan is bounded (L18q covers the qualified-cue shape too).
+    - *Not changed (reported):* the rule's false positives on affirmative TC wording that pairs an
+      activity with a negation (rewrite guidance in the E16 text); inverted word order ("at no point is a
+      new run launched") is not read; negative-path detection is a keyword test on the sentence (a
+      refusal word that is not itself negated).
   - *Owed:* G8 fresh-session certification; the G9-gated real session (a replay-observed mutation in
     the sidecar, no TC failed on a journey's own mutation); vendored per-file sync — products must
     sync this `goal_gate.py` together with `iter_spec.py` BEFORE adding `- Side effects:` lines (older code hashes those lines as

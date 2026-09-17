@@ -526,7 +526,7 @@ j2_sugg = next((ln for ln in sugg.splitlines() if ln.startswith("J-02")), "")
 case("D8m: an ambiguous or unattributed journey is reported as such (status source, reason, --suggest, the lint's "
      "and the prompts' wording — never as 'declared') and an attribution change moves the declaration digest",
      j2.get("status_source") == "ambiguous"
-     and "fence reading is suspect" in j2_sugg and "no 'Side effects:' line" not in j2_sugg
+     and "rename the example's id" in j2_sugg and "no 'Side effects:' line" not in j2_sugg
      and "declared mutating" not in IS._mutating_desc("J-02", j2, {"target"})
      and "cannot be tied to it with certainty" in IS._mutating_desc("J-02", j2, {"target"})
      and IS._status_list(["J-02"], {"J-02": j2}, True) == "J-02 (ambiguous declaration)"
@@ -552,20 +552,27 @@ json.dump({"schema_version": 1, "journeys": {"J-02": {"latest": {
     "truncated": False, "exceptions_applied": [], "readonly_endpoints_sha256": None,
     "ignore_paths": ["/login", "/logout", "/auth", "/session", "/token", "/csrf"]}}}}, open(bor_side, "w"))
 lb = G.build_side_effect_ledger(bor_goal, sidecar=bor_side, readonly_path=os.path.join(repo, "absent-ro.txt"))
+bor_led_path = os.path.join(repo, "borrowed-ledger.json")
+json.dump(lb, open(bor_led_path, "w"))
 b2 = lb["journeys"]["J-02"]
-case("D8n: a correctly fenced example that reuses a journey id lends it nothing — J-02's own 'none' stands and "
-     "an observed write is still a DECLARATION CONFLICT",
+case("D8n: a fenced example that reuses a journey id makes it ambiguous but is never reported as its declaration, "
+     "and an observed write is still surfaced as a (possible) DECLARATION CONFLICT",
      b2["declared"] == "none" and b2["declaration_conflict"] is True and b2["status"] == "mutating"
-     and not b2.get("ambiguous") and not b2.get("unattributed") and lb["conflicts"] == ["J-02"]
-     and IS._status_list(["J-02"], {"J-02": b2}, True).startswith("J-02 (DECLARED NONE, but observed"))
+     and b2.get("ambiguous") is True and b2["stated_values"] == ["mutating", "none"] and lb["conflicts"] == ["J-02"]
+     and IS._status_list(["J-02"], {"J-02": b2}, True).startswith(
+         "J-02 (ambiguous declaration; AMBIGUOUS, one block says none, but observed")
+     and "POSSIBLE DECLARATION CONFLICT" in IS.render_side_effect_context("evaluator", bor_led_path)
+     and "J-02 is declared 'none'" not in IS.render_side_effect_context("evaluator", bor_led_path))
 nb_goal = ("# Goal\n\n## Must-have user journeys\n\n- **J-01: Checkout**\n  1. Open /cart and click **Pay**\n"
            "  - The help panel shows this template:\n    ```\n    - **J-02: Browse**\n      1. Open /catalog\n"
            "    ```\n  - Side effects: mutating — places an order\n\n- **J-02: Browse**\n  1. Open /catalog\n"
            "  - Side effects: none\n\n## Anti-goals\n- none\n")
 lnb = G.build_side_effect_ledger(nb_goal)
-case("D8o: a fenced template inside one journey never lends that journey's declaration to the id it mentions",
-     lnb["journeys"]["J-02"]["status"] == "none" and lnb["journeys"]["J-02"]["declared"] == "none"
-     and lnb["journeys"]["J-01"]["declared"] == "mutating" and not lnb["journeys"]["J-02"].get("ambiguous"))
+case("D8o: a fenced template inside one journey never lends that journey's declaration to the id it mentions "
+     "(the id is ambiguous, so its own 'none' is not trusted, but J-01's 'mutating' is not borrowed)",
+     lnb["journeys"]["J-02"]["status"] == "unknown" and lnb["journeys"]["J-02"]["declared"] == "none"
+     and lnb["journeys"]["J-02"]["stated_values"] == ["none"] and lnb["journeys"]["J-02"].get("ambiguous") is True
+     and lnb["journeys"]["J-01"]["declared"] == "mutating")
 li_goal = ("# Goal\n\nSetup:\n\n- ```bash\n  make run\n\n## Must-have user journeys\n\n- **J-02: Browse**\n"
            "  1. Open /catalog\n  - Acceptance: listed\n  - Side effects: none\n\n- **J-03: Export**\n"
            "  1. Open /export\n  2. The page shows:\n     ```\n     EXPORTED\n     ```\n  - Side effects: none\n\n"
@@ -575,6 +582,12 @@ case("D8p: a fence opened on a list-item line ends with its item, so it never hi
      callable(getattr(IS, "fence_scan", None)) and IS.fence_scan(li_goal.split("\n"))[1] == []
      and IS.fenced_line_flags(li_goal.split("\n"))[4:7] == [True] * 3
      and lli["journeys"]["J-02"]["status"] == "none" and lli["journeys"]["J-03"]["status"] == "none")
+absorbed = shift.replace("```\nmake test\n```", "```bash\nmake test\n```")
+la = G.build_side_effect_ledger(absorbed)
+case("D8q: a stray fence whose shift a later ```bash block absorbs (no unclosed opener left) still never lets the "
+     "fenced example's 'none' stand for J-02",
+     IS.fence_scan(absorbed.split("\n"))[1] == [] and la["journeys"]["J-02"]["status"] == "mutating"
+     and la["journeys"]["J-02"].get("ambiguous") is True)
 def ledger(goal_text, sidecar=None, ro=None):
     return G.build_side_effect_ledger(goal_text, sidecar=sidecar, readonly_path=ro)
 ro = os.path.join(repo, "project-extensions", "side-effects", "read-only-endpoints.txt")
@@ -1286,11 +1299,9 @@ has_rule E16 || { _l18h=n; echo "      (missed: OUT OF SCOPE 'existing ledger le
   && assert "L18h: 'existing' / 'prior' / 'previous' wording never hides a whole-ledger or row-count prohibition" "pass" \
   || assert "L18h: qualified prohibitions" "fail"
 _l18i=y
-spec "$SPECS/l18i.md" allowed "J-04" "J-02" "- Any code change to the engine" \
-  "- TC-4: then no row is edited, launching a new run is expected" "- [ ] Without errors, starting a new run from J-04 succeeds"
-lint "$SPECS/l18i.md" --side-effects "$LED_DECL"
-if has_rule E16; then _l18i=n; echo "      (false positive: $(rule_line E16))"; fi
-for pair in "tc|- TC-4: Creating or editing ledger rows does not happen during the replay" "tc|- TC-4: Avoid launching a new run" \
+for pair in "tc|- TC-4: then no row is edited, launching a new run is expected" \
+            "dod|- [ ] Without errors, starting a new run from J-04 succeeds" \
+            "tc|- TC-4: Creating or editing ledger rows does not happen during the replay" "tc|- TC-4: Avoid launching a new run" \
             "dod|- [ ] Launching a new backtest run is not part of this pass"; do
   where="${pair%%|*}"; line="${pair#*|}"
   if [[ "$where" == tc ]]; then
@@ -1299,10 +1310,16 @@ for pair in "tc|- TC-4: Creating or editing ledger rows does not happen during t
     spec "$SPECS/l18i.md" allowed "J-04" "J-02" "- Any code change to the engine" "- TC-1: given x, when y, then z" "$line"
   fi
   lint "$SPECS/l18i.md" --side-effects "$LED_DECL"
-  has_rule E16 || { _l18i=n; echo "      (missed: $line)"; }
+  { has_rule E16 && rule_line E16 | grep -q 'contains any negation is a prohibition'; } \
+    || { _l18i=n; echo "      (not read as a prohibition, or without the rule's rewrite advice: $line)"; }
 done
+spec "$SPECS/l18i.md" allowed "J-04" "J-02" "- Any code change to the engine" \
+  "- TC-4: then no pre-existing row is edited; launching a new run is expected" \
+  "- [ ] Starting a new run from J-04 succeeds and shows its row"
+lint "$SPECS/l18i.md" --side-effects "$LED_DECL"
+if has_rule E16; then _l18i=n; echo "      (a rewrite the rule allows was flagged: $(rule_line E16))"; fi
 [[ "$_l18i" == y ]] \
-  && assert "L18i: a negation in another clause is not a prohibition; negations after the verb ('is not part of', 'does not happen', 'avoid') are" "pass" \
+  && assert "L18i: a TC / DoD sentence that names an activity and holds any negation, in any clause, is E16 with the rewrite advice; the rewrites are clean" "pass" \
   || assert "L18i: negation scope" "fail"
 spec "$SPECS/l18j.md" allowed "J-04" "J-02" "- Any code change to the engine" $'### TC-4 — replay J-04\n\nthe ledger row count is unchanged after the replay'
 lint "$SPECS/l18j.md" --side-effects "$LED_DECL"
@@ -1332,20 +1349,22 @@ done
   || assert "L18k: coordinated / aside negations" "fail"
 _l18l=y
 for line in "- TC-4: launching a new run must not modify any pre-existing ledger row" \
-            "- TC-4: launching a new run is not blocked by the confirm dialog" \
-            "- TC-4: starting a new run does not require a page reload" \
-            "- TC-4: appending ledger rows does not rewrite earlier rows" \
-            "- TC-4: adding ledger entries should not fail when the ledger is large" \
-            "- TC-4: the confirm dialog prevents launching a new run twice on a double click" \
-            "- TC-4: no confirm dialog blocks launching a new run" \
-            "- TC-4: no error appears when launching a new run" \
-            "- TC-4: whether or not launching a new run succeeds, the list renders"; do
+            "- TC-4: launching a new run adds one ledger row and does not edit or delete any pre-existing row" \
+            "- TC-4: when launching a new run, pre-existing rows are not edited" \
+            "- TC-4: no pre-existing ledger row is edited while launching a new run" \
+            "- TC-4: whether or not launching a new run succeeds, the list renders" \
+            "- TC-4: launching a new run shows the new row within 2 seconds" \
+            "- TC-12: given an invalid date range, when the user clicks Run, then a validation error is shown and no run is launched."; do
   spec "$SPECS/l18l.md" allowed "J-04" "J-02" "- Any code change to the engine" "$line"
   lint "$SPECS/l18l.md" --side-effects "$LED_DECL"
   if has_rule E16; then _l18l=n; echo "      (false positive: $line)"; fi
 done
+spec "$SPECS/l18l.md" allowed "J-04" "J-02" "- Any code change to the engine" \
+  "- TC-4: launching a new run must not modify pre-existing rows or launch a second new run"
+lint "$SPECS/l18l.md" --side-effects "$LED_DECL"
+has_rule E16 || { _l18l=n; echo "      (an activity joined by 'or' to a pre-existing object escaped)"; }
 [[ "$_l18l" == y ]] \
-  && assert "L18l: a negated predicate that only describes the activity ('is not blocked', 'must not modify', 'no error appears when') is never E16" "pass" \
+  && assert "L18l: invariants on pre-existing data, positive wording, idioms and negative-path checks are never E16 ('or' still joins an activity)" "pass" \
   || assert "L18l: invariant wording" "fail"
 _l18m=y
 spec "$SPECS/l18m.md" allowed "J-04" "J-02" "- Full-archive verification runs — not applicable; no run is launched this iteration."
@@ -1386,12 +1405,14 @@ lint "$SPECS/l18n.md" --side-effects "$LED_DECL"
 [[ "$_l18n" == y ]] \
   && assert "L18n: a stray fence that shifts the pairing, or a spec wrapped in a fence, never hides a prohibition" "pass" \
   || assert "L18n: fence-blind prohibition scan" "fail"
-PYTHONPATH="$LIB" python3 - <<'PY' && assert "L18o: the labelled negation table — every prohibition wording is reported, every affirmative one is not" "pass" || assert "L18o: negation table" "fail"
+PYTHONPATH="$LIB" python3 - <<'PY' && assert "L18o: the labelled negation table — every prohibition wording is reported, every other line is not" "pass" || assert "L18o: negation table" "fail"
 import sys
 import iter_spec as S
 T = ("## Goal Mode Metadata\n- **Depth:** lean\n\n## OUT OF SCOPE\n{oos}\n\n## TESTING REQUIREMENTS\n{tc}\n\n"
      "## DEFINITION OF DONE\n{dod}\n")
-# (expected: P = a prohibition, I = not one; where; line) — review rounds 4 and 5 plus the implementer's own.
+# (expected: P = a prohibition, I = not one; where; line) — review rounds 4-6 plus the implementer's. The
+# rule (iter_spec.py): a TC / DoD sentence that names an activity and contains any negation is a prohibition
+# unless the negation is about "pre-existing" data or the sentence states a refused request.
 CASES = [
     ('P', 'tc', '- TC-4: then the replay completes without altering, creating or deleting ledger rows'),
     ('P', 'tc', '- TC-4: then the replay completes without touching, creating or deleting ledger rows'),
@@ -1475,51 +1496,51 @@ CASES = [
     ('P', 'oos', '- Starting any new runs'),
     ('P', 'oos', '- Ledger row edits or new ledger rows'),
     ('I', 'tc', '- TC-4: launching a new run must not modify any pre-existing ledger row'),
-    ('I', 'tc', '- TC-4: launching a new run is not blocked by the confirm dialog'),
-    ('I', 'tc', '- TC-4: starting a new run does not require a page reload'),
-    ('I', 'tc', '- TC-4: appending ledger rows does not rewrite earlier rows'),
-    ('I', 'tc', '- TC-4: no confirm dialog blocks launching a new run'),
-    ('I', 'tc', '- TC-4: no error appears when launching a new run'),
+    ('P', 'tc', '- TC-4: launching a new run is not blocked by the confirm dialog'),  # activity + a negation in one sentence
+    ('P', 'tc', '- TC-4: starting a new run does not require a page reload'),  # activity + a negation in one sentence
+    ('P', 'tc', '- TC-4: appending ledger rows does not rewrite earlier rows'),  # activity + a negation in one sentence
+    ('P', 'tc', '- TC-4: no confirm dialog blocks launching a new run'),  # activity + a negation in one sentence
+    ('P', 'tc', '- TC-4: no error appears when launching a new run'),  # activity + a negation in one sentence
     ('I', 'tc', '- TC-4: whether or not launching a new run succeeds, the list renders'),
     ('I', 'tc', "- TC-4: J-04's Run step may add a new ledger row; no pre-existing ledger row is edited"),
-    ('I', 'tc', '- TC-4: given no run exists yet, when the user starts a new run, then a row is added'),
-    ('I', 'tc', '- TC-4: the page does not reload when launching a new run'),
-    ('I', 'tc', '- TC-4: the list does not flicker while starting a new run'),
-    ('I', 'tc', '- TC-4: the Run button is not disabled after launching a new run'),
-    ('I', 'tc', '- TC-4: no spinner remains after launching a new run'),
-    ('I', 'tc', '- TC-4: no stale data is shown after launching a new run'),
-    ('I', 'tc', '- TC-4: the dialog does not appear twice when launching a new run'),
-    ('I', 'tc', '- TC-4: the app never crashes when launching a new run'),
-    ('I', 'tc', '- TC-4: nothing breaks when launching a new run'),
-    ('I', 'tc', '- TC-4: no confirmation is needed before launching a new run'),
-    ('I', 'tc', '- TC-4: without reloading the page, launching a new run shows the new row'),
-    ('I', 'tc', '- TC-4: without errors, launching a new run adds one row'),
-    ('I', 'tc', '- TC-4: no console errors while launching a new run'),
-    ('I', 'tc', '- TC-4: no network errors during launching a new run'),
-    ('I', 'tc', '- TC-4: the user is never asked twice before launching a new run'),
-    ('I', 'tc', '- TC-4: the user never sees a stale row after launching a new run'),
-    ('I', 'tc', '- TC-4: there is no delay in launching a new run'),
-    ('I', 'tc', '- TC-4: no extra clicks are needed for launching a new run'),
-    ('I', 'tc', '- TC-4: no double-submit when launching a new run'),
-    ('I', 'tc', '- TC-4: no duplicate rows when launching a new run twice'),
-    ('I', 'tc', '- TC-4: without a page reload, starting a new run shows its row'),
-    ('I', 'tc', '- TC-4: a user without admin rights can still launch a new run'),
-    ('I', 'tc', '- TC-4: never more than one spinner while launching a new run'),
-    ('I', 'dod', '- [ ] No regressions in launching a new run'),
-    ('I', 'dod', '- [ ] No flakiness when adding ledger rows'),
+    ('P', 'tc', '- TC-4: given no run exists yet, when the user starts a new run, then a row is added'),  # activity + a negation in one sentence
+    ('P', 'tc', '- TC-4: the page does not reload when launching a new run'),  # activity + a negation in one sentence
+    ('P', 'tc', '- TC-4: the list does not flicker while starting a new run'),  # activity + a negation in one sentence
+    ('P', 'tc', '- TC-4: the Run button is not disabled after launching a new run'),  # activity + a negation in one sentence
+    ('P', 'tc', '- TC-4: no spinner remains after launching a new run'),  # activity + a negation in one sentence
+    ('P', 'tc', '- TC-4: no stale data is shown after launching a new run'),  # activity + a negation in one sentence
+    ('P', 'tc', '- TC-4: the dialog does not appear twice when launching a new run'),  # activity + a negation in one sentence
+    ('P', 'tc', '- TC-4: the app never crashes when launching a new run'),  # activity + a negation in one sentence
+    ('P', 'tc', '- TC-4: nothing breaks when launching a new run'),  # activity + a negation in one sentence
+    ('P', 'tc', '- TC-4: no confirmation is needed before launching a new run'),  # activity + a negation in one sentence
+    ('P', 'tc', '- TC-4: without reloading the page, launching a new run shows the new row'),  # activity + a negation in one sentence
+    ('P', 'tc', '- TC-4: without errors, launching a new run adds one row'),  # activity + a negation in one sentence
+    ('P', 'tc', '- TC-4: no console errors while launching a new run'),  # activity + a negation in one sentence
+    ('P', 'tc', '- TC-4: no network errors during launching a new run'),  # activity + a negation in one sentence
+    ('P', 'tc', '- TC-4: the user is never asked twice before launching a new run'),  # activity + a negation in one sentence
+    ('P', 'tc', '- TC-4: the user never sees a stale row after launching a new run'),  # activity + a negation in one sentence
+    ('P', 'tc', '- TC-4: there is no delay in launching a new run'),  # activity + a negation in one sentence
+    ('P', 'tc', '- TC-4: no extra clicks are needed for launching a new run'),  # activity + a negation in one sentence
+    ('P', 'tc', '- TC-4: no double-submit when launching a new run'),  # activity + a negation in one sentence
+    ('P', 'tc', '- TC-4: no duplicate rows when launching a new run twice'),  # activity + a negation in one sentence
+    ('P', 'tc', '- TC-4: without a page reload, starting a new run shows its row'),  # activity + a negation in one sentence
+    ('P', 'tc', '- TC-4: a user without admin rights can still launch a new run'),  # activity + a negation in one sentence
+    ('P', 'tc', '- TC-4: never more than one spinner while launching a new run'),  # activity + a negation in one sentence
+    ('P', 'dod', '- [ ] No regressions in launching a new run'),  # activity + a negation in one sentence
+    ('P', 'dod', '- [ ] No flakiness when adding ledger rows'),  # activity + a negation in one sentence
     ('I', 'dod', '- [ ] Not only listing but also launching a new run works'),
-    ('I', 'dod', '- [ ] No manual steps required for launching a new run'),
-    ('I', 'dod', '- [ ] No failures in the replay, including launching a new run'),
+    ('P', 'dod', '- [ ] No manual steps required for launching a new run'),  # activity + a negation in one sentence
+    ('P', 'dod', '- [ ] No failures in the replay, including launching a new run'),  # activity + a negation in one sentence
     ('I', 'dod', '- [ ] Launching a new run is expected and succeeds'),
-    ('I', 'dod', '- [ ] Launching a new run does not fail'),
-    ('I', 'dod', '- [ ] Launching a new run is not slow'),
-    ('I', 'dod', '- [ ] Launching a new run is not broken'),
-    ('I', 'dod', '- [ ] Launching a new run is not expected to fail'),
-    ('I', 'dod', '- [ ] Adding ledger rows is not blocked'),
-    ('I', 'dod', '- [ ] Adding ledger rows does not corrupt the file'),
+    ('P', 'dod', '- [ ] Launching a new run does not fail'),  # activity + a negation in one sentence
+    ('P', 'dod', '- [ ] Launching a new run is not slow'),  # activity + a negation in one sentence
+    ('P', 'dod', '- [ ] Launching a new run is not broken'),  # activity + a negation in one sentence
+    ('P', 'dod', '- [ ] Launching a new run is not expected to fail'),  # activity + a negation in one sentence
+    ('P', 'dod', '- [ ] Adding ledger rows is not blocked'),  # activity + a negation in one sentence
+    ('P', 'dod', '- [ ] Adding ledger rows does not corrupt the file'),  # activity + a negation in one sentence
     ('I', 'dod', '- [ ] Adding ledger rows must not change pre-existing rows'),
     ('I', 'dod', '- [ ] No pre-existing ledger row is edited while launching a new run'),
-    ('I', 'dod', '- [ ] No old run is touched by launching a new run'),
+    ('P', 'dod', '- [ ] No old run is touched by launching a new run'),  # activity + a negation in one sentence
     ('I', 'dod', '- [ ] No pre-existing row is edited or deleted (J-04 may add its own new run)'),
     ('I', 'dod', '- [ ] J-04 passes (its step 1 launches a new run; no pre-existing ledger row changes)'),
     ('P', 'tc', '- TC-4: the replay may be creating a report, but never deleting ledger rows'),
@@ -1529,8 +1550,8 @@ CASES = [
     ('I', 'tc', '- TC-12: given a `param_overrides` payload containing an unknown key, when `POST /api/runs` is called, then the API responds 400 naming the unknown key, and no run is created.'),
     ('I', 'tc', '- TC-12: given an invalid date range, when the user clicks Run, then a validation error is shown and no run is launched.'),
     ('I', 'tc', '- TC-12: given an invalid form, when submitted, then it is refused and no record is written.'),
-    ('I', 'tc', '- TC-4: no user who launches a new run sees an error'),
-    ('I', 'tc', '- TC-4: launching a new run is not required to view the list'),
+    ('P', 'tc', '- TC-4: no user who launches a new run sees an error'),  # activity + a negation in one sentence
+    ('P', 'tc', '- TC-4: launching a new run is not required to view the list'),  # activity + a negation in one sentence
     ('P', 'tc', '- TC-4: then the replay completes without creating, editing or deleting ledger rows'),
     ('P', 'tc', '- TC-4: without writing, appending or editing any ledger rows'),
     ('P', 'tc', '- TC-4: then the replay finishes without launching, starting or triggering a new run'),
@@ -1542,15 +1563,15 @@ CASES = [
     ('P', 'tc', '- TC-4: avoid launching a new run'),
     ('P', 'tc', '- TC-4: Creating or editing ledger rows does not happen'),
     ('P', 'dod', '- [ ] Launching a new backtest run is not part of this pass'),
-    ('I', 'dod', '- [ ] Launching a new backtest run is not broken by the refactor'),
-    ('I', 'tc', '- TC-4: the confirm dialog prevents launching a new run twice on a double click'),
-    ('I', 'tc', '- TC-4: then no row is edited, launching a new run is expected'),
+    ('P', 'dod', '- [ ] Launching a new backtest run is not broken by the refactor'),  # activity + a negation in one sentence
+    ('P', 'tc', '- TC-4: the confirm dialog prevents launching a new run twice on a double click'),  # activity + a negation in one sentence
+    ('P', 'tc', '- TC-4: then no row is edited, launching a new run is expected'),  # activity + a negation in one sentence
     ('I', 'tc', "- TC-4: no pre-existing ledger row is edited or deleted; J-04's own Run step may add its new row"),
     ('I', 'tc', '- TC-4: then the pre-existing ledger row count is unchanged and one new row is appended'),
     ('I', 'tc', '- TC-4: when launching a new run, pre-existing rows are not edited'),
-    ('I', 'tc', '- TC-4: adding ledger entries should not fail when the ledger is large'),
-    ('I', 'tc', '- TC-4: starting a new portfolio run should not take longer than 5 s'),
-    ('I', 'dod', '- [ ] Triggering a new sweep run will not be rejected by the guard'),
+    ('P', 'tc', '- TC-4: adding ledger entries should not fail when the ledger is large'),  # activity + a negation in one sentence
+    ('P', 'tc', '- TC-4: starting a new portfolio run should not take longer than 5 s'),  # activity + a negation in one sentence
+    ('P', 'dod', '- [ ] Triggering a new sweep run will not be rejected by the guard'),  # activity + a negation in one sentence
     ('P', 'oos', '- Writing to (or appending) ledger entries'),
     ('P', 'dod', '- [ ] Confirm pass completes without, at any point, launching a new run'),
     ('P', 'tc', '- TC-4: never (even on retry) starting a new run'),
@@ -1574,26 +1595,204 @@ CASES = [
     ('P', 'oos', '- Starting a new sweep run'),
     ('P', 'oos', '- Add ledger rows by hand'),
     ('P', 'tc', '- TC-4: avoids, e.g. on retry, launching a new run'),
-    ('I', 'tc', '- TC-4: no ledger rows get added'),
+    ('P', 'tc', '- TC-4: no ledger rows get added'),  # activity + a negation in one sentence
     ('P', 'tc', '  - TC-4: the replay does not launch a new run.'),
     ('P', 'tc', '| TC-4 | without launching a new run | pass |'),
-    ('I', 'tc', '- TC-4: the dialog does not block launching a new run'),
-    ('I', 'tc', '- TC-4: the replay does not require launching a new run'),
+    ('P', 'tc', '- TC-4: the dialog does not block launching a new run'),  # activity + a negation in one sentence
+    ('P', 'tc', '- TC-4: the replay does not require launching a new run'),  # activity + a negation in one sentence
     ('I', 'tc', '- TC-4: not only listing but also launching a new run works'),
-    ('I', 'tc', '- TC-4: when no run exists yet starting a new run creates the first row'),
+    ('P', 'tc', '- TC-4: when no run exists yet starting a new run creates the first row'),  # activity + a negation in one sentence
     ('I', 'tc', '- TC-4: given J-03 launches a new single-playbook run, when replayed, then it is listed'),
-    ('I', 'tc', '- TC-4: the Run button starts a new run and nothing else is written'),
-    ('I', 'tc', '- TC-4: the list never flickers while starting a new run'),
-    ('I', 'tc', '- TC-4: no toast is missing after adding ledger rows'),
-    ('I', 'dod', '- [ ] No regressions: launching a new run still works'),
-    ('I', 'tc', '- TC-4: without reloading, launching a new run shows the new row'),
-    ('I', 'tc', '- TC-4: no spinner remains after the user clicks Run to launch a new run'),
+    ('P', 'tc', '- TC-4: the Run button starts a new run and nothing else is written'),  # activity + a negation in one sentence
+    ('P', 'tc', '- TC-4: the list never flickers while starting a new run'),  # activity + a negation in one sentence
+    ('P', 'tc', '- TC-4: no toast is missing after adding ledger rows'),  # activity + a negation in one sentence
+    ('P', 'dod', '- [ ] No regressions: launching a new run still works'),  # activity + a negation in one sentence
+    ('P', 'tc', '- TC-4: without reloading, launching a new run shows the new row'),  # activity + a negation in one sentence
+    ('P', 'tc', '- TC-4: no spinner remains after the user clicks Run to launch a new run'),  # activity + a negation in one sentence
+    ('P', 'dod', '- [ ] No creating, editing or deleting of ledger rows is allowed'),
+    ('P', 'tc', '- TC-4: no launching of new runs is allowed during the confirm pass'),
+    ('P', 'tc', '- TC-4: no step that launches a new run is allowed in this pass'),
+    ('P', 'tc', '- TC-4: no TC that creates ledger rows is permitted in this iteration'),
+    ('P', 'dod', '- [ ] Nothing that starts a new run is expected in this pass'),
+    ('P', 'tc', '- TC-4: no re-creating of ledger rows is permitted'),
+    ('P', 'tc', '- TC-4: not a single step launching a new run is allowed'),
+    ('P', 'tc', '- TC-4: launching a new run is expected not to happen in the confirm pass'),
+    ('P', 'tc', '- TC-4: launching a new run is forbidden, as it breaks the baseline comparison'),
+    ('P', 'tc', '- TC-4: launching a new run is not allowed because it would duplicate the baseline row'),
+    ('P', 'dod', '- [ ] Creating ledger rows is forbidden — it would corrupt the J-01 history'),
+    ('P', 'tc', '- TC-4: starting a new run is not permitted since it fails the read-only contract'),
+    ('P', 'tc', '- TC-4: launching a new run must not happen, since that would fail the baseline check'),
+    ('P', 'tc', '- TC-4: launching a new run is not allowed: it would break the J-01 comparison'),
+    ('P', 'tc', '- TC-4: launching a new run is prohibited because a duplicate row would appear'),
+    ('P', 'tc', '- TC-4: launching a new run is not allowed without owner confirmation'),
+    ('P', 'dod', '- [ ] Adding ledger rows is out of scope and would be a regression for J-01'),
+    ('P', 'tc', '- TC-4: re-adding ledger rows is forbidden (duplicates would break J-01)'),
+    ('P', 'tc', '- TC-4: the confirm pass must never once launch a new run'),
+    ('P', 'tc', '- TC-4: the replay completes without once launching a new run'),
+    ('P', 'tc', '- TC-4: not even once launching a new run'),
+    ('P', 'tc', '- TC-4: after the fix, the confirm pass no longer launches a new run'),
+    ('P', 'tc', '- TC-4: opening the report no longer creates ledger rows'),
+    ('P', 'dod', '- [ ] The Confirm button no longer starts a new run'),
+    ('P', 'tc', '- TC-4: no step may launch a new run'),
+    ('P', 'tc', '- TC-4: no one should create ledger rows during the confirm pass'),
+    ('P', 'tc', '- TC-4: nothing in this pass may start a new run'),
+    ('P', 'dod', '- [ ] No TC is allowed to launch a new run'),
+    ('P', 'tc', '- TC-4: none of the TCs will launch a new run'),
+    ('P', 'tc', '- TC-4: the confirm pass replays J-01 without the recorded golden script launching a new run'),
+    ('P', 'tc', '- TC-4: the replay completes without any other tab or process starting a new run'),
+    ('P', 'tc', '- TC-4: the confirm pass completes without the original Run button starting a new run'),
+    ('P', 'tc', '- TC-4: the list reloads without the Refresh button launching a new run'),
+    ('P', 'tc', "- TC-4: without the previous step's retry launching a new run"),
+    ('P', 'tc', '- TC-4: the replay must avoid launching a new run'),
+    ('P', 'tc', '- TC-4: the replay is prohibited from launching a new run'),
+    ('P', 'tc', '- TC-4: the replay refrains from launching a new run'),
+    ('P', 'tc', '- TC-4: under no circumstances launch a new run'),
+    ('P', 'tc', '- TC-4: the replay may not launch a new run'),
+    ('P', 'tc', '- TC-4: the replay is not to launch a new run'),
+    ('P', 'tc', '- TC-4: open the existing run (do not launch a new run)'),
+    ('P', 'tc', '- TC-4: open the existing run — never launch a new run'),
+    ('P', 'tc', '- TC-4: launching a new run and editing ledger rows are both forbidden'),
+    ('P', 'tc', '- TC-4: launching a new run, re-running J-01, or editing ledger rows is forbidden'),
+    ('P', 'dod', '- [ ] Launching a new run, a sweep, or any backfill: forbidden'),
+    ('P', 'tc', '- TC-4: the replay must not silently re-create ledger rows'),
+    ('P', 'tc', '- TC-4: the replay must not quietly or automatically launch a new run'),
+    ('P', 'tc', '- TC-4: without the need to launch a new run'),
+    ('P', 'tc', '- TC-4: the tester must not, even by accident, launch a new run'),
+    ('P', 'tc', '- TC-4: the confirm pass does not click Run and so does not launch a new run'),
+    ('P', 'tc', '- TC-4: under no circumstances should the tester launch a new run'),
+    ('P', 'tc', '- TC-4: launching a new run via `scripts/run.py` is out of scope'),
+    ('P', 'dod', '- [ ] Launching a new run, a sweep or any backfill is forbidden'),
+    ('P', 'tc', '- TC-4: the tester must not press **Run**, which launches a new run'),
+    ('P', 'tc', '- TC-4: the confirm pass must not create a new ledger row'),
+    ('P', 'tc', '- TC-4: the confirm pass never writes to ledger rows'),
+    ('P', 'tc', '- TC-4: the confirm pass (a read-only replay) must never add ledger entries'),
+    ('P', 'tc', '- TC-4: during the replay, no-one launches a new run'),
+    ('P', 'tc', '- TC-4: the replay does NOT launch a new run.'),
+    ('P', 'tc', '- TC-4: the replay doesn’t start a new run'),
+    ('P', 'tc', '- TC-4: the replay does not trigger a new run on page load or on refresh'),
+    ('P', 'tc', '- TC-4: the replay does not launch a new run for any existing portfolio'),
+    ('P', 'tc', '- TC-4: the replay does not launch a new run, even when the page reloads'),
+    ('P', 'oos', '- Launching new runs'),
+    ('P', 'oos', '- Write new ledger rows'),
+    ('P', 'oos', '- **Creating** ledger rows'),
+    ('P', 'oos', '1. Create or edit ledger rows'),
+    ('P', 'oos', '- Starting a new portfolio run from the confirm page'),
+    ('P', 'tc', '- TC-4: J-04 launches a new run and the baseline run `80f6033f` is not edited or deleted'),  # activity + a negation in one sentence
+    ('P', 'tc', '- TC-4: launching a new run does not modify run `80f6033f`'),  # activity + a negation in one sentence
+    ('P', 'tc', '- TC-4: starting a new run must not change the cited run `80f6033f`'),  # activity + a negation in one sentence
+    ('P', 'tc', '- TC-4: launching a new run must not modify the 32 rows already in the ledger'),  # activity + a negation in one sentence
+    ('P', 'tc', '- TC-4: launching a new run does not modify rows that were already in the ledger'),  # activity + a negation in one sentence
+    ('P', 'tc', '- TC-4: launching a new run must not touch rows written before this iteration'),  # activity + a negation in one sentence
+    ('P', 'tc', '- TC-4: launching a new run must not modify the founding row'),  # activity + a negation in one sentence
+    ('P', 'tc', '- TC-4: launching a new run must not modify the J-01 baseline'),  # activity + a negation in one sentence
+    ('P', 'tc', '- TC-4: launching a new run keeps pre-existing rows and does not delete them'),  # activity + a negation in one sentence
+    ('P', 'tc', '- TC-4: launching a new run leaves the previous run untouched and does not delete it'),  # activity + a negation in one sentence
+    ('P', 'tc', '- TC-4: after launching a new run the old run is not deleted'),  # activity + a negation in one sentence
+    ('P', 'tc', '- TC-4: launching a new run must not delete any row that existed before'),  # activity + a negation in one sentence
+    ('I', 'tc', '- TC-4: launching a new run adds one ledger row and does not edit or delete any pre-existing row'),
+    ('P', 'tc', '- TC-4: launching a new run appends one ledger row and never modifies the rows recorded before it'),  # activity + a negation in one sentence
+    ('P', 'tc', '- TC-4: when J-04 launches a new run, no ledger row that existed before the run is edited or deleted'),  # activity + a negation in one sentence
+    ('I', 'tc', "- TC-4: J-04's run launch adds exactly one new ledger row; no pre-existing ledger row is edited or deleted"),
+    ('P', 'dod', "- [ ] Creating ledger rows never rewrites J-01's rows"),  # activity + a negation in one sentence
+    ('P', 'dod', "- [ ] Launching a new run leaves J-01's results unchanged and does not alter them"),  # activity + a negation in one sentence
+    ('P', 'tc', '- TC-5: launching a new run does not clear the selected filters'),  # activity + a negation in one sentence
+    ('P', 'tc', '- TC-5: starting a new run does not reset the chart zoom'),  # activity + a negation in one sentence
+    ('P', 'tc', "- TC-5: launching a new run doesn't navigate away from the page"),  # activity + a negation in one sentence
+    ('P', 'tc', '- TC-5: launching a new run never logs the user out'),  # activity + a negation in one sentence
+    ('P', 'tc', '- TC-5: starting a new run is not possible while another run is active'),  # activity + a negation in one sentence
+    ('P', 'tc', '- TC-5: launching a new run is not possible without selecting a portfolio'),  # activity + a negation in one sentence
+    ('P', 'tc', '- TC-5: starting a new run is not available to read-only users'),  # activity + a negation in one sentence
+    ('P', 'tc', '- TC-5: launching a new run takes no more than 2 seconds'),  # activity + a negation in one sentence
+    ('P', 'tc', '- TC-5: launching a new run takes no more than 3 clicks'),  # activity + a negation in one sentence
+    ('P', 'tc', '- TC-5: launching a new run causes no layout shift'),  # activity + a negation in one sentence
+    ('P', 'tc', '- TC-5: launching a new run sends no analytics event'),  # activity + a negation in one sentence
+    ('P', 'tc', '- TC-5: launching a new run makes no request to the legacy endpoint'),  # activity + a negation in one sentence
+    ('P', 'tc', '- TC-5: nothing else changes on launching a new run'),  # activity + a negation in one sentence
+    ('P', 'tc', '- TC-5: no layout shift on launching a new run'),  # activity + a negation in one sentence
+    ('P', 'tc', '- TC-5: no captcha for launching a new run'),  # activity + a negation in one sentence
+    ('P', 'dod', '- [ ] No schema migration for adding ledger rows'),  # activity + a negation in one sentence
+    ('P', 'dod', '- [ ] No mocks in the E2E test for launching a new run'),  # activity + a negation in one sentence
+    ('P', 'dod', '- [ ] No new dependency for launching a new run'),  # activity + a negation in one sentence
+    ('P', 'dod', '- [ ] No TODOs left in the code for creating ledger rows'),  # activity + a negation in one sentence
+    ('P', 'dod', '- [ ] No keyboard trap in the dialog for launching a new run'),  # activity + a negation in one sentence
+    ('P', 'tc', '- TC-5: a read-only user cannot launch a new run (the Run button is hidden)'),  # activity + a negation in one sentence
+    ('I', 'tc', '- TC-12: given an invalid date range, when the user clicks Run, then a validation error is shown and the app does not start a new run'),
+    ('P', 'tc', '- TC-5: the Run button is disabled while starting a new run, so it is not clicked twice'),  # activity + a negation in one sentence
+    ('P', 'tc', '- TC-5: no toast at the start of a new run'),  # activity + a negation in one sentence
+    ('P', 'tc', '- TC-5: launching a new run is not blocked, and no dialog appears'),  # activity + a negation in one sentence
+    ('P', 'tc', '- TC-5: when launching a new run, the chart is not cleared'),  # activity + a negation in one sentence
+    ('P', 'tc', '- TC-5: without leaving the page the user can launch a new run'),  # activity + a negation in one sentence
+    ('P', 'tc', '- TC-5: no admin role is required for launching a new run'),  # activity + a negation in one sentence
+    ('P', 'tc', '- TC-5: launching a new run triggers no full-page navigation'),  # activity + a negation in one sentence
+    ('I', 'tc', '- TC-5: the page shows the new run without the user having to reload'),
+    ('I', 'oos', '- Add pagination to the ledger rows table'),
+    ('I', 'oos', '- Create a CSV export of ledger entries'),
+    ('I', 'oos', '- Edit affordance for ledger rows (deferred)'),
+    ('I', 'oos', '- Styling of new ledger rows'),
+    ('I', 'oos', '- Add sorting to ledger records'),
+    ('P', 'tc', '- TC-4: when replayed, then the API never returns an error and no run is created'),
+    ('P', 'tc', '- TC-4: when replayed, the page shows no validation error, and no run is launched'),
+    ('P', 'tc', '- TC-4: the confirm pass opens the rejected-runs tab and no run is created'),
+    ('P', 'tc', '- TC-4: when replayed, no run is launched and no invalid rows appear'),
+    ('P', 'tc', "- TC-4: given J-04's golden, when replayed, then no run is created and the previously rejected run still reads REJECTED"),
+    ('P', 'dod', '- [ ] The replay passes, no run is launched, and no malformed payload is logged'),
+    ('P', 'tc', '- TC-4: when replayed, no run is launched (the HTTP 409 path is not exercised)'),
+    ('P', 'tc', "- TC-4: given J-04's golden, when replayed, then no run is created"),
+    ('P', 'tc', '- TC-4: given the Run detail page for the already-ledgered run `80f6033f` (`policy-core-v1`), when it is opened (no run is launched) and a full-page screenshot is taken, then the Engine header reads policy-core-v1'),
+    ('I', 'tc', '- TC-12: given a payload with an unknown field, when POST /api/runs is called, then it answers 422 and no run is created'),
+    ('I', 'tc', '- TC-12: given an expired session, when the user clicks Run, then the login page opens and no run is created'),
+    ('I', 'tc', '- TC-12: given a duplicate submission, when Run is clicked twice, then only one run is created and no second run is launched'),
+    ('P', 'tc', '- TC-4: launching a new run from the list page is not allowed'),
+    ('P', 'dod', '- [ ] Launching a new run from the Backtests list is not allowed'),
+    ('P', 'tc', '- TC-4: launching a new run from the Update screen is not allowed'),
+    ('P', 'tc', '- TC-4: starting a new run via the Create button is not part of this pass'),
+    ('P', 'tc', '- TC-4: launching a new run from the run list is out of scope'),
+    ('P', 'tc', '- TC-4: launching a new run from the Open Runs page is not allowed'),
+    ('P', 'tc', '- TC-4: launching a new run with the default load profile is forbidden'),
+    ('P', 'dod', '- [ ] Adding ledger rows through the display grid is not allowed'),
+    ('P', 'tc', '- TC-4: launching a new run for the returns report is not allowed'),
+    ('P', 'tc', '- TC-4: triggering a new run from the Refresh menu is not allowed'),
+    ('P', 'tc', '- TC-4: launching a new run from the work queue is prohibited'),
+    ('P', 'tc', '- TC-4: adding ledger rows from the create-entry form must not happen'),
+    ('P', 'tc', '- TC-4: launching a new run before the confirm pass ends is not allowed'),
+    ('P', 'tc', '- TC-4: launching a new run until J-01 passes is not allowed'),
+    ('P', 'tc', '- TC-4: launching a new run that targets J-04 is not allowed'),
+    ('P', 'tc', '- TC-4: launching a new run after login is not allowed in this pass'),
+    ('P', 'tc', '- TC-4: launching a new run once the page loads is forbidden'),
+    ('P', 'dod', '- [ ] Creating ledger rows than can be seen by J-01 is not allowed'),
+    ('P', 'tc', '- TC-4: launching a new run where a run already exists is not allowed'),
+    ('P', 'tc', '- TC-4: launching a new run from the Results page is not allowed'),
+    ('P', 'tc', '- TC-4: no one should be launching a new run during the confirm pass'),
+    ('P', 'tc', '- TC-4: nobody will be starting a new run'),
+    ('P', 'tc', '- TC-4: no tester is creating ledger rows in this pass'),
+    ('P', 'dod', '- [ ] No step is launching a new run'),
+    ('P', 'tc', '- TC-4: no-one should be starting a new run'),
+    ('P', 'tc', '- TC-4: no lane will be adding ledger rows'),
+    ('P', 'tc', "- TC-4: given J-04's stored golden script, when replayed, then run `80f6033f` is cited and the replay completes without\n  creating, editing or deleting ledger rows."),
+    ('P', 'tc', "- TC-4: given J-04's stored golden script, when replayed, then the confirm pass must not\n  launch a new run."),
+    ('P', 'tc', "- TC-4: given J-04's stored golden script, when replayed, then the ledger row\n  count is unchanged."),
+    ('P', 'tc', '- TC-11: given every J-04 image, when reviewed, then all cite run `80f6033f` and no\nnew run appears in the ledger'),
+    ('I', 'tc', "- TC-4: given J-04, when replayed, then no pre-existing ledger row is edited or\n  deleted; J-04's own Run step may add its new row"),
+    ('P', 'tc', '- TC-4: the replay must not touch pre-existing rows and must not launch a new run'),
+    ('P', 'tc', '- TC-4: when replayed, the earlier request that was rejected stays rejected, and no run is launched'),
+    ('P', 'tc', '- TC-4: launching a new run and editing pre-existing rows are not allowed'),
+    ('P', 'tc', '- TC-4: launching a new run must not modify pre-existing rows or launch a second new run'),
+    ('P', 'tc', '- TC-4: launching a new run via `scripts/run.py` is out of scope'),
+    ('P', 'oos', '1. Create or edit ledger rows'),
+    ('I', 'tc', '- TC-4: when launching a new run, pre-existing ledger rows must not be edited'),
+    ('I', 'tc', '- TC-12: given a payload, when POST /api/runs is called, then it is rejected and no run is created'),
+    ('I', 'tc', '- TC-4: then no pre-existing row is edited; launching a new run is expected'),
+    ('I', 'tc', '- TC-4: launching a new run adds one ledger row and does not edit or delete any pre-existing ledger row'),
+    ('I', 'tc', '- TC-4: the state advances with a new append-only ledger row, and no voiding event is recorded'),
+    ('I', 'tc', '- TC-6: given a second invocation, when it starts, then it raises `ConcurrentRunnerRefused` and appends no ledger row'),
+    ('I', 'tc', '- TC-3: given a stale certificate, when the sweep runs, then no ledger row is written and `promotion.refusal_class` reads "stale"'),
 ]
 bad = []
 for exp, where, line in CASES:
     text = T.format(oos=line if where == "oos" else "- x", tc=line if where == "tc" else "- TC-1: x",
                     dod=line if where == "dod" else "- [ ] y")
-    got = "P" if any(p["text"] == line.strip() for p in S.find_mutation_prohibitions(text)) else "I"
+    joined = " ".join(part.strip() for part in line.split("\n"))
+    got = "P" if any(p["text"] == joined for p in S.find_mutation_prohibitions(text)) else "I"
     if got != exp:
         bad.append(f"{exp}->{got} {where}: {line}")
 for b in bad:
@@ -1601,9 +1800,8 @@ for b in bad:
 sys.exit(1 if bad else 0)
 PY
 _l18p=y
-for quote in $'Its OUT OF SCOPE section read:\n\n```markdown\n## OUT OF SCOPE\n- Any new portfolio run launch, sweep, or ledger write\n```' \
-             $'Its test section read:\n\n```markdown\n## TESTING REQUIREMENTS\n- TC-4: then the ledger row count is unchanged\n```' \
-             $'Its OUT OF SCOPE section read:\n\n~~~\n## OUT OF SCOPE\n- Launching a new run\n~~~'; do
+for quote in $'Its OUT OF SCOPE section read:\n\n```markdown\n- Any new portfolio run launch, sweep, or ledger write\n```' \
+             $'Its test section read:\n\n```markdown\n- TC-4: then the ledger row count is unchanged\n```'; do
   spec "$SPECS/l18p.md" allowed "J-04" "J-02"
   python3 - "$SPECS/l18p.md" "$quote" <<'PY'
 import sys
@@ -1612,24 +1810,59 @@ t = t.replace("## IN SCOPE", "## BACKGROUND\n\nThe first plan was rejected by E1
 open(sys.argv[1], "w").write(t)
 PY
   lint "$SPECS/l18p.md" --side-effects "$LED_DECL"
-  if has_rule E16; then _l18p=n; echo "      (a fenced quotation of the rejected spec was scanned: $(rule_line E16))"; fi
+  if has_rule E16; then _l18p=n; echo "      (a heading-less quotation in BACKGROUND was scanned: $(rule_line E16))"; fi
 done
 spec "$SPECS/l18p.md" allowed "J-04" "J-02"
-printf '%s\n' '' 'The rejected metadata was:' '' '```markdown' '## Goal Mode Metadata' '- **Side-effect policy:** none' '```' >> "$SPECS/l18p.md"
+python3 - "$SPECS/l18p.md" <<'PY'
+import sys
+t = open(sys.argv[1]).read()
+q = "Its OUT OF SCOPE section read:\n\n```markdown\n## OUT OF SCOPE\n- Launching a new run\n```"
+t = t.replace("## IN SCOPE", "## BACKGROUND\n\nThe first plan was rejected by E16. " + q + "\n\n## IN SCOPE")
+open(sys.argv[1], "w").write(t)
+PY
 lint "$SPECS/l18p.md" --side-effects "$LED_DECL"
-if has_rule E13; then _l18p=n; echo "      (a fenced metadata quotation in NOTES made the policy restrictive)"; fi
+{ has_rule E16 && rule_line E16 | grep -q 'found with code fences ignored'; } \
+  || { _l18p=n; echo "      (a fenced quotation WITH its heading must be read fence-blind and say so: $LINT_OUT)"; }
 [[ "$_l18p" == y ]] \
-  && assert "L18p: a re-planned spec may quote the rejected sections inside a correctly paired fence without being scanned" "pass" \
+  && assert "L18p: a re-planned spec may quote rejected wording in BACKGROUND; a quoted section HEADING is read fence-blind (E16 says so)" "pass" \
   || assert "L18p: fenced quotations" "fail"
+_l18r=y
+spec "$SPECS/l18r.md" allowed "J-04" "J-02" "- Any new portfolio run launch" "- TC-4: then the ledger row count is unchanged"
+python3 - "$SPECS/l18r.md" <<'PY'
+import sys
+t = open(sys.argv[1]).read()
+t = t.replace("Confirm; no code change, no new run.", "Confirm; no code change, no new run.\n\n```bash\nmake run\n")
+t = t.replace("## NOTES", "```bash\nmake test\n```\n\n## NOTES")
+open(sys.argv[1], "w").write(t)
+PY
+lint "$SPECS/l18r.md" --side-effects "$LED_DECL"
+[[ "$(printf '%s' "$LINT_OUT" | grep -cE '^\[spec-lint\] ERROR E16 ' || true)" -ge 2 ]] \
+  || { _l18r=n; echo "      (a stray fence absorbed by a later \`\`\`bash block hid the prohibitions: $LINT_OUT)"; }
+spec "$SPECS/l18r.md" - "J-04" "J-02"
+python3 - "$SPECS/l18r.md" <<'PY'
+import sys
+t = open(sys.argv[1]).read()
+t = t.replace("Confirm; no code change, no new run.", "Confirm; no code change, no new run.\n\n```bash\nmake run\n")
+t = t.replace("### Backend", "- Side-effect policy: none\n\n### Backend")
+t = t.replace("## NOTES", "```json\n{}\n```\n\n## NOTES")
+open(sys.argv[1], "w").write(t)
+PY
+lint "$SPECS/l18r.md" --side-effects "$LED_DECL"
+has_rule E13 || { _l18r=n; echo "      (a stray fence absorbed by a later \`\`\`json block hid a restrictive policy line: $LINT_OUT)"; }
+[[ "$_l18r" == y ]] \
+  && assert "L18r: a stray fence that a later info-string block absorbs (no unclosed opener) hides neither a prohibition nor a restrictive policy" "pass" \
+  || assert "L18r: absorbed stray fence" "fail"
 PYTHONPATH="$LIB" timeout 60 python3 - <<'PY' \
   && assert "L18q: a 37 000-character TC line with 800 activities lints in seconds (the negation scan stays linear)" "pass" \
   || assert "L18q: negation scan performance" "fail"
 import time
 import iter_spec as S
-line = "- TC-4: " + " ".join(["no error appears when launching a new run and"] * 800)
-t0 = time.time()
-S.find_mutation_prohibitions("## TESTING REQUIREMENTS\n" + line + "\n")
-assert time.time() - t0 < 20, time.time() - t0
+for unit in ("no error appears when launching a new run and",
+             "no pre-existing ledger row is edited while launching a new run and"):
+    line = "- TC-4: " + " ".join([unit] * 800)
+    t0 = time.time()
+    S.find_mutation_prohibitions("## TESTING REQUIREMENTS\n" + line + "\n")
+    assert time.time() - t0 < 20, (unit, time.time() - t0)
 PY
 spec "$SPECS/l18e.md" allowed "J-04" "J-02"
 sed -i 's/^## OUT OF SCOPE$/## OUT OF SCOPE (this iteration)/; s/^## DEFINITION OF DONE$/## Definition of Done (DoD)/' "$SPECS/l18e.md"

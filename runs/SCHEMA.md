@@ -155,7 +155,7 @@ Also included as a section inside `reports/qa/<phase>-qa.md` when `Frontend Pres
 | Coherence audit per iter (goal mode) | `runs/goal-session-<sid>/iter-<N>/coherence.md` |
 | Goal-edit drift note (goal mode) | `runs/goal-session-<sid>/iter-<N>/journeys-changed.md` |
 | Canonical spec-field halt marker (goal mode, HARD-2) | `runs/goal-session-<sid>/iter-<N>/spec-field-unavailable` — written when the executor exited 78 because a `## Goal Mode Metadata` machine field could not be read at runtime (`reason=`, `rc=`, `spec=`, `iter=`, `detected_at_step=`). The iteration is neither evaluated nor advanced |
-| Spec-lint report (goal mode, HARD-2) | `runs/goal-session-<sid>/iter-<N>/spec-lint.txt` and `.json` — the deterministic iteration-spec lint's findings (`[spec-lint] ERROR\|WARN <rule> <name>: <msg>` lines; the JSON adds the parsed metadata and `work_kind_derived`, and — HARD-3, when the side-effect preflight ran — a `side_effects` block: `policy`, `availability` of the ledger, `journeys_checked` with their `roles` and `statuses`, `mutating`/`unknown`/`none`, the declared-none / observed-mutating `conflicts`, the `sticky` journeys, `policy_intent` / `policy_intent_where` / `policy_intent_hidden` / `restrictive` (the metadata section's policy lines decide — anything but a plain `allowed`, optionally followed by a dash note, in any label shape, is restrictive; lines elsewhere count only when the section has none; when the reading with code fences and HTML comments paired finds nothing restrictive, a reading that ignores them decides — only if a policy-shaped line inside the metadata section is fenced or commented out, or the fence reading is suspect — and `policy_intent_hidden` says so; a fenced quotation elsewhere never counts), the explicit `prohibitions` found (`section`, `line`, `text`, `pattern`; `fence_blind: true` marks one found only by the fence-ignoring scan that runs when the spec's fence reading is suspect — an unclosed fence opener, or a metadata heading that exists only inside a fence or comment), the `declaration_digest` and `build_id` it was checked against; this is the preflight view even after the ledger file is refreshed for the evaluator). Written on every linted iteration, clean or not. `spec-lint.stderr` holds the linter's own stderr and is what `spec_lint_crash` samples |
+| Spec-lint report (goal mode, HARD-2) | `runs/goal-session-<sid>/iter-<N>/spec-lint.txt` and `.json` — the deterministic iteration-spec lint's findings (`[spec-lint] ERROR\|WARN <rule> <name>: <msg>` lines; the JSON adds the parsed metadata and `work_kind_derived`, and — HARD-3, when the side-effect preflight ran — a `side_effects` block: `policy`, `availability` of the ledger, `journeys_checked` with their `roles` and `statuses`, `mutating`/`unknown`/`none`, the declared-none / observed-mutating `conflicts`, the `sticky` journeys, `policy_intent` / `policy_intent_where` / `policy_intent_hidden` / `restrictive` (the metadata section's policy lines decide — anything but a plain `allowed`, optionally followed by a dash note, in any label shape, is restrictive; lines elsewhere count only when the section has none; when the reading with code fences and HTML comments paired finds nothing restrictive, a reading that ignores them decides and `policy_intent_hidden` says so), the explicit `prohibitions` found (`section`, `line`, `text`, `pattern`; `fence_blind: true` marks one found only by the second scan, which ignores code fences because a stray fence can shift the pairing without a trace; an item's wrapped lines are scanned as one text; on a TC / DoD item a sentence that names an activity — creating/editing/… ledger rows, launching/starting/triggering a new run — and contains any negation is a prohibition unless the negation is about "pre-existing" data or the sentence states a refused request), the `declaration_digest` and `build_id` it was checked against; this is the preflight view even after the ledger file is refreshed for the evaluator). Written on every linted iteration, clean or not. `spec-lint.stderr` holds the linter's own stderr and is what `spec_lint_crash` samples |
 | Side-effect ledger per iteration (goal mode, HARD-3) | `runs/goal-session-<sid>/iter-<N>/side-effects.json` — see "Journey side-effect ledger" below; `side-effects.preflight.json` beside it is the iteration's frozen preflight view |
 | Side-effect sidecar (goal mode, HARD-3, engine-owned) | `runs/goal-session-<sid>/state/journey-side-effects.json` |
 | Replay side-effect run records (goal mode, HARD-3) | `runs/goal-session-<sid>/iter-<N>/replay-side-effects.json` (current) and `replay-side-effects.<stamp>-<pid>-<n>.json` (archived, never deleted) |
@@ -465,18 +465,18 @@ no declaration record (a new session, or a sidecar moved aside), the newest earl
 declaration flip made at the same time is still reported. `declaration_conflict`
 (and the top-level `conflicts` list) marks a journey declared `none` that was observed
 mutating. The ledger never lists fewer journeys than the certified drift gate
-(`_journey_blocks`), and never trusts a `none` a suspect fence reading may have
+(`_journey_blocks`), and never trusts a `none` a shifted fence reading may have
 misattributed. An id no definition covers is `unattributed` (`attribution_reason`
-`no-definition` — only nested references name it — or `fenced-example` / `fenced-header` —
-its only header sits inside a code fence, `fenced-header` when the fence reading is suspect).
-An id WITH a definition whose header also appears inside a code fence is `ambiguous` only when
-the fence reading is suspect (an unclosed top-level fence opener, the tell of a stray fence
-that may have shifted the pairing); a correctly fenced example that reuses a journey id is
-just an example. For both, the header's own list item is read (never a neighbour's lines),
+`no-definition` — only nested references name it — or `fenced-header` — its only header
+sits inside a code fence). An id WITH a definition whose header also appears inside a code
+fence is `ambiguous` (`fenced-header`): a stray fence can shift the pairing of every later
+fence without a trace, so either block may be the journey (goal-lint's duplicate-id ERROR
+already asks the owner to rename an example that reuses a real id). For both, the header's own list item is read (never a neighbour's lines),
 `stated_values` lists the values stated there — provenance, never reported as `declared`: a
 stated `mutating` makes the journey mutating, a `none` is never trusted — the observations
 still count, `status_source` is `unattributed` / `ambiguous` (or `observed`), a
-`declaration_conflict` still needs the journey's own definition to say `none`, the digest
+`declaration_conflict` still needs the journey's own definition to say `none` (for an
+ambiguous id the prompts call it a POSSIBLE conflict), the digest
 records the attribution, and goal-lint reports it (`side-effects-unattributed` WARN, or the
 `side-effects-invalid` ERROR of the ambiguous definition). Code fences are paired the
 CommonMark way: same character, closer at least as long with nothing after it, at the same

@@ -786,14 +786,13 @@ def side_effect_journey_views_all(text: str) -> list[dict]:
 
     - `unattributed`: an id that no definition covers — only nested references
       name it (`no-definition`), or its only header sits inside what the parser
-      reads as a code fence (`fenced-example`; `fenced-header` when the fence
-      reading is suspect);
+      reads as a code fence (`fenced-header`);
     - `ambiguous` (reason `fenced-header`): an id WITH a live definition that
-      also has a header inside a code fence, counted only when the fence reading
-      is suspect (fence_reading_suspect: an unclosed fence opener, the tell of a
-      stray fence that may have shifted the pairing — then the fenced header may
-      be the real definition and the live one a fenced example). A correctly
-      fenced example that reuses a journey id is just an example.
+      also has a header inside a code fence. A stray fence can shift the pairing
+      of every later fence without leaving a trace, so the fenced header may be
+      the real definition and the live one an example; which one it is cannot be
+      told, so neither is trusted with a `none` (goal-lint's duplicate-id ERROR
+      already asks the owner to rename an example that reuses a real id).
 
     Such a view reads the header's own list item (fences ignored for where it
     ends, so it never runs into a neighbouring journey's lines); a line there
@@ -804,8 +803,7 @@ def side_effect_journey_views_all(text: str) -> list[dict]:
     owner's declaration."""
     views = side_effect_journey_views(text)
     norm = _norm_newlines(text)
-    doc_flags, unclosed = fence_scan(norm.split("\n"))
-    suspect = bool(unclosed)
+    doc_flags = fence_scan(norm.split("\n"))[0]
     defined = {v["jid"] for v in views}
     for jid, start, end in _journey_blocks(norm):
         pos = start
@@ -814,19 +812,19 @@ def side_effect_journey_views_all(text: str) -> list[dict]:
         line_no = norm.count("\n", 0, pos)
         fenced_header = doc_flags[line_no]
         if jid not in defined:
-            kind = "unattributed"
-            reason = ("fenced-header" if suspect else "fenced-example") if fenced_header else "no-definition"
-        elif fenced_header and suspect:
+            kind, reason = "unattributed", ("fenced-header" if fenced_header else "no-definition")
+        elif fenced_header:
             kind, reason = "ambiguous", "fenced-header"
         else:
             continue
-        stop = _item_end_any(norm, pos, end)
-        block = norm[pos:stop]
+        line_start = norm.rfind("\n", 0, pos) + 1    # the item's indent is measured on its own line
+        stop = _item_end_any(norm, line_start, end)
+        block = norm[line_start:stop]
         own_flags = fenced_line_flags(_block_lines(block))
         doc_slice = doc_flags[line_no:line_no + len(own_flags)]
         fenced = ([a and b for a, b in zip(doc_slice, own_flags)] if len(doc_slice) == len(own_flags)
                   else own_flags)
-        views.append({"jid": jid, "start": pos, "end": stop, "own": block, "fenced": fenced,
+        views.append({"jid": jid, "start": line_start, "end": stop, "own": block, "fenced": fenced,
                       "duplicate": False, "extra": kind, "reason": reason})
     return views
 
@@ -838,9 +836,9 @@ def side_effect_journey_own_blocks(text: str) -> list[tuple[str, int, int, str, 
     return [(v["jid"], v["start"], v["end"], v["own"], v["duplicate"]) for v in side_effect_journey_views(text)]
 
 
-_AMBIGUOUS_ERROR = ("a header for this journey id also sits inside what the parser reads as a code fence, and the "
-                    "fence reading is suspect (an unclosed code fence) — its 'Side effects:' lines cannot be "
-                    "attributed with certainty: a 'none' does not count, a 'mutating' does; close the stray fence")
+_AMBIGUOUS_ERROR = ("a header for this journey id also sits inside what the parser reads as a code fence, so its "
+                    "'Side effects:' lines cannot be attributed with certainty: a 'none' does not count, a "
+                    "'mutating' does — rename the example's id, or close a stray fence above it")
 
 
 def parse_side_effect_declarations(text: str) -> dict[str, dict]:
@@ -876,9 +874,13 @@ def parse_side_effect_declarations(text: str) -> dict[str, dict]:
         d = _effective_declaration(live.get(jid, []), duplicate_block=jid in dup)
         if jid in kinds:
             kind, reason = kinds[jid]
+            stated = _effective_declaration(extra.get(jid, []))
             d[kind] = True
             d["attribution_reason"] = reason
             d["stated_values"] = sorted({f["value"] for f in extra.get(jid, []) + live.get(jid, []) if f["value"]})
+            d["stated_hash"] = stated["declaration_hash"]   # any edit of those lines is provenance-visible
+            if kind == "unattributed":
+                d["declaration_hash"] = stated["declaration_hash"]
             if kind == "ambiguous":
                 d["errors"].append(_AMBIGUOUS_ERROR)
                 d["valid"] = False
@@ -970,7 +972,8 @@ def declaration_digest(decls: dict[str, dict], ro: dict) -> str:
         marker = "ambiguous" if d.get("ambiguous") else ("unattributed" if d.get("unattributed") else None)
         if marker:
             items.append([jid, d["declared"] or "unknown", d["note"], d["declaration_hash"],
-                          f"{marker}:{d.get('attribution_reason')}", d.get("stated_values") or []])
+                          f"{marker}:{d.get('attribution_reason')}", d.get("stated_values") or [],
+                          d.get("stated_hash")])
         elif d["declaration_hash"]:
             items.append([jid, d["declared"] or "unknown", d["note"], d["declaration_hash"]])
     payload = {"schema": "journey-side-effect-declarations/1", "journeys": items,
@@ -1416,14 +1419,11 @@ def attribution_problem(j: dict) -> str:
     """Plain words for an unattributed or ambiguous ledger entry (goal-lint and --suggest)."""
     reason = j.get("attribution_reason")
     if j.get("ambiguous"):
-        return ("a header with this id also sits inside a code fence, and the fence reading is suspect (an "
-                "unclosed ``` / ~~~ line) — close the stray fence so the parser knows which block is the journey")
+        return ("a header with this id also sits inside a code fence — rename the example's id, or close a stray "
+                "``` / ~~~ line above it, so the parser knows which block is the journey")
     if reason == "fenced-header":
-        return ("its only header sits inside what the parser reads as a code fence, and the fence reading is "
-                "suspect (an unclosed ``` / ~~~ line) — close the stray fence")
-    if reason == "fenced-example":
-        return ("its only header sits inside a code fence (an example is not a journey) — define it outside "
-                "the fence")
+        return ("its only header sits inside what the parser reads as a code fence — define the journey outside "
+                "any fence, and check for a stray ``` / ~~~ line above it")
     return ("it is only mentioned inside other journeys, never defined at top level — give it its own "
             "'- **J-NN: <name>**' block")
 

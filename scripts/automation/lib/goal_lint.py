@@ -169,6 +169,15 @@ def _acceptance_bigrams(block: str) -> set[str]:
     return grams
 
 
+def _engine_reading(d: dict) -> str:
+    """How the side-effect ledger reads a declaration (observations aside)."""
+    if d["declared"] == "mutating" or "mutating" in (d.get("stated_values") or []):
+        return "mutating"
+    if d["declared"] == "none" and d["valid"] and not d.get("ambiguous"):
+        return "none"
+    return "unknown"
+
+
 def lint_text(text: str) -> list[Finding]:
     findings: list[Finding] = []
     lines = _stripped_lines(text)
@@ -278,7 +287,7 @@ def lint_text(text: str) -> list[Finding]:
             findings.append(Finding(
                 "ERROR", "side-effects-invalid", block_line0 + first,
                 f"journey {jid}: {'; '.join(d['errors'])} — the engine reads this journey as "
-                f"{d['declared'] or 'unknown'} (allowed: '- Side effects: none' or "
+                f"{_engine_reading(d)} (allowed: '- Side effects: none' or "
                 "'- Side effects: mutating — <what it creates or changes>')",
             ))
         elif not d["lines"]:
