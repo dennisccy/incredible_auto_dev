@@ -155,7 +155,7 @@ Also included as a section inside `reports/qa/<phase>-qa.md` when `Frontend Pres
 | Coherence audit per iter (goal mode) | `runs/goal-session-<sid>/iter-<N>/coherence.md` |
 | Goal-edit drift note (goal mode) | `runs/goal-session-<sid>/iter-<N>/journeys-changed.md` |
 | Canonical spec-field halt marker (goal mode, HARD-2) | `runs/goal-session-<sid>/iter-<N>/spec-field-unavailable` — written when the executor exited 78 because a `## Goal Mode Metadata` machine field could not be read at runtime (`reason=`, `rc=`, `spec=`, `iter=`, `detected_at_step=`). The iteration is neither evaluated nor advanced |
-| Spec-lint report (goal mode, HARD-2) | `runs/goal-session-<sid>/iter-<N>/spec-lint.txt` and `.json` — the deterministic iteration-spec lint's findings (`[spec-lint] ERROR\|WARN <rule> <name>: <msg>` lines; the JSON adds the parsed metadata and `work_kind_derived`, and — HARD-3, when the side-effect preflight ran — a `side_effects` block: `policy`, `availability` of the ledger, `journeys_checked` with their `roles` and `statuses`, `mutating`/`unknown`/`none`, the declared-none / observed-mutating `conflicts`, the `sticky` journeys, `policy_intent` / `policy_intent_where` / `restrictive` (the metadata section's policy lines decide — any value but a plain `allowed`, in any label shape, is restrictive; lines elsewhere count only when the section has none), the explicit `prohibitions` found (`section`, `line`, `text`, `pattern`), the `declaration_digest` and `build_id` it was checked against; this is the preflight view even after the ledger file is refreshed for the evaluator). Written on every linted iteration, clean or not. `spec-lint.stderr` holds the linter's own stderr and is what `spec_lint_crash` samples |
+| Spec-lint report (goal mode, HARD-2) | `runs/goal-session-<sid>/iter-<N>/spec-lint.txt` and `.json` — the deterministic iteration-spec lint's findings (`[spec-lint] ERROR\|WARN <rule> <name>: <msg>` lines; the JSON adds the parsed metadata and `work_kind_derived`, and — HARD-3, when the side-effect preflight ran — a `side_effects` block: `policy`, `availability` of the ledger, `journeys_checked` with their `roles` and `statuses`, `mutating`/`unknown`/`none`, the declared-none / observed-mutating `conflicts`, the `sticky` journeys, `policy_intent` / `policy_intent_where` / `policy_intent_hidden` / `restrictive` (the metadata section's policy lines decide — anything but a plain `allowed`, optionally followed by a dash note, in any label shape, is restrictive; lines elsewhere count only when the section has none; when the reading with code fences and HTML comments paired finds nothing restrictive, a reading that ignores them decides and `policy_intent_hidden` says so), the explicit `prohibitions` found by a fence-aware and a fence-blind scan (merged; `section`, `line`, `text`, `pattern`), the `declaration_digest` and `build_id` it was checked against; this is the preflight view even after the ledger file is refreshed for the evaluator). Written on every linted iteration, clean or not. `spec-lint.stderr` holds the linter's own stderr and is what `spec_lint_crash` samples |
 | Side-effect ledger per iteration (goal mode, HARD-3) | `runs/goal-session-<sid>/iter-<N>/side-effects.json` — see "Journey side-effect ledger" below; `side-effects.preflight.json` beside it is the iteration's frozen preflight view |
 | Side-effect sidecar (goal mode, HARD-3, engine-owned) | `runs/goal-session-<sid>/state/journey-side-effects.json` |
 | Replay side-effect run records (goal mode, HARD-3) | `runs/goal-session-<sid>/iter-<N>/replay-side-effects.json` (current) and `replay-side-effects.<stamp>-<pid>-<n>.json` (archived, never deleted) |
@@ -438,6 +438,7 @@ lanes (`CHAIN_SIDE_EFFECTS_FILE`), the decomposer and evaluator prompts. Shape:
    "observation_complete": true, "observation_basis": "recorded", "observation_established": true,
    "observation_sticky": false, "sticky_detail": null, "observed_at": "2026-09-17T00:00:00.000000Z",
    "golden_sha256": "<sha256>", "declaration_conflict": false, "unattributed": false,
+   "unattributed_reason": null,
    "requests": [{"method": "POST", "path": "/api/runs", "class": "mutating", "count": 1}],
    "exceptions_applied": [], "auth_ignored": [{"method": "POST", "path": "/api/login"}],
    "status": "mutating", "status_source": "declared+observed",
@@ -464,12 +465,21 @@ no declaration record (a new session, or a sidecar moved aside), the newest earl
 declaration flip made at the same time is still reported. `declaration_conflict`
 (and the top-level `conflicts` list) marks a journey declared `none` that was observed
 mutating. The ledger never lists fewer journeys than the certified drift gate
-(`_journey_blocks`): a journey id no definition covers (a nested bare `- **J-NN**` reference,
-a header the fence-aware splitter reads as example text) gets an `unattributed` entry whose
-observations still count and where only a stated `mutating` is honoured. Code fences are
-paired the CommonMark way (same character, closer at least as long); an unclosed fence is
-ordinary text, so it can never hide the journeys below it, and a declaration-shaped line
-inside a fence is journey text (never a declaration, never dropped from `spec_hash`). `run_records_pending` lists per-run records the sidecar has not merged yet (they are
+(`_journey_blocks`), and never trusts a `none` the fence reading may have misattributed: a
+certified header the side-effect splitter does not read as a definition gets an `unattributed`
+entry — `unattributed_reason` `fenced-header` (the header sits inside what the parser reads
+as a code fence; a stray fence can shift the reading of every later fence, so the id is
+ambiguous even when a live definition exists too) or `no-definition` (only nested references
+name it). Its observations still count, only a stated `mutating` from any of its blocks is
+honoured (`none` never counts), `status_source` is `unattributed` (`unattributed+observed`),
+the digest records the attribution, and goal-lint warns (`side-effects-unattributed`). Code
+fences are paired the CommonMark way: same character, closer at least as long with nothing
+after it, at the same blockquote depth and at most 3 columns deeper than the opener; an
+opener may sit on a list-item line; a quoted fence ends with its quote; a top-level opener
+that is never closed is ordinary text. A declaration-shaped line inside a fence is journey
+text (never a declaration, never dropped from `spec_hash`). A nested header is a definition
+when its own item carries a declaration or a numbered step, or when it names a journey no
+top-level header defines; a bare or titled mention of a top-level journey is a reference. `run_records_pending` lists per-run records the sidecar has not merged yet (they are
 applied in memory; the preflight's record step merges them).
 
 ### runs/goal-session-\<sid\>/state/journey-side-effects.json

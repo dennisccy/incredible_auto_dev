@@ -930,6 +930,7 @@ _side_effect_ledger_build() {
     # id, so the spec lint still reads it as UNAVAILABLE (never as evidence).
     rm -f "$_sl_out" 2>/dev/null || true
     SIDE_EFFECTS_BUILD_ID="$(date -u +%Y%m%dT%H%M%S%N)-$$-${RANDOM}"
+    SIDE_EFFECTS_FROZEN=false        # only a completed build of THIS iteration may say otherwise
     # --freeze keeps the iteration's first complete preflight view. It is
     # REUSED ("freeze") only when the spec already written will be re-linted
     # without re-planning, so that spec is judged against the evidence it was
@@ -2960,8 +2961,9 @@ print("e15" if any(isinstance(e, dict) and e.get("rule") == "E15" for e in errs)
       fi
     fi
     if [[ -n "$_se_e15" ]]; then
-      if [[ "$_lint_rc" -ne 0 && "$_lint_rc" -ne 1 ]]; then
-        # The crash branch below is never reached: record the crash here.
+      if [[ "$_lint_rc" -ne 0 && ( "$_lint_rc" -ne 1 || "${_se_json_state:-absent}" == "absent" || "${_se_json_state:-}" == "unfinished" ) ]]; then
+        # The lint did not finish (a crash exit, or a traceback's exit 1 with no
+        # finished JSON); the crash branch below is never reached: record it here.
         record_telemetry_event "spec_lint_crash" "$(jq -cn --arg n "$ITER_NAME" --arg rc "$_lint_rc" \
           --arg t "$(tail -c 400 "$ITER_DIR/spec-lint.stderr" 2>/dev/null | tr '\n' ' ')" --arg m "$_SPEC_LINT_MODE" \
           '{iter_name:$n, rc:($rc|tonumber), mode:$m, stderr_tail:$t}' 2>/dev/null \

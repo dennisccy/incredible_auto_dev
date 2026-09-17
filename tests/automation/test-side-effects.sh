@@ -486,6 +486,54 @@ ro6 = G.build_side_effect_ledger(ref_only)
 case("D8i: a journey id seen only as a nested reference still appears in the ledger (unattributed, fail-closed)",
      ro6["journeys"].get("J-12", {}).get("unattributed") is True
      and ro6["journeys"]["J-05"]["declared"] == "mutating")
+import iter_spec as IS
+shift = ("# Goal\n\nRun it with:\n\n```bash\nmake run\n\n## Must-have user journeys\n\n"
+         "- **J-01: Checkout**\n  1. Open /cart and click **Pay**\n  - Acceptance: placed\n"
+         "  - Side effects: mutating — places an order\n\nA template for new journeys:\n\n```\n"
+         "- **J-02: Refund**\n  - Side effects: none\n```\n\n"
+         "- **J-02: Refund**\n  1. Open /orders and click **Refund**\n  - Acceptance: refunded\n"
+         "  - Side effects: mutating — refunds the order\n\n```\nmake test\n```\n\n## Anti-goals\n- none\n")
+ls_ = G.build_side_effect_ledger(shift)
+j2 = ls_["journeys"].get("J-02", {})
+case("D8j: a stray top-level fence that shifts every later fence never lets a fenced example's `none` stand for "
+     "the real journey (the id is ambiguous: its stated `mutating` counts)",
+     j2.get("status") == "mutating" and j2.get("unattributed") is True
+     and j2.get("unattributed_reason") == "fenced-header"
+     and ls_["journeys"].get("J-01", {}).get("status") == "mutating"
+     and G.parse_side_effect_declarations(shift)["J-02"]["valid"] is False)
+F = IS.fenced_line_flags
+case("D8k: fences pair the CommonMark way — a 4-space-indented fence never closes a top-level one, a list-item "
+     "opener counts, a quoted fence ends with its quote, CRLF and ~~~/``` mixes are handled",
+     F(["```bash", "make run", "", "- item", "    ```", "    code", "    ```", "tail"])
+     == [False, False, False, False, True, True, True, False]
+     and F(["- ```bash", "  make run", "  ```", "- **J-01: X**"]) == [True, True, True, False]
+     and F(["> ```bash", "> make run", "", "text", "```", "code", "```", "after"])
+     == [True, True, False, False, True, True, True, False]
+     and F(["```\r", "x\r", "```\r", "y"]) == [True, True, True, False]
+     and F(["~~~", "```", "~~~", "z"]) == [True, True, True, False])
+titled = ("## Must-have user journeys\n\n- **J-01: Checkout**\n  1. Open /cart and click **Pay**\n"
+          "  - Acceptance: placed\n  - Related:\n    - **J-03: Browse** — the catalog must still list it\n"
+          "  - **J-03:** must still pass afterwards\n  - Side effects: mutating — places an order\n\n"
+          "- **J-03: Browse**\n  1. Open /catalog\n  - Acceptance: listed\n  - Side effects: none\n\n## Anti-goals\n")
+td = G.parse_side_effect_declarations(titled)
+case("D8l: a titled mention of a journey defined at top level is a reference, not a second definition",
+     td["J-03"]["declared"] == "none" and td["J-03"]["valid"] and td["J-01"]["declared"] == "mutating"
+     and not td["J-03"].get("unattributed"))
+fixed = shift.replace("```bash\nmake run\n", "```bash\nmake run\n```\n")
+sugg = G.render_side_effect_suggestions(ls_, "docs/goal.md")
+j2_sugg = next((ln for ln in sugg.splitlines() if ln.startswith("J-02")), "")
+case("D8m: an unattributed journey is reported as such (status source, reason, --suggest, the lint's wording) "
+     "and an attribution change moves the declaration digest",
+     j2.get("status_source") == "unattributed"
+     and "cannot be attributed with certainty" in j2_sugg and "no 'Side effects:' line" not in j2_sugg
+     and "declared mutating" not in IS._mutating_desc("J-02", j2, {"target"})
+     and "cannot be attributed" in IS._mutating_desc("J-02", j2, {"target"})
+     and G.declaration_digest(G.parse_side_effect_declarations(shift), {"sha256": None})
+     != G.declaration_digest(G.parse_side_effect_declarations(fixed), {"sha256": None}))
+lf_doc = ("- **J-01: Export**\n  1. Open /export\n     ```\n     - Side effects: none\n     ```\n"
+          "  - Acceptance: exported\n")
+case("D29: CRLF line endings never change which declaration-shaped lines the certified hash drops",
+     G._journey_hashes(lf_doc.replace("\n", "\r\n"))["J-01"] == G._journey_hashes(lf_doc)["J-01"])
 def ledger(goal_text, sidecar=None, ro=None):
     return G.build_side_effect_ledger(goal_text, sidecar=sidecar, readonly_path=ro)
 ro = os.path.join(repo, "project-extensions", "side-effects", "read-only-endpoints.txt")
@@ -823,6 +871,26 @@ printf '%s' "$GU_OUT" | grep -q 'J-02' \
 python3 "$GL" self-test >/dev/null 2>&1 \
   && assert "G4: goal_lint.py self-test passes (clean fixture stays finding-free with declarations)" "pass" \
   || assert "G4: goal_lint.py self-test" "fail"
+cat > "$WORK/unattributed.md" <<'EOF'
+# Goal
+
+## Must-have user journeys
+
+- **J-05: Checkout**
+  1. Open /cart and click **Pay**
+  - Acceptance: an order is placed
+    - **J-12** follows on from this checkout
+  - Side effects: mutating — places an order
+
+## Anti-goals
+
+- no paid SaaS
+EOF
+GA_OUT="$(python3 "$GL" "$WORK/unattributed.md" 2>&1)"
+printf '%s' "$GA_OUT" | grep -qE '^\[goal-lint\] WARN side-effects-unattributed line [0-9]+: journey J-12: it is only mentioned inside other journeys' \
+  && ! printf '%s' "$GA_OUT" | grep -q 'side-effects-invalid' \
+  && assert "G6: a journey id the side-effect parser cannot attribute is a goal-lint WARN naming why" "pass" \
+  || assert "G6: side-effects-unattributed WARN ($GA_OUT)" "fail"
 cat > "$WORK/nested-note.md" <<'EOF'
 # Goal
 
@@ -1200,6 +1268,77 @@ lint "$SPECS/l18j.md" --side-effects "$LED_DECL"
 has_rule E16 && rule_line E16 | grep -q 'TC-4' \
   && assert "L18j: the body of a '### TC-4' heading is part of that test case" "pass" \
   || assert "L18j: heading TC body ($LINT_OUT)" "fail"
+_l18k=y
+for pair in "tc|- TC-4: then the replay completes without creating, editing or deleting ledger rows" \
+            "tc|- TC-4: never (even on retry) starting a new run" \
+            "tc|- TC-4: the pass does not, at any point, launch a new run" \
+            "tc|- TC-4: do not click Run to launch a new run" \
+            "dod|- [ ] No creating, editing, or deleting of ledger rows" \
+            "dod|- [ ] The confirm pass completes without, at any point, launching a new run" \
+            "oos|- Editing (or deleting) ledger rows" \
+            "oos|- Launching – even for a smoke check – a new portfolio run"; do
+  where="${pair%%|*}"; line="${pair#*|}"
+  case "$where" in
+    tc) spec "$SPECS/l18k.md" allowed "J-04" "J-02" "- Any code change to the engine" "$line" ;;
+    dod) spec "$SPECS/l18k.md" allowed "J-04" "J-02" "- Any code change to the engine" "- TC-1: given x, when y, then z" "$line" ;;
+    *) spec "$SPECS/l18k.md" allowed "J-04" "J-02" "$line" ;;
+  esac
+  lint "$SPECS/l18k.md" --side-effects "$LED_DECL"
+  has_rule E16 || { _l18k=n; echo "      (missed: $line)"; }
+done
+[[ "$_l18k" == y ]] \
+  && assert "L18k: a negation still reaches the activity across a verb list, a comma or parenthetical aside or a pass-through verb" "pass" \
+  || assert "L18k: coordinated / aside negations" "fail"
+_l18l=y
+for line in "- TC-4: launching a new run must not modify any pre-existing ledger row" \
+            "- TC-4: launching a new run is not blocked by the confirm dialog" \
+            "- TC-4: starting a new run does not require a page reload" \
+            "- TC-4: appending ledger rows does not rewrite earlier rows" \
+            "- TC-4: adding ledger entries should not fail when the ledger is large" \
+            "- TC-4: the confirm dialog prevents launching a new run twice on a double click" \
+            "- TC-4: no confirm dialog blocks launching a new run" \
+            "- TC-4: no error appears when launching a new run" \
+            "- TC-4: whether or not launching a new run succeeds, the list renders"; do
+  spec "$SPECS/l18l.md" allowed "J-04" "J-02" "- Any code change to the engine" "$line"
+  lint "$SPECS/l18l.md" --side-effects "$LED_DECL"
+  if has_rule E16; then _l18l=n; echo "      (false positive: $line)"; fi
+done
+[[ "$_l18l" == y ]] \
+  && assert "L18l: a negated predicate that only describes the activity ('is not blocked', 'must not modify', 'no error appears when') is never E16" "pass" \
+  || assert "L18l: invariant wording" "fail"
+_l18m=y
+spec "$SPECS/l18m.md" allowed "J-04" "J-02" "- Full-archive verification runs — not applicable; no run is launched this iteration."
+lint "$SPECS/l18m.md" --side-effects "$LED_DECL"
+has_rule E16 || { _l18m=n; echo "      (missed: 'no run is launched')"; }
+spec "$SPECS/l18m.md" allowed "J-04" "J-02" "- Any code change to the engine" \
+  "- TC-4: given a malformed submission, when it is submitted, then it is refused and no record is written."
+lint "$SPECS/l18m.md" --side-effects "$LED_DECL"
+if has_rule E16; then _l18m=n; echo "      (false positive on a negative-path assertion)"; fi
+[[ "$_l18m" == y ]] \
+  && assert "L18m: 'no run is launched' (TenSteps iter-7/8 wording) is a prohibition; a negative-path 'no record is written' is not" "pass" \
+  || assert "L18m: passive wording" "fail"
+_l18n=y
+spec "$SPECS/l18n.md" allowed "J-04" "J-02" "- Any code change to the engine" "- TC-4: the ledger row count is unchanged"
+python3 - "$SPECS/l18n.md" <<'PY'
+import sys
+t = open(sys.argv[1]).read()
+t = t.replace("Confirm; no code change, no new run.", "Confirm; no code change, no new run.\n\n```bash\nmake run\n")
+t = t.replace("## NOTES", "```\nmake test\n```\n\n## NOTES")
+open(sys.argv[1], "w").write(t)
+PY
+lint "$SPECS/l18n.md" --side-effects "$LED_DECL"
+{ has_rule E16 && rule_line E16 | grep -q 'TC-4'; } || { _l18n=n; echo "      (a shifted fence hid TC-4: $LINT_OUT)"; }
+spec "$SPECS/l18n.md" allowed "J-04" "J-02" "- Any new portfolio run launch"
+python3 - "$SPECS/l18n.md" <<'PY'
+import sys
+t = open(sys.argv[1]).read()
+open(sys.argv[1], "w").write("```markdown\n" + t + "```\n")
+PY
+lint "$SPECS/l18n.md" --side-effects "$LED_DECL"
+{ has_rule E16 && rule_line E16 | grep -q 'OUT OF SCOPE'; } || { _l18n=n; echo "      (a wholly fenced spec hid its prohibition: $LINT_OUT)"; }
+[[ "$_l18n" == y ]] \
+  && assert "L18n: a stray fence that shifts the pairing, or a spec wrapped in a fence, never hides a prohibition" "pass" \
+  || assert "L18n: fence-blind prohibition scan" "fail"
 spec "$SPECS/l18e.md" allowed "J-04" "J-02"
 sed -i 's/^## OUT OF SCOPE$/## OUT OF SCOPE (this iteration)/; s/^## DEFINITION OF DONE$/## Definition of Done (DoD)/' "$SPECS/l18e.md"
 python3 - "$SPECS/l18e.md" <<'PY'
@@ -1295,6 +1434,67 @@ done
 [[ "$_l22c" == y ]] \
   && assert "L22c: only the metadata section decides when it has a policy line; any value but 'allowed' and any label shape is restrictive" "pass" \
   || assert "L22c: policy intent" "fail"
+_l22d=y
+for label in '- **Side-effect policy** none' '- **Side-effect policy (this iteration):** none' \
+             '- **Side-effect policy for J-04:** none' '- Side-effect policy is none' \
+             '- `Side-effect policy`: none' '- <b>Side-effect policy:</b> none'; do
+  spec "$SPECS/l22d.md" - "J-04" "J-02"
+  python3 - "$SPECS/l22d.md" "$label" <<'PY'
+import sys
+t = open(sys.argv[1]).read()
+t = t.replace("- **Work kind:** verify-only\n", "- **Work kind:** verify-only\n" + sys.argv[2] + "\n")
+open(sys.argv[1], "w").write(t)
+PY
+  lint "$SPECS/l22d.md" --side-effects "$LED_DECL"
+  { has_rule E02 && has_rule E13; } || { _l22d=n; echo "      (no E02 + E13 for: $label)"; }
+  lint "$SPECS/l22d.md" --side-effects "$WORK/does-not-exist.json"
+  { has_rule E02 && has_rule E15 && ! has_rule W11; } || { _l22d=n; echo "      (no E02 + E15 for: $label)"; }
+  [[ "$(python3 "$PROBE" policy-intent "$SPECS/l22d.md")" == "none" ]] || { _l22d=n; echo "      (policy-intent not none: $label)"; }
+done
+[[ "$_l22d" == y ]] \
+  && assert "L22d: a policy label with no separator, a qualifier, backticks or HTML still reads as a restrictive policy (E02 + E13 / E15)" "pass" \
+  || assert "L22d: separator-less policy labels" "fail"
+_l22e=y
+for value in 'allowed | none' 'allowed/none' 'allowed or none' 'allowed (but none for J-02)' 'allowed — but none for J-02'; do
+  spec "$SPECS/l22e.md" "$value" "J-04" "J-02"
+  lint "$SPECS/l22e.md" --side-effects "$WORK/does-not-exist.json"
+  { has_rule E06 && has_rule E15; } || { _l22e=n; echo "      (ambiguous value not restrictive: $value)"; }
+done
+spec "$SPECS/l22e.md" "allowed — J-04's Run step adds one row" "J-04" "J-02"
+lint "$SPECS/l22e.md" --side-effects "$WORK/does-not-exist.json"
+{ has_rule W11 && ! has_rule E15; } || { _l22e=n; echo "      (a plain 'allowed — <note>' was read as restrictive)"; }
+[[ "$_l22e" == y ]] \
+  && assert "L22e: an ambiguous policy value ('allowed | none', 'allowed (but none …)') is restrictive; 'allowed — <note>' is not" "pass" \
+  || assert "L22e: ambiguous policy values" "fail"
+_l22f=y
+spec "$SPECS/l22f.md" - "J-04" "J-02"
+python3 - "$SPECS/l22f.md" <<'PY'
+import sys
+t = open(sys.argv[1]).read()
+t = t.replace("- **Work kind:** verify-only\n", "- **Work kind:** verify-only\n<!-- draft\n- **Side-effect policy**: none\n")
+open(sys.argv[1], "w").write(t)
+PY
+lint "$SPECS/l22f.md" --side-effects "$LED_DECL"
+has_rule E13 || { _l22f=n; echo "      (an unclosed comment hid the policy: $LINT_OUT)"; }
+spec "$SPECS/l22f.md" - "J-04" "J-02"
+python3 - "$SPECS/l22f.md" <<'PY'
+import sys
+t = open(sys.argv[1]).read()
+t = t.replace("- **Work kind:** verify-only\n", "- **Work kind:** verify-only\n```text\n- **Side-effect policy**: none\n")
+t = t.replace("## NOTES", "```\nmake test\n```\n\n## NOTES")
+open(sys.argv[1], "w").write(t)
+PY
+python3 "$PROBE" lint "$SPECS/l22f.md" --side-effects "$WORK/does-not-exist.json" --json-out "$WORK/l22f.json" >/dev/null 2>&1
+python3 - "$WORK/l22f.json" <<'PY' || { _l22f=n; echo "      (a stray fence hid the policy)"; }
+import json, sys
+d = json.load(open(sys.argv[1]))
+se = d["side_effects"]
+assert se["restrictive"] and se["policy_intent_hidden"], se
+assert any(e["rule"] == "E15" and "code fence or HTML comment" in e["msg"] for e in d["errors"]), d["errors"]
+PY
+[[ "$_l22f" == y ]] \
+  && assert "L22f: an unclosed comment or a stray fence never hides a restrictive policy line (E13 / E15, reported as hidden)" "pass" \
+  || assert "L22f: hidden policy lines" "fail"
 [[ "$(python3 "$PROBE" policy-intent "$SPECS/l22b.md")" == "none" \
    && "$(python3 "$PROBE" policy-intent "$SPECS/l3.md")" == "allowed" && -z "$(python3 "$PROBE" policy-intent "$SPECS/l12b.md")" ]] \
   && python3 "$PROBE" ledger-ok "$LED_DECL" && ! python3 "$PROBE" ledger-ok "$LED_DECL" --build-id other-build 2>/dev/null \
@@ -2120,7 +2320,8 @@ E_PRESEED_SIDECAR='{ corrupt' e_run nonenone CHAIN_SPEC_LINT=warn STUB_LINT_CRAS
 E_PRESEED_SIDECAR='{ corrupt' e_run nonenone CHAIN_SPEC_LINT=warn STUB_LINT_CRASH=1 STUB_LINT_CRASH_RC=1 PYTHONPATH="$CRASH_PY"
 [[ "$(e_status)" == "GATE_BLOCKED" && "$(e_count developer)" == "0" ]] \
   && e_halt GATE_BLOCKED_SIDE_EFFECT_LEDGER side-effect-ledger && grep -q 'the spec lint did not finish (exit 1)' "$E_LOG" \
-  && assert "E5d2: the same with a traceback-style exit 1 (no findings, no JSON) -> GATE_BLOCKED, zero dispatch" "pass" \
+  && e_event spec_lint_crash \
+  && assert "E5d2: the same with a traceback-style exit 1 (no findings, no JSON) -> GATE_BLOCKED, zero dispatch, spec_lint_crash recorded" "pass" \
   || assert "E5d2: rc-1 crash fallback (status=$(e_status) dev=$(e_count developer))" "fail"
 e_run nonenone CHAIN_SPEC_LINT=warn STUB_LINT_CRASH=1 PYTHONPATH="$CRASH_PY"
 [[ "$(e_status)" != "GATE_BLOCKED" && "$(e_count developer)" -ge 1 ]] && grep -q 'continuing UNVERIFIED' "$E_LOG" \
@@ -2593,6 +2794,13 @@ if grep -nE 'rm .*REPLAY_SIDE_EFFECTS_RUN' "$RL" "$LEAN" "$FULLQA" >/dev/null \
 else
   assert "W13: per-run side-effect records are archived (partition entry + both fork reaps), never deleted" "pass"
 fi
+python3 - "$RG" <<'PY' && assert "W14: every preflight ledger build resets SIDE_EFFECTS_FROZEN before it can fail" "pass" || assert "W14: frozen flag reset" "fail"
+import sys
+body = open(sys.argv[1]).read().split("_side_effect_ledger_build() {", 1)[1].split("\n}\n", 1)[0]
+reset = body.find("SIDE_EFFECTS_FROZEN=false")
+fail_return = body.find("return 0")
+assert 0 <= reset < fail_return, (reset, fail_return)
+PY
 if grep -nE '(^|[^_])(pkill|fuser -k|killall)\b' "$SCRIPT_DIR/test-side-effects.sh" | grep -v 'grep -nE' >/dev/null; then
   assert "W12: this harness never kills by pattern or port (HARD-5)" "fail"
 else

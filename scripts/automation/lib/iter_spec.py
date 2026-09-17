@@ -506,23 +506,9 @@ _POLICY_LABEL = r"side[\s\-_\u2010-\u2015\u2212\u00ad]*effects?[\s\-_\u2010-\u20
 # included) outside the prose sections. GOAL / BACKGROUND / NOTES prose — where
 # a re-planned spec naturally explains what an earlier TC said — is never a
 # machine constraint, and neither is the metadata section.
-# (name, pattern, where, qualified): `where` "oos" = only on an OUT OF SCOPE line,
-# where listing an activity excludes it — on a TC / DoD line the same words can
-# be an affirmative invariant ("launching a new run is expected"), so there the
-# pattern needs an explicit negation: before the verb in the same clause ("no
-# … launching"), a prohibiting verb ("avoid launching"), or after the phrase
-# ("… is not part of this pass", "… does not happen"). A clause ends at . ; :
-# , ( ) or a dash. `qualified` = a row count qualified DIRECTLY as
+# (name, pattern, where, qualified): `where` "any" = every scanned line, "oos" =
+# only an OUT OF SCOPE line. `qualified` = a row count qualified DIRECTLY as
 # "pre-existing (ledger) row count" is an invariant, not a prohibition.
-_CLAUSE_GAP = r"[^.;:,()–—]"
-_NEG = r"\b(?:no|not|never|nor|without)\b" + _CLAUSE_GAP + r"{0,25}?"
-_AVOID = (r"\b(?:avoid(?:s|ed|ing)?|refrain(?:s|ed|ing)?\s+from|prevent(?:s|ed|ing)?|prohibit(?:s|ed|ing)?"
-          r"|forbid(?:s|den|ding)?|disallow(?:s|ed|ing)?)\s+")
-_POST_NEG = (_CLAUSE_GAP + r"{0,40}?\b(?:(?:is|are|was|were)\s+(?:not|never)\b|(?:does|do|must|should|may|will)\s+not\b"
-             r"|(?:is|are)\s+(?:forbidden|prohibited|excluded|disallowed|out\s+of\s+scope)\b)")
-_EDIT_LEDGER = (r"\b(?:creating|editing|deleting|writing|appending|adding)\b" + _CLAUSE_GAP
-                + r"{0,40}?\bledger\s+(?:rows?|entries|records)\b")
-_LAUNCH_NEW_RUN = r"\b(?:launching|starting|triggering)\s+(?:a\s+|any\s+)?new\s+(?:[\w-]+\s+){0,2}?runs?\b"
 _PROHIBITION_RES: tuple = (
     ("row-count-unchanged",
      re.compile(r"\b(?:row|record|ledger)s?\s+count\s+(?:(?:must|should|will|shall)\s+)?"
@@ -532,15 +518,13 @@ _PROHIBITION_RES: tuple = (
                 r"(?:(?:is|stays|remains|must\s+(?:stay|remain|be))\s+)?(?:unchanged|the\s+same)\b", re.I),
      "any", True),
     ("no-new-row-run-record",
-     re.compile(r"\bno\s+new\s+(?:[\w-]+\s+){0,2}?(?:rows?|runs?|records?|ledger\s+(?:rows?|entry|entries))\b", re.I),
+     re.compile(r"\bno\s+new\s+(?:[\w-]+\s+){0,2}?(?:rows?|runs?|records?|ledger\s+(?:rows?|entry|entries))\b"
+                r"|\bno\s+runs?\s+(?:(?:is|are|was|were|gets?|got)\s+|(?:will|shall|should|must|may|can)"
+                r"\s+be\s+)(?:launched|started|triggered|created|kicked\s+off)\b", re.I),
      "any", False),
     ("ledger-unchanged",
      re.compile(r"\bledger\s+(?:(?:is|stays|remains)\s+)?(?:left\s+)?(?:unchanged|frozen|untouched)\b", re.I),
      "any", False),
-    ("ledger-row-edit", re.compile(_EDIT_LEDGER, re.I), "oos", False),
-    ("ledger-row-edit", re.compile(_NEG + _EDIT_LEDGER, re.I), "any", False),
-    ("ledger-row-edit", re.compile(_AVOID + _EDIT_LEDGER, re.I), "any", False),
-    ("ledger-row-edit", re.compile(_EDIT_LEDGER + _POST_NEG, re.I), "any", False),
     ("must-not-mutate",
      re.compile(r"\bmust\s+not\s+(?:create|launch|append|write)\b"
                 r"|\bmust\s+not\s+(?:start|trigger)\s+(?:a\s+|any\s+)?(?:new\s+)?(?:[\w-]+\s+)?runs?\b", re.I),
@@ -549,12 +533,136 @@ _PROHIBITION_RES: tuple = (
      re.compile(r"\bno\s+(?:writes?|mutations?|launch(?:es)?)\b(?![-\w])", re.I), "any", False),
     ("any-new-run-launch",
      re.compile(r"\bany\s+new\s+(?:[\w-]+\s+){0,3}?run\s+launch(?:es)?\b", re.I), "any", False),
-    ("any-new-run-launch", re.compile(_LAUNCH_NEW_RUN, re.I), "oos", False),
-    ("any-new-run-launch", re.compile(_NEG + _LAUNCH_NEW_RUN, re.I), "any", False),
-    ("any-new-run-launch", re.compile(_AVOID + _LAUNCH_NEW_RUN, re.I), "any", False),
-    ("any-new-run-launch", re.compile(_LAUNCH_NEW_RUN + _POST_NEG, re.I), "any", False),
 )
 _PRE_EXISTING_ROWS_RE = re.compile(r"\bpre-?existing\s+(?:ledger\s+)?$", re.I)
+
+# Two ACTIVITIES — creating/editing/deleting ledger rows, launching a new run —
+# are a prohibition on an OUT OF SCOPE line as they stand (listing an activity
+# there excludes it), but on a TC / DoD line only when NEGATED, because there the
+# same words are usually an affirmative invariant ("launching a new run is
+# expected", "… must not modify any pre-existing ledger row"). Negated means
+# (_negated_activity), within one sentence:
+#   * a negation BEFORE the activity that scopes over it — "no", "never",
+#     "without", "avoid", "must not", … — with nothing between them but a
+#     coordinated verb list ("without creating, editing or deleting ledger
+#     rows") or an aside ("never (even on retry) starting a new run", "without,
+#     at any point, launching …"); a negation that belongs to another predicate
+#     ("no row is edited, launching a new run is expected") does not count;
+#   * or an OCCURRENCE / PERMISSION negation right AFTER it — "… is not part of
+#     this pass", "… does not happen", "… is forbidden"; any other negated
+#     predicate ("… is not blocked by", "… does not require", "… must not
+#     modify …") describes the activity, it does not forbid it.
+_ASIDE_RE = re.compile(r",[^,.;:!?]{0,40},|[–—][^–—.;:!?]{0,40}[–—]"
+                       r"|[ \t]-[ \t][^.;:!?]{0,40}?[ \t]-[ \t]")
+_PAREN_RE = re.compile(r"\([^()]*\)")
+_RUN_TAIL = (r"(?:(?:\([^()]{0,60}\)|,[^,.;:!?]{0,40},|[\u2013\u2014][^\u2013\u2014.;:!?]{0,40}[\u2013\u2014])[ \t]*)?"
+             r"(?:of[ \t]+)?(?:a\s+|any\s+|another\s+)?new\s+(?:[\w-]+\s+){0,2}?runs?\b")
+_ACTIVITY_RES: tuple = (
+    # (name, the listed form on an OUT OF SCOPE line — gerunds only, a base form
+    # there is usually a noun ("edit affordance for ledger rows") — and the
+    # negated form on a TC / DoD line, where base forms count: "did not create
+    # any ledger rows", "does not launch a new run").
+    ("ledger-row-edit",
+     re.compile(r"(?:(?:\(re\))?\b(?:re-?)?creating|\b(?:editing|deleting|writing|appending|adding|inserting))\b"
+                r"[^.;:!?]{0,60}?\bledger\s+(?:rows?|entries|records)\b", re.I),
+     re.compile(r"(?:(?:\(re\))?\b(?:re-?)?creat(?:e|es|ing)|\b(?:edit(?:s|ing)?|delet(?:e|es|ing)|writ(?:e|es|ing)"
+                r"|append(?:s|ing)?|add(?:s|ing)?|insert(?:s|ing)?))\b[^.;:!?]{0,60}?\bledger\s+(?:rows?|entries"
+                r"|records)\b", re.I)),
+    ("any-new-run-launch",
+     re.compile(r"\b(?:launching|starting|triggering)[ \t]+" + _RUN_TAIL, re.I),
+     re.compile(r"\b(?:launch(?:es|ing)?|start(?:s|ing)?|trigger(?:s|ing)?)[ \t]+" + _RUN_TAIL, re.I)),
+)
+_NEG_CUE_RE = re.compile(
+    r"\b(?:no|not|never|nor|neither|without|cannot|can't|won't|don't|doesn't|didn't|mustn't|shouldn't"
+    r"|isn't|aren't|avoid(?:s|ed|ing)?|refrain(?:s|ed|ing)?[ \t]+from|prohibit(?:s|ed|ing)?"
+    r"|forbid(?:s|den|ding)?|disallow(?:s|ed|ing)?|exclud(?:e|es|ed|ing))\b", re.I)
+_NOT_A_CUE_RE = re.compile(r"(?:\bor[ \t]+not|\bnot[ \t]+only)\b", re.I)
+_ACTIVITY_VERB_LIST_RE = re.compile(
+    r"(?:\(re\))?\b(?:re-?)?(?:creat|edit|delet|writ|append|add|insert|launch|start|trigger|modif|chang|updat"
+    r"|remov|renam|overwrit|rewrit|run|submit|sav|execut|record)\w*\b[ \t]*(?:,[ \t]*)?"
+    r"(?:\b(?:or|and|and/or|nor)\b[ \t]*)?", re.I)
+_FINITE_RE = re.compile(r"\b(?:is|are|was|were|be|been|being|has|have|had|does|do|did|must|should|will|would"
+                        r"|may|might|can|could|shall|gets?|got)\b", re.I)
+# Words that may stand between a negation and the activity it forbids: fillers,
+# adverbs, and verbs that pass the negation through ("must not involve / result
+# in launching", "do not click Run to launch"). Any other word — "no confirm
+# dialog BLOCKS launching", "does not REQUIRE launching", "no error APPEARS when
+# launching" — means the negation belongs to another predicate.
+_SCOPE_WORDS = frozenset("""
+a an the any all at by to in on of for from with into under during within this its their own
+even ever again also further first once more point points time times stage stages circumstance
+circumstances pass step steps iteration replay retry retries now yet still else otherwise whatsoever
+additional extra new accidental automatic implicit explicit silent inadvertent direct indirect
+button buttons control controls
+involve involves involving include includes including result results resulting lead leads leading
+cause causes causing allow allows allowing permit permits permitting attempt attempts attempting
+try tries trying perform performs performing mean means entail entails
+click clicks clicking press presses pressing tap taps tapping use uses using hit hits hitting
+""".split())
+_RELATIVE_HEAD_RE = re.compile(r"^[ \t]*(?:[\w-]+[ \t]+){1,2}(?:that|which|who)[ \t]*$", re.I)
+_OCCURRENCE_NEG_RE = re.compile(
+    r"^(?P<gap>[^,()–—]{0,40}?)(?<![\w'])(?:"
+    r"(?:is|are|was|were)[ \t]+(?:not|never)[ \t]+(?:part[ \t]+of|allowed|permitted|performed|done|attempted"
+    r"|in[ \t]+scope|expected\b(?![ \t]+to\b)|required|needed|wanted|acceptable|executed|carried[ \t]+out)"
+    r"|(?:is|are|was|were)[ \t]+(?:forbidden|prohibited|excluded|disallowed|out[ \t]+of[ \t]+scope)"
+    r"|(?:does|do|did|must|should|may|will|shall|can)[ \t]+(?:not|never)[ \t]+(?:happen|occur|take[ \t]+place"
+    r"|be[ \t]+(?:performed|done|attempted|allowed|permitted|executed|carried[ \t]+out))"
+    r"|(?:doesn't|don't|didn't|won't|mustn't|shouldn't|cannot|can't)[ \t]+(?:happen|occur|take[ \t]+place"
+    r"|be[ \t]+(?:performed|done|attempted|allowed|permitted))"
+    r")\b", re.I)
+_SENTENCE_BREAKS = ".;:!?"
+
+
+_NOT_A_BREAK_RE = re.compile(r"\b(?:e\.g|i\.e|etc|vs|cf|approx|incl|resp)\.|(?<=\d)\.(?=\d)", re.I)
+
+
+def _mask_parens(text: str, lo: int, hi: int) -> str:
+    """`text` with every parenthetical blanked (same length), except one that
+    encloses [lo, hi) — the activity's own clause — and with the periods of
+    abbreviations and decimals blanked, so they do not end a sentence."""
+    out = _NOT_A_BREAK_RE.sub(lambda a: a.group(0).replace(".", " "), text)
+    for _ in range(4):                     # nested parentheses, innermost first
+        out = _PAREN_RE.sub(lambda p: p.group(0) if p.start() < lo and hi <= p.end() else " " * len(p.group(0)),
+                            out)
+    return out
+
+
+def _negation_scopes(between: str) -> bool:
+    """Does a negation cue scope over an activity with `between` in between?"""
+    s = between
+    for _ in range(3):
+        s = _ASIDE_RE.sub(" ", s)
+    s = _ACTIVITY_VERB_LIST_RE.sub(" ", s)
+    if _RELATIVE_HEAD_RE.match(s):             # "no step that launches a new run"
+        return True
+    if re.search(r"[,()\[\]\u2013\u2014]|[ \t]-[ \t]", s) or _FINITE_RE.search(s):
+        return False
+    words = re.findall(r"[\w'-]+", s.lower())
+    return len(words) <= 6 and all(w in _SCOPE_WORDS or w.endswith("ly") for w in words)
+
+
+def _negated_activity(line: str, rx: "re.Pattern[str]") -> "re.Match[str] | None":
+    """The first match of activity `rx` in `line` that is negated (see above)."""
+    norm = line.replace("’", "'")
+    for m in rx.finditer(norm):
+        masked = _mask_parens(norm, m.start(), m.end())
+        head = masked[:m.start()]
+        cut = max(head.rfind(c) for c in _SENTENCE_BREAKS + "()")
+        head = head[cut + 1:]
+        if any(_negation_scopes(head[cue.end():]) for cue in _NEG_CUE_RE.finditer(head)
+               if not _NOT_A_CUE_RE.match(head, max(0, cue.start() - 3))
+               and not _NOT_A_CUE_RE.match(head, cue.start())):
+            return m
+        tail = masked[m.end():]
+        for _ in range(3):
+            tail = _ASIDE_RE.sub(" ", tail)
+        cuts = [tail.find(c) for c in _SENTENCE_BREAKS + ")" if c in tail]
+        post = _OCCURRENCE_NEG_RE.match(tail[:min(cuts)] if cuts else tail)
+        if post and not _FINITE_RE.search(post.group("gap")):
+            return m
+    return None
+
+
 _TC_LINE_RE = re.compile(
     r"^(?P<indent>[ \t]*)(?P<heading>#{1,6}[ \t]+)?(?:(?:[-*+]|\d+[.)])[ \t]+)?(?:\[[ xX]\][ \t]+)?(?:\|[ \t]*)?"
     r"(?:\*\*|__)?[`(\[]?(?P<tc>TC-\d+[a-z]?)\b", re.I)
@@ -562,60 +670,104 @@ _ANY_HEADING_RE = re.compile(r"^[ \t]{0,3}#{1,6}[ \t]")
 _PROSE_SECTIONS = ("GOAL", "BACKGROUND", "NOTES", "NOTE", "CONTEXT", "RATIONALE", "HISTORY")
 
 # ── markdown code fences (shared with goal_gate.py) ──────────────────────────
-_FENCE_OPEN_RE = re.compile(r"^[ \t]*(?:>[ \t]?)*(?P<fence>`{3,}|~{3,})(?P<info>.*)$")
-_FENCE_CLOSE_RE = re.compile(r"^[ \t]*(?:>[ \t]?)*(?P<fence>`{3,}|~{3,})[ \t]*$")
+_FENCE_OPEN_RE = re.compile(r"^(?P<quote>[ \t]*(?:>[ \t]?)*)(?P<lead>[ \t]*(?:(?:[-*+]|\d{1,9}[.)])[ \t]+)*)"
+                            r"(?P<fence>`{3,}|~{3,})(?P<info>.*)$")
+_FENCE_CLOSE_RE = re.compile(r"^(?P<quote>[ \t]*(?:>[ \t]?)*)(?P<lead>[ \t]*)(?P<fence>`{3,}|~{3,})[ \t]*$")
+_QUOTE_PREFIX_RE = re.compile(r"^[ \t]*(?:>[ \t]?)*")
+
+
+def _fence_shape(m: "re.Match[str]") -> tuple[str, int, int, int]:
+    """(character, length, blockquote depth, column after the quote markers)."""
+    quote = m.group("quote")
+    after = quote.rsplit(">", 1)[-1]
+    return (m.group("fence")[0], len(m.group("fence")), quote.count(">"),
+            len((after + m.group("lead")).expandtabs(4)))
 
 
 def fenced_line_flags(lines: list[str]) -> list[bool]:
     """True for every line that is a code-fence delimiter or inside a fence.
 
-    CommonMark pairing: a fence closes only on a line of the SAME character, at
-    least as long, with nothing after it (a backtick opener's info string holds
-    no backtick), and everything between is content — a ``` line inside a ~~~
-    block included. Deliberate deviation: an opener that is never closed is
-    ordinary text, so one stray fence can never swallow the rest of a document
-    (and with it every journey or prohibition below it)."""
+    CommonMark pairing, approximated without a full container parser:
+    - a fence closes only on a line of the SAME character, at least as long,
+      with nothing after it (a backtick opener's info string holds no
+      backtick), at the same blockquote depth and indented at most 3 columns
+      deeper than the opener; everything between is content (a ``` line inside
+      a ~~~ block included);
+    - an opener may sit on a list-item line (`- ```bash`);
+    - a fence inside a blockquote ends with the quote when it is not closed
+      before (CommonMark closes it there);
+    - deliberate deviation: a top-level opener that is never closed is ordinary
+      text, so one stray fence cannot swallow the rest of a document.
+    A stray fence can still pair with a LATER fence and shift the reading of
+    every fence after it (a renderer shifts the same way), so the callers that
+    decide safety never rely on this reading alone (see
+    find_mutation_prohibitions, policy_intent_detail and goal_gate's
+    side_effect_journey_views_all)."""
     n = len(lines)
     flags = [False] * n
-    closers: list[tuple[int, str, int]] = []
-    for j, ln in enumerate(lines):
+    text = [ln[:-1] if ln.endswith("\r") else ln for ln in lines]
+    depth = [_QUOTE_PREFIX_RE.match(ln).group(0).count(">") for ln in text]
+    closes: list = [None] * n
+    by_char: dict[str, list[int]] = {"`": [], "~": []}
+    for j, ln in enumerate(text):
         c = _FENCE_CLOSE_RE.match(ln)
         if c:
-            closers.append((j, c.group("fence")[0], len(c.group("fence"))))
-    positions = [j for j, _c, _k in closers]
+            closes[j] = _fence_shape(c)
+            by_char[closes[j][0]].append(j)
     i = 0
     while i < n:
-        m = _FENCE_OPEN_RE.match(lines[i])
-        if m and not (m.group("fence")[0] == "`" and "`" in m.group("info")):
-            ch, size = m.group("fence")[0], len(m.group("fence"))
-            close = None
-            for j, c, k in closers[bisect.bisect_right(positions, i):]:
-                if c == ch and k >= size:
-                    close = j
+        m = _FENCE_OPEN_RE.match(text[i])
+        if not m or (m.group("fence")[0] == "`" and "`" in m.group("info")):
+            i += 1
+            continue
+        ch, size, qd, col = _fence_shape(m)
+        end = None
+        if qd:
+            j = i + 1
+            while j < n and depth[j] >= qd:
+                c = closes[j]
+                if c and c[0] == ch and c[1] >= size and c[2] == qd and c[3] <= col + 3:
                     break
-            if close is not None:
-                for k in range(i, close + 1):
-                    flags[k] = True
-                i = close + 1
-                continue
-        i += 1
+                j += 1
+            end = j if j < n and depth[j] >= qd else j - 1   # closed here, or with the quote
+        else:
+            positions = by_char[ch]
+            for j in positions[bisect.bisect_right(positions, i):]:
+                c = closes[j]
+                if c[1] >= size and c[2] == 0 and c[3] <= col + 3:
+                    end = j
+                    break
+        if end is None:
+            i += 1
+            continue
+        for k in range(i, end + 1):
+            flags[k] = True
+        i = end + 1
     return flags
 
 
 def _html_comment_flags(lines: list[str]) -> list[bool]:
-    """Lines inside a multi-line HTML comment (or starting one on their own)."""
-    flags = [False] * len(lines)
-    inside = False
-    for i, ln in enumerate(lines):
-        if inside:
-            flags[i] = True
-            if "-->" in ln:
-                inside = False
+    """Lines inside a multi-line HTML comment (or starting one on their own).
+    An opener that is never closed is ordinary text, like an unclosed fence."""
+    n = len(lines)
+    flags = [False] * n
+    i = 0
+    while i < n:
+        s = lines[i].strip()
+        if not s.startswith("<!--"):
+            i += 1
             continue
-        s = ln.strip()
-        if s.startswith("<!--"):
+        if "-->" in s[4:]:
             flags[i] = True
-            inside = "-->" not in s[4:]
+            i += 1
+            continue
+        end = next((j for j in range(i + 1, n) if "-->" in lines[j]), None)
+        if end is None:
+            i += 1
+            continue
+        for k in range(i, end + 1):
+            flags[k] = True
+        i = end + 1
     return flags
 
 
@@ -651,12 +803,23 @@ def _indent_of(line: str) -> int:
     return len(expanded) - len(expanded.lstrip())
 
 
-def find_mutation_prohibitions(spec_text: str) -> list[dict]:
-    """[{section, line, text, pattern, match}] — section is 'OUT OF SCOPE',
-    'DEFINITION OF DONE' or the TC id ('TC-4')."""
+def _prohibition_hit(line: str, label: str) -> "tuple[str, re.Match[str]] | None":
+    for name, rx, where, qualified in _PROHIBITION_RES:
+        if where == "oos" and label != "OUT OF SCOPE":
+            continue
+        for m in rx.finditer(line):
+            if qualified and _PRE_EXISTING_ROWS_RE.search(line[:m.start()]):
+                continue
+            return name, m
+    for name, listed, negated in _ACTIVITY_RES:
+        m = listed.search(line) if label == "OUT OF SCOPE" else _negated_activity(line, negated)
+        if m:
+            return name, m
+    return None
+
+
+def _scan_prohibitions(lines: list[str], fenced: list[bool]) -> list[dict]:
     found: list[dict] = []
-    lines = spec_text.splitlines()
-    fenced = fenced_line_flags(lines)
     kinds = _line_sections(lines, fenced)
     tc_label, tc_indent, tc_heading = None, 0, False
     for i, line in enumerate(lines, 1):
@@ -686,17 +849,7 @@ def find_mutation_prohibitions(spec_text: str) -> list[dict]:
                 continue
         if not line.strip():
             continue
-        hit = None
-        for name, rx, where, qualified in _PROHIBITION_RES:
-            if where == "oos" and label != "OUT OF SCOPE":
-                continue
-            for m in rx.finditer(line):
-                if qualified and _PRE_EXISTING_ROWS_RE.search(line[:m.start()]):
-                    continue
-                hit = (name, m)
-                break
-            if hit:
-                break
+        hit = _prohibition_hit(line, label)
         if hit:
             text = line.strip()
             found.append({"section": label, "line": i, "pattern": hit[0], "match": hit[1].group(0),
@@ -704,48 +857,81 @@ def find_mutation_prohibitions(spec_text: str) -> list[dict]:
     return found
 
 
+def find_mutation_prohibitions(spec_text: str) -> list[dict]:
+    """[{section, line, text, pattern, match}] — section is 'OUT OF SCOPE',
+    'DEFINITION OF DONE' or the TC id ('TC-4').
+
+    The spec is scanned twice and the findings are merged: once with its code
+    fences paired (a fenced example is not a constraint) and once ignoring
+    fences, because a stray or unclosed fence can shift the pairing of every
+    fence after it (a renderer shifts the same way) — a prohibition must never
+    disappear because the fence reading was wrong. The cost of the blind pass
+    is a false positive on fenced prohibition-shaped text, one re-plan at most."""
+    lines = spec_text.splitlines()
+    found = {p["line"]: p for p in _scan_prohibitions(lines, fenced_line_flags(lines))}
+    for p in _scan_prohibitions(lines, [False] * len(lines)):
+        found.setdefault(p["line"], p)
+    return [found[n] for n in sorted(found)]
+
+
 # A line that states the side-effect policy in ANY shape a reader would take for
 # it: after blockquote / table / list / checkbox prefixes, emphasis, Unicode
-# format characters (zero-width) and dash variants are set aside.
+# format characters (zero-width) and dash variants are set aside, the line
+# STARTS with the label. The value follows the first `:`, `|` or `=` — a
+# qualifier such as "(this iteration)" or "for J-04" may come before it — or,
+# with no such separator, whatever follows the label ("**Side-effect policy**
+# none", "Side-effect policy is allowed").
 _POLICY_LINE_PREFIX_RE = re.compile(
     r"^[ \t]*(?:>[ \t]?)*(?:\|[ \t]*)?(?:(?:[-*+]|\d+[.)])[ \t]+)?(?:\[[ xX]\][ \t]+)?")
-_POLICY_LABEL_RE = re.compile(
-    rf"^[*_ \t]*{_POLICY_LABEL}\b[*_]*[ \t]*[:|=–—-]+[*_ \t]*(?P<rest>.*)$", re.I)
+_POLICY_LABEL_START_RE = re.compile(rf"^[*_` \t]*{_POLICY_LABEL}\b(?P<rest>.*)$", re.I)
+_POLICY_HTML_TAG_RE = re.compile(r"</?(?:b|strong|em|i|u|code|span|mark|kbd)\b[^>]*>", re.I)
+_POLICY_SEP_RE = re.compile(r"[:|=]")
+_POLICY_LEAD_RE = re.compile(
+    r"^(?:[*_` \t]|[-\u2013\u2014\u2192>]+(?=[ \t*_`]|$))*(?:(?:is|stays|remains|set[ \t]+to)\b[ \t]*)?", re.I)
+_POLICY_QUOTES = "`*_\"'‘’“”"
+_POLICY_PLAIN_ALLOWED_RE = re.compile(
+    rf"^[{_POLICY_QUOTES}]*allowed[{_POLICY_QUOTES}]*[.;,!]?(?:[ \t]+[-–—]+[ \t]+(?P<note>.*))?$", re.I)
+_POLICY_NOTE_RESTRICTIVE_RE = re.compile(
+    r"^(?:but|except|unless)\b|\b(?:none(?![ \t]+of\b)|read[-\s]?only|forbidden|prohibited|disallowed)\b", re.I)
 
 
 def _policy_line_value(line: str) -> "str | None":
+    """The value a policy-labelled line states ('' when none can be isolated),
+    or None when the line does not start with the policy label."""
     s = unicodedata.normalize("NFKC", line)
     s = "".join(ch for ch in s if unicodedata.category(ch) != "Cf")
-    s = _POLICY_LINE_PREFIX_RE.sub("", s, count=1)
-    m = _POLICY_LABEL_RE.match(s)
-    return m.group("rest") if m else None
+    s = _POLICY_LINE_PREFIX_RE.sub("", _POLICY_HTML_TAG_RE.sub("", s), count=1)
+    m = _POLICY_LABEL_START_RE.match(s)
+    if not m:
+        return None
+    rest = m.group("rest")
+    sep = _POLICY_SEP_RE.search(rest)
+    if sep:
+        rest = rest[sep.end():]
+    return _POLICY_LEAD_RE.sub("", rest, count=1)
 
 
 def _policy_value_restrictive(value: str) -> bool:
-    """Anything but a plainly stated `allowed` is restrictive (fail closed):
-    `none`, `no`, `not allowed`, `read-only`, `forbidden`, an empty or struck
-    through value."""
-    v = re.sub(r"\|+[ \t]*$", "", value).strip()
-    if not v or "~~" in v:
+    """Anything but a plainly stated `allowed` (optionally followed by a dash
+    note) is restrictive — fail closed: `none`, `no`, `not allowed`,
+    `read-only`, `allowed | none`, `allowed/none`, `allowed (but none for
+    J-02)`, an empty or struck-through value; a dash note that restricts
+    (`allowed — but none for J-02`) is restrictive too."""
+    v = re.sub(r"[ \t]*\|+[ \t]*$", "", value).strip()
+    if "~~" in v:
         return True
-    tok = re.match(r"[`*_\"'‘’“”(\[]*([A-Za-z]+)", v)
-    return not (tok and tok.group(1).lower() == "allowed")
+    m = _POLICY_PLAIN_ALLOWED_RE.match(v)
+    if not m:
+        return True
+    return bool(_POLICY_NOTE_RESTRICTIVE_RE.search((m.group("note") or "").strip()))
 
 
-def policy_intent_detail(spec_text: str) -> dict:
-    """{intent, where, line}: intent 'none' (restrictive), 'allowed' or ''.
-
-    Policy-shaped lines in the metadata section decide; only when the section has
-    none (the field is absent or misplaced) do lines elsewhere count — never
-    prose sections (GOAL / BACKGROUND / NOTES …), HTML comments, fences or
-    indented code. A restrictive-looking line counts whatever its form, so a
-    policy the canonical parser cannot read is reported (E02/E06/E01) AND
-    treated as restrictive (E13/E15)."""
-    md = read_metadata(spec_text)
-    canonical = md.get("side_effect_policy")
-    lines = spec_text.splitlines()
-    fenced = fenced_line_flags(lines)
-    comments = _html_comment_flags(lines)
+def _policy_intent_pass(lines: list[str], canonical, blind: bool) -> dict:
+    n = len(lines)
+    if blind:
+        fenced = comments = [False] * n
+    else:
+        fenced, comments = fenced_line_flags(lines), _html_comment_flags(lines)
     kinds = _line_sections(lines, fenced)
     in_section: list[tuple[int, str]] = []
     outside: list[tuple[int, str]] = []
@@ -760,19 +946,45 @@ def policy_intent_detail(spec_text: str) -> dict:
         elif kinds[i] != "prose":
             stripped = ln.expandtabs(4)
             body = stripped.lstrip()
-            if len(stripped) - len(body) >= 4 and not re.match(r"(?:[-*+]|\d+[.)])[ \t]", body):
+            if (not blind and len(stripped) - len(body) >= 4
+                    and not re.match(r"(?:[-*+]|\d+[.)])[ \t]", body)):
                 continue                      # an indented code block
             outside.append((i + 1, value))
     hits, where = (in_section, "section") if in_section else (outside, "outside")
-    for n, value in hits:
+    for n_, value in hits:
         if _policy_value_restrictive(value):
             return {"intent": "none", "where": "canonical" if canonical == "none" and where == "section" else where,
-                    "line": n}
+                    "line": n_}
     if canonical in _VALID_POLICY:
         return {"intent": canonical, "where": "canonical", "line": None}
     if hits:
         return {"intent": "allowed", "where": where, "line": hits[0][0]}
     return {"intent": "", "where": None, "line": None}
+
+
+def policy_intent_detail(spec_text: str) -> dict:
+    """{intent, where, line, hidden}: intent 'none' (restrictive), 'allowed' or ''.
+
+    Policy-shaped lines in the metadata section decide; only when the section has
+    none (the field is absent or misplaced) do lines elsewhere count — never
+    prose sections (GOAL / BACKGROUND / NOTES …), HTML comments, fences or
+    indented code. A restrictive-looking line counts whatever its form, so a
+    policy the canonical parser cannot read is reported (E02/E06/E01) AND
+    treated as restrictive (E13/E15). The spec is read twice: when the reading
+    with code fences and comments paired finds nothing restrictive, a reading
+    that ignores them decides (`hidden`: True) — a stray fence or comment opener
+    must never hide a restrictive policy."""
+    canonical = read_metadata(spec_text).get("side_effect_policy")
+    lines = spec_text.splitlines()
+    aware = _policy_intent_pass(lines, canonical, blind=False)
+    aware["hidden"] = False
+    if aware["intent"] == "none":
+        return aware
+    blind = _policy_intent_pass(lines, canonical, blind=True)
+    if blind["intent"] == "none":
+        blind["hidden"] = True
+        return blind
+    return aware
 
 
 def policy_intent(spec_text: str) -> str:
@@ -853,7 +1065,10 @@ def _observation_text(rec: dict) -> str:
 
 def _mutating_desc(jid: str, rec: dict, roles: set) -> str:
     src = []
-    if rec.get("declared") == "mutating":
+    if rec.get("declared") == "mutating" and rec.get("unattributed"):
+        src.append("a 'Side effects: mutating' line near its header that cannot be attributed with certainty "
+                   f"({rec.get('unattributed_reason') or 'unattributed'}) — read as mutating, fail-closed")
+    elif rec.get("declared") == "mutating":
         src.append("declared mutating" + (f": '{rec['note']}'" if rec.get("note") else ""))
     if rec.get("observed_mutating"):
         conflict = "declared none, but " if rec.get("declared") == "none" else ""
@@ -887,14 +1102,16 @@ def side_effect_findings(spec_text: str, md: dict, ledger_path: str | None, stri
     detail = policy_intent_detail(spec_text)
     intent = detail["intent"]
     restrictive = policy == "none" or intent == "none"
+    hidden = (" — the line sits inside what the parser reads as a code fence or HTML comment, and a stray "
+              "fence or comment opener must never hide a policy" if detail.get("hidden") else "")
     if policy == "none":
         stated = "Side-effect policy: none"
     elif detail["where"] == "outside":
-        stated = (f"a Side-effect policy line outside the metadata section (line {detail['line']}) reads as "
-                  "restrictive, and the section declares no policy — it is treated as restrictive")
+        stated = (f"a Side-effect policy line outside the metadata section (line {detail['line']}) does not state "
+                  f"a plain 'allowed', and the section declares no policy — it is treated as restrictive{hidden}")
     else:
-        stated = (f"the Side-effect policy line (line {detail['line']}) states a restrictive value in a form the "
-                  "parser cannot use (see E02/E06) — it is treated as restrictive")
+        stated = (f"the Side-effect policy line (line {detail['line']}) does not state a plain 'allowed' (see "
+                  f"E02/E06 for the canonical form) — it is treated as restrictive{hidden}")
     roles = _journey_roles(md, makeup)
     checked = list(roles)
     info = load_side_effect_ledger(ledger_path, build_id)
@@ -966,6 +1183,7 @@ def side_effect_findings(spec_text: str, md: dict, ledger_path: str | None, stri
         "policy_raw": policy_raw,
         "policy_intent": intent,
         "policy_intent_where": detail["where"],
+        "policy_intent_hidden": bool(detail.get("hidden")),
         "restrictive": restrictive,
         "strict": bool(strict),
         "journeys_checked": checked,

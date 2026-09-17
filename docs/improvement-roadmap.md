@@ -5574,7 +5574,7 @@ Four root causes: governors read proxies instead of facts (HARD-1..3); ownership
     malformed format still counts as mutating (a malformed line never makes a journey less
     restrictive). (5) Declarations are parsed with a correctly-bounded block splitter — see
     CAND-JOURNEY-BLOCKS in §16 for the pre-existing `_journey_blocks` quirk it avoids.
-  - *Verify:* `bash tests/automation/test-side-effects.sh` (265 checks after revision 4, incl. the
+  - *Verify:* `bash tests/automation/test-side-effects.sh` (279 checks after revision 5, incl. the
     exact TenSteps iteration-9 contradiction, the none→allowed tripwire, E15 fail-closed with zero
     dispatch in block AND warn mode, the real lean executor with a fake Playwright) · self-tests of
     `demo_runner.py`, `goal_gate.py`, `goal_lint.py`, `iter_spec.py`, `artifact_schemas.py` ·
@@ -5709,9 +5709,61 @@ Four root causes: governors read proxies instead of facts (HARD-1..3); ownership
       a failed record recomputes `declaration_digest_changed_this_iter`; the replay telemetry guard
       compares parsed timestamps and says so when a record has none; `merged_runs` is bounded at
       100 000.
+  - *Revision 5 (2026-09-17, after a fourth adversarial review of `a57c633`; RED: the new checks
+    fail against `a57c633`, GREEN 279/0):*
+    - **Negation (Critical):** revision 4's clause rule silenced E16 on list and parenthetical
+      wording ("without creating, editing or deleting ledger rows", "never (even on retry) starting
+      a new run", an OUT OF SCOPE "Editing (or deleting) ledger rows"). A negation now reaches an
+      activity across a coordinated verb list, a parenthetical, comma or dash aside and
+      pass-through words ("must not involve / result in …", "do not click Run to launch …"); any
+      other word in between ("no confirm dialog BLOCKS launching …", "does not REQUIRE launching
+      …", "no error APPEARS when launching …") means the negation belongs to another predicate.
+      After the activity only an occurrence or permission negation counts ("is not part of",
+      "does not happen", "is forbidden"): "must not modify any pre-existing ledger row", "is not
+      blocked by", "should not fail" describe the activity (revision 4's false positives,
+      Important). Base verb forms count on a negated TC / DoD line ("does not launch a new run");
+      OUT OF SCOPE lists gerunds only (a base form there is usually a noun). "no run is launched"
+      (the TenSteps iter-7/8 wording) is a prohibition; a negative-path "… is refused and no
+      record is written" is not. Over the 612 real iteration specs no prohibition is lost against
+      `a078282`, `aa8996f` or `a57c633`, and the 4 TenSteps "no run is launched" lines are gained.
+    - **Policy labels (Critical):** revision 4 required a separator after the label, so
+      `**Side-effect policy** none`, `… (this iteration): none` and `… for J-04: none` were
+      silently absent again (no E02, no E13/E15 — a missing ledger dispatched in block mode — and
+      the crash fallback read `''`). Any line that starts with the label is a policy line
+      (backticked and HTML labels included); its value follows the first `:` / `|` / `=`, or the
+      label itself.
+    - **Policy values (Important):** only a plain `allowed`, optionally followed by a dash note
+      that does not restrict it (`allowed — but none for J-02` does), is permissive; `allowed |
+      none`, `allowed/none`, `allowed or none`, `allowed (…)` are restrictive, as the docs said.
+    - **Hidden lines (Critical, partly pre-existing):** an unclosed `<!--` is ordinary text, like
+      an unclosed fence. A stray fence can still pair with a LATER fence and shift every fence
+      after it (a renderer shifts the same way), so no safety read relies on the fence reading
+      alone: the prohibition scan runs fence-aware AND fence-blind (merged), the policy intent
+      falls back to a fence- and comment-blind reading (`policy_intent_hidden`, said in the
+      E13/E15 text), and in goal.md a journey header read as fenced makes its id ambiguous
+      (`unattributed`, `unattributed_reason: fenced-header`: only `mutating` is honoured, even
+      when a live definition — possibly a fenced example read as live — exists). Pairing is also
+      indentation- and quote-aware (a closer at most 3 columns deeper than its opener, at the same
+      blockquote depth; a quoted fence ends with its quote) and recognises list-item openers
+      (`- ```bash`). Revision 4's claim that a stray fence "can never hide the journeys below it"
+      held only for a fence with no later closer.
+    - **Minor:** a titled mention of a journey defined at top level (`- **J-03: Browse** — …`,
+      `- **J-03:** …`) is a reference, so J-03's `none` stands; unattributed entries are reported
+      as such (status source `unattributed`, the reason, `--suggest`, the lint wording, the digest,
+      and a goal-lint `side-effects-unattributed` WARN); CRLF no longer moves the certified hash of
+      a fenced declaration-shaped line; `spec_lint_crash` is also recorded for a traceback's exit
+      1; every preflight build resets `SIDE_EFFECTS_FROZEN` before it can fail.
+    - *Not changed (reported):* the fence-blind reads can raise a false positive on fenced
+      prohibition- or policy-shaped text (one re-plan at most); a fenced journey example that
+      reuses a real id makes that id ambiguous (goal-lint already reports it as `duplicate-id`);
+      a named nested header with no content and no top-level definition stays a definition; a
+      passive "no ledger rows are created" stays unscanned (negative-path ambiguity — 6 real-corpus
+      false positives otherwise); a policy table header row (`| Side-effect policy | Meaning |`) in
+      the metadata section reads as restrictive (E02 + E13, the safe direction); `goal_gate.py`
+      imports `iter_spec.fenced_line_flags`, so a vendored sync must copy both files together.
   - *Owed:* G8 fresh-session certification; the G9-gated real session (a replay-observed mutation in
     the sidecar, no TC failed on a journey's own mutation); vendored per-file sync — products must
-    sync this `goal_gate.py` BEFORE adding `- Side effects:` lines (older code hashes those lines as
+    sync this `goal_gate.py` together with `iter_spec.py` BEFORE adding `- Side effects:` lines (older code hashes those lines as
     journey text, which would read as goal-edit drift); owner confirmation of the I3 and I7
     decisions above and of observation stickiness; M6 (the GOAL_ACHIEVED two-key confirm prompt
     carries no side-effect context).

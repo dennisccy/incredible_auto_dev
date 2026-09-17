@@ -692,7 +692,7 @@ def _has_own_content(lines: list[str], fenced: list[bool]) -> bool:
     return any(_SE_STEP_RE.match(ln) and not f for ln, f in zip(body, flags))
 
 
-_NAMED_HEADER_RE = re.compile(r"^[ \t]*[-*+][ \t]+\*\*J-\d+\b[ \t]*[:.\u2013\u2014-][ \t]*\S")
+_NAMED_HEADER_RE = re.compile(r"^[ \t]*[-*+][ \t]+\*\*J-\d+\b[ \t]*[:.\u2013\u2014-][ \t]*[^\s*]")
 
 
 def side_effect_journey_views(text: str) -> list[dict]:
@@ -701,12 +701,13 @@ def side_effect_journey_views(text: str) -> list[dict]:
 
     - A header nested inside a block of the SAME journey (an owner note such as
       `- **J-10 CLOSED — …**`) is part of that block, not a second definition.
-    - A nested header of ANOTHER journey is a definition when it names the
-      journey (`- **J-06: Refund**`) or its own list item carries a declaration
-      or a numbered step; its item's lines are then blanked out of the parent
-      (newlines kept, so line indices stay relative to `start`). A bare
-      `- **J-11** depends on this` is a mere reference and its line simply stays
-      part of the parent.
+    - A nested header of ANOTHER journey is a definition when its own list item
+      carries a declaration or a numbered step, or when it names a journey
+      (`- **J-06: Refund**`) that no top-level header defines; its item's lines
+      are then blanked out of the parent (newlines kept, so line indices stay
+      relative to `start`). A bare `- **J-11** depends on this`, or a titled
+      mention of a journey defined at top level, is a mere reference and its
+      line simply stays part of the parent.
     - `fenced` flags each own line that is a code-fence delimiter or inside a
       fence (document-level), `duplicate` marks an id with >1 definition."""
     text = _norm_newlines(text)
@@ -717,6 +718,7 @@ def side_effect_journey_views(text: str) -> list[dict]:
     for jid, st, en in blocks:
         containers = [(j2, s2, e2) for j2, s2, e2 in blocks if s2 < st < e2]
         items.append({"jid": jid, "start": st, "end": en, "containers": containers})
+    top_level = {it["jid"] for it in items if not it["containers"]}
     for it in items:
         if not it["containers"]:
             it["kind"] = "def"
@@ -727,8 +729,12 @@ def side_effect_journey_views(text: str) -> list[dict]:
             continue
         first = text.count("\n", 0, it["start"])
         body = text[it["start"]:it["end"]].split("\n")
-        named = bool(_NAMED_HEADER_RE.match(body[0]))
-        it["kind"] = "def" if named or _has_own_content(body, fenced_all[first:first + len(body)]) else "ref"
+        if _has_own_content(body, fenced_all[first:first + len(body)]):
+            it["kind"] = "def"
+        elif _NAMED_HEADER_RE.match(body[0]) and it["jid"] not in top_level:
+            it["kind"] = "def"     # a sub-journey named only here
+        else:
+            it["kind"] = "ref"     # a bare or titled mention of a journey defined elsewhere
     defs = [it for it in items if it["kind"] == "def"]
     views: list[dict] = []
     for d in defs:
@@ -758,23 +764,45 @@ def side_effect_journey_views(text: str) -> list[dict]:
 
 
 def side_effect_journey_views_all(text: str) -> list[dict]:
-    """side_effect_journey_views plus a fail-closed view for every journey id the
-    CERTIFIED splitter (_journey_blocks) sees but no definition covers (a
-    header the side-effect splitter reads as fenced, a nested reference to a
-    journey defined nowhere else): the side-effect ledger never has fewer
-    journeys than the drift gate. Such a view (`unattributed: True`) reads the
-    certified block, and only a stated `mutating` is honoured there."""
+    """side_effect_journey_views plus a fail-closed view (`unattributed: True`)
+    for every journey header the CERTIFIED splitter (_journey_blocks) sees that
+    the side-effect splitter does not read as a definition:
+
+    - `fenced-header`: the header sits inside what fenced_line_flags reads as a
+      code fence. A stray fence can shift that reading for every later fence
+      (a renderer shifts the same way), so such a header may be the REAL
+      definition while a fenced example reads as live — its id is ambiguous,
+      whether or not a live definition exists too;
+    - `no-definition`: an id that only nested references name.
+
+    Such a view reads the certified block from its header line on, a line
+    counting as a declaration when either the document's or the block's own
+    fence pairing leaves it unfenced. For an unattributed id only a stated
+    `mutating` (from any of its blocks) is honoured and `none` never counts, so
+    the side-effect ledger never has fewer journeys than the drift gate and
+    never trusts a `none` that the fence reading may have misattributed."""
     views = side_effect_journey_views(text)
-    seen = {v["jid"] for v in views}
     norm = _norm_newlines(text)
+    doc_flags = fenced_line_flags(norm.split("\n"))
+    defined = {v["jid"] for v in views}
     for jid, start, end in _journey_blocks(norm):
-        if jid in seen:
+        pos = start
+        while pos < end and norm[pos] in " \t\n":
+            pos += 1
+        line_no = norm.count("\n", 0, pos)
+        if doc_flags[line_no]:
+            reason = "fenced-header"
+        elif jid not in defined:
+            reason = "no-definition"
+        else:
             continue
-        seen.add(jid)
-        block = norm[start:end]
-        views.append({"jid": jid, "start": start, "end": end, "own": block,
-                      "fenced": fenced_line_flags(_block_lines(block)), "duplicate": False,
-                      "unattributed": True})
+        block = norm[pos:end]
+        own_flags = fenced_line_flags(_block_lines(block))
+        doc_slice = doc_flags[line_no:line_no + len(own_flags)]
+        fenced = ([a and b for a, b in zip(doc_slice, own_flags)] if len(doc_slice) == len(own_flags)
+                  else own_flags)
+        views.append({"jid": jid, "start": pos, "end": end, "own": block, "fenced": fenced,
+                      "duplicate": False, "unattributed": True, "unattributed_reason": reason})
     return views
 
 
@@ -790,25 +818,37 @@ def parse_side_effect_declarations(text: str) -> dict[str, dict]:
 
     declaration = {declared: 'none'|'mutating'|None, valid, errors, note, lines,
     declaration_hash (None when the journey has no declaration line)}; each
-    line's `index` is relative to the journey block's first line."""
+    line's `index` is relative to the journey block's first line. An id with an
+    unattributed view (side_effect_journey_views_all) also carries
+    `unattributed: True` and `unattributed_reason`."""
     out: dict[str, dict] = {}
     raw: dict[str, list[dict]] = {}
     dup: set[str] = set()
-    unattributed: set[str] = set()
+    unattributed: dict[str, str] = {}
     for v in side_effect_journey_views_all(text):
         found = [_parse_declaration_line(i, m)
                  for i, m in _declaration_line_matches(_block_lines(v["own"]), fenced=v["fenced"])]
         if v["duplicate"]:
             dup.add(v["jid"])
         if v.get("unattributed"):
-            unattributed.add(v["jid"])
+            unattributed.setdefault(v["jid"], v.get("unattributed_reason") or "no-definition")
         raw[v["jid"]] = raw.get(v["jid"], []) + found
     for jid, found in raw.items():
         d = _effective_declaration(found, duplicate_block=jid in dup)
         if jid in unattributed:
-            # Lines that may belong to a neighbour: only `mutating` is honoured.
+            reason = unattributed[jid]
+            if found:
+                where, fix = (("a header for this journey id sits inside what the parser reads as a code fence",
+                               "check the code fences above it")
+                              if reason == "fenced-header" else
+                              ("this journey id has no definition of its own (only nested references name it)",
+                               "give it a top-level definition"))
+                d["errors"].append(f"{where}, so its 'Side effects:' lines cannot be attributed with certainty — "
+                                   f"only 'mutating' is honoured; {fix}")
+                d["valid"] = False
             d["declared"] = "mutating" if d["declared"] == "mutating" else None
             d["unattributed"] = True
+            d["unattributed_reason"] = reason
         out[jid] = d
     return out
 
@@ -892,8 +932,13 @@ def _readonly_token(ro: dict):
 
 
 def declaration_digest(decls: dict[str, dict], ro: dict) -> str:
-    items = [[jid, d["declared"] or "unknown", d["note"], d["declaration_hash"]]
-             for jid, d in sorted(decls.items()) if d["declaration_hash"]]
+    items = []
+    for jid, d in sorted(decls.items()):
+        if d.get("unattributed"):
+            items.append([jid, d["declared"] or "unknown", d["note"], d["declaration_hash"],
+                          f"unattributed:{d.get('unattributed_reason')}"])
+        elif d["declaration_hash"]:
+            items.append([jid, d["declared"] or "unknown", d["note"], d["declaration_hash"]])
     payload = {"schema": "journey-side-effect-declarations/1", "journeys": items,
                "read_only_endpoints_sha256": _readonly_token(ro)}
     return hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
@@ -1102,11 +1147,12 @@ def build_side_effect_ledger(goal_text: str, sidecar=None, readonly_path=None, *
             status = "none"
         else:
             status = "unknown"   # includes a `none` whose observations cannot be read
+        unattr = bool(d.get("unattributed"))
         if observed and d["declared"] == "mutating":
-            source = "declared+observed"
+            source = "unattributed+observed" if unattr else "declared+observed"
         elif observed:
             source = "observed"
-        elif view.get("unattributed") and not d["declared"]:
+        elif unattr:
             source = "unattributed"
         elif d["declared"] == "none" and not established:
             source = "declared-unverified"
@@ -1137,7 +1183,8 @@ def build_side_effect_ledger(goal_text: str, sidecar=None, readonly_path=None, *
             "exceptions_applied": o["exceptions_applied"],
             "auth_ignored": o["auth_ignored"],
             "declaration_conflict": bool(observed and d["declared"] == "none"),
-            "unattributed": bool(view.get("unattributed")),
+            "unattributed": unattr,
+            "unattributed_reason": d.get("unattributed_reason"),
             "status": status,
             "status_source": source,
             "step_hints": [{k: h[k] for k in ("n", "text", "words")}
@@ -1353,6 +1400,13 @@ def render_side_effect_suggestions(ledger: dict, goal_path: str) -> str:
                     f"{READONLY_ENDPOINTS_REL} and keep 'none'", ""]
         elif j["declaration_valid"] and j["declared"]:
             continue
+        elif j.get("unattributed"):
+            why = ("a header for it sits inside what the parser reads as a code fence — check for a stray or "
+                   "unclosed ``` / ~~~ line above it" if j.get("unattributed_reason") == "fenced-header"
+                   else "it has no definition of its own, only nested mentions — give it a top-level "
+                        "'- **" + jid + ": <name>**' block")
+            out += [f"{head}: its side-effect lines cannot be attributed with certainty ({why}); it is read as "
+                    f"{j['declared'] or 'unknown'} (only 'mutating' is honoured) until that is fixed.", ""]
         else:
             if not j["declaration_valid"]:
                 out.append(f"{head}: INVALID declaration ({'; '.join(j['declaration_errors'])}) — read as "

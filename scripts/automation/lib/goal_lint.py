@@ -45,6 +45,13 @@ are quality signals:
                              it stays `unknown` to the spec preflight.
                              `goal_gate.py side-effects docs/goal.md --suggest`
                              prints paste-ready lines.
+    WARN  side-effects-unattributed  (HARD-3) a journey id the drift gate sees
+                             but the side-effect parser cannot attribute: its
+                             header sits inside what the parser reads as a
+                             code fence (a stray or unclosed fence above it),
+                             or it is only mentioned inside other journeys.
+                             The preflight honours only a stated `mutating`
+                             for it (`none` never counts).
 
 Exit codes: 0 clean, 1 warnings only, 2 structural errors (including
 unreadable file). Output: one line per finding + a summary; silent when
@@ -286,6 +293,20 @@ def lint_text(text: str) -> list[Finding]:
                     "line — add '- Side effects: mutating — <what it creates or changes>' (or "
                     "'- Side effects: none — <why>'); until then the spec preflight treats it as unknown",
                 ))
+
+    for jid, d in decls.items():
+        if not d.get("unattributed") or jid in reported:
+            continue
+        reported.add(jid)
+        ln = next((_line_of(s) for j, s, _e in blocks if j == jid), None)
+        where = ("its header sits inside what the parser reads as a code fence (look for a stray or unclosed "
+                 "``` / ~~~ line above it)" if d.get("unattributed_reason") == "fenced-header"
+                 else "it is only mentioned inside other journeys, never defined at top level")
+        findings.append(Finding(
+            "WARN", "side-effects-unattributed", ln,
+            f"journey {jid}: {where} — the side-effect preflight reads it as {d['declared'] or 'unknown'} "
+            "and honours only a stated 'mutating' for it",
+        ))
 
     # product-shape-empty (WARN): >=2 journeys naming the same value/metric is
     # exactly the "same number differs across pages" risk the Product Shape
