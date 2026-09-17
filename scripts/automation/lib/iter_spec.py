@@ -84,6 +84,7 @@ evidence-only dispatch and the fix silently never happened.
 """
 from __future__ import annotations
 
+import bisect
 import json
 import re
 import sys
@@ -497,10 +498,7 @@ _SIDE_EFFECT_STATUSES = ("none", "mutating", "unknown")
 # hyphens/dashes (U+2010–U+2015, U+2212, soft hyphen) or underscores between the
 # words, singular or plural.
 _POLICY_LABEL = r"side[\s\-_\u2010-\u2015\u2212\u00ad]*effects?[\s\-_\u2010-\u2015\u2212\u00ad]*polic(?:y|ies)"
-_POLICY_NEAR_MISS_RE = re.compile(
-    rf"^[ \t]*(?:[-*+][ \t]+)?(?:\*\*|__)?[ \t]*{_POLICY_LABEL}\b", re.I)
-_POLICY_ANY_RE = re.compile(
-    rf"^[ \t]*(?:[-*+][ \t]+)?(?:\*\*|__)?[ \t]*{_POLICY_LABEL}\b(?P<rest>.*)$", re.I)
+
 # Explicit no-mutation prohibitions (plan WP3, matched case-insensitively, one
 # finding per line) — scanned ONLY in `## OUT OF SCOPE` and `## DEFINITION OF
 # DONE` (heading suffixes such as "(this iteration)" or "(DoD)" allowed) and on
@@ -511,10 +509,19 @@ _POLICY_ANY_RE = re.compile(
 # (name, pattern, where, qualified): `where` "oos" = only on an OUT OF SCOPE line,
 # where listing an activity excludes it — on a TC / DoD line the same words can
 # be an affirmative invariant ("launching a new run is expected"), so there the
-# pattern needs its negated form. `qualified` = a match preceded by
-# "pre-existing" / "existing" / "prior" is an invariant, not a prohibition.
-_NEG = r"\b(?:no|not|never|nor|without)\b[^.;:]{0,25}?"
-_EDIT_LEDGER = r"\b(?:creating|editing|deleting|writing|appending|adding)\b[^.;:]{0,40}?\bledger\s+(?:rows?|entries|records)\b"
+# pattern needs an explicit negation: before the verb in the same clause ("no
+# … launching"), a prohibiting verb ("avoid launching"), or after the phrase
+# ("… is not part of this pass", "… does not happen"). A clause ends at . ; :
+# , ( ) or a dash. `qualified` = a row count qualified DIRECTLY as
+# "pre-existing (ledger) row count" is an invariant, not a prohibition.
+_CLAUSE_GAP = r"[^.;:,()–—]"
+_NEG = r"\b(?:no|not|never|nor|without)\b" + _CLAUSE_GAP + r"{0,25}?"
+_AVOID = (r"\b(?:avoid(?:s|ed|ing)?|refrain(?:s|ed|ing)?\s+from|prevent(?:s|ed|ing)?|prohibit(?:s|ed|ing)?"
+          r"|forbid(?:s|den|ding)?|disallow(?:s|ed|ing)?)\s+")
+_POST_NEG = (_CLAUSE_GAP + r"{0,40}?\b(?:(?:is|are|was|were)\s+(?:not|never)\b|(?:does|do|must|should|may|will)\s+not\b"
+             r"|(?:is|are)\s+(?:forbidden|prohibited|excluded|disallowed|out\s+of\s+scope)\b)")
+_EDIT_LEDGER = (r"\b(?:creating|editing|deleting|writing|appending|adding)\b" + _CLAUSE_GAP
+                + r"{0,40}?\bledger\s+(?:rows?|entries|records)\b")
 _LAUNCH_NEW_RUN = r"\b(?:launching|starting|triggering)\s+(?:a\s+|any\s+)?new\s+(?:[\w-]+\s+){0,2}?runs?\b"
 _PROHIBITION_RES: tuple = (
     ("row-count-unchanged",
@@ -529,9 +536,11 @@ _PROHIBITION_RES: tuple = (
      "any", False),
     ("ledger-unchanged",
      re.compile(r"\bledger\s+(?:(?:is|stays|remains)\s+)?(?:left\s+)?(?:unchanged|frozen|untouched)\b", re.I),
-     "any", True),
+     "any", False),
     ("ledger-row-edit", re.compile(_EDIT_LEDGER, re.I), "oos", False),
     ("ledger-row-edit", re.compile(_NEG + _EDIT_LEDGER, re.I), "any", False),
+    ("ledger-row-edit", re.compile(_AVOID + _EDIT_LEDGER, re.I), "any", False),
+    ("ledger-row-edit", re.compile(_EDIT_LEDGER + _POST_NEG, re.I), "any", False),
     ("must-not-mutate",
      re.compile(r"\bmust\s+not\s+(?:create|launch|append|write)\b"
                 r"|\bmust\s+not\s+(?:start|trigger)\s+(?:a\s+|any\s+)?(?:new\s+)?(?:[\w-]+\s+)?runs?\b", re.I),
@@ -542,13 +551,72 @@ _PROHIBITION_RES: tuple = (
      re.compile(r"\bany\s+new\s+(?:[\w-]+\s+){0,3}?run\s+launch(?:es)?\b", re.I), "any", False),
     ("any-new-run-launch", re.compile(_LAUNCH_NEW_RUN, re.I), "oos", False),
     ("any-new-run-launch", re.compile(_NEG + _LAUNCH_NEW_RUN, re.I), "any", False),
+    ("any-new-run-launch", re.compile(_AVOID + _LAUNCH_NEW_RUN, re.I), "any", False),
+    ("any-new-run-launch", re.compile(_LAUNCH_NEW_RUN + _POST_NEG, re.I), "any", False),
 )
-_INVARIANT_QUALIFIER_RE = re.compile(r"\b(?:pre-?existing|existing|prior|previous|earlier|older)\b", re.I)
+_PRE_EXISTING_ROWS_RE = re.compile(r"\bpre-?existing\s+(?:ledger\s+)?$", re.I)
 _TC_LINE_RE = re.compile(
-    r"^(?P<indent>[ \t]*)(?:#{1,6}[ \t]+)?(?:(?:[-*+]|\d+[.)])[ \t]+)?(?:\[[ xX]\][ \t]+)?(?:\|[ \t]*)?"
+    r"^(?P<indent>[ \t]*)(?P<heading>#{1,6}[ \t]+)?(?:(?:[-*+]|\d+[.)])[ \t]+)?(?:\[[ xX]\][ \t]+)?(?:\|[ \t]*)?"
     r"(?:\*\*|__)?[`(\[]?(?P<tc>TC-\d+[a-z]?)\b", re.I)
-_FENCE_LINE_RE = re.compile(r"^\s*(```|~~~)")
+_ANY_HEADING_RE = re.compile(r"^[ \t]{0,3}#{1,6}[ \t]")
 _PROSE_SECTIONS = ("GOAL", "BACKGROUND", "NOTES", "NOTE", "CONTEXT", "RATIONALE", "HISTORY")
+
+# ── markdown code fences (shared with goal_gate.py) ──────────────────────────
+_FENCE_OPEN_RE = re.compile(r"^[ \t]*(?:>[ \t]?)*(?P<fence>`{3,}|~{3,})(?P<info>.*)$")
+_FENCE_CLOSE_RE = re.compile(r"^[ \t]*(?:>[ \t]?)*(?P<fence>`{3,}|~{3,})[ \t]*$")
+
+
+def fenced_line_flags(lines: list[str]) -> list[bool]:
+    """True for every line that is a code-fence delimiter or inside a fence.
+
+    CommonMark pairing: a fence closes only on a line of the SAME character, at
+    least as long, with nothing after it (a backtick opener's info string holds
+    no backtick), and everything between is content — a ``` line inside a ~~~
+    block included. Deliberate deviation: an opener that is never closed is
+    ordinary text, so one stray fence can never swallow the rest of a document
+    (and with it every journey or prohibition below it)."""
+    n = len(lines)
+    flags = [False] * n
+    closers: list[tuple[int, str, int]] = []
+    for j, ln in enumerate(lines):
+        c = _FENCE_CLOSE_RE.match(ln)
+        if c:
+            closers.append((j, c.group("fence")[0], len(c.group("fence"))))
+    positions = [j for j, _c, _k in closers]
+    i = 0
+    while i < n:
+        m = _FENCE_OPEN_RE.match(lines[i])
+        if m and not (m.group("fence")[0] == "`" and "`" in m.group("info")):
+            ch, size = m.group("fence")[0], len(m.group("fence"))
+            close = None
+            for j, c, k in closers[bisect.bisect_right(positions, i):]:
+                if c == ch and k >= size:
+                    close = j
+                    break
+            if close is not None:
+                for k in range(i, close + 1):
+                    flags[k] = True
+                i = close + 1
+                continue
+        i += 1
+    return flags
+
+
+def _html_comment_flags(lines: list[str]) -> list[bool]:
+    """Lines inside a multi-line HTML comment (or starting one on their own)."""
+    flags = [False] * len(lines)
+    inside = False
+    for i, ln in enumerate(lines):
+        if inside:
+            flags[i] = True
+            if "-->" in ln:
+                inside = False
+            continue
+        s = ln.strip()
+        if s.startswith("<!--"):
+            flags[i] = True
+            inside = "-->" not in s[4:]
+    return flags
 
 
 def _section_kind(title: str) -> str:
@@ -565,6 +633,19 @@ def _section_kind(title: str) -> str:
     return "other"
 
 
+def _line_sections(lines: list[str], fenced: list[bool]) -> list[str]:
+    kinds: list[str] = []
+    kind = "other"
+    for ln, f in zip(lines, fenced):
+        h2 = None if f else _H2_LINE_RE.match(ln)
+        if h2:
+            kind = _section_kind(h2.group(1))
+            kinds.append("heading")
+            continue
+        kinds.append(kind)
+    return kinds
+
+
 def _indent_of(line: str) -> int:
     expanded = line.expandtabs(4)
     return len(expanded) - len(expanded.lstrip())
@@ -574,19 +655,15 @@ def find_mutation_prohibitions(spec_text: str) -> list[dict]:
     """[{section, line, text, pattern, match}] — section is 'OUT OF SCOPE',
     'DEFINITION OF DONE' or the TC id ('TC-4')."""
     found: list[dict] = []
-    kind = "other"
-    in_fence = False
-    tc_label, tc_indent = None, 0
-    for i, line in enumerate(spec_text.splitlines(), 1):
-        if _FENCE_LINE_RE.match(line):
-            in_fence = not in_fence
-            tc_label = None
+    lines = spec_text.splitlines()
+    fenced = fenced_line_flags(lines)
+    kinds = _line_sections(lines, fenced)
+    tc_label, tc_indent, tc_heading = None, 0, False
+    for i, line in enumerate(lines, 1):
+        kind = kinds[i - 1]
+        if fenced[i - 1]:
             continue
-        if in_fence:
-            continue
-        h2 = _H2_LINE_RE.match(line)
-        if h2:
-            kind = _section_kind(h2.group(1))
+        if kind == "heading":
             tc_label = None
             continue
         if kind in ("prose", "metadata"):
@@ -594,8 +671,11 @@ def find_mutation_prohibitions(spec_text: str) -> list[dict]:
         tc = _TC_LINE_RE.match(line)
         if tc:
             tc_label, tc_indent = tc.group("tc").upper(), _indent_of(tc.group("indent"))
+            tc_heading = bool(tc.group("heading"))
             label = tc_label
-        elif (tc_label and line.strip() and not line.lstrip().startswith("#")
+        elif tc_label and tc_heading and not _ANY_HEADING_RE.match(line):
+            label = tc_label                       # the body of a `### TC-4` heading
+        elif (tc_label and not tc_heading and line.strip() and not _ANY_HEADING_RE.match(line)
               and not line.lstrip().startswith("|") and _indent_of(line) > tc_indent):
             label = tc_label                       # a TC continued (or sub-bulleted) below its line
         else:
@@ -604,12 +684,14 @@ def find_mutation_prohibitions(spec_text: str) -> list[dict]:
                 label = kind
             else:
                 continue
+        if not line.strip():
+            continue
         hit = None
         for name, rx, where, qualified in _PROHIBITION_RES:
             if where == "oos" and label != "OUT OF SCOPE":
                 continue
             for m in rx.finditer(line):
-                if qualified and _INVARIANT_QUALIFIER_RE.search(line[max(0, m.start() - 40):m.start()]):
+                if qualified and _PRE_EXISTING_ROWS_RE.search(line[:m.start()]):
                     continue
                 hit = (name, m)
                 break
@@ -622,31 +704,81 @@ def find_mutation_prohibitions(spec_text: str) -> list[dict]:
     return found
 
 
+# A line that states the side-effect policy in ANY shape a reader would take for
+# it: after blockquote / table / list / checkbox prefixes, emphasis, Unicode
+# format characters (zero-width) and dash variants are set aside.
+_POLICY_LINE_PREFIX_RE = re.compile(
+    r"^[ \t]*(?:>[ \t]?)*(?:\|[ \t]*)?(?:(?:[-*+]|\d+[.)])[ \t]+)?(?:\[[ xX]\][ \t]+)?")
+_POLICY_LABEL_RE = re.compile(
+    rf"^[*_ \t]*{_POLICY_LABEL}\b[*_]*[ \t]*[:|=–—-]+[*_ \t]*(?P<rest>.*)$", re.I)
+
+
+def _policy_line_value(line: str) -> "str | None":
+    s = unicodedata.normalize("NFKC", line)
+    s = "".join(ch for ch in s if unicodedata.category(ch) != "Cf")
+    s = _POLICY_LINE_PREFIX_RE.sub("", s, count=1)
+    m = _POLICY_LABEL_RE.match(s)
+    return m.group("rest") if m else None
+
+
+def _policy_value_restrictive(value: str) -> bool:
+    """Anything but a plainly stated `allowed` is restrictive (fail closed):
+    `none`, `no`, `not allowed`, `read-only`, `forbidden`, an empty or struck
+    through value."""
+    v = re.sub(r"\|+[ \t]*$", "", value).strip()
+    if not v or "~~" in v:
+        return True
+    tok = re.match(r"[`*_\"'‘’“”(\[]*([A-Za-z]+)", v)
+    return not (tok and tok.group(1).lower() == "allowed")
+
+
+def policy_intent_detail(spec_text: str) -> dict:
+    """{intent, where, line}: intent 'none' (restrictive), 'allowed' or ''.
+
+    Policy-shaped lines in the metadata section decide; only when the section has
+    none (the field is absent or misplaced) do lines elsewhere count — never
+    prose sections (GOAL / BACKGROUND / NOTES …), HTML comments, fences or
+    indented code. A restrictive-looking line counts whatever its form, so a
+    policy the canonical parser cannot read is reported (E02/E06/E01) AND
+    treated as restrictive (E13/E15)."""
+    md = read_metadata(spec_text)
+    canonical = md.get("side_effect_policy")
+    lines = spec_text.splitlines()
+    fenced = fenced_line_flags(lines)
+    comments = _html_comment_flags(lines)
+    kinds = _line_sections(lines, fenced)
+    in_section: list[tuple[int, str]] = []
+    outside: list[tuple[int, str]] = []
+    for i, ln in enumerate(lines):
+        if fenced[i] or comments[i] or kinds[i] == "heading":
+            continue
+        value = _policy_line_value(ln)
+        if value is None:
+            continue
+        if kinds[i] == "metadata":
+            in_section.append((i + 1, value))
+        elif kinds[i] != "prose":
+            stripped = ln.expandtabs(4)
+            body = stripped.lstrip()
+            if len(stripped) - len(body) >= 4 and not re.match(r"(?:[-*+]|\d+[.)])[ \t]", body):
+                continue                      # an indented code block
+            outside.append((i + 1, value))
+    hits, where = (in_section, "section") if in_section else (outside, "outside")
+    for n, value in hits:
+        if _policy_value_restrictive(value):
+            return {"intent": "none", "where": "canonical" if canonical == "none" and where == "section" else where,
+                    "line": n}
+    if canonical in _VALID_POLICY:
+        return {"intent": canonical, "where": "canonical", "line": None}
+    if hits:
+        return {"intent": "allowed", "where": where, "line": hits[0][0]}
+    return {"intent": "", "where": None, "line": None}
+
+
 def policy_intent(spec_text: str) -> str:
-    """'none' when the spec states a RESTRICTIVE side-effect policy in any form a
-    reader would take for one — the canonical line, a near-miss label (Unicode
-    dashes included), decoration around the value (`none`, "none — reason") or
-    a policy line outside the metadata section; otherwise the canonical value
-    ('allowed', an invalid value, or ''). A policy the parser cannot read is
-    reported (E02/E06/E01) AND still treated as restrictive (E13/E15)."""
-    canonical = read_metadata(spec_text).get("side_effect_policy") or ""
-    if canonical == "none":
-        return "none"
-    in_fence = False
-    for ln in spec_text.splitlines():
-        if _FENCE_LINE_RE.match(ln):
-            in_fence = not in_fence
-            continue
-        if in_fence:
-            continue
-        m = _POLICY_ANY_RE.match(unicodedata.normalize("NFKC", ln))
-        if not m:
-            continue
-        rest = re.sub(r"^[\s*_:=\-\u2010-\u2015]*", "", m.group("rest"))
-        tok = re.match(r"[`*_\"'\u2018\u2019\u201c\u201d(\[]*([A-Za-z]+)", rest)
-        if tok and tok.group(1).lower() == "none":
-            return "none"
-    return canonical
+    """'none' when the spec states a restrictive side-effect policy in any form
+    (see policy_intent_detail), else 'allowed' or ''."""
+    return policy_intent_detail(spec_text)["intent"]
 
 
 def load_side_effect_ledger(path: str | None, build_id: str | None = None) -> dict:
@@ -752,11 +884,17 @@ def side_effect_findings(spec_text: str, md: dict, ledger_path: str | None, stri
     """Append the HARD-3 findings through err()/warn(); return the report block."""
     policy_raw = md.get("side_effect_policy")
     policy = policy_raw if policy_raw in _VALID_POLICY else None
-    intent = policy_intent(spec_text)
+    detail = policy_intent_detail(spec_text)
+    intent = detail["intent"]
     restrictive = policy == "none" or intent == "none"
-    stated = ("Side-effect policy: none" if policy == "none" else
-              "Side-effect policy reads as 'none' (in a form the parser cannot use — see E02/E06/E01 — so it is "
-              "treated as restrictive)")
+    if policy == "none":
+        stated = "Side-effect policy: none"
+    elif detail["where"] == "outside":
+        stated = (f"a Side-effect policy line outside the metadata section (line {detail['line']}) reads as "
+                  "restrictive, and the section declares no policy — it is treated as restrictive")
+    else:
+        stated = (f"the Side-effect policy line (line {detail['line']}) states a restrictive value in a form the "
+                  "parser cannot use (see E02/E06) — it is treated as restrictive")
     roles = _journey_roles(md, makeup)
     checked = list(roles)
     info = load_side_effect_ledger(ledger_path, build_id)
@@ -827,6 +965,7 @@ def side_effect_findings(spec_text: str, md: dict, ledger_path: str | None, stri
         "policy": policy,
         "policy_raw": policy_raw,
         "policy_intent": intent,
+        "policy_intent_where": detail["where"],
         "restrictive": restrictive,
         "strict": bool(strict),
         "journeys_checked": checked,
@@ -930,6 +1069,8 @@ def render_side_effect_context(mode: str, ledger_path: str | None, spec_text: st
         return ""
     md = read_metadata(spec_text) if spec_text is not None else None
     policy = md["side_effect_policy"] if md and md["side_effect_policy"] in _VALID_POLICY else None
+    if policy is None and spec_text is not None and policy_intent(spec_text) == "none":
+        policy = "none (stated in a non-canonical form — treated as restrictive)"
     if md is not None:
         relevant = list(_journey_roles(md, list(makeup or [])))
     else:
@@ -1038,7 +1179,7 @@ def lint_spec(
     # `none` into "absent" (E13/E15 skipped), so a near miss is an error.
     policy_b, policy_p = _field_patterns(_FIELDS["side_effect_policy"])
     for ln in metadata_section(spec_text)[0].splitlines():
-        if _POLICY_NEAR_MISS_RE.match(ln) and not (policy_b.match(ln) or policy_p.match(ln)):
+        if _policy_line_value(ln) is not None and not (policy_b.match(ln) or policy_p.match(ln)):
             err("E02", f"'{ln.strip()}' looks like a Side-effect policy line but is not in the canonical form "
                        "- **Side-effect policy:** none|allowed, so the engine cannot read it and the policy would "
                        "silently count as absent")

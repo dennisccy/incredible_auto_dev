@@ -155,7 +155,7 @@ Also included as a section inside `reports/qa/<phase>-qa.md` when `Frontend Pres
 | Coherence audit per iter (goal mode) | `runs/goal-session-<sid>/iter-<N>/coherence.md` |
 | Goal-edit drift note (goal mode) | `runs/goal-session-<sid>/iter-<N>/journeys-changed.md` |
 | Canonical spec-field halt marker (goal mode, HARD-2) | `runs/goal-session-<sid>/iter-<N>/spec-field-unavailable` — written when the executor exited 78 because a `## Goal Mode Metadata` machine field could not be read at runtime (`reason=`, `rc=`, `spec=`, `iter=`, `detected_at_step=`). The iteration is neither evaluated nor advanced |
-| Spec-lint report (goal mode, HARD-2) | `runs/goal-session-<sid>/iter-<N>/spec-lint.txt` and `.json` — the deterministic iteration-spec lint's findings (`[spec-lint] ERROR\|WARN <rule> <name>: <msg>` lines; the JSON adds the parsed metadata and `work_kind_derived`, and — HARD-3, when the side-effect preflight ran — a `side_effects` block: `policy`, `availability` of the ledger, `journeys_checked` with their `roles` and `statuses`, `mutating`/`unknown`/`none`, the declared-none / observed-mutating `conflicts`, the `sticky` journeys, `policy_intent` / `restrictive` (a policy line that reads as `none` in any form counts as restrictive), the explicit `prohibitions` found (`section`, `line`, `text`, `pattern`), the `declaration_digest` and `build_id` it was checked against; this is the preflight view even after the ledger file is refreshed for the evaluator). Written on every linted iteration, clean or not. `spec-lint.stderr` holds the linter's own stderr and is what `spec_lint_crash` samples |
+| Spec-lint report (goal mode, HARD-2) | `runs/goal-session-<sid>/iter-<N>/spec-lint.txt` and `.json` — the deterministic iteration-spec lint's findings (`[spec-lint] ERROR\|WARN <rule> <name>: <msg>` lines; the JSON adds the parsed metadata and `work_kind_derived`, and — HARD-3, when the side-effect preflight ran — a `side_effects` block: `policy`, `availability` of the ledger, `journeys_checked` with their `roles` and `statuses`, `mutating`/`unknown`/`none`, the declared-none / observed-mutating `conflicts`, the `sticky` journeys, `policy_intent` / `policy_intent_where` / `restrictive` (the metadata section's policy lines decide — any value but a plain `allowed`, in any label shape, is restrictive; lines elsewhere count only when the section has none), the explicit `prohibitions` found (`section`, `line`, `text`, `pattern`), the `declaration_digest` and `build_id` it was checked against; this is the preflight view even after the ledger file is refreshed for the evaluator). Written on every linted iteration, clean or not. `spec-lint.stderr` holds the linter's own stderr and is what `spec_lint_crash` samples |
 | Side-effect ledger per iteration (goal mode, HARD-3) | `runs/goal-session-<sid>/iter-<N>/side-effects.json` — see "Journey side-effect ledger" below; `side-effects.preflight.json` beside it is the iteration's frozen preflight view |
 | Side-effect sidecar (goal mode, HARD-3, engine-owned) | `runs/goal-session-<sid>/state/journey-side-effects.json` |
 | Replay side-effect run records (goal mode, HARD-3) | `runs/goal-session-<sid>/iter-<N>/replay-side-effects.json` (current) and `replay-side-effects.<stamp>-<pid>-<n>.json` (archived, never deleted) |
@@ -412,12 +412,14 @@ lint must see — an existing file is removed first, and a file that survives a 
 carries another build id, so the lint reads it as unavailable) and refreshed before the
 goal-evaluator (`"pre-evaluator"`, keeping the preflight file if the refresh fails). The
 iteration's first COMPLETE preflight build is also kept as `side-effects.preflight.json`
-(`--freeze`); every later preflight of the same iteration (a resume) reuses it — `frozen:
-true`, `frozen_at`, a new `build_id` — while its `input_fingerprint` (declaration digest,
+(`--freeze`). A later preflight of the same iteration reuses it — `frozen: true`,
+`frozen_at`, a new `build_id` — only when the spec already written will be re-linted WITHOUT
+re-planning (the decomposer checkpoint is valid), its `input_fingerprint` (declaration digest,
 auth list, exception file, classifier version, journey set) is unchanged and the fresh build
-is complete, so a resumed iteration is re-linted against the evidence it was planned against,
-never against its own replay's observations. Changed inputs are rebuilt, and that view is
-frozen instead. Readers:
+is complete: such a spec is judged against the evidence it was planned against, never its
+own replay's observations. A spec about to be (re)written — no valid checkpoint, or a re-plan
+after a frozen view was rejected — is planned against a fresh build, which becomes the new
+frozen view. Changed inputs are rebuilt too. Readers:
 the spec lint (`iter_spec.py lint --side-effects … --side-effects-build-id …`), both browser
 lanes (`CHAIN_SIDE_EFFECTS_FILE`), the decomposer and evaluator prompts. Shape:
 
@@ -435,7 +437,7 @@ lanes (`CHAIN_SIDE_EFFECTS_FILE`), the decomposer and evaluator prompts. Shape:
    "observed_mutating": true, "observed_iter": 8, "observed_iter_name": "goal-<sid>-iter-8",
    "observation_complete": true, "observation_basis": "recorded", "observation_established": true,
    "observation_sticky": false, "sticky_detail": null, "observed_at": "2026-09-17T00:00:00.000000Z",
-   "golden_sha256": "<sha256>", "declaration_conflict": false,
+   "golden_sha256": "<sha256>", "declaration_conflict": false, "unattributed": false,
    "requests": [{"method": "POST", "path": "/api/runs", "class": "mutating", "count": 1}],
    "exceptions_applied": [], "auth_ignored": [{"method": "POST", "path": "/api/login"}],
    "status": "mutating", "status_source": "declared+observed",
@@ -461,7 +463,13 @@ no declaration record (a new session, or a sidecar moved aside), the newest earl
 `iter-<K>/side-effects.json` is the provenance baseline (`declarations_seeded_from`), so a
 declaration flip made at the same time is still reported. `declaration_conflict`
 (and the top-level `conflicts` list) marks a journey declared `none` that was observed
-mutating. `run_records_pending` lists per-run records the sidecar has not merged yet (they are
+mutating. The ledger never lists fewer journeys than the certified drift gate
+(`_journey_blocks`): a journey id no definition covers (a nested bare `- **J-NN**` reference,
+a header the fence-aware splitter reads as example text) gets an `unattributed` entry whose
+observations still count and where only a stated `mutating` is honoured. Code fences are
+paired the CommonMark way (same character, closer at least as long); an unclosed fence is
+ordinary text, so it can never hide the journeys below it, and a declaration-shaped line
+inside a fence is journey text (never a declaration, never dropped from `spec_hash`). `run_records_pending` lists per-run records the sidecar has not merged yet (they are
 applied in memory; the preflight's record step merges them).
 
 ### runs/goal-session-\<sid\>/state/journey-side-effects.json
@@ -487,8 +495,9 @@ clears it, and a mutation without a golden identity or with an unreadable `obser
 never cleared. Whether a journey has uncleared evidence does not depend on the order the
 observations were merged in (a union's request sample can, and only by holding more
 requests). At most 50 goldens are kept per journey: only entries with nothing left to prove
-are dropped, and a dropped entry's clean time stays in `cleared_goldens`. `merged_runs` lists
-the merged run ids (the newest 2000), including runs that observed no journey. A corrupt or
+are dropped, and a dropped entry's clean time stays in `cleared_goldens` (at most 500).
+`merged_runs` lists every merged run id (bounded at 100 000), including runs that observed no
+journey. A corrupt or
 wrongly-shaped sidecar is never overwritten by either writer; moving it aside loses nothing,
 because the next ledger is rebuilt from the per-run records.
 

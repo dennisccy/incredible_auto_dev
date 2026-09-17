@@ -152,9 +152,10 @@
 #   crashed the engine decides it itself (GATE_BLOCKED, reason
 #   GATE_BLOCKED_SIDE_EFFECT_LEDGER — never re-planned); only
 #   CHAIN_SPEC_LINT=off or the rollback below skip it, and both say so. The
-#   iteration's first complete preflight ledger is frozen, so a resume is
-#   re-linted against the same evidence. The ledger is refreshed before the
-#   goal-evaluator, whose prompt names it.
+#   iteration's first complete preflight ledger is frozen and reused only while
+#   the written spec is re-linted without re-planning (a resume); a spec about
+#   to be (re)written is planned against a fresh build. The ledger is refreshed
+#   before the goal-evaluator, whose prompt names it.
 #   CHAIN_SIDE_EFFECT_PREFLIGHT=true   (default) — false skips E13-E16/W09-W11
 #                      (the rollback; the policy field's own E06/W02 still run).
 #   CHAIN_SIDE_EFFECT_STRICT=false     (default) — true turns W09/W10 (unknown
@@ -920,7 +921,8 @@ _tail_or_placeholder() {
 # never decided here: the spec lint fails closed on it under
 # `Side-effect policy: none` (E15) and warns otherwise (W11). Returns 0.
 _side_effect_ledger_build() {
-  local _sl_step="$1" _sl_out="$ITER_DIR/side-effects.json" _sl_rc=0 _sl_events _sl_name _sl_payload
+  local _sl_step="$1" _sl_view="${2:-fresh}" _sl_out="$ITER_DIR/side-effects.json" _sl_rc=0 _sl_events _sl_name _sl_payload
+  local _sl_snap="$ITER_DIR/side-effects.preflight.json"
   local _sl_args=(side-effects "$GOAL_FILE" --sidecar "$SIDE_EFFECT_SIDECAR" --out "$_sl_out"
                   --repo-root "$REPO_ROOT" --iter "$CURRENT_ITER" --iter-name "$ITER_NAME" --step "$_sl_step")
   if [[ "$_sl_step" == "preflight" ]]; then
@@ -928,10 +930,13 @@ _side_effect_ledger_build() {
     # id, so the spec lint still reads it as UNAVAILABLE (never as evidence).
     rm -f "$_sl_out" 2>/dev/null || true
     SIDE_EFFECTS_BUILD_ID="$(date -u +%Y%m%dT%H%M%S%N)-$$-${RANDOM}"
-    # --freeze: the iteration's first complete preflight view is kept and reused
-    # while its inputs are unchanged, so a resumed iteration is re-linted against
-    # the evidence it was planned against — never against its own replay's.
-    _sl_args+=(--record-digest --build-id "$SIDE_EFFECTS_BUILD_ID" --freeze "$ITER_DIR/side-effects.preflight.json")
+    # --freeze keeps the iteration's first complete preflight view. It is
+    # REUSED ("freeze") only when the spec already written will be re-linted
+    # without re-planning, so that spec is judged against the evidence it was
+    # planned against, never its own replay's. A spec about to be (re)written is
+    # planned against the current evidence ("fresh": the old view is dropped).
+    [[ "$_sl_view" == "fresh" ]] && { rm -f "$_sl_snap" 2>/dev/null || true; }
+    _sl_args+=(--record-digest --build-id "$SIDE_EFFECTS_BUILD_ID" --freeze "$_sl_snap")
   fi
   _sl_events="$(python3 "$SCRIPT_DIR/lib/goal_gate.py" "${_sl_args[@]}")" || _sl_rc=$?
   while IFS=$'\t' read -r _sl_name _sl_payload; do
@@ -954,6 +959,10 @@ _side_effect_ledger_build() {
       || printf '{"iter_name":"%s","step":"%s"}' "$ITER_NAME" "$_sl_step")" || true
     return 0
   fi
+  if [[ "$_sl_step" == "preflight" ]]; then
+    SIDE_EFFECTS_FROZEN="$(python3 -c 'import json, sys; print("true" if json.load(open(sys.argv[1])).get("frozen") else "false")' \
+      "$_sl_out" 2>/dev/null || echo false)"
+  fi
   local _sl_summary
   _sl_summary="$(python3 - "$_sl_out" <<'PYLEDGER' 2>/dev/null || true
 import json, sys
@@ -961,8 +970,9 @@ d = json.load(open(sys.argv[1]))
 s = d.get("summary") or {}
 def names(k):
     return ", ".join(s.get(k) or []) or "(none)"
-print("mutating: %s; none: %s; unknown: %s; declaration digest %s%s%s%s%s" % (
+print("mutating: %s; none: %s; unknown: %s; declaration digest %s%s%s%s%s%s" % (
     names("mutating"), names("none"), names("unknown"), (d.get("declaration_digest") or "")[:12],
+    "" if not d.get("frozen") else "; the iteration's FROZEN preflight view (built %s) is reused" % d.get("frozen_at"),
     "" if not d.get("conflicts") else "; DECLARATION CONFLICT (declared none, observed mutating): " + ", ".join(d["conflicts"]),
     "" if d.get("ignore_paths_default", True) else
     "; auth/session exclusions OVERRIDDEN by CHAIN_SIDE_EFFECT_IGNORE_PATHS: " + (", ".join(d.get("ignore_paths") or []) or "(none)"),
@@ -2624,9 +2634,19 @@ except Exception: print(0)" 2>/dev/null || echo 0)"
   # both browser lanes. Re-built on every resume, so a repaired input is seen.
   SIDE_EFFECTS_FILE="$ITER_DIR/side-effects.json"
   export CHAIN_SIDE_EFFECTS_FILE="$SIDE_EFFECTS_FILE"
-  _side_effect_ledger_build preflight
-  _SE_DECOMPOSER_CONTEXT="$(python3 "$SCRIPT_DIR/lib/iter_spec.py" side-effect-context --mode decomposer \
-    --side-effects "$SIDE_EFFECTS_FILE" 2>/dev/null || true)"
+  # The same resume-skip test the decomposer step uses below: only a spec that
+  # will be re-linted WITHOUT re-planning keeps its frozen planning evidence.
+  _se_view="fresh"
+  if step_done_valid decomposer --dir "$ITER_DIR" "$REPO_ROOT/docs/phases/${ITER_NAME}.md" \
+     && grep -qiE '(\*\*)?Depth:(\*\*)?[[:space:]]*(lean|full|evidence)' "$REPO_ROOT/docs/phases/${ITER_NAME}.md" 2>/dev/null; then
+    _se_view="freeze"
+  fi
+  _side_effect_ledger_build preflight "$_se_view"
+  _se_render_decomposer_context() {
+    _SE_DECOMPOSER_CONTEXT="$(python3 "$SCRIPT_DIR/lib/iter_spec.py" side-effect-context --mode decomposer \
+      --side-effects "$SIDE_EFFECTS_FILE" 2>/dev/null || true)"
+  }
+  _se_render_decomposer_context
 
   echo "[run-goal] Step 1: goal-decomposer (mode: $DECOMPOSER_MODE)"
   # Pre-trim historical state — pass only the tail to the decomposer so token
@@ -2863,9 +2883,9 @@ Do NOT write code or implement anything. The iteration spec and any blueprint ed
     # prohibitions > 0 and a non-empty `mutating` list but NO E16 is the
     # framework-bug tripwire. Fields default to JSON-valid values so the jq
     # payload can never degrade on the clean path.
-    _se_pol="" _se_rules="" _se_proh="" _se_unknown="" _se_mut=""
+    _se_pol="" _se_rules="" _se_proh="" _se_unknown="" _se_mut="" _se_restr=""
     if [[ -s "$_lint_json" ]]; then
-      IFS=$'\x1f' read -r _se_pol _se_rules _se_proh _se_unknown _se_mut < <(python3 - "$_lint_json" 2>/dev/null <<'PYSELINT' || true
+      IFS=$'\x1f' read -r _se_pol _se_rules _se_proh _se_unknown _se_mut _se_restr < <(python3 - "$_lint_json" 2>/dev/null <<'PYSELINT' || true
 import json, sys
 d = json.load(open(sys.argv[1]))
 ids = ("E02", "E06", "E13", "E14", "E15", "E16", "W02", "W09", "W10", "W11")
@@ -2876,16 +2896,18 @@ pol = (d.get("metadata") or {}).get("side_effect_policy") or ""
 proh = len(se.get("prohibitions") or []) if se else None
 unknown = " ".join(se.get("unknown") or []) if se else ""
 mut = se.get("mutating") if se else None
-print("\x1f".join([pol, json.dumps(rules), json.dumps(proh), unknown, json.dumps(mut)]))
+restr = se.get("restrictive") if se else None
+print("\x1f".join([pol, json.dumps(rules), json.dumps(proh), unknown, json.dumps(mut), json.dumps(restr)]))
 PYSELINT
 ) || true
     fi
-    _se_rules="${_se_rules:-[]}"; _se_proh="${_se_proh:-null}"; _se_mut="${_se_mut:-null}"
+    _se_rules="${_se_rules:-[]}"; _se_proh="${_se_proh:-null}"; _se_mut="${_se_mut:-null}"; _se_restr="${_se_restr:-null}"
     record_telemetry_event "spec_lint" "$(jq -cn --arg n "$ITER_NAME" --arg a "$_spec_attempt" \
       --arg rc "$_lint_rc" --arg e "$_lint_errs" --arg w "$_lint_warns" --arg m "$_SPEC_LINT_MODE" \
       --arg sp "$_se_pol" --argjson sr "$_se_rules" --argjson spr "$_se_proh" --argjson smu "$_se_mut" \
+      --argjson sre "$_se_restr" \
       '{iter_name:$n, attempt:($a|tonumber), rc:($rc|tonumber), errors:($e|tonumber), warnings:($w|tonumber), mode:$m,
-        side_effect_policy:$sp, side_effect_rules:$sr, prohibitions:$spr, mutating:$smu}' \
+        side_effect_policy:$sp, side_effect_rules:$sr, prohibitions:$spr, mutating:$smu, restrictive:$sre}' \
       2>/dev/null || printf '{"iter_name":"%s","rc":%s}' "$ITER_NAME" "$_lint_rc")"
     if [[ -n "$_se_unknown" ]]; then
       record_telemetry_event "side_effect_unknown" "$(jq -cn --arg n "$ITER_NAME" --arg a "$_spec_attempt" \
@@ -2908,26 +2930,47 @@ PYSELINT
     # Nothing has been dispatched past the decomposer at this point.
     _se_e15=""
     if [[ "$_SE_PREFLIGHT" == "on" ]]; then
-      if grep -qE '^\[spec-lint\] ERROR E15 ' "$_lint_txt" 2>/dev/null; then
-        _se_e15="E15 in $_lint_txt"
-      elif [[ "$_lint_rc" -ne 0 ]] && ! python3 -c 'import json, sys
-se = json.load(open(sys.argv[1])).get("side_effects")
-sys.exit(0 if isinstance(se, dict) and se.get("availability") in ("ok", "incomplete", "unavailable") else 1)' \
-            "$_lint_json" 2>/dev/null; then
+      # What the lint JSON proves: "e15" (it reported E15), "done" (its
+      # side-effect pass finished without E15) or anything else (unproven).
+      _se_json_state="$(python3 -c 'import json, sys
+try:
+    d = json.load(open(sys.argv[1]))
+except Exception:
+    print("absent"); sys.exit(0)
+se = d.get("side_effects") if isinstance(d, dict) else None
+if not (isinstance(se, dict) and se.get("availability") in ("ok", "incomplete", "unavailable")):
+    print("unfinished"); sys.exit(0)
+errs = d.get("errors") if isinstance(d.get("errors"), list) else []
+print("e15" if any(isinstance(e, dict) and e.get("rule") == "E15" for e in errs) else "done")' \
+        "$_lint_json" 2>/dev/null || echo absent)"
+      if grep -qE '^\[spec-lint\] ERROR E15 ' "$_lint_txt" 2>/dev/null || [[ "$_se_json_state" == "e15" ]]; then
+        _se_e15="the spec lint reported E15 — the spec states a restrictive side-effect policy and the side-effect ledger is unavailable, incomplete or stale"
+      elif [[ "$_lint_rc" -ne 0 && "$_se_json_state" != "done" ]]; then
         _se_intent="$(python3 "$SCRIPT_DIR/lib/iter_spec.py" policy-intent "$ITER_SPEC_PATH" 2>/dev/null)" \
           || _se_intent="unreadable"
         if [[ "$_se_intent" == "none" || "$_se_intent" == "unreadable" ]] \
            && ! python3 "$SCRIPT_DIR/lib/iter_spec.py" ledger-ok "$SIDE_EFFECTS_FILE" \
                   --build-id "${SIDE_EFFECTS_BUILD_ID:-}" 2>/dev/null; then
-          _se_e15="the spec lint did not finish (exit $_lint_rc), the spec's side-effect policy is '$_se_intent' and the ledger is not usable"
+          if [[ "$_se_intent" == "none" ]]; then
+            _se_e15="the spec lint did not finish (exit $_lint_rc), the spec states a restrictive side-effect policy and the side-effect ledger is not usable"
+          else
+            _se_e15="the spec lint did not finish (exit $_lint_rc), the spec's side-effect policy could not be read and the side-effect ledger is not usable"
+          fi
         fi
       fi
     fi
     if [[ -n "$_se_e15" ]]; then
-      echo "[run-goal] The spec declares a restrictive 'Side-effect policy: none' but the deterministic side-effect ledger is unavailable, incomplete or stale (E15: $_se_e15) — halting BEFORE any dispatch (CHAIN_SPEC_LINT=$_SPEC_LINT_MODE does not relax this). This is not re-planned: the planner cannot repair the evidence source." >&2
+      if [[ "$_lint_rc" -ne 0 && "$_lint_rc" -ne 1 ]]; then
+        # The crash branch below is never reached: record the crash here.
+        record_telemetry_event "spec_lint_crash" "$(jq -cn --arg n "$ITER_NAME" --arg rc "$_lint_rc" \
+          --arg t "$(tail -c 400 "$ITER_DIR/spec-lint.stderr" 2>/dev/null | tr '\n' ' ')" --arg m "$_SPEC_LINT_MODE" \
+          '{iter_name:$n, rc:($rc|tonumber), mode:$m, stderr_tail:$t}' 2>/dev/null \
+          || printf '{"iter_name":"%s","rc":%s}' "$ITER_NAME" "$_lint_rc")"
+      fi
+      echo "[run-goal] E15: $_se_e15 — halting BEFORE any dispatch (CHAIN_SPEC_LINT=$_SPEC_LINT_MODE does not relax this). This is not re-planned: the planner cannot repair the evidence source." >&2
       echo "[run-goal]   Ledger:  ${SIDE_EFFECTS_FILE#"$REPO_ROOT"/}   Sidecar: ${SIDE_EFFECT_SIDECAR#"$REPO_ROOT"/}" >&2
       echo "[run-goal]   Reproduce:  python3 scripts/automation/lib/goal_gate.py side-effects docs/goal.md --sidecar ${SIDE_EFFECT_SIDECAR#"$REPO_ROOT"/}" >&2
-      echo "[run-goal]   Fix the input — make read-only-endpoints.txt readable; repair a corrupt per-run record iter-*/replay-side-effects*.json; move a corrupt sidecar aside (every observation is rebuilt from the per-run records) — then:  /goal-resume $SESSION_ID  (the ledger is rebuilt and the spec re-linted)" >&2
+      echo "[run-goal]   Fix the input — make read-only-endpoints.txt readable; repair a corrupt per-run record iter-*/replay-side-effects*.json or an earlier ledger iter-*/side-effects.json; move a corrupt sidecar aside (every observation is rebuilt from the per-run records) — then:  /goal-resume $SESSION_ID  (the ledger is rebuilt and the spec re-linted)" >&2
       record_telemetry_event "halt" "$(jq -cn --arg m "$_SPEC_LINT_MODE" --arg rc "$_lint_rc" \
         '{reason:"GATE_BLOCKED_SIDE_EFFECT_LEDGER", detected_at_step:"side-effect-ledger", lint_mode:$m, lint_rc:($rc|tonumber)}' 2>/dev/null \
         || printf '%s' '{"reason":"GATE_BLOCKED_SIDE_EFFECT_LEDGER","detected_at_step":"side-effect-ledger"}')"
@@ -2969,6 +3012,13 @@ Fix EVERY line below and rewrite the same file. This is the ONE automatic re-pla
 pauses the session for the human.
 $(cat "$_lint_txt")"
         step_invalidate_from decomposer "$ITER_DIR"
+        if [[ "${SIDE_EFFECTS_FROZEN:-false}" == "true" ]]; then
+          # The resumed spec was judged against its frozen planning evidence; the
+          # rewrite is planned (and linted) against the current evidence.
+          echo "[run-goal] Re-planning a resumed iteration: the side-effect ledger is rebuilt from the current evidence (the frozen preflight view is dropped)." >&2
+          _side_effect_ledger_build preflight fresh
+          _se_render_decomposer_context
+        fi
         continue
       fi
       echo "[run-goal] Spec lint REJECTED the re-planned spec too ($_lint_errs error(s)) — halting." >&2

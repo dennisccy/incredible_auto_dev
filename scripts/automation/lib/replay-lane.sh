@@ -234,9 +234,22 @@ except Exception:
     sys.exit(0)
 if not isinstance(rec, dict):
     sys.exit(0)
-since = sys.argv[3] if len(sys.argv) > 3 else ""
-if since and str(rec.get("observed_at") or "") < since:
-    sys.exit(0)
+import datetime
+def when(v):
+    try:
+        t = datetime.datetime.fromisoformat(str(v).rstrip("Z"))
+    except ValueError:
+        return None
+    return t if t.tzinfo else t.replace(tzinfo=datetime.timezone.utc)
+since = when(sys.argv[3]) if len(sys.argv) > 3 and sys.argv[3] else None
+if since is not None:
+    seen = when(rec.get("observed_at"))
+    if seen is None:
+        print("warn\tthe side-effect run record " + sys.argv[1] + " carries no readable observed_at — its "
+              "telemetry is not reported (the next preflight still reads its observations)")
+        sys.exit(0)
+    if seen < since:
+        sys.exit(0)
 name = sys.argv[2]
 def num(v):
     try:

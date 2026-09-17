@@ -5574,7 +5574,7 @@ Four root causes: governors read proxies instead of facts (HARD-1..3); ownership
     malformed format still counts as mutating (a malformed line never makes a journey less
     restrictive). (5) Declarations are parsed with a correctly-bounded block splitter — see
     CAND-JOURNEY-BLOCKS in §16 for the pre-existing `_journey_blocks` quirk it avoids.
-  - *Verify:* `bash tests/automation/test-side-effects.sh` (252 checks after revision 3, incl. the
+  - *Verify:* `bash tests/automation/test-side-effects.sh` (265 checks after revision 4, incl. the
     exact TenSteps iteration-9 contradiction, the none→allowed tripwire, E15 fail-closed with zero
     dispatch in block AND warn mode, the real lean executor with a fake Playwright) · self-tests of
     `demo_runner.py`, `goal_gate.py`, `goal_lint.py`, `iter_spec.py`, `artifact_schemas.py` ·
@@ -5676,6 +5676,39 @@ Four root causes: governors read proxies instead of facts (HARD-1..3); ownership
       prefixes (reported, owner's choice); an observation stays sticky for the session once its
       golden is re-derived — the only tracked owner remedy is the exception file (owner decision);
       rare TC shapes (blank-line continuations, OUT OF SCOPE as an H3) are not scanned.
+  - *Revision 4 (2026-09-17, after a third adversarial review of `aa8996f`; RED: the new checks
+    fail against `aa8996f`, GREEN 265/0):*
+    - **Fences (Critical):** code fences are paired the CommonMark way (same character, closer at
+      least as long, no info string on the closer); an unclosed fence is ordinary text. aa8996f's
+      character-agnostic toggle let a `~~~` block holding a ``` line (or an unclosed fence) drop
+      every later journey from the ledger — E13/E16 went silent on a complete-looking ledger — and
+      moved the certified hash for a fenced declaration-shaped line. The same pairing is used by the
+      certified hash, the side-effect splitter and the spec scanners (`iter_spec.fenced_line_flags`).
+    - **Journey coverage:** the ledger never lists fewer journeys than `_journey_blocks`; an id no
+      definition covers gets an `unattributed` fail-closed entry (observations count, only a stated
+      `mutating` is honoured). A nested header that NAMES a journey (`- **J-06: Refund**`) is a
+      definition; a bare `- **J-11** …` is a reference.
+    - **Qualifier (Critical):** `ledger-unchanged` has no qualifier any more, and a row count is an
+      invariant only when qualified DIRECTLY ("pre-existing (ledger) row count") — "the existing
+      ledger's row count is unchanged", "prior …", "as in the previous iteration, …" are prohibitions
+      again.
+    - **Frozen view:** reused only when the written spec will be re-linted without re-planning (the
+      decomposer checkpoint is valid); with no checkpoint, or on a re-plan after a frozen view was
+      rejected, the ledger is rebuilt fresh and the decomposer context re-rendered.
+    - **Policy intent:** when the metadata section has a policy line only the section decides (NOTES,
+      comments and prose never count); any value but a plain `allowed` — `no`, `not allowed`,
+      `read-only`, `forbidden`, struck-through, empty — and any label shape (italic, numbered, table,
+      blockquote, zero-width characters) is restrictive; near-miss shapes are E02.
+    - **Negation:** a negation must be in the same clause (a comma, parenthesis or dash ends it);
+      negations after the phrase ("… is not part of this pass", "… does not happen") and prohibiting
+      verbs ("avoid …") count; the body of a `### TC-4` heading belongs to TC-4.
+    - **Minor:** E15 is also decided from the lint JSON (a lint killed after writing it), with a
+      `spec_lint_crash` event and accurate wording when the fallback halts; `spec_lint` carries
+      `restrictive`; a malformed earlier ledger no longer breaks the declaration baseline; a reused
+      snapshot drops a stale `record_error`, the recorded conflicts come from the current evidence and
+      a failed record recomputes `declaration_digest_changed_this_iter`; the replay telemetry guard
+      compares parsed timestamps and says so when a record has none; `merged_runs` is bounded at
+      100 000.
   - *Owed:* G8 fresh-session certification; the G9-gated real session (a replay-observed mutation in
     the sidecar, no TC failed on a journey's own mutation); vendored per-file sync — products must
     sync this `goal_gate.py` BEFORE adding `- Side effects:` lines (older code hashes those lines as

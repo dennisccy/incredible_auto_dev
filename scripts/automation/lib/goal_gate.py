@@ -91,6 +91,8 @@ import re
 import sys
 from pathlib import Path
 
+from iter_spec import fenced_line_flags
+
 PASSING_STATUSES = {"passing", "already_passing"}
 
 # A journey entry in goal.md: a list item starting "- **J-NN" (tolerates
@@ -253,7 +255,7 @@ def _normalize_text(block: str) -> str:
     return "\n".join(lines)
 
 
-def _normalize_block(block: str, in_fence: bool = False) -> str:
+def _normalize_block(block: str, fenced: "list[bool] | None" = None) -> str:
     """_normalize_text of a journey block minus its well-formed declarations.
 
     HARD-3 (certification path, owner-approved D.3): a WELL-FORMED
@@ -264,21 +266,25 @@ def _normalize_block(block: str, in_fence: bool = False) -> str:
     A MALFORMED declaration-shaped line is ordinary journey text and stays in the
     hash, so editing it is drift (the safe direction) — the parser that decides
     "well-formed" is parse_side_effect_declarations' own (one regex, one rule).
-    `in_fence` is the document's code-fence state where the block starts, so a
-    block that begins inside a fence is judged exactly as the parser judges it."""
+    `fenced` carries the DOCUMENT's code-fence flags for these lines, so a line
+    is judged exactly as the declaration parser judges it (a block may start or
+    end inside a fence); without it the block's own fences are paired."""
     lines = _split_lines(block)
-    drop = _well_formed_declaration_indices(lines, in_fence)
+    drop = _well_formed_declaration_indices(lines, fenced)
     return _normalize_text("\n".join(ln for i, ln in enumerate(lines) if i not in drop))
 
 
 def _journey_hashes(text: str) -> dict[str, str]:
     """sha256 hex of each journey block's normalized text, keyed by J-NN."""
-    before = _fence_state_before(text.split("\n"))
-    return {
-        jid: hashlib.sha256(_normalize_block(text[start:end], before[text.count("\n", 0, start)])
-                            .encode("utf-8")).hexdigest()
-        for jid, start, end in _journey_blocks(text)
-    }
+    flags = fenced_line_flags(text.split("\n"))
+    out: dict[str, str] = {}
+    for jid, start, end in _journey_blocks(text):
+        block = text[start:end]
+        first = text.count("\n", 0, start)
+        n = block.count("\n") + 1
+        fenced = flags[first:first + n] if len(_split_lines(block)) == n else None
+        out[jid] = hashlib.sha256(_normalize_block(block, fenced).encode("utf-8")).hexdigest()
+    return out
 
 
 def cmd_hash_journeys(
@@ -474,7 +480,6 @@ _SE_VALUE_RE = re.compile(r"^[*_`]*(?P<value>[A-Za-z]+)[*_`]*(?P<tail>.*)$", re.
 _SE_NOTE_RE = re.compile(r"^[ \t]*[-–—]+[ \t]*(?P<note>.*?)[ \t]*$", re.S)
 _SE_TRIVIAL_TAIL_RE = re.compile(r"^[ \t]*[.;,]?[ \t]*$")
 _SE_RAW_VALUE_SPLIT_RE = re.compile(r"[ \t]+[-–—]|[–—]")
-_SE_FENCE_RE = re.compile(r"^[ \t]*(```|~~~)")
 _SE_STEP_RE = re.compile(r"^(?P<indent>[ \t]*)(?P<n>\d+)[.)][ \t]+(?P<text>.*)$")
 _SE_BULLET_RE = re.compile(r"^[ \t]*[-*+][ \t]")
 _SE_CODE_SPAN_RE = re.compile(r"`([^`]*)`")
@@ -505,40 +510,17 @@ _SE_LABEL_SPAN_RE = re.compile(rf"{_SE_ACTION_STEMS}(?:[ \t]+[\w-]+){{0,2}}", re
 _JOURNEY_NAME_RE = re.compile(r"^\s*-\s+\*\*(J-\d+)\b[\s:.—–-]*(?P<name>.*?)\s*\*\*", re.MULTILINE)
 
 
-def _fence_state_before(lines: list[str]) -> list[bool]:
-    """For each line: is a code fence open when the line starts?"""
-    states: list[bool] = []
-    in_fence = False
-    for ln in lines:
-        states.append(in_fence)
-        if _SE_FENCE_RE.match(ln):
-            in_fence = not in_fence
-    return states
-
-
-def _fenced_line_flags(lines: list[str]) -> list[bool]:
-    """For each line: is it a fence delimiter or inside a fence?"""
-    before = _fence_state_before(lines)
-    return [b or bool(_SE_FENCE_RE.match(ln)) for b, ln in zip(before, lines)]
-
-
-def _declaration_line_matches(lines: list[str], in_fence: bool = False,
+def _declaration_line_matches(lines: list[str],
                               fenced: "list[bool] | None" = None) -> list[tuple[int, "re.Match[str]"]]:
     """(index, match) for every declaration-shaped line outside a code fence.
-    `fenced` (document-level flags for exactly these lines) wins over toggling
-    from `in_fence`, the fence state at the first line."""
+    `fenced`: document-level fence flags for exactly these lines; without it
+    the lines' own fences are paired (iter_spec.fenced_line_flags)."""
+    if fenced is None:
+        fenced = fenced_line_flags(lines)
     out = []
-    state = in_fence
     for i, ln in enumerate(lines):
-        if fenced is not None:
-            if i < len(fenced) and fenced[i]:
-                continue
-        else:
-            if _SE_FENCE_RE.match(ln):
-                state = not state
-                continue
-            if state:
-                continue
+        if i < len(fenced) and fenced[i]:
+            continue
         m = _SE_LINE_RE.match(ln)
         if m:
             out.append((i, m))
@@ -597,9 +579,9 @@ def _parse_declaration_line(idx: int, m: "re.Match[str]") -> dict:
             "text": " ".join(m.group(0).split())}
 
 
-def _well_formed_declaration_indices(lines: list[str], in_fence: bool = False) -> set[int]:
+def _well_formed_declaration_indices(lines: list[str], fenced: "list[bool] | None" = None) -> set[int]:
     """Indices of the lines a journey spec_hash ignores: well-formed declarations only."""
-    return {i for i, m in _declaration_line_matches(lines, in_fence)
+    return {i for i, m in _declaration_line_matches(lines, fenced)
             if not _parse_declaration_line(i, m)["errors"]}
 
 
@@ -656,7 +638,7 @@ def side_effect_journey_blocks(text: str) -> list[tuple[str, int, int]]:
     side_effect_journey_views). Hash neutrality does not depend on it:
     _normalize_block judges each line on its own."""
     text = _norm_newlines(text)
-    fenced = _fenced_line_flags(text.split("\n"))
+    fenced = fenced_line_flags(text.split("\n"))
 
     def _line_start_and_indent(m: "re.Match[str]") -> tuple[int, int]:
         lead = m.group(1)
@@ -710,22 +692,26 @@ def _has_own_content(lines: list[str], fenced: list[bool]) -> bool:
     return any(_SE_STEP_RE.match(ln) and not f for ln, f in zip(body, flags))
 
 
+_NAMED_HEADER_RE = re.compile(r"^[ \t]*[-*+][ \t]+\*\*J-\d+\b[ \t]*[:.\u2013\u2014-][ \t]*\S")
+
+
 def side_effect_journey_views(text: str) -> list[dict]:
     """One view per journey DEFINITION over the newline-normalised text:
     {jid, start, end, own, fenced, duplicate}.
 
     - A header nested inside a block of the SAME journey (an owner note such as
       `- **J-10 CLOSED — …**`) is part of that block, not a second definition.
-    - A nested header of ANOTHER journey is a definition only when its own list
-      item carries a declaration or a numbered step; its item's lines are then
-      blanked out of the parent (newlines kept, so line indices stay relative to
-      `start`). Otherwise (`- **J-11** depends on this`) it is a mere reference
-      and its line simply stays part of the parent.
+    - A nested header of ANOTHER journey is a definition when it names the
+      journey (`- **J-06: Refund**`) or its own list item carries a declaration
+      or a numbered step; its item's lines are then blanked out of the parent
+      (newlines kept, so line indices stay relative to `start`). A bare
+      `- **J-11** depends on this` is a mere reference and its line simply stays
+      part of the parent.
     - `fenced` flags each own line that is a code-fence delimiter or inside a
       fence (document-level), `duplicate` marks an id with >1 definition."""
     text = _norm_newlines(text)
     lines_all = text.split("\n")
-    fenced_all = _fenced_line_flags(lines_all)
+    fenced_all = fenced_line_flags(lines_all)
     blocks = side_effect_journey_blocks(text)
     items = []
     for jid, st, en in blocks:
@@ -741,7 +727,8 @@ def side_effect_journey_views(text: str) -> list[dict]:
             continue
         first = text.count("\n", 0, it["start"])
         body = text[it["start"]:it["end"]].split("\n")
-        it["kind"] = "def" if _has_own_content(body, fenced_all[first:first + len(body)]) else "ref"
+        named = bool(_NAMED_HEADER_RE.match(body[0]))
+        it["kind"] = "def" if named or _has_own_content(body, fenced_all[first:first + len(body)]) else "ref"
     defs = [it for it in items if it["kind"] == "def"]
     views: list[dict] = []
     for d in defs:
@@ -770,6 +757,27 @@ def side_effect_journey_views(text: str) -> list[dict]:
     return views
 
 
+def side_effect_journey_views_all(text: str) -> list[dict]:
+    """side_effect_journey_views plus a fail-closed view for every journey id the
+    CERTIFIED splitter (_journey_blocks) sees but no definition covers (a
+    header the side-effect splitter reads as fenced, a nested reference to a
+    journey defined nowhere else): the side-effect ledger never has fewer
+    journeys than the drift gate. Such a view (`unattributed: True`) reads the
+    certified block, and only a stated `mutating` is honoured there."""
+    views = side_effect_journey_views(text)
+    seen = {v["jid"] for v in views}
+    norm = _norm_newlines(text)
+    for jid, start, end in _journey_blocks(norm):
+        if jid in seen:
+            continue
+        seen.add(jid)
+        block = norm[start:end]
+        views.append({"jid": jid, "start": start, "end": end, "own": block,
+                      "fenced": fenced_line_flags(_block_lines(block)), "duplicate": False,
+                      "unattributed": True})
+    return views
+
+
 def side_effect_journey_own_blocks(text: str) -> list[tuple[str, int, int, str, bool]]:
     """(journey_id, start, end, own_text, duplicate) per journey definition —
     see side_effect_journey_views (offsets refer to the newline-normalised
@@ -786,34 +794,37 @@ def parse_side_effect_declarations(text: str) -> dict[str, dict]:
     out: dict[str, dict] = {}
     raw: dict[str, list[dict]] = {}
     dup: set[str] = set()
-    for v in side_effect_journey_views(text):
+    unattributed: set[str] = set()
+    for v in side_effect_journey_views_all(text):
         found = [_parse_declaration_line(i, m)
                  for i, m in _declaration_line_matches(_block_lines(v["own"]), fenced=v["fenced"])]
         if v["duplicate"]:
             dup.add(v["jid"])
+        if v.get("unattributed"):
+            unattributed.add(v["jid"])
         raw[v["jid"]] = raw.get(v["jid"], []) + found
     for jid, found in raw.items():
-        out[jid] = _effective_declaration(found, duplicate_block=jid in dup)
+        d = _effective_declaration(found, duplicate_block=jid in dup)
+        if jid in unattributed:
+            # Lines that may belong to a neighbour: only `mutating` is honoured.
+            d["declared"] = "mutating" if d["declared"] == "mutating" else None
+            d["unattributed"] = True
+        out[jid] = d
     return out
 
 
 def _journey_steps(block: str, fenced: "list[bool] | None" = None) -> list[dict]:
     """Numbered steps of a journey block with their continuation lines:
-    [{n, line (index in the block), text}]. `fenced` (document-level flags)
-    wins over toggling on the block's own fence lines."""
+    [{n, line (index in the block), text}]. `fenced`: document-level fence
+    flags for the block's lines; without it the block's own fences are paired."""
     steps: list[dict] = []
     cur = None
-    in_fence = False
-    for i, raw in enumerate(_block_lines(block)):
-        if fenced is not None:
-            if i < len(fenced) and fenced[i]:
-                cur = None
-                continue
-        elif _SE_FENCE_RE.match(raw):
-            in_fence = not in_fence
+    lines = _block_lines(block)
+    if fenced is None:
+        fenced = fenced_line_flags(lines)
+    for i, raw in enumerate(lines):
+        if i < len(fenced) and fenced[i]:
             cur = None
-            continue
-        if in_fence:
             continue
         m = _SE_STEP_RE.match(raw)
         if m:
@@ -1051,7 +1062,7 @@ def build_side_effect_ledger(goal_text: str, sidecar=None, readonly_path=None, *
     errors: list[str] = []
     decls = parse_side_effect_declarations(goal_text)
     views: dict[str, dict] = {}
-    for v in side_effect_journey_views(goal_text):
+    for v in side_effect_journey_views_all(goal_text):
         views.setdefault(v["jid"], v)
     names = {m.group(1): m.group("name").strip() for m in _JOURNEY_NAME_RE.finditer(goal_text)}
     ro = load_readonly_endpoints(readonly_path)
@@ -1095,6 +1106,8 @@ def build_side_effect_ledger(goal_text: str, sidecar=None, readonly_path=None, *
             source = "declared+observed"
         elif observed:
             source = "observed"
+        elif view.get("unattributed") and not d["declared"]:
+            source = "unattributed"
         elif d["declared"] == "none" and not established:
             source = "declared-unverified"
         elif d["declared"]:
@@ -1124,6 +1137,7 @@ def build_side_effect_ledger(goal_text: str, sidecar=None, readonly_path=None, *
             "exceptions_applied": o["exceptions_applied"],
             "auth_ignored": o["auth_ignored"],
             "declaration_conflict": bool(observed and d["declared"] == "none"),
+            "unattributed": bool(view.get("unattributed")),
             "status": status,
             "status_source": source,
             "step_hints": [{k: h[k] for k in ("n", "text", "words")}
@@ -1181,10 +1195,13 @@ def _declaration_seed(sidecar, iter_n) -> "dict | None":
     for f in p.parent.parent.glob("iter-*/side-effects.json"):
         try:
             d = json.loads(f.read_text(encoding="utf-8"))
-            k = int(d.get("iter"))
-        except (OSError, ValueError, TypeError, RecursionError):
+        except (OSError, ValueError, RecursionError):
             continue
         if not isinstance(d, dict) or not isinstance(d.get("journeys"), dict) or not d.get("declaration_digest"):
+            continue
+        try:
+            k = int(d.get("iter"))
+        except (TypeError, ValueError):
             continue
         if iter_n is not None and k >= iter_n:
             continue
@@ -1403,18 +1420,23 @@ def cmd_side_effects(goal_path: str, opts: dict) -> int:
         return 0
     freeze = opts.get("--freeze")
     frozen_written = False
+    fresh_ledger = ledger
     if freeze:
         # The preflight view of an iteration is decided ONCE: a resumed
         # iteration re-lints its spec against the evidence it was planned
         # against, never against its own replay's observations.
         snap = _load_frozen(freeze, iter_n, ledger)
         if snap is not None:
+            snap.pop("record_error", None)
             snap.update({"build_id": ledger["build_id"], "built_at": ledger["built_at"],
                          "built_at_step": ledger["built_at_step"], "frozen": True,
-                         "frozen_at": snap.get("built_at")})
+                         "frozen_at": snap.get("frozen_at") or snap.get("built_at")})
             ledger = snap
     recording = bool(opts.get("--record-digest") and sidecar)
-    full_ledger = copy.deepcopy(ledger)  # recording always sees every journey
+    # Recording always sees every journey and the CURRENT evidence (a conflict
+    # this iteration's own replay found is reported now, frozen view or not);
+    # the declarations are identical — the fingerprints matched.
+    full_ledger = copy.deepcopy(fresh_ledger)
     prospective_before = {k: ledger.get(k) for k in
                           ("recorded_declaration_digest", "declaration_digest_prev", "declaration_digest_changed_iter")}
     if recording:
@@ -1463,7 +1485,9 @@ def cmd_side_effects(goal_path: str, opts: dict) -> int:
             # Nothing was recorded, so the ledger must not claim a recorded change.
             for key in ("recorded_declaration_digest", "declaration_digest_prev", "declaration_digest_changed_iter"):
                 ledger[key] = prospective_before.get(key)
-            ledger["declaration_digest_changed_this_iter"] = False
+            ledger["declaration_digest_changed_this_iter"] = bool(
+                iter_n is not None and ledger.get("declaration_digest_changed_iter") == iter_n
+                and ledger.get("declaration_digest_prev"))
             ledger["record_error"] = rec_err
             print(f"[side-effects] {rec_err}", file=sys.stderr)
             try:

@@ -200,7 +200,7 @@ SIDE_EFFECT_SAMPLE_CAP = 20
 SIDE_EFFECT_HISTORY_CAP = 5
 SIDE_EFFECT_GOLDEN_CAP = 50
 SIDE_EFFECT_CLEARED_INDEX_CAP = 500
-MERGED_RUNS_CAP = 2000
+MERGED_RUNS_CAP = 100_000  # a sanity bound: every run id a session ever merged
 # Bumped whenever classify_candidate's rules change: a recorded observation
 # classified under another version is always re-classified by the ledger.
 SIDE_EFFECT_CLASSIFIER_VERSION = 2
