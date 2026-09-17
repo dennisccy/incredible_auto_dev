@@ -497,9 +497,10 @@ ls_ = G.build_side_effect_ledger(shift)
 j2 = ls_["journeys"].get("J-02", {})
 case("D8j: a stray top-level fence that shifts every later fence never lets a fenced example's `none` stand for "
      "the real journey (the id is ambiguous: its stated `mutating` counts)",
-     j2.get("status") == "mutating" and j2.get("unattributed") is True
-     and j2.get("unattributed_reason") == "fenced-header"
+     j2.get("status") == "mutating" and j2.get("ambiguous") is True
+     and j2.get("attribution_reason") == "fenced-header" and j2.get("declared") == "none"
      and ls_["journeys"].get("J-01", {}).get("status") == "mutating"
+     and ls_["journeys"]["J-01"].get("unattributed") is True and ls_["journeys"]["J-01"].get("declared") is None
      and G.parse_side_effect_declarations(shift)["J-02"]["valid"] is False)
 F = IS.fenced_line_flags
 case("D8k: fences pair the CommonMark way — a 4-space-indented fence never closes a top-level one, a list-item "
@@ -522,18 +523,58 @@ case("D8l: a titled mention of a journey defined at top level is a reference, no
 fixed = shift.replace("```bash\nmake run\n", "```bash\nmake run\n```\n")
 sugg = G.render_side_effect_suggestions(ls_, "docs/goal.md")
 j2_sugg = next((ln for ln in sugg.splitlines() if ln.startswith("J-02")), "")
-case("D8m: an unattributed journey is reported as such (status source, reason, --suggest, the lint's wording) "
-     "and an attribution change moves the declaration digest",
-     j2.get("status_source") == "unattributed"
-     and "cannot be attributed with certainty" in j2_sugg and "no 'Side effects:' line" not in j2_sugg
+case("D8m: an ambiguous or unattributed journey is reported as such (status source, reason, --suggest, the lint's "
+     "and the prompts' wording — never as 'declared') and an attribution change moves the declaration digest",
+     j2.get("status_source") == "ambiguous"
+     and "fence reading is suspect" in j2_sugg and "no 'Side effects:' line" not in j2_sugg
      and "declared mutating" not in IS._mutating_desc("J-02", j2, {"target"})
-     and "cannot be attributed" in IS._mutating_desc("J-02", j2, {"target"})
+     and "cannot be tied to it with certainty" in IS._mutating_desc("J-02", j2, {"target"})
+     and IS._status_list(["J-02"], {"J-02": j2}, True) == "J-02 (ambiguous declaration)"
      and G.declaration_digest(G.parse_side_effect_declarations(shift), {"sha256": None})
      != G.declaration_digest(G.parse_side_effect_declarations(fixed), {"sha256": None}))
 lf_doc = ("- **J-01: Export**\n  1. Open /export\n     ```\n     - Side effects: none\n     ```\n"
           "  - Acceptance: exported\n")
 case("D29: CRLF line endings never change which declaration-shaped lines the certified hash drops",
      G._journey_hashes(lf_doc.replace("\n", "\r\n"))["J-01"] == G._journey_hashes(lf_doc)["J-01"])
+bor_goal = ("# Goal\n\n## Must-have user journeys\n\n"
+            "- **J-01: Checkout**\n  1. Open /cart and click **Pay**\n  - Acceptance: listed\n"
+            "  - Side effects: mutating — places an order\n\n"
+            "- **J-02: Browse**\n  1. Open /catalog\n  - Acceptance: listed\n"
+            "  - Side effects: none — the catalog only reads\n\n"
+            "## Writing a journey\n\nJourneys follow this shape (example only):\n\n```markdown\n"
+            "- **J-02: Save a filter**\n  1. Open /catalog and click **Save filter**\n"
+            "  - Side effects: mutating — saves a filter\n```\n\n## Anti-goals\n- none\n")
+bor_side = os.path.join(repo, "borrowed-sidecar.json")
+json.dump({"schema_version": 1, "journeys": {"J-02": {"latest": {
+    "iter": 8, "iter_name": "goal-x-iter-8", "complete": True, "verdict": "PASS", "mutating_count": 1,
+    "auth_count": 0, "readonly_count": 0,
+    "requests": [{"method": "POST", "path": "/api/catalog/track", "class": "mutating", "count": 1}],
+    "truncated": False, "exceptions_applied": [], "readonly_endpoints_sha256": None,
+    "ignore_paths": ["/login", "/logout", "/auth", "/session", "/token", "/csrf"]}}}}, open(bor_side, "w"))
+lb = G.build_side_effect_ledger(bor_goal, sidecar=bor_side, readonly_path=os.path.join(repo, "absent-ro.txt"))
+b2 = lb["journeys"]["J-02"]
+case("D8n: a correctly fenced example that reuses a journey id lends it nothing — J-02's own 'none' stands and "
+     "an observed write is still a DECLARATION CONFLICT",
+     b2["declared"] == "none" and b2["declaration_conflict"] is True and b2["status"] == "mutating"
+     and not b2.get("ambiguous") and not b2.get("unattributed") and lb["conflicts"] == ["J-02"]
+     and IS._status_list(["J-02"], {"J-02": b2}, True).startswith("J-02 (DECLARED NONE, but observed"))
+nb_goal = ("# Goal\n\n## Must-have user journeys\n\n- **J-01: Checkout**\n  1. Open /cart and click **Pay**\n"
+           "  - The help panel shows this template:\n    ```\n    - **J-02: Browse**\n      1. Open /catalog\n"
+           "    ```\n  - Side effects: mutating — places an order\n\n- **J-02: Browse**\n  1. Open /catalog\n"
+           "  - Side effects: none\n\n## Anti-goals\n- none\n")
+lnb = G.build_side_effect_ledger(nb_goal)
+case("D8o: a fenced template inside one journey never lends that journey's declaration to the id it mentions",
+     lnb["journeys"]["J-02"]["status"] == "none" and lnb["journeys"]["J-02"]["declared"] == "none"
+     and lnb["journeys"]["J-01"]["declared"] == "mutating" and not lnb["journeys"]["J-02"].get("ambiguous"))
+li_goal = ("# Goal\n\nSetup:\n\n- ```bash\n  make run\n\n## Must-have user journeys\n\n- **J-02: Browse**\n"
+           "  1. Open /catalog\n  - Acceptance: listed\n  - Side effects: none\n\n- **J-03: Export**\n"
+           "  1. Open /export\n  2. The page shows:\n     ```\n     EXPORTED\n     ```\n  - Side effects: none\n\n"
+           "## Anti-goals\n- none\n")
+lli = G.build_side_effect_ledger(li_goal)
+case("D8p: a fence opened on a list-item line ends with its item, so it never hides or shifts the journeys below",
+     callable(getattr(IS, "fence_scan", None)) and IS.fence_scan(li_goal.split("\n"))[1] == []
+     and IS.fenced_line_flags(li_goal.split("\n"))[4:7] == [True] * 3
+     and lli["journeys"]["J-02"]["status"] == "none" and lli["journeys"]["J-03"]["status"] == "none")
 def ledger(goal_text, sidecar=None, ro=None):
     return G.build_side_effect_ledger(goal_text, sidecar=sidecar, readonly_path=ro)
 ro = os.path.join(repo, "project-extensions", "side-effects", "read-only-endpoints.txt")
@@ -1314,6 +1355,12 @@ spec "$SPECS/l18m.md" allowed "J-04" "J-02" "- Any code change to the engine" \
   "- TC-4: given a malformed submission, when it is submitted, then it is refused and no record is written."
 lint "$SPECS/l18m.md" --side-effects "$LED_DECL"
 if has_rule E16; then _l18m=n; echo "      (false positive on a negative-path assertion)"; fi
+for line in "- TC-12: given an unknown key, when POST /api/runs is called, then the API responds 400 naming the unknown key, and no run is created." \
+            "- TC-13: given an invalid date range, when the user clicks Run, then a validation error is shown and no run is launched."; do
+  spec "$SPECS/l18m.md" allowed "J-04" "J-02" "- Any code change to the engine" "$line"
+  lint "$SPECS/l18m.md" --side-effects "$LED_DECL"
+  if has_rule E16; then _l18m=n; echo "      (false positive on a negative-path run assertion: $line)"; fi
+done
 [[ "$_l18m" == y ]] \
   && assert "L18m: 'no run is launched' (TenSteps iter-7/8 wording) is a prohibition; a negative-path 'no record is written' is not" "pass" \
   || assert "L18m: passive wording" "fail"
@@ -1339,6 +1386,251 @@ lint "$SPECS/l18n.md" --side-effects "$LED_DECL"
 [[ "$_l18n" == y ]] \
   && assert "L18n: a stray fence that shifts the pairing, or a spec wrapped in a fence, never hides a prohibition" "pass" \
   || assert "L18n: fence-blind prohibition scan" "fail"
+PYTHONPATH="$LIB" python3 - <<'PY' && assert "L18o: the labelled negation table — every prohibition wording is reported, every affirmative one is not" "pass" || assert "L18o: negation table" "fail"
+import sys
+import iter_spec as S
+T = ("## Goal Mode Metadata\n- **Depth:** lean\n\n## OUT OF SCOPE\n{oos}\n\n## TESTING REQUIREMENTS\n{tc}\n\n"
+     "## DEFINITION OF DONE\n{dod}\n")
+# (expected: P = a prohibition, I = not one; where; line) — review rounds 4 and 5 plus the implementer's own.
+CASES = [
+    ('P', 'tc', '- TC-4: then the replay completes without altering, creating or deleting ledger rows'),
+    ('P', 'tc', '- TC-4: then the replay completes without touching, creating or deleting ledger rows'),
+    ('P', 'tc', '- TC-4: then the replay completes without mutating, adding or removing ledger rows'),
+    ('P', 'tc', '- TC-4: then the replay completes without reordering or deleting ledger rows'),
+    ('P', 'tc', '- TC-4: the confirm pass finishes without queueing or starting a new run'),
+    ('P', 'tc', '- TC-4: the confirm pass finishes without scheduling, queuing or launching a new run'),
+    ('P', 'dod', '- [ ] Confirmed without amending, editing or deleting ledger entries'),
+    ('P', 'tc', '- TC-4: the confirm pass completes without editing the ledger or launching a new run'),
+    ('P', 'tc', '- TC-4: the confirm pass completes without modifying the ledger or launching a new run'),
+    ('P', 'dod', '- [ ] The pass completes without touching the ledger or starting a new run'),
+    ('P', 'tc', '- TC-4: the confirm pass completes without anyone launching a new run'),
+    ('P', 'tc', '- TC-4: the confirm pass completes without the user launching a new run'),
+    ('P', 'tc', '- TC-4: the confirm pass completes without the browser lane launching a new run'),
+    ('P', 'tc', '- TC-4: the replay completes without Playwright starting a new run'),
+    ('P', 'dod', '- [ ] The replay completes without the engine triggering any new run'),
+    ('P', 'tc', '- TC-4: never re-launching a new run'),
+    ('P', 'tc', '- TC-4: the retry completes without re-adding ledger rows'),
+    ('P', 'tc', '- TC-4: the retry completes without re-writing ledger rows'),
+    ('P', 'tc', '- TC-4: the retry completes without re-inserting ledger rows'),
+    ('P', 'tc', '- TC-4: the replay does not itself launch a new run'),
+    ('P', 'tc', '- TC-4: the replay must not go on to launch a new run'),
+    ('P', 'tc', '- TC-4: the confirm must not end up launching a new run'),
+    ('P', 'tc', '- TC-4: the replay must not then launch a new run'),
+    ('P', 'tc', '- TC-4: without *any* user launching a new run'),
+    ('P', 'tc', '- TC-4: without the need of launching a new run'),
+    ('P', 'tc', '- TC-4: never, even once, launching a new run'),
+    ('P', 'tc', '- TC-4: without (re)creating ledger rows'),
+    ('P', 'tc', '- TC-4: never launching a new run (J-04 excluded)'),
+    ('P', 'tc', '- TC-4: the replay does not launch or start a new run'),
+    ('P', 'tc', '- TC-4: do NOT under any circumstances launch a new run'),
+    ('P', 'tc', '- TC-4: there is no launching of new runs'),
+    ('P', 'dod', '- [ ] Not launching any new portfolio run'),
+    ('P', 'dod', '- [ ] Verified without, e.g., launching a new run'),
+    ('P', 'tc', '- TC-4: without launching a new run or editing ledger rows'),
+    ('P', 'tc', '- TC-4: no ledger rows are edited and no one starts a new run'),
+    ('P', 'tc', '- TC-4: without launching a single new run'),
+    ('P', 'tc', '- TC-4: without launching a new backtest run'),
+    ('P', 'tc', '- TC-4: without launching yet another new run'),
+    ('P', 'tc', '- TC-4: without launching a brand new portfolio run'),
+    ('P', 'tc', '- TC-4: the confirm pass must never launch a new run.'),
+    ('P', 'tc', '- TC-4: the tester must not accidentally launch a new run'),
+    ('P', 'tc', '- TC-4: the operator should not click **Run** to launch a new run'),
+    ('P', 'tc', '- TC-4: the replay does not (and must not) launch a new run'),
+    ('P', 'tc', '- TC-4: the replay neither launches a new run nor edits ledger rows'),
+    ('P', 'tc', '- TC-4: nor does it launch a new run'),
+    ('P', 'tc', '- TC-4: launching a new run must not be part of this pass'),
+    ('P', 'tc', '- TC-4: launching a new run should not be part of the confirm pass'),
+    ('P', 'tc', '- TC-4: launching a new run is not expected to happen'),
+    ('P', 'tc', '- TC-4: launching a new run is not OK in this pass'),
+    ('P', 'tc', '- TC-4: starting a new run does not belong in this iteration'),
+    ('P', 'tc', '- TC-4: editing ledger rows will not be tolerated'),
+    ('P', 'tc', "- TC-4: creating ledger rows is not in this iteration's scope"),
+    ('P', 'tc', "- TC-4: launching a new run isn't allowed"),
+    ('P', 'tc', '- TC-4: launching a new run is NOT allowed during the confirm pass'),
+    ('P', 'tc', '- TC-4: launching a new run is not permitted'),
+    ('P', 'tc', '- TC-4: launching a new run must not happen'),
+    ('P', 'tc', '- TC-4: launching a new run is out of scope'),
+    ('P', 'tc', '- TC-4: launching a new run is not part of this pass'),
+    ('P', 'tc', '- TC-4: launching a new run must not occur during the confirm pass'),
+    ('P', 'tc', '- TC-4: launching a new run from the confirm page is not allowed'),
+    ('P', 'tc', '- TC-4: launching a new run — not allowed'),
+    ('P', 'tc', '- TC-4: launching a new run: not allowed'),
+    ('P', 'dod', '- [ ] Launching a new run is excluded from this pass'),
+    ('P', 'dod', '- [ ] Launching a new run must not be attempted'),
+    ('P', 'dod', '- [ ] Launching a new run: forbidden'),
+    ('P', 'dod', '- [ ] Forbidden: launching a new run'),
+    ('P', 'dod', '- [ ] Not allowed: launching a new run or editing ledger rows'),
+    ('P', 'dod', '- [ ] Launching a new run is never acceptable'),
+    ('P', 'dod', '- [ ] Adding ledger rows is not allowed'),
+    ('P', 'dod', "- [ ] Adding ledger rows doesn't happen"),
+    ('P', 'dod', "- [ ] Adding ledger rows won't happen"),
+    ('P', 'oos', '- Launching a new run'),
+    ('P', 'oos', '- Re-launching a new run'),
+    ('P', 'oos', '- Relaunching or starting a new run'),
+    ('P', 'oos', '- Editing (or deleting) ledger rows'),
+    ('P', 'oos', '- Launching – even for a smoke check – a new portfolio run'),
+    ('P', 'oos', '- Launch a new run'),
+    ('P', 'oos', '- Create or edit ledger rows'),
+    ('P', 'oos', '- New run launches'),
+    ('P', 'oos', '- Starting any new runs'),
+    ('P', 'oos', '- Ledger row edits or new ledger rows'),
+    ('I', 'tc', '- TC-4: launching a new run must not modify any pre-existing ledger row'),
+    ('I', 'tc', '- TC-4: launching a new run is not blocked by the confirm dialog'),
+    ('I', 'tc', '- TC-4: starting a new run does not require a page reload'),
+    ('I', 'tc', '- TC-4: appending ledger rows does not rewrite earlier rows'),
+    ('I', 'tc', '- TC-4: no confirm dialog blocks launching a new run'),
+    ('I', 'tc', '- TC-4: no error appears when launching a new run'),
+    ('I', 'tc', '- TC-4: whether or not launching a new run succeeds, the list renders'),
+    ('I', 'tc', "- TC-4: J-04's Run step may add a new ledger row; no pre-existing ledger row is edited"),
+    ('I', 'tc', '- TC-4: given no run exists yet, when the user starts a new run, then a row is added'),
+    ('I', 'tc', '- TC-4: the page does not reload when launching a new run'),
+    ('I', 'tc', '- TC-4: the list does not flicker while starting a new run'),
+    ('I', 'tc', '- TC-4: the Run button is not disabled after launching a new run'),
+    ('I', 'tc', '- TC-4: no spinner remains after launching a new run'),
+    ('I', 'tc', '- TC-4: no stale data is shown after launching a new run'),
+    ('I', 'tc', '- TC-4: the dialog does not appear twice when launching a new run'),
+    ('I', 'tc', '- TC-4: the app never crashes when launching a new run'),
+    ('I', 'tc', '- TC-4: nothing breaks when launching a new run'),
+    ('I', 'tc', '- TC-4: no confirmation is needed before launching a new run'),
+    ('I', 'tc', '- TC-4: without reloading the page, launching a new run shows the new row'),
+    ('I', 'tc', '- TC-4: without errors, launching a new run adds one row'),
+    ('I', 'tc', '- TC-4: no console errors while launching a new run'),
+    ('I', 'tc', '- TC-4: no network errors during launching a new run'),
+    ('I', 'tc', '- TC-4: the user is never asked twice before launching a new run'),
+    ('I', 'tc', '- TC-4: the user never sees a stale row after launching a new run'),
+    ('I', 'tc', '- TC-4: there is no delay in launching a new run'),
+    ('I', 'tc', '- TC-4: no extra clicks are needed for launching a new run'),
+    ('I', 'tc', '- TC-4: no double-submit when launching a new run'),
+    ('I', 'tc', '- TC-4: no duplicate rows when launching a new run twice'),
+    ('I', 'tc', '- TC-4: without a page reload, starting a new run shows its row'),
+    ('I', 'tc', '- TC-4: a user without admin rights can still launch a new run'),
+    ('I', 'tc', '- TC-4: never more than one spinner while launching a new run'),
+    ('I', 'dod', '- [ ] No regressions in launching a new run'),
+    ('I', 'dod', '- [ ] No flakiness when adding ledger rows'),
+    ('I', 'dod', '- [ ] Not only listing but also launching a new run works'),
+    ('I', 'dod', '- [ ] No manual steps required for launching a new run'),
+    ('I', 'dod', '- [ ] No failures in the replay, including launching a new run'),
+    ('I', 'dod', '- [ ] Launching a new run is expected and succeeds'),
+    ('I', 'dod', '- [ ] Launching a new run does not fail'),
+    ('I', 'dod', '- [ ] Launching a new run is not slow'),
+    ('I', 'dod', '- [ ] Launching a new run is not broken'),
+    ('I', 'dod', '- [ ] Launching a new run is not expected to fail'),
+    ('I', 'dod', '- [ ] Adding ledger rows is not blocked'),
+    ('I', 'dod', '- [ ] Adding ledger rows does not corrupt the file'),
+    ('I', 'dod', '- [ ] Adding ledger rows must not change pre-existing rows'),
+    ('I', 'dod', '- [ ] No pre-existing ledger row is edited while launching a new run'),
+    ('I', 'dod', '- [ ] No old run is touched by launching a new run'),
+    ('I', 'dod', '- [ ] No pre-existing row is edited or deleted (J-04 may add its own new run)'),
+    ('I', 'dod', '- [ ] J-04 passes (its step 1 launches a new run; no pre-existing ledger row changes)'),
+    ('P', 'tc', '- TC-4: the replay may be creating a report, but never deleting ledger rows'),
+    ('P', 'tc', '- TC-4: when adding a note, never deleting ledger rows'),
+    ('P', 'oos', '- Launching\xa0a new run'),
+    ('P', 'tc', '- TC-4: without launching\xa0a new run'),
+    ('I', 'tc', '- TC-12: given a `param_overrides` payload containing an unknown key, when `POST /api/runs` is called, then the API responds 400 naming the unknown key, and no run is created.'),
+    ('I', 'tc', '- TC-12: given an invalid date range, when the user clicks Run, then a validation error is shown and no run is launched.'),
+    ('I', 'tc', '- TC-12: given an invalid form, when submitted, then it is refused and no record is written.'),
+    ('I', 'tc', '- TC-4: no user who launches a new run sees an error'),
+    ('I', 'tc', '- TC-4: launching a new run is not required to view the list'),
+    ('P', 'tc', '- TC-4: then the replay completes without creating, editing or deleting ledger rows'),
+    ('P', 'tc', '- TC-4: without writing, appending or editing any ledger rows'),
+    ('P', 'tc', '- TC-4: then the replay finishes without launching, starting or triggering a new run'),
+    ('P', 'tc', '- TC-4: never creating, editing, or deleting ledger entries during the replay'),
+    ('P', 'dod', '- [ ] The confirm pass is done without creating, editing or deleting ledger rows'),
+    ('P', 'tc', '- TC-4: no creating, editing or appending of ledger rows'),
+    ('P', 'tc', '- TC-4: the pass does not, at any point, launch a new run'),
+    ('P', 'tc', '- TC-4: without starting a new backtest run'),
+    ('P', 'tc', '- TC-4: avoid launching a new run'),
+    ('P', 'tc', '- TC-4: Creating or editing ledger rows does not happen'),
+    ('P', 'dod', '- [ ] Launching a new backtest run is not part of this pass'),
+    ('I', 'dod', '- [ ] Launching a new backtest run is not broken by the refactor'),
+    ('I', 'tc', '- TC-4: the confirm dialog prevents launching a new run twice on a double click'),
+    ('I', 'tc', '- TC-4: then no row is edited, launching a new run is expected'),
+    ('I', 'tc', "- TC-4: no pre-existing ledger row is edited or deleted; J-04's own Run step may add its new row"),
+    ('I', 'tc', '- TC-4: then the pre-existing ledger row count is unchanged and one new row is appended'),
+    ('I', 'tc', '- TC-4: when launching a new run, pre-existing rows are not edited'),
+    ('I', 'tc', '- TC-4: adding ledger entries should not fail when the ledger is large'),
+    ('I', 'tc', '- TC-4: starting a new portfolio run should not take longer than 5 s'),
+    ('I', 'dod', '- [ ] Triggering a new sweep run will not be rejected by the guard'),
+    ('P', 'oos', '- Writing to (or appending) ledger entries'),
+    ('P', 'dod', '- [ ] Confirm pass completes without, at any point, launching a new run'),
+    ('P', 'tc', '- TC-4: never (even on retry) starting a new run'),
+    ('P', 'tc', '- TC-4: the replay finishes without creating, editing or deleting ledger rows'),
+    ('P', 'dod', '- [ ] No creating, editing, or deleting of ledger rows'),
+    ('P', 'tc', '- TC-4: no further launching of new runs'),
+    ('P', 'tc', '- TC-4: the replay never accidentally launches a new run'),
+    ('P', 'tc', '- TC-4: the replay must not under any circumstances launch a new run'),
+    ('P', 'tc', '- TC-4: do not click Run to launch a new run'),
+    ('P', 'tc', '- TC-4: no step that launches a new run is executed'),
+    ('P', 'tc', '- TC-4: the replay neither creates nor edits ledger rows'),
+    ('P', 'tc', '- TC-4: the confirm pass must not result in creating ledger rows'),
+    ('P', 'tc', '- TC-4: the replay must not involve launching a new run'),
+    ('P', 'tc', '- TC-4: the replay did not create any ledger rows'),
+    ('P', 'tc', '- TC-4: without triggering any new runs'),
+    ('P', 'tc', '- TC-4: never re-running or launching a new run'),
+    ('P', 'dod', '- [ ] No new ledger entries are written'),
+    ('P', 'dod', '- [ ] The pass completes (without launching a new run)'),
+    ('P', 'dod', '- [ ] The pass completes — without launching a new run'),
+    ('P', 'tc', '- TC-4: never – not even on retry – starting a new run'),
+    ('P', 'oos', '- Starting a new sweep run'),
+    ('P', 'oos', '- Add ledger rows by hand'),
+    ('P', 'tc', '- TC-4: avoids, e.g. on retry, launching a new run'),
+    ('I', 'tc', '- TC-4: no ledger rows get added'),
+    ('P', 'tc', '  - TC-4: the replay does not launch a new run.'),
+    ('P', 'tc', '| TC-4 | without launching a new run | pass |'),
+    ('I', 'tc', '- TC-4: the dialog does not block launching a new run'),
+    ('I', 'tc', '- TC-4: the replay does not require launching a new run'),
+    ('I', 'tc', '- TC-4: not only listing but also launching a new run works'),
+    ('I', 'tc', '- TC-4: when no run exists yet starting a new run creates the first row'),
+    ('I', 'tc', '- TC-4: given J-03 launches a new single-playbook run, when replayed, then it is listed'),
+    ('I', 'tc', '- TC-4: the Run button starts a new run and nothing else is written'),
+    ('I', 'tc', '- TC-4: the list never flickers while starting a new run'),
+    ('I', 'tc', '- TC-4: no toast is missing after adding ledger rows'),
+    ('I', 'dod', '- [ ] No regressions: launching a new run still works'),
+    ('I', 'tc', '- TC-4: without reloading, launching a new run shows the new row'),
+    ('I', 'tc', '- TC-4: no spinner remains after the user clicks Run to launch a new run'),
+]
+bad = []
+for exp, where, line in CASES:
+    text = T.format(oos=line if where == "oos" else "- x", tc=line if where == "tc" else "- TC-1: x",
+                    dod=line if where == "dod" else "- [ ] y")
+    got = "P" if any(p["text"] == line.strip() for p in S.find_mutation_prohibitions(text)) else "I"
+    if got != exp:
+        bad.append(f"{exp}->{got} {where}: {line}")
+for b in bad:
+    print("      (" + b + ")")
+sys.exit(1 if bad else 0)
+PY
+_l18p=y
+for quote in $'Its OUT OF SCOPE section read:\n\n```markdown\n## OUT OF SCOPE\n- Any new portfolio run launch, sweep, or ledger write\n```' \
+             $'Its test section read:\n\n```markdown\n## TESTING REQUIREMENTS\n- TC-4: then the ledger row count is unchanged\n```' \
+             $'Its OUT OF SCOPE section read:\n\n~~~\n## OUT OF SCOPE\n- Launching a new run\n~~~'; do
+  spec "$SPECS/l18p.md" allowed "J-04" "J-02"
+  python3 - "$SPECS/l18p.md" "$quote" <<'PY'
+import sys
+t = open(sys.argv[1]).read()
+t = t.replace("## IN SCOPE", "## BACKGROUND\n\nThe first plan was rejected by E16. " + sys.argv[2] + "\n\n## IN SCOPE")
+open(sys.argv[1], "w").write(t)
+PY
+  lint "$SPECS/l18p.md" --side-effects "$LED_DECL"
+  if has_rule E16; then _l18p=n; echo "      (a fenced quotation of the rejected spec was scanned: $(rule_line E16))"; fi
+done
+spec "$SPECS/l18p.md" allowed "J-04" "J-02"
+printf '%s\n' '' 'The rejected metadata was:' '' '```markdown' '## Goal Mode Metadata' '- **Side-effect policy:** none' '```' >> "$SPECS/l18p.md"
+lint "$SPECS/l18p.md" --side-effects "$LED_DECL"
+if has_rule E13; then _l18p=n; echo "      (a fenced metadata quotation in NOTES made the policy restrictive)"; fi
+[[ "$_l18p" == y ]] \
+  && assert "L18p: a re-planned spec may quote the rejected sections inside a correctly paired fence without being scanned" "pass" \
+  || assert "L18p: fenced quotations" "fail"
+PYTHONPATH="$LIB" timeout 60 python3 - <<'PY' \
+  && assert "L18q: a 37 000-character TC line with 800 activities lints in seconds (the negation scan stays linear)" "pass" \
+  || assert "L18q: negation scan performance" "fail"
+import time
+import iter_spec as S
+line = "- TC-4: " + " ".join(["no error appears when launching a new run and"] * 800)
+t0 = time.time()
+S.find_mutation_prohibitions("## TESTING REQUIREMENTS\n" + line + "\n")
+assert time.time() - t0 < 20, time.time() - t0
+PY
 spec "$SPECS/l18e.md" allowed "J-04" "J-02"
 sed -i 's/^## OUT OF SCOPE$/## OUT OF SCOPE (this iteration)/; s/^## DEFINITION OF DONE$/## Definition of Done (DoD)/' "$SPECS/l18e.md"
 python3 - "$SPECS/l18e.md" <<'PY'
@@ -2466,7 +2758,12 @@ grep -q 'ERROR E16' "$CANARY.prompt-2" 2>/dev/null && grep -q 'WARN W02' "$CANAR
 
 # ── Part P: prompts + observer through the REAL lean executor ────────────────
 echo "== P. lean end-to-end: replay observation -> next-iteration E13 -> prompts"
-P_BE=48861; P_FE=48862
+# Free ports per run: two suites running at once must never share (or kill) each other's servers.
+read -r P_BE P_FE < <(python3 -c 'import socket
+socks = [socket.socket() for _ in range(2)]
+for s in socks:
+    s.bind(("127.0.0.1", 0))
+print(*[s.getsockname()[1] for s in socks])')
 SRV_DIR="$WORK/srv"; mkdir -p "$SRV_DIR"
 for _p in "$P_BE" "$P_FE"; do
   ( cd "$SRV_DIR" && exec python3 -m http.server "$_p" ) >/dev/null 2>&1 &

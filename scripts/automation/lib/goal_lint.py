@@ -47,11 +47,11 @@ are quality signals:
                              prints paste-ready lines.
     WARN  side-effects-unattributed  (HARD-3) a journey id the drift gate sees
                              but the side-effect parser cannot attribute: its
-                             header sits inside what the parser reads as a
-                             code fence (a stray or unclosed fence above it),
-                             or it is only mentioned inside other journeys.
-                             The preflight honours only a stated `mutating`
-                             for it (`none` never counts).
+                             only header sits inside a code fence (an example,
+                             or a stray fence shifted the reading), or it is
+                             only mentioned inside other journeys. The
+                             preflight honours only a stated `mutating` for it
+                             (`none` never counts).
 
 Exit codes: 0 clean, 1 warnings only, 2 structural errors (including
 unreadable file). Output: one line per finding + a summary; silent when
@@ -68,7 +68,7 @@ import sys
 from collections import namedtuple
 from pathlib import Path
 
-from goal_gate import (_journey_blocks, journey_step_hints, parse_side_effect_declarations,
+from goal_gate import (_journey_blocks, attribution_problem, journey_step_hints, parse_side_effect_declarations,
                        side_effect_journey_views)
 
 Finding = namedtuple("Finding", "severity rule line message")  # line: int|None
@@ -299,13 +299,11 @@ def lint_text(text: str) -> list[Finding]:
             continue
         reported.add(jid)
         ln = next((_line_of(s) for j, s, _e in blocks if j == jid), None)
-        where = ("its header sits inside what the parser reads as a code fence (look for a stray or unclosed "
-                 "``` / ~~~ line above it)" if d.get("unattributed_reason") == "fenced-header"
-                 else "it is only mentioned inside other journeys, never defined at top level")
+        reads = "mutating" if "mutating" in (d.get("stated_values") or []) else "unknown"
         findings.append(Finding(
             "WARN", "side-effects-unattributed", ln,
-            f"journey {jid}: {where} — the side-effect preflight reads it as {d['declared'] or 'unknown'} "
-            "and honours only a stated 'mutating' for it",
+            f"journey {jid}: {attribution_problem(d)} — the side-effect preflight reads it as {reads} "
+            "(a stated 'none' is not trusted, a stated 'mutating' is)",
         ))
 
     # product-shape-empty (WARN): >=2 journeys naming the same value/metric is

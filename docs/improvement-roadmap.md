@@ -5574,7 +5574,7 @@ Four root causes: governors read proxies instead of facts (HARD-1..3); ownership
     malformed format still counts as mutating (a malformed line never makes a journey less
     restrictive). (5) Declarations are parsed with a correctly-bounded block splitter — see
     CAND-JOURNEY-BLOCKS in §16 for the pre-existing `_journey_blocks` quirk it avoids.
-  - *Verify:* `bash tests/automation/test-side-effects.sh` (279 checks after revision 5, incl. the
+  - *Verify:* `bash tests/automation/test-side-effects.sh` (285 checks after revision 6, incl. the
     exact TenSteps iteration-9 contradiction, the none→allowed tripwire, E15 fail-closed with zero
     dispatch in block AND warn mode, the real lean executor with a fake Playwright) · self-tests of
     `demo_runner.py`, `goal_gate.py`, `goal_lint.py`, `iter_spec.py`, `artifact_schemas.py` ·
@@ -5761,6 +5761,55 @@ Four root causes: governors read proxies instead of facts (HARD-1..3); ownership
       false positives otherwise); a policy table header row (`| Side-effect policy | Meaning |`) in
       the metadata section reads as restrictive (E02 + E13, the safe direction); `goal_gate.py`
       imports `iter_spec.fenced_line_flags`, so a vendored sync must copy both files together.
+  - *Revision 6 (2026-09-17, after a fifth adversarial review of `421d6c2`; RED: the revised suite
+    fails 9 checks against `421d6c2`, GREEN 285/0):*
+    - **Negation, redesigned (Critical):** revision 5's word allowlists silenced E16 on natural
+      prohibition wording both earlier revisions caught ("without the user launching a new run",
+      "without editing the ledger or launching …", "never re-launching …", "…: forbidden",
+      "launching a new run must not be part of this pass"). The rule is now a deny-list, decided per
+      sentence for EVERY place an activity verb starts: a negation reaches the activity unless a
+      finite or auxiliary verb, a subordinator or a clause break lies between them (subjects,
+      objects, adverbs, any coordinated gerund list and asides do not stop it); after the activity
+      any negation counts unless a subordinator, a clause break or an affirmative verb comes first;
+      a negation is dead when it denies a problem or a requirement ("no error appears when …", "…
+      is not blocked", "… does not require a reload") or pre-existing data ("… must not modify any
+      pre-existing ledger row"); an affirmed activity ("… is expected", "… adds a row") is exempt.
+      Every verb takes a re- prefix, no-break spaces are spaces, OUT OF SCOPE also lists an
+      imperative ("- Create or edit ledger rows") and nouns ("New run launches", "new ledger rows",
+      "ledger row edits"). A 195-line labelled table (review rounds 4 and 5 plus the implementer's)
+      is a test: every prohibition reported, every affirmative line clean — {aa8996f, a57c633}
+      miss {49, 39} of its 81 prohibitions and over-report {23, 31} of its 48 clean lines (the
+      reviewer's 129-line table). Over the 612 real specs nothing is lost and the 4 TenSteps lines
+      stay gained.
+    - **Fenced journey headers (Critical):** revision 5 made a fenced header's id ambiguous even
+      for a correctly fenced example and read the certified span, so an example (or a neighbour's
+      line) became a "declared mutating" and a real DECLARATION CONFLICT disappeared. Now a fenced
+      header makes a DEFINED id ambiguous only when the fence reading is suspect (an unclosed
+      top-level fence opener, `fence_scan`); an extra view reads only the header's own list item;
+      what it states is `stated_values` provenance — never `declared` (prompts say "ambiguous /
+      unattributed declaration") — and a conflict still needs the journey's own definition to say
+      `none`.
+    - **Fence-blind reads only when suspect (Important):** the fence-blind prohibition scan and
+      policy reading run only when the fence reading is suspect (an unclosed opener, or a metadata
+      heading that exists only inside a fence or comment — a wrapped spec) or, for the policy, when a
+      policy-shaped line inside the metadata section is fenced or commented out. A re-planned spec
+      may quote the rejected sections inside a closed fence; a blind-only E16 says it was read with
+      fences ignored (`fence_blind`).
+    - **Negative paths (Important):** "no run is launched / created" is not a prohibition in a
+      sentence that describes a refused request ("… responds 400 …", "… a validation error is
+      shown …").
+    - **Minor:** a fence opened on a list-item line ends with its item; the negation scan reads a
+      bounded window around each activity (found by the implementer: an 800-activity, 37 000-character
+      line took minutes, now well under a second — L18q); the P-part of the suite binds free ports,
+      so two suites can run at once (the P9 flake); the decomposer contract and the docs say how to
+      quote a rejected spec and what a fenced policy line means.
+    - *Not changed (reported):* "… is not done automatically; the user clicks Run" stays a false
+      positive (safe direction, as in `a57c633`); the passive "no ledger rows are created" stays
+      unscanned; negations that invert word order ("at no point is a new run launched") and
+      prohibitions phrased only through a subordinate clause are not read; a stray fence in a spec
+      with an even number of fence lines leaves no unclosed opener, so the suspicion signal misses
+      it (no real spec or goal.md has one); the 612-spec corpus holds only 6 activity lines, so the
+      real-world false-positive rate of the negation rule is still unmeasured.
   - *Owed:* G8 fresh-session certification; the G9-gated real session (a replay-observed mutation in
     the sidecar, no TC failed on a journey's own mutation); vendored per-file sync — products must
     sync this `goal_gate.py` together with `iter_spec.py` BEFORE adding `- Side effects:` lines (older code hashes those lines as
