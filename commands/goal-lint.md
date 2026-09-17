@@ -17,7 +17,10 @@ paste-ready. Do not launch the engine, dispatch agents, or edit any other file.
    the user to author one with `/goal-init` — there is nothing to lint.
 
 1b. **Side-effect pass (HARD-3, deterministic).** Run
-   `python3 scripts/automation/lib/goal_gate.py side-effects docs/goal.md --suggest`.
+   `python3 scripts/automation/lib/goal_gate.py side-effects docs/goal.md --suggest`
+   (when a goal session already exists, add
+   `--sidecar runs/goal-session-<sid>/state/journey-side-effects.json` so its replay
+   observations are considered — without it no line can say "contradicted by a replay").
    It prints, per journey, whether its optional `- Side effects: none | mutating — <note>`
    line is missing, invalid (for example `read-only`, which is not a value) or contradicted
    by a replay observation, with paste-ready replacement lines. A journey without a valid

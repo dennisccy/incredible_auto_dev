@@ -485,8 +485,8 @@ _bqa_fork_reap() {
   # ports so the sequential rerun boots on the fixed tree.
   _bqa_kill_port_servers
   replay_lane_paths "$ITER_NAME"
-  rm -f "$_BQA_STATE_FILE" "$_BQA_RC_FILE" "${REGRESSION_RESULTS:-}" "${CANARY_RESULTS:-}" \
-        "${REPLAY_SIDE_EFFECTS_RUN:-}" 2>/dev/null || true
+  rm -f "$_BQA_STATE_FILE" "$_BQA_RC_FILE" "${REGRESSION_RESULTS:-}" "${CANARY_RESULTS:-}" 2>/dev/null || true
+  replay_side_effects_retire "${REPLAY_SIDE_EFFECTS_RUN:-}"   # HARD-3: archived, never deleted
   echo "[goal-iter-lean] Forked replay lane is dead and its lane files are discarded — safe to invalidate."
   return 0
 }
@@ -572,8 +572,8 @@ _bqa_full_fork_reap() {
   _bqa_kill_port_servers
   replay_lane_paths "$ITER_NAME"
   rm -f "$_BQA_FULL_RC_FILE" "$_BQA_FULL_PID_FILE" \
-        "${REGRESSION_RESULTS:-}" "${LLM_RESULTS:-}" "${UI_TEST_RESULTS:-}" "${CANARY_RESULTS:-}" \
-        "${REPLAY_SIDE_EFFECTS_RUN:-}" 2>/dev/null || true
+        "${REGRESSION_RESULTS:-}" "${LLM_RESULTS:-}" "${UI_TEST_RESULTS:-}" "${CANARY_RESULTS:-}" 2>/dev/null || true
+  replay_side_effects_retire "${REPLAY_SIDE_EFFECTS_RUN:-}"   # HARD-3: archived, never deleted
   record_telemetry_event "parallel_bqa_wasted_dispatch" "$(jq -cn --arg n "$ITER_NAME" \
       '{mode:"full", iter_name:$n,
         wasted:"one full browser-qa dispatch (LLM lane included) ran against the pre-fix tree and was discarded on the attempt-1 review FAIL",

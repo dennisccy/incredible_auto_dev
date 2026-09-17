@@ -364,7 +364,7 @@ $(if [[ -n "${_bqa_nudge:-}" ]]; then echo "REQUIRED DELIVERABLE (golden-coverag
   # HARD-3: the engine-built side-effect context (lib/replay-lane.sh), appended
   # to the goal-lanes note. Empty when no context applies — the prompt is then
   # byte-identical. Goal-session iterations only (plain phase mode never sees it).
-  _se_block="$(side_effects_prompt_block "${CHAIN_SIDE_EFFECTS_FILE:-}" "$SPEC")"
+  _se_block="$(side_effects_prompt_block "${CHAIN_SIDE_EFFECTS_FILE:-}" "$SPEC" full)"
   [[ -n "$_se_block" ]] && _goal_lanes_note+=$'\n'"$_se_block"
 fi
 

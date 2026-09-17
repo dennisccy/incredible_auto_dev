@@ -75,8 +75,8 @@ Write each journey with:
     There is no "read-only" value: if a journey POSTs to an endpoint that only computes and
     stores nothing, list that endpoint in
     project-extensions/side-effects/read-only-endpoints.txt (one "POST /api/path" per line)
-    and declare the journey "none". Editing this line never invalidates a journey's
-    recorded pass. `python3 scripts/automation/lib/goal_gate.py side-effects docs/goal.md
+    and declare the journey "none". Editing a well-formed line never invalidates a
+    journey's recorded pass (a malformed one is ordinary journey text). `python3 scripts/automation/lib/goal_gate.py side-effects docs/goal.md
     --suggest` prints suggested lines.
 -->
 

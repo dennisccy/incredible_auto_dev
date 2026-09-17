@@ -62,10 +62,15 @@
 # HARD-3 side-effect observer: unless CHAIN_SIDE_EFFECT_OBSERVER is off, every
 # verify call also records same-project POST/PUT/PATCH/DELETE requests into the
 # engine-owned sidecar runs/goal-session-<sid>/state/journey-side-effects.json
-# (read at the NEXT iteration's preflight) and this iteration's run record
+# (read at the NEXT iteration's preflight) and this run's record
 # iter-<N>/replay-side-effects.json, from which side_effect_observed /
-# side_effect_exception_applied telemetry is emitted. side_effects_prompt_block
-# renders the engine-built SIDE-EFFECT CONTEXT for BOTH browser lanes.
+# side_effect_exception_applied / side_effect_clear_refused /
+# side_effect_sidecar_update_failed telemetry is emitted. A previous record is
+# never deleted — replay_side_effects_retire renames it (…/replay-side-effects.
+# <stamp>.json) — because the per-run records are the durable observation
+# history the preflight rebuilds and repairs the sidecar from.
+# side_effects_prompt_block renders the engine-built SIDE-EFFECT CONTEXT for BOTH
+# browser lanes.
 #   Out of partition+verify: R_REPLAY, R_LLM, _use_replay, REPLAY_FAILED,
 #        REPLAY_SKIPPED_INFRA, REPLAY_MASS_FAIL, REPLAY_CANARIES (SPEED-22)
 
@@ -163,13 +168,28 @@ replay_lane_paths() {
   REPLAY_SIDE_EFFECTS_RUN="$REPO_ROOT/runs/goal-session-${SID}/iter-${_rl_iter##*-iter-}/replay-side-effects.json"
 }
 
+# replay_side_effects_retire <record> — HARD-3: move a previous per-run
+# side-effect record out of the way (renamed beside it, never deleted), so it is
+# never read as the current run's record while its observations stay on disk
+# for the preflight. Never fails the caller.
+replay_side_effects_retire() {
+  local _rr="${1:-}" _rr_to
+  [[ -n "$_rr" && -f "$_rr" ]] || return 0
+  _rr_to="${_rr%.json}.$(date -u +%Y%m%dT%H%M%S%N)-$$-${RANDOM}.json"
+  mv -f "$_rr" "$_rr_to" 2>/dev/null \
+    || _replay_lane_warn "could not archive the previous side-effect record $_rr (it stays in place)"
+  return 0
+}
+
 # One verify invocation over the golden set — extracted so the REL-5 retry is
 # literally the same command. $1 = iter/phase name, $2 = journey csv.
 # HARD-3: the side-effect observer rides every verify call unless
-# CHAIN_SIDE_EFFECT_OBSERVER is off (rollback knob, default on).
+# CHAIN_SIDE_EFFECT_OBSERVER is off (rollback knob, default on); each call starts
+# from a retired (archived) run record.
 _replay_lane_verify_once() {
   local _se=()
   if side_effect_knob_on CHAIN_SIDE_EFFECT_OBSERVER on; then
+    replay_side_effects_retire "$REPLAY_SIDE_EFFECTS_RUN"
     _se=(--side-effects-out "$REPLAY_SIDE_EFFECTS_SIDECAR" --side-effects-run-out "$REPLAY_SIDE_EFFECTS_RUN")
   fi
   python3 "$DEMO_RUNNER" --mode verify \
@@ -180,10 +200,12 @@ _replay_lane_verify_once() {
 }
 
 # HARD-3: emit side_effect_observed (one per replayed journey — zero counts
-# included, so a status flip between iterations is visible) and
-# side_effect_exception_applied (one per applied read-only exception) from THIS
-# run's record, plus one log line naming the mutating journeys. Never fails the
-# lane. $1 = iter/phase name.
+# included, so a status flip between iterations is visible),
+# side_effect_exception_applied (one per applied read-only or auth exclusion,
+# `kind` says which), side_effect_clear_refused (a complete clean replay that
+# could not clear an earlier mutation recorded under another golden) and
+# side_effect_sidecar_update_failed from THIS run's record, plus log lines.
+# Never fails the lane. $1 = iter/phase name.
 _replay_lane_side_effect_events() {
   local _se_iter="$1" _se_name _se_payload
   [[ -f "${REPLAY_SIDE_EFFECTS_RUN:-}" ]] || return 0
@@ -191,6 +213,8 @@ _replay_lane_side_effect_events() {
     [[ -n "$_se_name" && -n "$_se_payload" ]] || continue
     if [[ "$_se_name" == "log" ]]; then
       _replay_lane_log "Side effects observed during replay (mutating requests per journey): $_se_payload — recorded in $(basename "${REPLAY_SIDE_EFFECTS_SIDECAR:-journey-side-effects.json}"); the next iteration's preflight reads it."
+    elif [[ "$_se_name" == "warn" ]]; then
+      _replay_lane_warn "$_se_payload"
     elif declare -F record_telemetry_event >/dev/null 2>&1; then
       record_telemetry_event "$_se_name" "$_se_payload" || true
     fi
@@ -200,25 +224,50 @@ try:
     rec = json.load(open(sys.argv[1]))
 except Exception:
     sys.exit(0)
+if not isinstance(rec, dict):
+    sys.exit(0)
 name = sys.argv[2]
+def num(v):
+    try:
+        return int(v or 0)
+    except (TypeError, ValueError):
+        return -1
 mutated = []
-for jid, o in sorted((rec.get("journeys") or {}).items()):
+journeys = rec.get("journeys") if isinstance(rec.get("journeys"), dict) else {}
+for jid, o in sorted(journeys.items()):
     if not isinstance(o, dict):
         continue
-    count = int(o.get("mutating_count") or 0)
+    count = num(o.get("mutating_count"))
     sample = [str(r.get("method")) + " " + str(r.get("path")) for r in (o.get("requests") or [])
               if isinstance(r, dict) and r.get("class") == "mutating"][:3]
     if count:
         mutated.append(jid + "(" + str(count) + ")")
     print("side_effect_observed\t" + json.dumps({
         "iter_name": name, "journey": jid, "mutating_count": count,
-        "auth_count": int(o.get("auth_count") or 0), "readonly_count": int(o.get("readonly_count") or 0),
-        "sample": sample, "complete": bool(o.get("complete"))}, sort_keys=True))
-    for e in o.get("exceptions_applied") or []:
-        if isinstance(e, dict):
-            print("side_effect_exception_applied\t" + json.dumps(
-                {"iter_name": name, "journey": jid, "method": e.get("method"), "path": e.get("path")},
-                sort_keys=True))
+        "auth_count": num(o.get("auth_count")), "readonly_count": num(o.get("readonly_count")),
+        "sample": sample, "complete": bool(o.get("complete")),
+        "golden": (o.get("golden_sha256") or "")[:12] or None}, sort_keys=True))
+    for kind, key in (("read-only", "exceptions_applied"), ("auth", "auth_ignored")):
+        for e in o.get(key) or []:
+            if isinstance(e, dict):
+                print("side_effect_exception_applied\t" + json.dumps(
+                    {"iter_name": name, "journey": jid, "kind": kind, "method": e.get("method"),
+                     "path": e.get("path")}, sort_keys=True))
+side = rec.get("sidecar") if isinstance(rec.get("sidecar"), dict) else {}
+for jid, n in sorted((side.get("clear_refused") or {}).items()):
+    if isinstance(n, dict):
+        print("side_effect_clear_refused\t" + json.dumps({
+            "iter_name": name, "journey": jid, "golden": (n.get("golden_sha256") or "")[:12] or None,
+            "mutating_golden": (n.get("mutating_golden_sha256") or "")[:12] or None,
+            "mutating_iter": n.get("mutating_iter"), "sample": n.get("sample") or []}, sort_keys=True))
+        print("warn\tjourney " + jid + " replayed clean, but that cannot clear the mutation recorded in "
+              + str(n.get("mutating_iter_name") or n.get("mutating_iter")) + " under another golden script — it stays MUTATING")
+if side.get("path") and side.get("updated") is False and journeys:
+    print("side_effect_sidecar_update_failed\t" + json.dumps({
+        "iter_name": name, "journeys": sorted(journeys), "message": str(side.get("message") or "")[:300]},
+        sort_keys=True))
+    print("warn\tthe side-effect sidecar was NOT updated (" + str(side.get("message") or "?")[:200]
+          + ") — this run's record keeps the observations and the next preflight merges them")
 if mutated:
     print("log\t" + " ".join(mutated))
 PYEVENTS
@@ -226,16 +275,18 @@ PYEVENTS
   return 0
 }
 
-# side_effects_prompt_block <ledger> <spec> — the engine-built SIDE-EFFECT
-# CONTEXT for a browser-lane prompt (HARD-3), or NOTHING when no context applies
-# (no readable ledger, or neither a declared policy nor a MUTATING journey in
-# the spec's journey set) — the caller's prompt is then byte-identical.
-# The engine-scheduled make-up journeys (CHAIN_BQA_MAKEUP_JOURNEYS) join the set.
+# side_effects_prompt_block <ledger> <spec> [lean|full] — the engine-built
+# SIDE-EFFECT CONTEXT for a browser-lane prompt (HARD-3), or NOTHING when no
+# context applies (no readable ledger, or neither a declared policy nor a
+# MUTATING journey in the spec's journey set) — the caller's prompt is then
+# byte-identical. The engine-scheduled make-up journeys
+# (CHAIN_BQA_MAKEUP_JOURNEYS) join the set; `full` adds one sentence for the
+# full-depth lane, which also executes UT- test cases.
 side_effects_prompt_block() {
-  local _sp_ledger="${1:-}" _sp_spec="${2:-}"
+  local _sp_ledger="${1:-}" _sp_spec="${2:-}" _sp_kind="${3:-lean}"
   [[ -n "$_sp_ledger" && -f "$_sp_ledger" ]] || return 0
   python3 "$_REPLAY_LANE_LIB_DIR/iter_spec.py" side-effect-context --mode lane \
-    --side-effects "$_sp_ledger" ${_sp_spec:+--spec "$_sp_spec"} \
+    --side-effects "$_sp_ledger" ${_sp_spec:+--spec "$_sp_spec"} --lane-kind "$_sp_kind" \
     --makeup-journeys "${CHAIN_BQA_MAKEUP_JOURNEYS:-}" 2>/dev/null || true
 }
 
@@ -437,7 +488,8 @@ replay_lane_partition_and_verify() {
   # into this run — a merge would ingest them as current output, and a lane
   # that does not engage this run (no goldens, hatch off) would leave last
   # run's files masquerading as this iteration's. Absent beats stale.
-  rm -f "$REGRESSION_RESULTS" "$LLM_RESULTS" "$CANARY_RESULTS" "${REPLAY_SIDE_EFFECTS_RUN:-}" 2>/dev/null || true
+  rm -f "$REGRESSION_RESULTS" "$LLM_RESULTS" "$CANARY_RESULTS" 2>/dev/null || true
+  replay_side_effects_retire "${REPLAY_SIDE_EFFECTS_RUN:-}"
 
   # A golden that fails validation is quarantined (renamed *.json.invalid) and
   # its journey routed to the LLM lane — previously an invalid golden produced

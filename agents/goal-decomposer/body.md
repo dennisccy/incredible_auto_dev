@@ -162,25 +162,27 @@ Self-check before you finish: **Work kind, Depth and IN SCOPE must agree.** If y
 
 Some journeys change persisted data as part of their own steps (J-04 "click Run" launches a run and appends a ledger row). Before you are dispatched, the engine builds a **side-effect ledger** for every journey and puts it in your prompt ("Side-effect ledger (deterministic, engine-built): … MUTATING / NONE / Unknown"). A journey is:
 
-- **MUTATING** — the owner declared `- Side effects: mutating — <note>` in `docs/goal.md`, OR a deterministic replay OBSERVED it send a POST/PUT/PATCH/DELETE. An observation always beats a `none` declaration.
-- **NONE** — the owner declared `- Side effects: none` and nothing was observed.
-- **Unknown** — no valid declaration and no observation.
+- **MUTATING** — the owner declared `- Side effects: mutating — <note>` in `docs/goal.md`, OR a deterministic replay OBSERVED it send a POST/PUT/PATCH/DELETE (it stays observed until a complete replay of the same golden script shows no write). An observation always beats a `none` declaration; the ledger then says `DECLARED NONE, but observed …`.
+- **NONE** — the owner declared `- Side effects: none`, nothing was observed, and the observations could be read.
+- **Unknown** — no valid declaration and no observation, or observations that could not be read.
 
 You never edit `docs/goal.md` to change these; you plan around them. Write exactly one of:
+
+Use exactly that canonical form: a near-miss label (`Side effect policy`, `**Side-effect policy**:`, a `*` bullet) is E02, because the engine cannot read it and would treat the policy as absent.
 
 - `- **Side-effect policy:** none` — ONLY when no target, required or make-up journey is MUTATING. An Unknown journey under `none` is a warning (W09), an error under the owner's strict mode (E14).
 - `- **Side-effect policy:** allowed` — whenever a journey this iteration executes changes data. Then every TC and DEFINITION OF DONE line must be an **invariant on PRE-EXISTING rows** ("no pre-existing ledger row is edited or deleted; J-04's own Run step may add its new row"), never "nothing changes".
 
-Whatever the policy line says, the engine also scans OUT OF SCOPE, every `TC-` line and DEFINITION OF DONE for explicit no-mutation prohibitions — "row/record/ledger count unchanged", "no new row/run/record", "ledger unchanged/frozen", "must not create/launch/append/write", "no write/mutation/launch", "Any new … run launch". Use those phrases only when you truly mean "the browser run must not change data", and never while a MUTATING journey is in the iteration. Scope exclusions about CODE ("no change to versions.py") are fine.
+Whatever the policy line says, the engine also scans OUT OF SCOPE, DEFINITION OF DONE and every `TC-` line outside GOAL / BACKGROUND / NOTES for explicit no-mutation prohibitions — "row/record/ledger count unchanged", "no new row/run/record", "ledger unchanged/frozen", "must not create/launch/append/write", "no write/mutation/launch", "Any new … run launch", and close variants ("no new portfolio runs", "number of ledger rows unchanged", "creating or editing ledger rows", "launching a new run"). Use those phrases only when you truly mean "the browser run must not change data", and never while a MUTATING journey is in the iteration. Scope exclusions about CODE ("no change to versions.py") are fine, and so is explaining a rejected TC's old wording in BACKGROUND or NOTES — prose there is never scanned.
 
 The contradictions, in plain words:
 
 - **E13** — `policy none`, but a target/required/make-up journey is MUTATING. The error names the journey, why it is mutating (declared, or the observed request and iteration) and the step that mutates.
 - **E16** — an explicit prohibition meets a MUTATING journey. This fires under `allowed`, `none` or no policy line at all: changing `none` to `allowed` does NOT fix it — rewrite the prohibition as an invariant on pre-existing rows. This is exactly the TenSteps iteration-9 failure (OUT OF SCOPE "Any new portfolio run launch … ledger write" and a TC asserting "row count is unchanged", while target J-04's own step 1 clicks Run).
-- **E15** — `policy none` while the ledger itself is unavailable or incomplete. The engine halts (`GATE_BLOCKED`) without a re-plan; do not declare `none` when your prompt says the ledger is UNAVAILABLE or INCOMPLETE.
+- **E15** — `policy none` while the ledger itself is unavailable, incomplete or stale. The engine halts (`GATE_BLOCKED`) without a re-plan — even when the owner runs the lint in warn mode; do not declare `none` when your prompt says the ledger is UNAVAILABLE or INCOMPLETE.
 - **W10** — a prohibition with only Unknown journeys in the iteration (E14 in strict mode). **W11** — the ledger is unavailable under `allowed`/no policy (dispatch continues).
 
-Fixing a side-effect error: declare `allowed` and rewrite the TC/DoD/OUT OF SCOPE line as an invariant, or drop the journey from **Target journeys**. **Never drop a Required-still-passing or make-up journey to dodge a conflict** — the error says so when the journey may not be dropped.
+Fixing a side-effect error: declare `allowed` and rewrite the TC/DoD/OUT OF SCOPE line as an invariant, or drop the journey from **Target journeys**. **Never drop a Required-still-passing or make-up journey to dodge a conflict** — the error says so when the journey may not be dropped. A baseline spec assesses every journey: there, change only the policy and the wording.
 
 ## Picking target journeys (priority rubric — apply top-down)
 

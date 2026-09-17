@@ -43,22 +43,28 @@ CLI:
         exit 2: goal.md unreadable
     python3 goal_gate.py side-effects <goal.md> [--sidecar P] [--out P]
         [--journeys J-01,J-02] [--suggest] [--repo-root DIR] [--readonly-endpoints P]
-        [--iter N] [--iter-name NAME] [--step preflight|pre-evaluator] [--record-digest]
+        [--iter N] [--iter-name NAME] [--step preflight|pre-evaluator]
+        [--build-id ID] [--record-digest]
         HARD-3 journey side-effect ledger. Each journey's status is
-        `mutating` if a deterministic replay OBSERVED a mutation (sidecar) or
-        the owner declared `- Side effects: mutating — <note>`; `none` if the
-        owner declared `none` and nothing was observed; `unknown` otherwise
-        (no line, or an invalid one). Carries the declaration_digest (sha256
-        over the parsed declarations + the read-only exception file), the
-        per-journey declaration_hash and step hints. --record-digest updates
-        the engine-owned sidecar's declaration bookkeeping (never a corrupt
-        one). With --out the ledger is written atomically and stdout carries
-        one `<event>\t<json>` telemetry line per declaration change; without
-        it stdout is the ledger JSON. --suggest prints paste-ready lines and
-        never edits goal.md.
+        `mutating` if a deterministic replay OBSERVED a mutation that no later
+        complete clean replay of the same golden cleared (the sidecar plus the
+        session's per-run records iter-*/replay-side-effects*.json) or the
+        owner declared `- Side effects: mutating — <note>`; `none` if the owner
+        declared `none`, nothing was observed and the observations could be
+        read; `unknown` otherwise (no line, an invalid one, or unreadable
+        observations). Carries the declaration_digest (sha256 over the parsed
+        declarations + the read-only exception file), the per-journey
+        declaration_hash and step hints. --record-digest (needs --out) merges
+        per-run records the sidecar missed and updates the engine-owned
+        sidecar's declaration bookkeeping (never a corrupt one) AFTER the ledger
+        is written. With --out the ledger is written atomically and stdout
+        carries one `<event>\t<json>` telemetry line per recorded change;
+        without it stdout is the ledger JSON. --suggest prints paste-ready
+        lines and never edits goal.md.
         exit 0: ledger complete   exit 3: ledger written but INCOMPLETE
-        (corrupt sidecar / unreadable exception file — a `Side-effect policy:
-        none` spec fails closed on it)   exit 2: goal.md unreadable
+        (corrupt sidecar or run record / unreadable exception file — a
+        `Side-effect policy: none` spec fails closed on it)
+        exit 2: goal.md unreadable, bad arguments, or --out not writable
     python3 goal_gate.py drift <journeys-changed.md> <journey-history.json>
         The enforcement side of hash-journeys (achievement gate, NEED-9):
         every journey listed in the note must have been re-verified against
@@ -73,6 +79,7 @@ CLI:
 """
 from __future__ import annotations
 
+import copy
 import datetime
 import hashlib
 import json
@@ -231,14 +238,16 @@ def _normalize_block(block: str) -> str:
     """Line endings → \\n, per-line rstrip, trailing blank lines dropped — so
     formatting-only edits to goal.md do not read as spec changes.
 
-    HARD-3 (certification path, owner-approved D.3): every `Side effects:`
-    declaration line — valid or not — is DROPPED before hashing, so adding,
-    editing or removing a declaration never creates goal-edit drift. It is not
-    invisible: the separate declaration_digest (side-effects ledger) changes
-    instead, and the engine emits side_effect_declaration_changed. The line set
-    is exactly what parse_side_effect_declarations reads (one regex)."""
+    HARD-3 (certification path, owner-approved D.3): a WELL-FORMED
+    `- Side effects: none | mutating — <note>` line is DROPPED before hashing,
+    so adding, editing or removing a valid declaration never creates goal-edit
+    drift. It is not invisible: the separate declaration_digest (side-effects
+    ledger) changes instead, and the engine emits side_effect_declaration_changed.
+    A MALFORMED declaration-shaped line is ordinary journey text and stays in the
+    hash, so editing it is drift (the safe direction) — the parser that decides
+    "well-formed" is parse_side_effect_declarations' own (one regex, one rule)."""
     lines = block.replace("\r\n", "\n").replace("\r", "\n").split("\n")
-    drop = {i for i, _ in _declaration_line_matches(lines)}
+    drop = _well_formed_declaration_indices(lines)
     lines = [ln.rstrip() for i, ln in enumerate(lines) if i not in drop]
     while lines and lines[-1] == "":
         lines.pop()
@@ -420,19 +429,26 @@ def cmd_goal_slice(
 
 
 # ── HARD-3: journey side-effect declarations + deterministic ledger ──────────
-# Owner-approved schema (plan D.3), one optional line per journey block:
+# Owner-approved schema (plan D.3), one optional list item per journey block:
 #     - Side effects: none | mutating — <note>
 # Absent = `unknown`. Harmless formatting is normalized (case, whitespace,
 # **bold**/`code` around the value, `-`/`–`/`—` before the note). Anything else
-# is invalid (goal-lint ERROR side-effects-invalid) and reads as `unknown` —
-# except that a clearly-stated `mutating` is still honoured when only its
-# FORMAT is wrong: a malformed declaration may never make a journey less
-# restrictive than its stated value. There is deliberately no `read-only` value:
-# a read-only POST endpoint belongs in the digest-tracked exception file.
+# — a near-miss label (`Side effect:`), a line that is not its own list item, an
+# unknown value or a malformed note — is invalid (goal-lint ERROR
+# side-effects-invalid) and reads as `unknown`, except that a clearly-stated
+# `mutating` is still honoured when only its FORMAT is wrong: a malformed
+# declaration may never make a journey less restrictive than its stated value.
+# There is deliberately no `read-only` value: a read-only POST endpoint belongs
+# in the digest-tracked exception file.
+#
+# Certification path: ONLY a well-formed declaration line is dropped before the
+# journey spec_hash (_normalize_block). A malformed one stays journey text, so
+# editing it is goal-edit drift — the safe direction — as well as a change of
+# the declaration digest, which covers a malformed line's full text.
 SIDE_EFFECT_VALUES = ("none", "mutating")
 READONLY_ENDPOINTS_REL = "project-extensions/side-effects/read-only-endpoints.txt"
 _SE_LINE_RE = re.compile(
-    r"^[ \t]*(?:[-*+][ \t]+)?(?:\*\*|__)?(?P<label>side[ \t]*[-_]?[ \t]*effects?)(?:\*\*|__)?"
+    r"^[ \t]*(?P<bullet>[-*+][ \t]+)?(?:\*\*|__)?(?P<label>side[ \t]*[-_]?[ \t]*effects?)(?:\*\*|__)?"
     r"[ \t]*:(?:\*\*|__)?[ \t]*(?P<rest>.*?)[ \t]*$",
     re.IGNORECASE)
 _SE_VALUE_RE = re.compile(r"^[*_`]*(?P<value>[A-Za-z]+)[*_`]*(?P<tail>.*)$", re.S)
@@ -442,16 +458,31 @@ _SE_RAW_VALUE_SPLIT_RE = re.compile(r"[ \t]+[-–—]|[–—]")
 _SE_FENCE_RE = re.compile(r"^[ \t]*(```|~~~)")
 _SE_STEP_RE = re.compile(r"^(?P<indent>[ \t]*)(?P<n>\d+)[.)][ \t]+(?P<text>.*)$")
 _SE_BULLET_RE = re.compile(r"^[ \t]*[-*+][ \t]")
-_SE_CODE_SPAN_RE = re.compile(r"`[^`]*`")
+_SE_CODE_SPAN_RE = re.compile(r"`([^`]*)`")
 # Words that name a state-changing browser action (plan WP3: create|submit|save|
 # delete|run|launch|upload|edit|update|post, with their common inflections).
 # Heuristic ONLY: it drives goal-lint's advisory WARN and the step hints printed
-# next to a finding — it never decides a status.
-_SE_ACTION_WORD_RE = re.compile(
-    r"\b(create[sd]?|creating|submit(?:s|ted|ting)?|save[sd]?|saving|delete[sd]?|deleting"
-    r"|runs?|launch(?:es|ed|ing)?|upload(?:s|ed|ing)?|edit(?:s|ed|ing)?|update[sd]?|updating"
-    r"|posts?|posted|posting)\b",
-    re.IGNORECASE)
+# next to a finding — it never decides a status. A word counts only where the
+# step DOES it: imperatively at the start of a clause ("Run the backfill",
+# "then delete the row", "re-run"), as a control the step operates ("click
+# Run", "press **Save**"), or as an all-caps label / HTTP method ("RUN TODAY",
+# "POST /api/x"). "the run completes", "a past run" and "Run `pytest …`" (a
+# command) do not count.
+_SE_ACTION_STEMS = (r"(?:create[sd]?|creating|submit(?:s|ted|ting)?|save[sd]?|saving|delete[sd]?|deleting"
+                    r"|runs?|launch(?:es|ed|ing)?|upload(?:s|ed|ing)?|edit(?:s|ed|ing)?|update[sd]?|updating"
+                    r"|posts?|posted|posting)")
+_SE_ACTION_WORD_RE = re.compile(rf"\b{_SE_ACTION_STEMS}\b", re.IGNORECASE)
+_SE_CODE_TOKEN = " \x00code\x00 "
+_SE_WORD_END = r"(?![\w-])(?![ \t]*\x00code\x00)"
+_SE_CLAUSE_START_RE = re.compile(
+    r"(?:^|[;:,.!?→—–(\[])[ \t]*(?:(?:then|and|also|now|finally|first|next)[ \t]+)*(?:\*\*|__|[\"'“‘])?"
+    rf"(?:re-?)?(?P<w>{_SE_ACTION_STEMS}){_SE_WORD_END}", re.IGNORECASE)
+_SE_CONTROL_RE = re.compile(
+    r"\b(?:click(?:s|ed|ing)?|press(?:es|ed|ing)?|tap(?:s|ped|ping)?|hit(?:s|ting)?|select(?:s|ed|ing)?"
+    r"|choos(?:e|es|ing)|chose|use[sd]?|using)[ \t]+(?:on[ \t]+)?(?:the[ \t]+)?(?:\*\*|__|[\"'“‘])?"
+    rf"(?P<w>{_SE_ACTION_STEMS}){_SE_WORD_END}", re.IGNORECASE)
+_SE_UPPER_RE = re.compile(r"\b(?P<w>RUNS?|SAVE|SUBMIT|CREATE|DELETE|LAUNCH|UPLOAD|EDIT|UPDATE|POST)(?![\w-])")
+_SE_LABEL_SPAN_RE = re.compile(rf"{_SE_ACTION_STEMS}(?:[ \t]+[\w-]+){{0,2}}", re.IGNORECASE)
 _JOURNEY_NAME_RE = re.compile(r"^\s*-\s+\*\*(J-\d+)\b[\s:.—–-]*(?P<name>.*?)\s*\*\*", re.MULTILINE)
 
 
@@ -505,10 +536,19 @@ def _parse_declaration_line(idx: int, m: "re.Match[str]") -> dict:
     errors = []
     if label != "side effects":
         errors.append(f"the label must be exactly 'Side effects:' (found '{m.group('label').strip()}:')")
+    if not m.group("bullet"):
+        errors.append("write the declaration as its own list item ('- Side effects: …'), "
+                      "not as a continuation of another line")
     if parsed["error"]:
         errors.append(parsed["error"])
     return {"index": idx, "label_ok": label == "side effects", "value": parsed["value"],
-            "raw_value": parsed["raw_value"], "note": parsed["note"], "errors": errors}
+            "raw_value": parsed["raw_value"], "note": parsed["note"], "errors": errors,
+            "text": " ".join(m.group(0).split())}
+
+
+def _well_formed_declaration_indices(lines: list[str]) -> set[int]:
+    """Indices of the lines a journey spec_hash ignores: well-formed declarations only."""
+    return {i for i, m in _declaration_line_matches(lines) if not _parse_declaration_line(i, m)["errors"]}
 
 
 def _effective_declaration(found: list[dict], duplicate_block: bool = False) -> dict:
@@ -529,11 +569,14 @@ def _effective_declaration(found: list[dict], duplicate_block: bool = False) -> 
     else:
         declared = None
     note = next((f["note"] for f in found if f["value"] and f["note"]), "")
-    tuples = [["side effects" if f["label_ok"] else "invalid-label",
-               f["value"] or ("invalid:" + f["raw_value"].lower()), f["note"]] for f in found]
+    # A well-formed line contributes its meaning (formatting-neutral); a
+    # malformed one its whole whitespace-normalized text, so ANY edit to it is
+    # provenance-visible.
+    items = [["side effects", f["value"], f["note"]] if not f["errors"] else ["malformed", f["text"]]
+             for f in found]
     dhash = None
     if found:
-        dhash = hashlib.sha256(json.dumps({"declared": declared or "unknown", "lines": tuples},
+        dhash = hashlib.sha256(json.dumps({"declared": declared or "unknown", "lines": items},
                                           sort_keys=True).encode("utf-8")).hexdigest()
     return {"declared": declared, "valid": not errors, "errors": errors, "note": note,
             "lines": found, "declaration_hash": dhash}
@@ -544,17 +587,17 @@ def _block_lines(block: str) -> list[str]:
 
 
 def side_effect_journey_blocks(text: str) -> list[tuple[str, int, int]]:
-    """(journey_id, start, end) spans with the header indent measured on the
-    header's OWN line.
+    """(journey_id, start, end) spans — nested headers included — with the header
+    indent measured on the header's OWN line.
 
     `_journey_blocks` (the certified spec_hash path — deliberately untouched)
     measures `len(m.group(1))`, and that leading-whitespace group also swallows
     the blank lines before a header, so a journey preceded by two blank lines is
     not a boundary for one preceded by a single blank line and the earlier block
-    runs on into it.
-    Declarations must never be attributed to the wrong journey, so side-effect
-    parsing uses this corrected splitter. Hash neutrality does not depend on it:
-    `_normalize_block` drops every declaration line in whatever block it hashes."""
+    runs on into it. Declarations must never be attributed to the wrong journey,
+    so side-effect parsing uses this corrected splitter (through
+    side_effect_journey_own_blocks). Hash neutrality does not depend on it:
+    _normalize_block judges each line on its own."""
     headers = list(_JOURNEY_HEADER_RE.finditer(text))
 
     def _line_start_and_indent(m: "re.Match[str]") -> tuple[int, int]:
@@ -578,22 +621,52 @@ def side_effect_journey_blocks(text: str) -> list[tuple[str, int, int]]:
     return blocks
 
 
+def side_effect_journey_own_blocks(text: str) -> list[tuple[str, int, int, str, bool]]:
+    """One (journey_id, start, end, own_text, duplicate) per journey DEFINITION.
+
+    A header nested inside a block of the SAME journey (an owner note such as
+    `- **J-10 CLOSED — …**`) is part of that block, not a second definition. The
+    lines of a nested block of ANOTHER journey are blanked out of its parent
+    (newlines kept, so line indices stay relative to `start`): every declaration
+    and step belongs to its innermost journey only. `duplicate` marks a journey
+    id defined more than once at the top of its own nesting."""
+    blocks = side_effect_journey_blocks(text)
+    defs: list[list] = []
+    for jid, s, e in blocks:
+        if any(j2 == jid and s2 < s < e2 for j2, s2, e2 in blocks):
+            continue
+        holes = sorted((s2, min(e2, e)) for j2, s2, e2 in blocks if j2 != jid and s < s2 < e)
+        parts: list[str] = []
+        pos = s
+        for hs, he in holes:
+            if he <= pos:
+                continue
+            hs = max(hs, pos)
+            parts.append(text[pos:hs])
+            parts.append("\n" * text.count("\n", hs, he))
+            pos = he
+        parts.append(text[pos:e])
+        defs.append([jid, s, e, "".join(parts)])
+    counts: dict[str, int] = {}
+    for d in defs:
+        counts[d[0]] = counts.get(d[0], 0) + 1
+    return [(jid, s, e, own, counts[jid] > 1) for jid, s, e, own in defs]
+
+
 def parse_side_effect_declarations(text: str) -> dict[str, dict]:
-    """{journey id: declaration} for every journey block in goal.md text.
+    """{journey id: declaration} for every journey defined in goal.md text.
 
     declaration = {declared: 'none'|'mutating'|None, valid, errors, note, lines,
-    declaration_hash (None when the journey has no declaration line)}."""
+    declaration_hash (None when the journey has no declaration line)}; each
+    line's `index` is relative to the journey block's first line."""
     out: dict[str, dict] = {}
     raw: dict[str, list[dict]] = {}
     dup: set[str] = set()
-    for jid, start, end in side_effect_journey_blocks(text):
-        lines = _block_lines(text[start:end])
-        found = [_parse_declaration_line(i, m) for i, m in _declaration_line_matches(lines)]
-        if jid in raw:
+    for jid, _start, _end, own, duplicate in side_effect_journey_own_blocks(text):
+        found = [_parse_declaration_line(i, m) for i, m in _declaration_line_matches(_block_lines(own))]
+        if duplicate:
             dup.add(jid)
-            raw[jid] = raw[jid] + found
-        else:
-            raw[jid] = found
+        raw[jid] = raw.get(jid, []) + found
     for jid, found in raw.items():
         out[jid] = _effective_declaration(found, duplicate_block=jid in dup)
     return out
@@ -632,17 +705,35 @@ def _journey_steps(block: str) -> list[dict]:
     return [{"n": s["n"], "line": s["line"], "text": " ".join(" ".join(s["parts"]).split())} for s in steps]
 
 
+def _se_plain(text: str) -> str:
+    """Code spans out of the way: a span that is itself a control label (`Run`,
+    `Save draft`) keeps its words; any other span (a path, a command) becomes a
+    placeholder that is never an action and blocks an imperative before it."""
+    def _repl(m: "re.Match[str]") -> str:
+        inner = m.group(1).strip()
+        return inner if _SE_LABEL_SPAN_RE.fullmatch(inner) else _SE_CODE_TOKEN
+    return _SE_CODE_SPAN_RE.sub(_repl, text)
+
+
+def step_action_words(text: str) -> set[str]:
+    """Lower-cased action words a step (or one clause of it) actually performs."""
+    plain = _se_plain(text)
+    words: set[str] = set()
+    for rx in (_SE_CLAUSE_START_RE, _SE_CONTROL_RE, _SE_UPPER_RE):
+        words.update(m.group("w").lower() for m in rx.finditer(plain))
+    return words
+
+
 def journey_step_hints(block: str, cap: int = 3) -> list[dict]:
-    """Numbered steps that name a state-changing action: [{n, line, text, words}].
-    `text` is the step's matching clauses (split on ';'), code spans ignored."""
+    """Numbered steps that perform a state-changing action: [{n, line, text,
+    words}]. `text` is the step's matching clauses (split on ';')."""
     hints: list[dict] = []
     for step in _journey_steps(block):
-        plain = _SE_CODE_SPAN_RE.sub(" ", step["text"])
-        words = sorted({w.lower() for w in _SE_ACTION_WORD_RE.findall(plain)})
+        words = sorted(step_action_words(step["text"]))
         if not words:
             continue
         clauses = [c.strip() for c in step["text"].split(";") if c.strip()]
-        hit = [c for c in clauses if _SE_ACTION_WORD_RE.search(_SE_CODE_SPAN_RE.sub(" ", c))]
+        hit = [c for c in clauses if step_action_words(c)]
         excerpt = "; ".join(hit) if hit else step["text"]
         if len(excerpt) > 200:
             excerpt = excerpt[:199].rstrip() + "…"
@@ -668,7 +759,7 @@ def declaration_digest(decls: dict[str, dict], ro: dict) -> str:
 
 
 def _load_side_effect_sidecar(path) -> tuple["dict | None", "str | None"]:
-    """(data, error). An absent sidecar is (None, None): no observations yet."""
+    """(data, error). An absent sidecar is (None, None): nothing merged yet."""
     if not path:
         return None, None
     p = Path(path)
@@ -676,109 +767,206 @@ def _load_side_effect_sidecar(path) -> tuple["dict | None", "str | None"]:
         raw = p.read_text(encoding="utf-8")
     except FileNotFoundError:
         return None, None
-    except OSError as exc:
-        return None, f"side-effect sidecar {path} is unreadable ({exc.strerror or exc})"
+    except (OSError, ValueError) as exc:
+        return None, f"side-effect sidecar {path} is unreadable ({getattr(exc, 'strerror', None) or exc})"
     try:
         data = json.loads(raw)
-    except ValueError as exc:
+    except (ValueError, RecursionError) as exc:
         return None, f"side-effect sidecar {path} is not valid JSON ({exc})"
-    if not isinstance(data, dict) or not isinstance(data.get("journeys", {}), dict):
-        return None, f"side-effect sidecar {path} has the wrong shape (no 'journeys' object)"
+    from demo_runner import sidecar_shape_error  # noqa: PLC0415
+    shape = sidecar_shape_error(data)
+    if shape:
+        return None, f"side-effect sidecar {path} has the wrong shape ({shape})"
     return data, None
 
 
-def _journey_observation(rec, ro: dict, ignore: list[str], classify) -> dict:
-    """Observed-mutation facts for one journey from its sidecar record.
+def _scan_run_records(sidecar) -> tuple[list, list]:
+    """(records, errors): every per-run observation record of the session the
+    sidecar belongs to (<session>/iter-*/replay-side-effects*.json — current and
+    archived), oldest first. They are never deleted, so the observations stay
+    recoverable when the sidecar is corrupt, moved aside or missed an update."""
+    if not sidecar:
+        return [], []
+    p = Path(sidecar)
+    if p.parent.name != "state":
+        return [], []
+    session = p.parent.parent
+    try:
+        files = sorted(session.glob("iter-*/replay-side-effects*.json"))
+    except OSError as exc:
+        return [], [f"the per-run side-effect records under {session} cannot be listed ({exc})"]
+    from demo_runner import observation_time  # noqa: PLC0415
+    recs: list = []
+    errs: list = []
+    for f in files:
+        try:
+            d = json.loads(f.read_text(encoding="utf-8"))
+        except (OSError, ValueError, RecursionError) as exc:
+            errs.append(f"per-run side-effect record {f} is unreadable ({exc})")
+            continue
+        if (not isinstance(d, dict) or not isinstance(d.get("run_id"), str) or not d["run_id"]
+                or not isinstance(d.get("journeys"), dict)
+                or any(not isinstance(o, dict) for o in d["journeys"].values())):
+            errs.append(f"per-run side-effect record {f} has the wrong shape")
+            continue
+        recs.append({"path": str(f), "run_id": d["run_id"], "observed_at": d.get("observed_at"),
+                     "journeys": d["journeys"]})
+    recs.sort(key=lambda r: (observation_time(r), r["run_id"]))
+    return recs, errs
 
-    The status-driving record is `latest`. When the exception file or the auth
-    list changed since it was recorded, its stored {method, path} sample is
-    re-classified with the CURRENT rules; a truncated sample cannot be, so it
-    stays mutating if it held any candidate request (fail closed)."""
+
+def _reclassify(ev: dict, ro: dict, ignore: list[str], classify, version: int):
+    """(still_mutating, requests, exceptions_applied, auth_ignored, basis) for one
+    recorded observation. When the exception file, the auth list or the
+    classifier rules changed since it was recorded, its stored {method, path}
+    sample is re-classified with the CURRENT rules; a truncated sample cannot
+    be, so it stays mutating if it held any candidate request (fail closed)."""
+    try:
+        mut = int(ev.get("mutating_count") or 0)
+        auth = int(ev.get("auth_count") or 0)
+        roc = int(ev.get("readonly_count") or 0)
+    except (TypeError, ValueError):
+        raise ValueError("observation counts are not integers") from None
+    reqs = ev.get("requests") or []
+    if not isinstance(reqs, list) or any(not isinstance(r, dict) for r in reqs):
+        raise ValueError("observation requests are not a list of objects")
+
+    def _pairs(key: str) -> list:
+        v = ev.get(key) or []
+        return [dict(x) for x in v if isinstance(x, dict)] if isinstance(v, list) else []
+
+    stale = (bool(ev.get("context_mixed"))
+             or ev.get("classifier_version") != version
+             or ev.get("readonly_endpoints_sha256") != ro.get("sha256")
+             or bool(ev.get("readonly_endpoints_error")) != bool(ro.get("error"))
+             or list(ev.get("ignore_paths") or []) != list(ignore))
+    if not stale:
+        return mut > 0, [dict(r) for r in reqs], _pairs("exceptions_applied"), _pairs("auth_ignored"), "recorded"
+    if ev.get("truncated"):
+        return (mut + auth + roc) > 0, [dict(r) for r in reqs], [], [], "reclassification-unverifiable"
+    entries = [] if ro.get("error") else (ro.get("entries") or [])
+    shown = []
+    for r in reqs:
+        r2 = dict(r)
+        r2["class"] = classify(str(r.get("method") or ""), str(r.get("path") or "/"), ignore, entries)
+        shown.append(r2)
+    observed = any(r["class"] == "mutating" for r in shown) or (mut > 0 and not reqs)
+    exceptions = [{"method": r.get("method"), "path": r.get("path")} for r in shown
+                  if r["class"] == "ignored-readonly"]
+    auth_ignored = [{"method": r.get("method"), "path": r.get("path")} for r in shown
+                    if r["class"] == "ignored-auth"]
+    return observed, shown, exceptions, auth_ignored, "reclassified"
+
+
+def _journey_observation(rec, ro: dict, ignore: list[str], classify, version: int) -> dict:
+    """Observed-mutation facts for one journey record (sidecar + un-merged run
+    records). Status evidence is every mutation that no strictly newer complete
+    clean replay of the SAME golden cleared (demo_runner.uncleared_mutations);
+    `observation_sticky` marks one that a newer clean replay of a DIFFERENT
+    golden could not clear."""
+    from demo_runner import observation_time, sidecar_shape_error, uncleared_mutations  # noqa: PLC0415
     base = {"observed_mutating": False, "observed_iter": None, "observed_iter_name": None,
             "observation_complete": None, "observation_basis": None, "observed_at": None,
-            "requests": [], "exceptions_applied": [], "error": None}
+            "observation_sticky": False, "sticky_detail": None, "golden_sha256": None,
+            "requests": [], "exceptions_applied": [], "auth_ignored": [], "error": None}
     if rec is None:
         return base
-    if not isinstance(rec, dict):
-        return {**base, "error": "record is not an object"}
+    shape = sidecar_shape_error({"journeys": {"J": rec}})
+    if shape:
+        return {**base, "error": shape.replace("record J", "the record")}
     latest = rec.get("latest")
-    if latest is None:
-        return base
-    if not isinstance(latest, dict):
-        return {**base, "error": "'latest' is not an object"}
     try:
-        mut = int(latest.get("mutating_count") or 0)
-        auth = int(latest.get("auth_count") or 0)
-        roc = int(latest.get("readonly_count") or 0)
-    except (TypeError, ValueError):
-        return {**base, "error": "observation counts are not integers"}
-    reqs = latest.get("requests") or []
-    if not isinstance(reqs, list) or any(not isinstance(r, dict) for r in reqs):
-        return {**base, "error": "observation requests are not a list of objects"}
-    stale = (latest.get("readonly_endpoints_sha256") != ro.get("sha256")
-             or bool(latest.get("readonly_endpoints_error")) != bool(ro.get("error"))
-             or list(latest.get("ignore_paths") or []) != list(ignore))
-    if not stale:
-        observed, basis = mut > 0, "recorded"
-        shown = [dict(r) for r in reqs]
-        exceptions = [dict(e) for e in (latest.get("exceptions_applied") or []) if isinstance(e, dict)]
-    elif latest.get("truncated"):
-        observed, basis = (mut + auth + roc) > 0, "reclassification-unverifiable"
-        shown = [dict(r) for r in reqs]
-        exceptions = []
-    else:
-        entries = [] if ro.get("error") else (ro.get("entries") or [])
-        shown = []
-        for r in reqs:
-            r2 = dict(r)
-            r2["class"] = classify(str(r.get("method") or ""), str(r.get("path") or "/"), ignore, entries)
-            shown.append(r2)
-        observed = any(r["class"] == "mutating" for r in shown) or (mut > 0 and not reqs)
-        basis = "reclassified"
-        exceptions = [{"method": r.get("method"), "path": r.get("path")} for r in shown
-                      if r["class"] == "ignored-readonly"]
-    return {**base, "observed_mutating": bool(observed), "observed_iter": latest.get("iter"),
-            "observed_iter_name": latest.get("iter_name"), "observation_complete": latest.get("complete"),
-            "observation_basis": basis, "observed_at": latest.get("observed_at"),
-            "requests": shown, "exceptions_applied": exceptions}
+        uncleared = uncleared_mutations(rec)
+        # A clean replay's sample can hold requests an exclusion let through;
+        # re-checked under the current rules, they may be mutations after all.
+        goldens = rec.get("goldens") if isinstance(rec.get("goldens"), dict) else {}
+        cleans = [e["clean"] for e in goldens.values() if isinstance(e, dict) and isinstance(e.get("clean"), dict)]
+        if isinstance(latest, dict):
+            cleans.append(latest)
+        cleans.sort(key=observation_time, reverse=True)
+        for m in uncleared + cleans:
+            observed, shown, exc, auth_ig, basis = _reclassify(m, ro, ignore, classify, version)
+            if not observed:
+                continue
+            sticky = bool(any(m is u for u in uncleared) and isinstance(latest, dict)
+                          and latest.get("complete") is True
+                          and not int(latest.get("mutating_count") or 0)
+                          and observation_time(latest) > observation_time(m))
+            detail = ({"iter": latest.get("iter"), "iter_name": latest.get("iter_name"),
+                       "golden_sha256": latest.get("golden_sha256")} if sticky else None)
+            return {**base, "observed_mutating": True, "observed_iter": m.get("iter"),
+                    "observed_iter_name": m.get("iter_name"), "observation_complete": m.get("complete"),
+                    "observation_basis": basis, "observed_at": m.get("observed_at"),
+                    "observation_sticky": sticky, "sticky_detail": detail,
+                    "golden_sha256": m.get("golden_sha256"), "requests": shown,
+                    "exceptions_applied": exc, "auth_ignored": auth_ig}
+        if isinstance(latest, dict):
+            _o, shown, exc, auth_ig, basis = _reclassify(latest, ro, ignore, classify, version)
+            return {**base, "observed_iter": latest.get("iter"), "observed_iter_name": latest.get("iter_name"),
+                    "observation_complete": latest.get("complete"), "observation_basis": basis,
+                    "observed_at": latest.get("observed_at"), "golden_sha256": latest.get("golden_sha256"),
+                    "requests": shown, "exceptions_applied": exc, "auth_ignored": auth_ig}
+    except (TypeError, ValueError) as exc:
+        return {**base, "error": str(exc)}
+    return base
 
 
 def build_side_effect_ledger(goal_text: str, sidecar=None, readonly_path=None, *, iter_n=None,
-                             iter_name=None, step=None, goal_file=None, env=None) -> dict:
-    """The deterministic per-iteration side-effect ledger (a pure read)."""
-    from demo_runner import classify_candidate, load_readonly_endpoints, side_effect_ignore_paths  # noqa: PLC0415
+                             iter_name=None, step=None, goal_file=None, env=None, build_id=None) -> dict:
+    """The deterministic per-iteration side-effect ledger (a pure read: run
+    records the sidecar has not merged yet are applied in memory)."""
+    from demo_runner import (SIDE_EFFECT_CLASSIFIER_VERSION, classify_candidate,  # noqa: PLC0415
+                             load_readonly_endpoints, merge_side_effect_observations,
+                             side_effect_ignore_paths, side_effect_ignore_paths_report)
     errors: list[str] = []
     decls = parse_side_effect_declarations(goal_text)
     blocks: dict[str, str] = {}
-    for jid, start, end in side_effect_journey_blocks(goal_text):
-        blocks.setdefault(jid, goal_text[start:end])
+    for jid, _start, _end, own, _dup in side_effect_journey_own_blocks(goal_text):
+        blocks.setdefault(jid, own)
     names = {m.group(1): m.group("name").strip() for m in _JOURNEY_NAME_RE.finditer(goal_text)}
     ro = load_readonly_endpoints(readonly_path)
     if ro["error"]:
         errors.append(f"read-only exception file {ro['path']} is {ro['error']} — exceptions cannot be "
                       "applied and recorded observations cannot be re-checked")
-    ignore = list(side_effect_ignore_paths(env))
+    ignore_t, ignore_rejected = side_effect_ignore_paths_report(env)
+    ignore = list(ignore_t)
     side, side_err = _load_side_effect_sidecar(sidecar)
+    unestablished = False
     if side_err:
-        errors.append(side_err + " — observed mutations are unknown this iteration")
-    records = (side or {}).get("journeys") or {}
+        errors.append(side_err + " — observations recorded only there cannot be read this iteration")
+        unestablished = True
+    run_recs, run_errs = _scan_run_records(sidecar)
+    for e in run_errs:
+        errors.append(e + " — the observations it holds are unknown this iteration")
+        unestablished = True
+    merged_runs = set()
+    if isinstance(side, dict) and isinstance(side.get("merged_runs"), list):
+        merged_runs = {r for r in side["merged_runs"] if isinstance(r, str)}
+    pending = [r for r in run_recs if r["run_id"] not in merged_runs]
+    work = copy.deepcopy(side) if isinstance(side, dict) else {}
+    for r in pending:
+        work = merge_side_effect_observations(work, r["journeys"], now="(in memory)")
+    records = work.get("journeys") or {}
     journeys: dict[str, dict] = {}
     for jid, block in blocks.items():
         d = decls[jid]
-        o = _journey_observation(records.get(jid), ro, ignore, classify_candidate)
+        o = _journey_observation(records.get(jid), ro, ignore, classify_candidate, SIDE_EFFECT_CLASSIFIER_VERSION)
         if o["error"]:
-            errors.append(f"side-effect sidecar record for {jid} is unusable ({o['error']})")
+            errors.append(f"side-effect record for {jid} is unusable ({o['error']})")
+        established = not unestablished and not o["error"]
         observed = o["observed_mutating"]
         if observed or d["declared"] == "mutating":
             status = "mutating"
-        elif d["declared"] == "none":
+        elif d["declared"] == "none" and established:
             status = "none"
         else:
-            status = "unknown"
+            status = "unknown"   # includes a `none` whose observations cannot be read
         if observed and d["declared"] == "mutating":
             source = "declared+observed"
         elif observed:
             source = "observed"
+        elif d["declared"] == "none" and not established:
+            source = "declared-unverified"
         elif d["declared"]:
             source = "declared"
         elif d["lines"]:
@@ -797,9 +985,15 @@ def build_side_effect_ledger(goal_text: str, sidecar=None, readonly_path=None, *
             "observed_iter_name": o["observed_iter_name"],
             "observation_complete": o["observation_complete"],
             "observation_basis": o["observation_basis"],
+            "observation_established": established,
+            "observation_sticky": o["observation_sticky"],
+            "sticky_detail": o["sticky_detail"],
             "observed_at": o["observed_at"],
+            "golden_sha256": o["golden_sha256"],
             "requests": o["requests"],
             "exceptions_applied": o["exceptions_applied"],
+            "auth_ignored": o["auth_ignored"],
+            "declaration_conflict": bool(observed and d["declared"] == "none"),
             "status": status,
             "status_source": source,
             "step_hints": [{k: h[k] for k in ("n", "text", "words")} for h in journey_step_hints(block)],
@@ -807,6 +1001,7 @@ def build_side_effect_ledger(goal_text: str, sidecar=None, readonly_path=None, *
     summary = {s: [j for j, r in journeys.items() if r["status"] == s] for s in ("mutating", "none", "unknown")}
     return {
         "schema_version": 1,
+        "build_id": build_id,
         "built_at": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "built_at_step": step,
         "iter": iter_n,
@@ -822,25 +1017,37 @@ def build_side_effect_ledger(goal_text: str, sidecar=None, readonly_path=None, *
         "readonly_endpoints": {k: ro[k] for k in ("path", "present", "sha256", "entries", "invalid", "error")},
         "ignore_paths": ignore,
         "ignore_paths_default": tuple(ignore) == tuple(side_effect_ignore_paths({})),
+        "ignore_paths_rejected": list(ignore_rejected),
+        "run_records_pending": [r["path"] for r in pending],
         "journeys": journeys,
         "summary": summary,
+        "conflicts": [j for j, r in journeys.items() if r["declaration_conflict"]],
         "declaration_errors": [{"journey": j, "errors": r["declaration_errors"]}
                                for j, r in journeys.items() if not r["declaration_valid"]],
     }
 
 
+def _first_mutating(requests) -> str:
+    return next((f"{r.get('method')} {r.get('path')}" for r in requests or []
+                 if isinstance(r, dict) and r.get("class") == "mutating"), "a mutating request")
+
+
 def record_side_effect_declarations(sidecar_path, ledger: dict, iter_n, iter_name) -> tuple[list, "str | None"]:
-    """Engine bookkeeping: record the current declarations + digest in the
-    sidecar (read-modify-write under the same directory lock the observer uses)
-    and return the telemetry events for what changed since the last record. A
-    corrupt sidecar is never overwritten."""
-    from demo_runner import _atomic_write_json, _locked_dir  # noqa: PLC0415
+    """Engine bookkeeping, one read-modify-write under the same directory lock the
+    observer uses: merge every per-run record the sidecar has not merged yet
+    (repair), record the current declarations + digest, and return the telemetry
+    events for what changed since the last record. A corrupt or wrongly-shaped
+    sidecar is never overwritten."""
+    from demo_runner import (_atomic_write_json, _locked_dir,  # noqa: PLC0415
+                             merge_side_effect_observations, sidecar_shape_error)
     events: list = []
     p = Path(sidecar_path)
     cur_decls = {jid: {"declared": j["declared"], "declaration_hash": j["declaration_hash"], "note": j["note"]}
                  for jid, j in ledger["journeys"].items() if j["declaration_hash"]}
     ro_token = _readonly_token(ledger["readonly_endpoints"])
     digest = ledger["declaration_digest"]
+    run_recs, _run_errs = _scan_run_records(p)
+    repaired: list = []
     try:
         p.parent.mkdir(parents=True, exist_ok=True)
         with _locked_dir(p.parent):
@@ -848,10 +1055,16 @@ def record_side_effect_declarations(sidecar_path, ledger: dict, iter_n, iter_nam
             if p.exists():
                 try:
                     current = json.loads(p.read_text(encoding="utf-8"))
-                except (OSError, ValueError) as exc:
-                    return events, f"{p} is unreadable or corrupt ({exc}) — declarations not recorded, file not overwritten"
-                if not isinstance(current, dict):
-                    return events, f"{p} has the wrong shape — declarations not recorded, file not overwritten"
+                except (OSError, ValueError, RecursionError) as exc:
+                    return [], f"{p} is unreadable or corrupt ({exc}) — declarations not recorded, file not overwritten"
+                shape = sidecar_shape_error(current)
+                if shape:
+                    return [], f"{p} has the wrong shape ({shape}) — declarations not recorded, file not overwritten"
+            done = {r for r in current.get("merged_runs") or [] if isinstance(r, str)}
+            for r in run_recs:
+                if r["run_id"] not in done:
+                    current = merge_side_effect_observations(current, r["journeys"])
+                    repaired.append(r)
             prev = current.get("declarations")
             if isinstance(prev, dict):
                 for jid in sorted(set(prev) | set(cur_decls)):
@@ -869,6 +1082,7 @@ def record_side_effect_declarations(sidecar_path, ledger: dict, iter_n, iter_nam
                     events.append(("side_effect_declaration_changed", {
                         "journey": None, "source": "auth-ignore-paths",
                         "from": list(current.get("ignore_paths") or []), "to": list(ledger["ignore_paths"]),
+                        "rejected": list(ledger.get("ignore_paths_rejected") or []),
                         "iter": iter_n, "iter_name": iter_name, "declaration_digest": digest[:12]}))
                 if "readonly_endpoints_sha256" in current and current.get("readonly_endpoints_sha256") != ro_token:
                     events.append(("side_effect_declaration_changed", {
@@ -876,6 +1090,22 @@ def record_side_effect_declarations(sidecar_path, ledger: dict, iter_n, iter_nam
                         "from": (current.get("readonly_endpoints_sha256") or "absent")[:12],
                         "to": (ro_token or "absent")[:12], "iter": iter_n, "iter_name": iter_name,
                         "declaration_digest": digest[:12]}))
+            # A journey declared `none` that a replay observed mutating: reported
+            # once per distinct observation (the evaluator is told every time).
+            prev_conf = current.get("declaration_conflicts")
+            prev_conf = prev_conf if isinstance(prev_conf, dict) else {}
+            conflicts: dict = {}
+            for jid, j in ledger["journeys"].items():
+                if not j.get("declaration_conflict"):
+                    continue
+                sample = _first_mutating(j.get("requests"))
+                conflicts[jid] = f"{sample}@{j.get('observed_at') or ''}"
+                if prev_conf.get(jid) != conflicts[jid]:
+                    events.append(("side_effect_declaration_conflict", {
+                        "journey": jid, "declared": "none", "observed": sample,
+                        "observed_iter": j.get("observed_iter"), "sticky": bool(j.get("observation_sticky")),
+                        "iter": iter_n, "iter_name": iter_name}))
+            current["declaration_conflicts"] = conflicts
             if current.get("declaration_digest") != digest:
                 current["declaration_digest_prev"] = current.get("declaration_digest")
                 current["declaration_digest_changed_iter"] = iter_n
@@ -888,7 +1118,11 @@ def record_side_effect_declarations(sidecar_path, ledger: dict, iter_n, iter_nam
             current.setdefault("journeys", {})
             _atomic_write_json(p, current)
     except (OSError, TimeoutError) as exc:
-        return events, f"declarations not recorded ({exc})"
+        return [], f"declarations not recorded ({exc})"
+    if repaired:
+        events.append(("side_effect_observations_repaired", {
+            "iter": iter_n, "iter_name": iter_name, "runs": [r["run_id"] for r in repaired],
+            "records": [f"{Path(r['path']).parent.name}/{Path(r['path']).name}" for r in repaired]}))
     return events, None
 
 
@@ -902,15 +1136,17 @@ def render_side_effect_suggestions(ledger: dict, goal_path: str) -> str:
         f"# list a read-only POST endpoint in {READONLY_ENDPOINTS_REL} ('POST /api/path') and declare 'none'.",
         "",
     ]
+    if not ledger.get("sidecar"):
+        out[4:4] = ["# No --sidecar was given, so replay observations are not considered: pass",
+                    "# --sidecar runs/goal-session-<sid>/state/journey-side-effects.json to include them."]
     n = 0
     for jid, j in ledger["journeys"].items():
         head = f"{jid} ({j['name']})" if j.get("name") else jid
-        mut_reqs = [f"{r.get('method')} {r.get('path')}" for r in j["requests"] if r.get("class") == "mutating"]
         when = (f"iter-{j['observed_iter']}" if j.get("observed_iter") is not None
                 else (j.get("observed_iter_name") or "an earlier iteration"))
         hint = j["step_hints"][0] if j["step_hints"] else None
         if j["declared"] == "none" and j["observed_mutating"]:
-            sample = mut_reqs[0] if mut_reqs else "a mutating request"
+            sample = _first_mutating(j["requests"])
             out += [f"{head}: declared none, but the replay OBSERVED {sample} in {when} — the observation wins.",
                     f"  suggest:  - Side effects: mutating — <what {sample} creates or changes>",
                     f"  or, only if that endpoint computes without persisting: add '{sample}' to "
@@ -924,7 +1160,7 @@ def render_side_effect_suggestions(ledger: dict, goal_path: str) -> str:
             else:
                 out.append(f"{head}: no 'Side effects:' line (status unknown).")
             if j["observed_mutating"]:
-                out.append(f"  evidence: the replay observed {mut_reqs[0] if mut_reqs else 'a mutation'} in {when}")
+                out.append(f"  evidence: the replay observed {_first_mutating(j['requests'])} in {when}")
             if hint:
                 out.append(f"  evidence: step {hint['n']} mentions {', '.join(hint['words'])}: '{hint['text']}'")
             if j["observed_mutating"] or hint or j["declared"] == "mutating":
@@ -942,8 +1178,14 @@ def render_side_effect_suggestions(ledger: dict, goal_path: str) -> str:
 def cmd_side_effects(goal_path: str, opts: dict) -> int:
     try:
         text = Path(goal_path).read_text(encoding="utf-8")
-    except OSError as exc:
+    except (OSError, ValueError) as exc:
         print(f"[side-effects] goal file unreadable: {goal_path}: {exc}", file=sys.stderr)
+        return 2
+    out = opts.get("--out")
+    sidecar = opts.get("--sidecar")
+    if opts.get("--record-digest") and not out:
+        print("[side-effects] --record-digest needs --out (change events are printed as tab-separated lines)",
+              file=sys.stderr)
         return 2
     readonly = opts.get("--readonly-endpoints")
     if readonly is None:
@@ -956,50 +1198,56 @@ def cmd_side_effects(goal_path: str, opts: dict) -> int:
         except ValueError:
             print(f"[side-effects] --iter must be an integer (got {opts['--iter']!r})", file=sys.stderr)
             return 2
-    sidecar = opts.get("--sidecar")
     ledger = build_side_effect_ledger(text, sidecar=sidecar, readonly_path=readonly, iter_n=iter_n,
                                       iter_name=opts.get("--iter-name"), step=opts.get("--step"),
-                                      goal_file=goal_path)
-    events: list = []
-    if opts.get("--record-digest") and sidecar:
-        if ledger["complete"]:
-            events, rec_err = record_side_effect_declarations(sidecar, ledger, iter_n, opts.get("--iter-name"))
-            if rec_err:
-                ledger["record_error"] = rec_err
-                print(f"[side-effects] {rec_err}", file=sys.stderr)
-            else:
-                side, _ = _load_side_effect_sidecar(sidecar)
-                side = side or {}
-                ledger["recorded_declaration_digest"] = side.get("declaration_digest")
-                ledger["declaration_digest_prev"] = side.get("declaration_digest_prev")
-                ledger["declaration_digest_changed_iter"] = side.get("declaration_digest_changed_iter")
-        else:
-            ledger["record_error"] = "declarations not recorded: the ledger is incomplete"
+                                      goal_file=goal_path, build_id=opts.get("--build-id"))
     if opts.get("--suggest"):
         sys.stdout.write(render_side_effect_suggestions(ledger, goal_path))
         return 0
+    recording = bool(opts.get("--record-digest") and sidecar)
+    full_ledger = dict(ledger)          # recording always sees every journey
+    if recording:
+        if ledger["complete"]:
+            # What the record below will store (it runs only after --out is written,
+            # so a failed write can never move the digest without its events).
+            if ledger.get("recorded_declaration_digest") != ledger["declaration_digest"]:
+                ledger["declaration_digest_prev"] = ledger.get("recorded_declaration_digest")
+                ledger["declaration_digest_changed_iter"] = iter_n
+                ledger["recorded_declaration_digest"] = ledger["declaration_digest"]
+        else:
+            ledger["record_error"] = "declarations not recorded: the ledger is incomplete"
     wanted = [j for j in re.findall(r"J-\d+", opts.get("--journeys") or "")]
     if wanted:
         ledger["journeys"] = {j: r for j, r in ledger["journeys"].items() if j in wanted}
         ledger["summary"] = {s: [j for j in lst if j in wanted] for s, lst in ledger["summary"].items()}
+        ledger["conflicts"] = [j for j in ledger["conflicts"] if j in wanted]
     ledger["declaration_digest_changed_this_iter"] = bool(
         iter_n is not None and ledger.get("declaration_digest_changed_iter") == iter_n
         and ledger.get("declaration_digest_prev"))
     for e in ledger["errors"]:
         print(f"[side-effects] INCOMPLETE: {e}", file=sys.stderr)
-    out = opts.get("--out")
-    if out:
-        from demo_runner import _atomic_write_json  # noqa: PLC0415
-        try:
-            Path(out).parent.mkdir(parents=True, exist_ok=True)
-            _atomic_write_json(out, ledger)
-        except OSError as exc:
-            print(f"[side-effects] could not write {out}: {exc}", file=sys.stderr)
-            return 2
-        for name, payload in events:
-            print(f"{name}\t{json.dumps(payload, sort_keys=True)}")
-    else:
+    if not out:
         print(json.dumps(ledger, sort_keys=True, indent=1))
+        return 0 if ledger["complete"] else 3
+    from demo_runner import _atomic_write_json  # noqa: PLC0415
+    try:
+        Path(out).parent.mkdir(parents=True, exist_ok=True)
+        _atomic_write_json(out, ledger)
+    except OSError as exc:
+        print(f"[side-effects] could not write {out}: {exc} — nothing was recorded", file=sys.stderr)
+        return 2
+    if recording and ledger["complete"]:
+        events, rec_err = record_side_effect_declarations(sidecar, full_ledger, iter_n, opts.get("--iter-name"))
+        if rec_err:
+            ledger["record_error"] = rec_err
+            print(f"[side-effects] {rec_err}", file=sys.stderr)
+            try:
+                _atomic_write_json(out, ledger)
+            except OSError:
+                pass
+        else:
+            for name, payload in events:
+                print(f"{name}\t{json.dumps(payload, sort_keys=True)}")
     return 0 if ledger["complete"] else 3
 
 
@@ -1214,12 +1462,56 @@ def _self_test() -> int:
         assert dd["J-01"]["declared"] == "none" and dd["J-02"]["declared"] == "mutating"
         assert dd["J-04"]["declared"] is None and dd["J-04"]["valid"], "absent = unknown, not an error"
         assert dd["J-03"]["declared"] is None and not dd["J-03"]["valid"], "read-only is invalid -> unknown"
-        undeclared = re.sub(r"(?m)^  - (\*\*)?Side effects:.*\n", "", se_goal)
-        assert _journey_hashes(se_goal) == _journey_hashes(undeclared), \
-            "a Side effects line must never change a journey spec_hash"
+        valid_removed = re.sub(r"(?m)^  - (\*\*)?Side effects:(\*\*)? (none|mutating)\b.*\n", "", se_goal)
+        assert _journey_hashes(se_goal) == _journey_hashes(valid_removed), \
+            "a well-formed Side effects line must never change a journey spec_hash"
+        all_removed = re.sub(r"(?m)^  - (\*\*)?Side effects:.*\n", "", se_goal)
+        assert _journey_hashes(se_goal)["J-03"] != _journey_hashes(all_removed)["J-03"], \
+            "a MALFORMED declaration-shaped line is journey text: removing it is drift"
+        # edits hidden inside malformed lines are drift AND digest changes
+        def _one(line: str) -> str:
+            return ("## Must-have user journeys\n\n- **J-09: X**\n  - Steps:\n    1. click Run\n"
+                    "  - Acceptance: header shows\n" + line + "\n\n## Anti-goals\n")
+        from demo_runner import load_readonly_endpoints  # noqa: PLC0415
+        ro_none = load_readonly_endpoints(None)
+        for a, b in (("    side effect: the ledger gains exactly one row", "    side effect: the ledger gains two rows"),
+                     ("  - Side effects: none (5 rows)", "  - Side effects: none (50 rows)"),
+                     ("  - Side effects: none. badge OK", "  - Side effects: none. badge FAILED"),
+                     ("  - Side effects: (tbd) — 5 runs", "  - Side effects: (tbd) — 9 runs"),
+                     ("  - Side effects: mutating, named Alpha", "  - Side effects: mutating, named Beta"),
+                     ("  Side effects: none — reads", "  Side effects: none — writes")):
+            ga, gb = _one(a), _one(b)
+            assert _journey_hashes(ga) != _journey_hashes(gb), ("malformed edit must be drift", a)
+            assert declaration_digest(parse_side_effect_declarations(ga), ro_none) != \
+                declaration_digest(parse_side_effect_declarations(gb), ro_none), ("malformed edit must move the digest", a)
+        assert parse_side_effect_declarations(_one("  - Side effects: mutating, named Alpha"))["J-09"]["declared"] \
+            == "mutating", "a malformed mutating still counts"
+        assert parse_side_effect_declarations(_one("  Side effects: none"))["J-09"]["declared"] is None, \
+            "a declaration that is not its own list item is invalid"
+        fmt_a, fmt_b = _one("  - Side effects: none — reads only"), _one("  -   side effects:  **None**  –  reads   only")
+        assert _journey_hashes(fmt_a) == _journey_hashes(fmt_b) and \
+            declaration_digest(parse_side_effect_declarations(fmt_a), ro_none) == \
+            declaration_digest(parse_side_effect_declarations(fmt_b), ro_none), "harmless formatting is neutral"
+        # declarations belong to their innermost journey; a same-id note is not a second definition
+        nested = ("## Must-have user journeys\n\n- **J-01: Parent**\n  - Steps:\n    1. click Run\n"
+                  "  - **J-02: Child**\n    - Steps:\n      1. Visit `/r`\n    - Side effects: none — reads\n"
+                  "- **J-03: Closed**\n  - Steps:\n    1. Visit `/c`\n  - **J-03 CLOSED — owner note**\n"
+                  "    - detail\n  - Side effects: none — reads\n\n## Anti-goals\n")
+        nd = parse_side_effect_declarations(nested)
+        assert nd["J-01"]["declared"] is None and nd["J-02"]["declared"] == "none", nd["J-01"]
+        assert nd["J-03"]["declared"] == "none" and nd["J-03"]["valid"], nd["J-03"]
+        own = {j: o for j, _s, _e, o, _d in side_effect_journey_own_blocks(nested)}
+        assert "Child" not in own["J-01"] and own["J-01"].count("\n") == nested.split("- **J-03")[0].count("\n") - 2
+        assert [h["n"] for h in journey_step_hints(own["J-01"])] == [1]
+        # the step heuristic: actions the step performs, not nouns or commands
+        for text, words in (("Open Backtests; click Run", ["run"]), ("Press RUN TODAY", ["run"]),
+                            ("then re-run the backfill", ["run"]), ("Land on the run detail", []),
+                            ("Assert the run lands on READY", []), ("Run `pytest -q` and record the count", []),
+                            ("POST /api/x with the body", ["post"]), ("Visit `/run-list`", []),
+                            ("click `Save draft`", ["save"]), ("Post-condition: rows render", [])):
+            assert sorted(step_action_words(text)) == words, (text, step_action_words(text))
         ro_path = d / "ro.txt"
         ro_path.write_text("POST /api/eval\n", encoding="utf-8")
-        from demo_runner import load_readonly_endpoints  # noqa: PLC0415
         ro_a = load_readonly_endpoints(ro_path)
         flipped = se_goal.replace("mutating — launches a run", "none — launches a run")
         assert _journey_hashes(flipped) == _journey_hashes(se_goal)
@@ -1228,17 +1520,68 @@ def _self_test() -> int:
         ro_path.write_text("POST /api/eval\nPOST /api/preview\n", encoding="utf-8")
         assert declaration_digest(dd, load_readonly_endpoints(ro_path)) != declaration_digest(dd, ro_a), \
             "editing read-only-endpoints.txt must change the declaration digest"
-        side = d / "se-sidecar.json"
-        side.write_text(json.dumps({"journeys": {"J-01": {"latest": {
-            "complete": True, "mutating_count": 1, "auth_count": 0, "readonly_count": 0, "iter": 4,
-            "requests": [{"method": "POST", "path": "/api/runs", "class": "mutating", "count": 1}],
-            "readonly_endpoints_sha256": None, "ignore_paths": ["/login", "/logout", "/auth", "/session",
-                                                                "/token", "/csrf"]}}}}), encoding="utf-8")
+        # ledger: observation outranks none; unreadable observations never read as none
+        sess = d / "runs" / "goal-session-t"
+        (sess / "state").mkdir(parents=True)
+        side = sess / "state" / "journey-side-effects.json"
+        g1, g2 = "a" * 64, "b" * 64
+
+        def _obs(n, t, golden, it):
+            return {"run_id": f"r-{it}", "iter": it, "iter_name": f"t-iter-{it}", "complete": True,
+                    "verdict": "PASS", "mutating_count": n, "auth_count": 0, "readonly_count": 0,
+                    "observed_at": f"2026-09-17T00:00:{t:02d}.000000Z", "golden_sha256": golden,
+                    "requests": [{"method": "POST", "path": "/api/runs", "class": "mutating", "count": n}] if n else [],
+                    "truncated": False, "exceptions_applied": [], "auth_ignored": [], "classifier_version": 2,
+                    "readonly_endpoints_sha256": None, "readonly_endpoints_error": None,
+                    "ignore_paths": ["/login", "/logout", "/auth", "/session", "/token", "/csrf"]}
+
+        def _record(it, obs):
+            f = sess / f"iter-{it}" / "replay-side-effects.json"
+            f.parent.mkdir(parents=True, exist_ok=True)
+            f.write_text(json.dumps({"run_id": obs["run_id"], "iter": it, "observed_at": obs["observed_at"],
+                                     "journeys": {"J-01": obs}}), encoding="utf-8")
+
+        _record(4, _obs(1, 4, g1, 4))
         led = build_side_effect_ledger(se_goal, sidecar=side, readonly_path=d / "absent.txt", env={})
         assert led["complete"], led["errors"]
         assert led["journeys"]["J-01"]["status"] == "mutating", "observation outranks a none declaration"
+        assert led["run_records_pending"] and led["conflicts"] == ["J-01"], led["conflicts"]
         assert led["journeys"]["J-02"]["status"] == "mutating"
         assert led["journeys"]["J-03"]["status"] == "unknown" and led["journeys"]["J-04"]["status"] == "unknown"
+        # a later clean replay of ANOTHER golden cannot clear it (sticky); the same golden can
+        _record(5, _obs(0, 5, g2, 5))
+        j1 = build_side_effect_ledger(se_goal, sidecar=side, readonly_path=d / "absent.txt", env={})["journeys"]["J-01"]
+        assert j1["status"] == "mutating" and j1["observation_sticky"] and j1["observed_iter"] == 4, j1
+        _record(6, _obs(0, 6, g1, 6))
+        j1 = build_side_effect_ledger(se_goal, sidecar=side, readonly_path=d / "absent.txt", env={})["journeys"]["J-01"]
+        assert j1["status"] == "none" and not j1["observed_mutating"], j1
+        (sess / "iter-6" / "replay-side-effects.json").unlink()
+        # recording repairs the sidecar from the run records, once
+        rled = build_side_effect_ledger(se_goal, sidecar=side, readonly_path=d / "absent.txt", env={})
+        evs, err = record_side_effect_declarations(side, rled, 7, "t-iter-7")
+        assert err is None and ("side_effect_observations_repaired" in [e for e, _ in evs]), (err, evs)
+        assert "side_effect_declaration_conflict" in [e for e, _ in evs], evs
+        assert sorted(json.loads(side.read_text())["merged_runs"]) == ["r-4", "r-5"]
+        evs2, _ = record_side_effect_declarations(side, rled, 8, "t-iter-8")
+        assert not [e for e, _ in evs2 if e in ("side_effect_observations_repaired",
+                                               "side_effect_declaration_conflict")], evs2
+        # a corrupt sidecar: incomplete, the record evidence still counts, a
+        # none with nothing recorded is UNKNOWN (never "none")
+        side.write_text("{ corrupt", encoding="utf-8")
+        cl = build_side_effect_ledger(se_goal, sidecar=side, readonly_path=d / "absent.txt", env={})
+        assert not cl["complete"] and cl["journeys"]["J-01"]["status"] == "mutating", cl["journeys"]["J-01"]
+        noted = se_goal.replace("- **J-04: Plain**", "- **J-04: Plain**\n  - Side effects: none — reads")
+        cl4 = build_side_effect_ledger(noted, sidecar=side, readonly_path=d / "absent.txt", env={})["journeys"]["J-04"]
+        assert cl4["status"] == "unknown" and cl4["status_source"] == "declared-unverified", cl4
+        # moving it aside rebuilds every observation from the run records
+        side.unlink()
+        mv = build_side_effect_ledger(noted, sidecar=side, readonly_path=d / "absent.txt", env={})
+        assert mv["complete"] and mv["journeys"]["J-01"]["status"] == "mutating" \
+            and mv["journeys"]["J-04"]["status"] == "none", mv["journeys"]["J-01"]
+        # a corrupt run record makes the ledger incomplete too
+        (sess / "iter-9").mkdir()
+        (sess / "iter-9" / "replay-side-effects.20260917T000000Z-1-1.json").write_text("{", encoding="utf-8")
+        assert not build_side_effect_ledger(noted, sidecar=side, readonly_path=d / "absent.txt", env={})["complete"]
         sugg = render_side_effect_suggestions(led, "goal.md")
         assert "J-01" in sugg and "OBSERVED POST /api/runs" in sugg, sugg
         assert "- Side effects: none — <why this journey only reads>" in sugg, sugg
@@ -1300,7 +1643,7 @@ def main(argv: list[str]) -> int:
         return cmd_drift(args[0], args[1])
     if cmd == "side-effects" and args:
         valued = ("--sidecar", "--out", "--journeys", "--repo-root", "--readonly-endpoints",
-                  "--iter", "--iter-name", "--step")
+                  "--iter", "--iter-name", "--step", "--build-id")
         flags = ("--suggest", "--record-digest")
         se_opts: dict = {}
         rest = args[1:]

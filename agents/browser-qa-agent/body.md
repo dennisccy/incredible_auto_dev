@@ -127,9 +127,14 @@ When it is present:
   mutation conflicts with the iteration spec (for example a test case that expects "no new
   run"), finish the journey and write the conflict in the row's Actual cell as a
   **spec/journey contradiction** — the evaluator scores it; you do not.
-- Never perform a mutation that is not one of the journey's numbered steps.
+- Never perform a mutation that is not one of the journey's numbered steps. In a
+  full-depth run, the numbered steps of a UT- test case you were asked to execute count as
+  numbered steps too.
 - In each row's Actual cell, name any create/update/delete you performed, or write
   "no data changed".
+- A `DECLARATION CONFLICT:` line names a journey the owner declared as changing nothing
+  that a replay nevertheless saw write: execute it as written and name the step that
+  changes data in that row's Actual cell.
 
 When the block is absent, nothing changes.
 

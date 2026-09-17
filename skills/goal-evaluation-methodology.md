@@ -116,7 +116,16 @@ your overall impression of the iteration.
    - A MUTATING journey (declared by the owner, or OBSERVED by the deterministic replay —
      the replay rows name it as `; side effects: N mutating request(s) (POST /api/…)`) that
      creates or changes data in one of its numbered steps is behaving as specified. That
-     change is never, by itself, a failure or a regression.
+     change is never, by itself, a failure or a regression — unless the owner declared the
+     journey `none` (next bullet).
+   - A **DECLARATION CONFLICT** — the ledger line says `J-02 (DECLARED NONE, but observed …)`
+     — is the opposite case: the owner says the journey changes nothing, yet the replay saw it
+     write. Either the product started writing where it must not (a regression, possibly an
+     anti-goal) or the declaration is wrong. Report it as a finding in Summary and
+     assumptions.md; never excuse it as the journey's own step.
+   - An observed mutation stays evidence until a complete replay of the SAME golden script
+     shows no write. `not cleared by the clean replay in iter-N, which used a different golden
+     script` means a re-derived script replayed clean: the journey still counts as MUTATING.
    - When the iteration spec forbids that change (a TC asserting "row count unchanged", an
      OUT OF SCOPE "no new run"), the SPEC contradicts the journey. Record a
      **spec/journey contradiction** (Summary + assumptions.md), score the TC on the invariant
@@ -125,8 +134,10 @@ your overall impression of the iteration.
      it reached execution.
    - A mutation that is NOT one of the journey's numbered steps (the LLM lane changed data it
      was not asked to), or an edit to pre-existing rows, stays a real finding.
-   - `Unknown` means nobody declared the journey and no replay observed it; it is not
-     evidence either way.
+   - `Unknown` means nobody declared the journey and no replay observed it — or the
+     observations could not be read (an INCOMPLETE ledger); it is not evidence either way.
+     Replay rows may also say `auth request(s) not counted: POST /api/login`: session
+     plumbing the observer excludes on purpose, reported so it is never silent.
 
 ## B. Anti-goal checklist (per category — answer each with yes/no + citation)
 
@@ -202,7 +213,7 @@ never the bare absence of a row.
 5. **Honesty**: is anything I couldn't verify marked `unknown` rather than guessed? If a
    screenshot contradicted prose anywhere, did the screenshot win?
 6. **Side effects**: did I score every data change a MUTATING journey's own step made as
-   expected behaviour — and name any spec/journey contradiction (A.8) instead of failing the
-   journey or ignoring the contradiction?
+   expected behaviour — name any spec/journey contradiction (A.8) instead of failing the
+   journey or ignoring it — and report every DECLARATION CONFLICT as a finding?
 
 If any answer is "no", fix the evaluation — do not ship it with a caveat.

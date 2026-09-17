@@ -11,7 +11,11 @@
 #   * `Side-effect policy: none` never dispatches over a mutating journey (E13) and fails CLOSED
 #     when its deterministic ledger is unavailable (E15, not re-plannable);
 #   * `unknown` never blocks unless CHAIN_SIDE_EFFECT_STRICT=true (W09/W10 -> E14);
-#   * a declaration is journey-hash-neutral but declaration-digest-visible;
+#   * a WELL-FORMED declaration is journey-hash-neutral but declaration-digest-visible; a
+#     malformed one is journey text (drift) and digest-visible;
+#   * an observed mutation stays until a complete clean replay of the SAME golden, per-run records
+#     are never deleted, and unreadable observations never read as `none`;
+#   * CHAIN_SPEC_LINT=warn never relaxes E15;
 #   * prompts are byte-identical when no side-effect context applies.
 #
 #   C. classifier + observer units (lib/demo_runner.py)
@@ -77,9 +81,10 @@ from demo_runner import (classify_request, SideEffectRecorder, parse_readonly_en
 FE, BE = "http://localhost:3017", "http://localhost:8017"
 case("C1: same-project POST fetch -> mutating", classify_request("POST", "fetch", FE + "/api/runs", FE) == "mutating")
 case("C2: a GET is never a side effect", classify_request("GET", "fetch", FE + "/api/runs", FE) is None)
-case("C3: a POST image/beacon-class request is ignored (resource type)",
-     classify_request("POST", "image", FE + "/api/x", FE) is None
-     and classify_request("POST", "other", FE + "/api/x", FE) is None)
+case("C3: a POST sub-resource request (image, script, stylesheet) is ignored (resource type)",
+     all(classify_request("POST", t, FE + "/api/x", FE) is None for t in ("image", "script", "stylesheet")))
+case("C3b: every write channel counts — beacons (ping) and unclassified (other) requests too",
+     all(classify_request("POST", t, FE + "/api/drafts", FE) == "mutating" for t in ("ping", "beacon", "other")))
 case("C4: development-asset POSTs are ignored (/_next/, /__nextjs, /sockjs-node, /@vite, /__vite)",
      all(classify_request("POST", "fetch", FE + p, FE) is None
          for p in ("/_next/data/x.json", "/__nextjs_original-stack-frame", "/sockjs-node/info",
@@ -94,9 +99,17 @@ case("C5b: a form POST navigation (resource type document) is a mutation",
 case("C6: a POST to an external analytics host is ignored",
      classify_request("POST", "fetch", "https://analytics.example.com/collect", FE) is None)
 case("C7: POST /api/login -> ignored-auth", classify_request("POST", "fetch", FE + "/api/login", FE) == "ignored-auth")
-case("C7b: the default auth list covers logout/auth/session/token/csrf",
+case("C7b: the default auth list covers logout/auth/session/token/csrf, behind an optional /api[/vN] prefix",
      all(classify_request("POST", "fetch", FE + p, FE) == "ignored-auth"
-         for p in ("/logout", "/auth/callback", "/api/session", "/oauth/token", "/csrf")))
+         for p in ("/logout", "/auth/callback", "/api/session", "/api/v1/token", "/csrf",
+                   "/api/auth/callback/credentials"))
+     and classify_request("DELETE", "fetch", FE + "/api/session", FE) == "ignored-auth")
+case("C7d: an auth word deeper in the path, a PUT/PATCH, or a resource id is a real mutation",
+     all(classify_request(m, "fetch", FE + p, FE) == "mutating" for m, p in (
+         ("PATCH", "/api/chat/session/7"), ("DELETE", "/api/workouts/session/9"),
+         ("POST", "/api/trading/session/start"), ("POST", "/api/users/42/token"),
+         ("POST", "/api/api-keys/token"), ("PUT", "/api/settings/auth"), ("PUT", "/api/session"),
+         ("PATCH", "/api/auth/password"), ("DELETE", "/api/auth/users/5"))))
 case("C7c: an auth word that is only part of a segment is still a mutation",
      classify_request("POST", "fetch", FE + "/api/login-history/clear", FE) == "mutating"
      and classify_request("POST", "fetch", FE + "/api/sessions", FE) == "mutating")
@@ -111,6 +124,11 @@ case("C8b: a SET-empty override disables every auth exclusion (distinct from UNS
 del os.environ["CHAIN_SIDE_EFFECT_IGNORE_PATHS"]
 case("C8c: UNSET restores the documented default list",
      side_effect_ignore_paths() == ("/login", "/logout", "/auth", "/session", "/token", "/csrf"))
+from demo_runner import side_effect_ignore_paths_report
+eff, rej = side_effect_ignore_paths_report({"CHAIN_SIDE_EFFECT_IGNORE_PATHS": "/login, /api, api/v1, /, /v2"})
+case("C8d: an override naming '/' or an API root (/api, api/v1, /v2) is REJECTED and reported, never applied",
+     eff == ("/login",) and rej == ("/api", "api/v1", "/", "/v2")
+     and classify_request("POST", "fetch", FE + "/api/runs", FE, ignored_paths=eff) == "mutating")
 entries, invalid = parse_readonly_endpoints(
     "# owner-authored read-only endpoints\n"
     "POST /api/policy/evaluate\n"
@@ -136,6 +154,14 @@ case("C10d: a dot-segment path never matches an exception or an auth exclusion (
      and classify_request("POST", "fetch", FE + "/api/runs/%2e%2e/login", FE) == "mutating")
 case("C11: the SAME read-only POST with no exception file is mutating",
      classify_request("POST", "fetch", FE + "/api/policy/evaluate", FE, readonly_endpoints=()) == "mutating")
+case("C11b: an encoded separator or backslash never rides a dev-asset, auth or read-only exemption",
+     classify_request("POST", "fetch", FE + "/_next/..%2Fapi/runs", FE) == "mutating"
+     and classify_request("POST", "fetch", FE + "/api/policy/evaluate%2F..%2Fsave", FE, readonly_endpoints=entries) == "mutating")
+case("C11c: with a local base, LAN / private / loopback / single-label / .local backends are the same project",
+     all(classify_request("POST", "fetch", h + "/api/runs", FE) == "mutating" for h in (
+         "http://192.168.1.20:8000", "http://10.1.2.3", "http://127.0.0.2:9000", "http://myhost:8000",
+         "http://app.local", "http://[::1]:8000"))
+     and classify_request("POST", "fetch", "http://93.184.216.34/api/runs", FE) is None)
 class Req:
     def __init__(self, m, t, u):
         self.method, self.resource_type, self.url = m, t, u
@@ -151,6 +177,8 @@ case("C12: the recorder counts per class and keeps only {method, path} (no query
      and "secret" not in repr(s))
 case("C12b: an applied read-only exception is retained as evidence",
      s["exceptions_applied"] == [{"method": "POST", "path": "/api/policy/evaluate"}])
+case("C12c: an applied auth exclusion is retained as evidence too",
+     s["auth_ignored"] == [{"method": "POST", "path": "/api/login"}])
 class Broken:
     @property
     def method(self):
@@ -164,9 +192,10 @@ for i in range(25):
 s2 = rec2.summary()
 case("C14: the stored sample is capped at 20 distinct requests and says it was truncated",
      len(s2["requests"]) == 20 and s2["truncated"] is True and s2["mutating_count"] == 25)
-case("C15: row suffix names the mutating requests and any applied exception",
+case("C15: row suffix names the mutating requests and every applied exclusion (read-only and auth)",
      render_side_effect_suffix(s) == "; side effects: 2 mutating request(s) (POST /api/runs); "
-                                     "read-only exception applied: POST /api/policy/evaluate")
+                                     "read-only exception applied: POST /api/policy/evaluate; "
+                                     "auth request(s) not counted: POST /api/login")
 case("C15b: row suffix when nothing mutated",
      render_side_effect_suffix(SideEffectRecorder(FE).summary()) == "; side effects: none observed")
 case("C15c: a partial replay says so",
@@ -183,36 +212,60 @@ run_py_cases <<'PY'
 import json, os, subprocess, sys, tempfile
 def case(name, cond):
     print(("pass" if cond else "fail") + "\t" + name)
-from demo_runner import merge_side_effect_observations, update_side_effects_sidecar
-def obs(n, complete=True, verdict="PASS", path="/api/runs", it=8):
+from demo_runner import merge_side_effect_observations, update_side_effects_sidecar, uncleared_mutations
+G1, G2 = "1" * 64, "2" * 64
+def obs(n, complete=True, verdict="PASS", path="/api/runs", it=8, golden=G1):
     reqs = [{"method": "POST", "path": path, "class": "mutating", "count": n}] if n else []
     return {"run_id": f"r{it}", "iter": it, "iter_name": f"goal-x-iter-{it}", "verdict": verdict,
+            "observed_at": f"2026-09-17T00:{it:02d}:00.000000Z", "golden_sha256": golden,
             "complete": complete, "mutating_count": n, "auth_count": 0, "readonly_count": 0,
             "requests": reqs, "truncated": False, "exceptions_applied": [],
             "readonly_endpoints_sha256": None, "ignore_paths": ["/login"], "observer_errors": 0}
+def still(m, jid="J-04"):
+    return [x["iter"] for x in uncleared_mutations(m["journeys"][jid])]
+def merged(base, *seq):
+    m = json.loads(json.dumps(base))
+    for jid, o in seq:
+        m = merge_side_effect_observations(m, {jid: o})
+    return m
 base = {"schema_version": 1, "declaration_digest": "d1", "declarations": {"J-04": {"declared": "none"}},
         "journeys": {"J-02": {"latest": obs(0, it=3)}}}
-m = merge_side_effect_observations(json.loads(json.dumps(base)), {"J-04": obs(1)})
+m = merged(base, ("J-04", obs(1)))
 case("S1: merging J-04 keeps J-02's record untouched", m["journeys"]["J-02"] == base["journeys"]["J-02"])
 case("S2: engine-owned keys (declarations / digest) survive an observer write",
      m["declaration_digest"] == "d1" and m["declarations"] == base["declarations"])
-case("S3: a complete observation becomes 'latest' and 'last_attempt'",
-     m["journeys"]["J-04"]["latest"]["mutating_count"] == 1 and m["journeys"]["J-04"]["last_attempt"]["run_id"] == "r8")
-m2 = merge_side_effect_observations(json.loads(json.dumps(m)), {"J-04": obs(0, complete=False, verdict="FAIL", it=9)})
-case("S4: a PARTIAL zero-mutation replay never downgrades a mutating observation",
-     m2["journeys"]["J-04"]["latest"]["mutating_count"] == 1 and m2["journeys"]["J-04"]["last_attempt"]["iter"] == 9)
-m3 = merge_side_effect_observations(json.loads(json.dumps(base)), {"J-02": obs(2, complete=False, verdict="FAIL", it=9)})
-case("S5: a PARTIAL replay that did mutate upgrades the journey",
-     m3["journeys"]["J-02"]["latest"]["mutating_count"] == 2)
-m4 = merge_side_effect_observations(json.loads(json.dumps(m)), {"J-04": obs(0, it=10)})
-case("S6: a COMPLETE replay with no mutation is authoritative for the golden it replayed",
-     m4["journeys"]["J-04"]["latest"]["mutating_count"] == 0)
+case("S3: a complete observation becomes 'latest' and 'last_attempt', and is status evidence",
+     m["journeys"]["J-04"]["latest"]["mutating_count"] == 1 and m["journeys"]["J-04"]["last_attempt"]["run_id"] == "r8"
+     and still(m) == [8] and m["merged_runs"] == ["r8"])
+m2 = merged(m, ("J-04", obs(0, complete=False, verdict="FAIL", it=9)))
+case("S4: a PARTIAL zero-mutation replay never clears a recorded mutation",
+     still(m2) == [8] and m2["journeys"]["J-04"]["last_attempt"]["iter"] == 9)
+m3 = merged(base, ("J-02", obs(2, complete=False, verdict="FAIL", it=9)))
+case("S5: a PARTIAL replay that did mutate upgrades the journey", still(m3, "J-02") == [9])
+m4 = merged(m, ("J-04", obs(0, it=10)))
+case("S6: a strictly newer COMPLETE clean replay of the SAME golden clears the mutation",
+     still(m4) == [] and m4["journeys"]["J-04"]["latest"]["mutating_count"] == 0)
+notes = {}
+m5 = merge_side_effect_observations(json.loads(json.dumps(m)), {"J-04": obs(0, it=10, golden=G2)}, notes=notes)
+case("S6b: a complete clean replay of a DIFFERENT golden (a re-derived script) never clears it, and says so",
+     still(m5) == [8] and notes.get("J-04", {}).get("mutating_iter") == 8)
+m6 = merged({}, ("J-04", obs(1, golden=None)), ("J-04", obs(0, it=10, golden=None)))
+case("S6c: a mutation recorded without a golden identity is never cleared", still(m6) == [8])
+m7 = merged({}, ("J-04", obs(0, it=10)), ("J-04", obs(1)), ("J-04", obs(0, it=11, golden=G2)))
+m7b = merged({}, ("J-04", obs(0, it=11, golden=G2)), ("J-04", obs(0, it=10)), ("J-04", obs(1)))
+case("S6d: a late merge of an older record is order-independent (cleared stays cleared)",
+     still(m7) == [] and still(m7b) == [])
+m8 = merged(m4, ("J-04", obs(1, it=12)))
+case("S6e: a mutation AFTER the clearing replay counts again", still(m8) == [12])
 case("S7: mutation provenance survives in mutating_history",
      [h["iter"] for h in m4["journeys"]["J-04"]["mutating_history"]] == [8])
 mm = json.loads(json.dumps(base))
 for i in range(12):
     mm = merge_side_effect_observations(mm, {"J-09": obs(1, it=i)})
 case("S8: mutating_history is bounded (last 5)", len(mm["journeys"]["J-09"]["mutating_history"]) == 5)
+again = merge_side_effect_observations(json.loads(json.dumps(m5)), {"J-04": obs(0, it=10, golden=G2)},
+                                       now=m5["observations_updated_at"])
+case("S8b: merging the same run twice changes nothing", again == m5)
 d = tempfile.mkdtemp()
 p = os.path.join(d, "state", "journey-side-effects.json")
 ok, msg = update_side_effects_sidecar(p, {"J-04": obs(1)})
@@ -347,12 +400,41 @@ variants = [
     blk.replace("  - Acceptance", "  - Side effects: none\n  - Acceptance"),
     blk + "  - **Side effects:** none\n\n",
     (blk + "  - Side effects: mutating — x\n").replace("\n", "\r\n"),
-    blk + "  - Side effects: read-only\n",
+    blk + "  * side effects:  **None**  –  reads\n",
 ]
-case("D7: spec_hash(block) == spec_hash(block + a Side effects line), for every form and position",
+case("D7: spec_hash(block) == spec_hash(block + a WELL-FORMED Side effects line), for every form and position",
      all(G._journey_hashes(v)["J-09"] == h0 for v in variants))
+malformed = [
+    blk + "  - Side effects: read-only\n",
+    blk + "  - Side effect: mutating — creates a note row\n",
+    blk + "  Side effects: none\n",
+    blk + "  - Side effects: none (the list still shows 5 rows)\n",
+]
+case("D7b: a MALFORMED declaration-shaped line is journey text — adding it is goal-edit drift",
+     all(G._journey_hashes(v)["J-09"] != h0 for v in malformed))
+def pair_moves(a, b):
+    ga, gb = blk + a + "\n", blk + b + "\n"
+    da = G.declaration_digest(G.parse_side_effect_declarations(ga), {"sha256": None})
+    db = G.declaration_digest(G.parse_side_effect_declarations(gb), {"sha256": None})
+    return G._journey_hashes(ga) != G._journey_hashes(gb) and da != db
+case("D7c: editing inside a malformed line (prose after 'side effect:', a '(…)' or '.' tail, a comma) moves BOTH spec_hash and digest",
+     all(pair_moves(a, b) for a, b in (
+         ("    side effect: the ledger gains exactly one row", "    side effect: the ledger gains two rows"),
+         ("  - Side effects: none (5 rows)", "  - Side effects: none (50 rows)"),
+         ("  - Side effects: none. badge OK", "  - Side effects: none. badge FAILED"),
+         ("  - Side effects: (tbd) — 5 runs", "  - Side effects: (tbd) — 9 runs"),
+         ("  - Side effects: mutating, named Alpha", "  - Side effects: mutating, named Beta"))))
 case("D8: spec_hash still changes when the journey's own text changes",
      G._journey_hashes(blk.replace("a note row", "two note rows"))["J-09"] != h0)
+nest = ("## Must-have user journeys\n\n- **J-01: Parent**\n  - Steps:\n    1. Open Runs; click Run\n"
+        "  - **J-02: Child**\n    - Steps:\n      1. Visit `/r`\n    - Side effects: none — reads\n"
+        "- **J-10: Recover**\n  - Steps:\n    1. Visit `/c`\n  - **J-10 CLOSED — owner note**\n    - detail\n"
+        "  - Side effects: none — reads the restored layer\n\n## Anti-goals\n")
+nd = G.parse_side_effect_declarations(nest)
+case("D8b: a declaration belongs to its innermost journey (J-01 does not inherit nested J-02's none)",
+     nd["J-01"]["declared"] is None and nd["J-02"]["declared"] == "none")
+case("D8c: a nested owner note with the SAME id is part of the journey, not a second definition",
+     nd["J-10"]["declared"] == "none" and nd["J-10"]["valid"])
 def ledger(goal_text, sidecar=None, ro=None):
     return G.build_side_effect_ledger(goal_text, sidecar=sidecar, readonly_path=ro)
 ro = os.path.join(repo, "project-extensions", "side-effects", "read-only-endpoints.txt")
@@ -412,11 +494,28 @@ L6 = ledger(text, sidecar=sc(sc_path, "J-02", req="/api/policy/evaluate", ro_sha
 case("D15c: a truncated sample cannot be reclassified — the journey stays mutating (conservative)",
      L6["journeys"]["J-02"]["status"] == "mutating"
      and L6["journeys"]["J-02"]["observation_basis"] == "reclassification-unverifiable")
+clean_ev = {"iter": 9, "iter_name": "goal-x-iter-9", "run_id": "r9", "observed_at": "2026-09-17T00:09:00.000000Z",
+            "complete": True, "verdict": "PASS", "golden_sha256": "d" * 64, "mutating_count": 0, "auth_count": 0,
+            "readonly_count": 1, "truncated": False, "classifier_version": 2,
+            "requests": [{"method": "POST", "path": "/api/policy/evaluate", "class": "ignored-readonly", "count": 1}],
+            "exceptions_applied": [{"method": "POST", "path": "/api/policy/evaluate"}], "auth_ignored": [],
+            "readonly_endpoints_sha256": ro_sha, "readonly_endpoints_error": None,
+            "ignore_paths": ["/login", "/logout", "/auth", "/session", "/token", "/csrf"]}
+gpath = os.path.join(repo, "state", "golden-clean.json")
+json.dump({"schema_version": 1, "journeys": {"J-02": {"latest": dict(clean_ev), "last_attempt": dict(clean_ev),
+           "goldens": {"d" * 64: {"clean": dict(clean_ev)}}}}}, open(gpath, "w"))
+kept = ledger(text, sidecar=gpath, ro=ro)["journeys"]["J-02"]
+dropped = ledger(text, sidecar=gpath, ro=os.path.join(repo, "absent.txt"))["journeys"]["J-02"]
+case("D15d: a request a clean replay did not count (read-only exception) counts again once the exception is withdrawn",
+     kept["status"] == "none" and kept["exceptions_applied"] and dropped["status"] == "mutating"
+     and dropped["observation_basis"] == "reclassified")
 bad = os.path.join(repo, "state", "bad.json")
 open(bad, "w").write("{ not json")
 L7 = ledger(text, sidecar=bad, ro=ro)
-case("D16: a corrupt sidecar makes the ledger INCOMPLETE, but declared statuses stay known",
+case("D16: a corrupt sidecar makes the ledger INCOMPLETE, but declared mutations stay known",
      L7["complete"] is False and L7["errors"] and L7["journeys"]["J-04"]["status"] == "mutating")
+case("D16a: ... and a declared none whose observations cannot be read is UNKNOWN, never none",
+     L7["journeys"]["J-02"]["status"] == "unknown" and L7["journeys"]["J-02"]["status_source"] == "declared-unverified")
 case("D16b: an absent sidecar is a complete ledger (no observations yet)",
      ledger(text, sidecar=os.path.join(repo, "state", "nope.json"), ro=ro)["complete"] is True)
 unread = os.path.join(repo, "unreadable.txt")
@@ -473,7 +572,7 @@ rc, so, se = cli("side-effects", flip_goal, "--sidecar", side, "--out", out, "--
                  "--iter-name", "goal-x-iter-5", "--step", "preflight", "--record-digest",
                  "--readonly-endpoints", ro2)
 case("D20d: an unchanged declaration set emits no change event", "side_effect_declaration_changed" not in so)
-os.environ["CHAIN_SIDE_EFFECT_IGNORE_PATHS"] = "/login, /api"
+os.environ["CHAIN_SIDE_EFFECT_IGNORE_PATHS"] = "/login, /signin, /api"
 rc, so, se = cli("side-effects", flip_goal, "--sidecar", side, "--out", out, "--iter", "6",
                  "--iter-name", "goal-x-iter-6", "--step", "preflight", "--record-digest",
                  "--readonly-endpoints", ro2)
@@ -482,8 +581,20 @@ evs = [l.split("\t", 1) for l in so.splitlines() if "\t" in l]
 ch = [json.loads(p) for e, p in evs if e == "side_effect_declaration_changed"]
 led6 = json.load(open(out))
 case("D20e: overriding the auth exclusions is provenance-visible (source auth-ignore-paths) and flagged in the ledger",
-     any(c.get("source") == "auth-ignore-paths" and c.get("to") == ["/login", "/api"] for c in ch)
-     and led6["ignore_paths_default"] is False and json.load(open(side))["ignore_paths"] == ["/login", "/api"])
+     any(c.get("source") == "auth-ignore-paths" and c.get("to") == ["/login", "/signin"]
+         and c.get("rejected") == ["/api"] for c in ch)
+     and led6["ignore_paths_default"] is False and led6["ignore_paths_rejected"] == ["/api"]
+     and json.load(open(side))["ignore_paths"] == ["/login", "/signin"])
+rc, so, se = cli("side-effects", flip_goal, "--sidecar", side, "--record-digest")
+case("D20f: --record-digest without --out is refused (the change events would have nowhere to go)",
+     rc == 2 and "needs --out" in se)
+digest_before = json.load(open(side))["declaration_digest"]
+os.makedirs(os.path.join(repo, "out-is-a-dir"), exist_ok=True)
+rc, so, se = cli("side-effects", goal_path, "--sidecar", side, "--out", os.path.join(repo, "out-is-a-dir"),
+                 "--iter", "7", "--iter-name", "goal-x-iter-7", "--step", "preflight", "--record-digest",
+                 "--readonly-endpoints", ro2)
+case("D20g: when the ledger cannot be written, nothing is recorded (the digest and its events are not lost)",
+     rc == 2 and json.load(open(side))["declaration_digest"] == digest_before and "\t" not in so)
 open(side, "w").write("{ corrupt")
 rc, so, se = cli("side-effects", goal_path, "--sidecar", side, "--out", out, "--record-digest")
 case("D21: CLI exits 3 (ledger written, incomplete) for a corrupt sidecar — and never rewrites it",
@@ -501,6 +612,42 @@ case("D22: --suggest prints paste-ready lines: mutating for a step that saves, n
      and re.search(r"(?m)^J-03 .*INVALID declaration", so) and "read-only-endpoints.txt" in so
      and not re.search(r"(?m)^J-02 |^J-04 ", so))
 case("D22b: --suggest never edits the goal file", open(sug_goal, "rb").read() == before)
+# The per-run records are the durable observation history: a sidecar that
+# missed an update, or was moved aside, is rebuilt from them.
+sess = os.path.join(repo, "runs", "goal-session-rb")
+os.makedirs(os.path.join(sess, "state"))
+os.makedirs(os.path.join(sess, "iter-2"))
+rb_side = os.path.join(sess, "state", "journey-side-effects.json")
+rec2 = {"run_id": "goal-rb-iter-2:1", "iter": 2, "observed_at": "2026-09-17T01:00:00.000000Z",
+        "journeys": {"J-02": {"run_id": "goal-rb-iter-2:1", "iter": 2, "iter_name": "goal-rb-iter-2",
+                              "observed_at": "2026-09-17T01:00:00.000000Z", "golden_sha256": "c" * 64,
+                              "complete": True, "verdict": "PASS", "mutating_count": 1, "auth_count": 0,
+                              "readonly_count": 0, "truncated": False, "exceptions_applied": [],
+                              "requests": [{"method": "POST", "path": "/api/policy/save", "class": "mutating", "count": 1}],
+                              "classifier_version": 2, "readonly_endpoints_sha256": None,
+                              "ignore_paths": ["/login", "/logout", "/auth", "/session", "/token", "/csrf"]}},
+        "sidecar": {"path": rb_side, "updated": False, "message": "sidecar update failed: could not lock"}}
+json.dump(rec2, open(os.path.join(sess, "iter-2", "replay-side-effects.json"), "w"))
+json.dump({"schema_version": 1, "journeys": {}}, open(rb_side, "w"))
+rbo = os.path.join(sess, "iter-3", "side-effects.json")
+rc, so, se = cli("side-effects", goal_path, "--sidecar", rb_side, "--out", rbo, "--iter", "3",
+                 "--iter-name", "goal-rb-iter-3", "--step", "preflight", "--record-digest", "--readonly-endpoints", ro)
+rl = json.load(open(rbo))
+evs = [l.split("\t", 1) for l in so.splitlines() if "\t" in l]
+case("D24: a run record the sidecar never merged still counts: J-02 (declared none) is MUTATING, a declaration conflict",
+     rc == 0 and rl["journeys"]["J-02"]["status"] == "mutating" and rl["conflicts"] == ["J-02"]
+     and rl["run_records_pending"])
+case("D24b: the preflight record repairs the sidecar and reports it (observations_repaired + declaration_conflict)",
+     "goal-rb-iter-2:1" in json.load(open(rb_side))["merged_runs"]
+     and {"side_effect_observations_repaired", "side_effect_declaration_conflict"} <= {e for e, _ in evs})
+os.rename(rb_side, rb_side + ".corrupt-moved-aside")
+rc, so, se = cli("side-effects", goal_path, "--sidecar", rb_side, "--out", rbo, "--readonly-endpoints", ro)
+case("D24c: a sidecar moved aside loses nothing — the ledger is rebuilt from the per-run records",
+     rc == 0 and json.load(open(rbo))["journeys"]["J-02"]["status"] == "mutating")
+open(os.path.join(sess, "iter-2", "replay-side-effects.20260917T010101000000000-1-1.json"), "w").write("{ torn")
+rc, so, se = cli("side-effects", goal_path, "--sidecar", rb_side, "--out", rbo, "--readonly-endpoints", ro)
+case("D24d: an unreadable per-run record makes the ledger INCOMPLETE (its observations are unknown)",
+     rc == 3 and json.load(open(rbo))["complete"] is False)
 case("D23: goal_gate self-test passes (pins hash invariance + digest sensitivity)",
      subprocess.run([sys.executable, os.path.join(os.environ["PYTHONPATH"].split(":")[0], "goal_gate.py"), "self-test"],
                     capture_output=True).returncode == 0)
@@ -547,6 +694,36 @@ printf '%s' "$GU_OUT" | grep -q 'J-02' \
 python3 "$GL" self-test >/dev/null 2>&1 \
   && assert "G4: goal_lint.py self-test passes (clean fixture stays finding-free with declarations)" "pass" \
   || assert "G4: goal_lint.py self-test" "fail"
+cat > "$WORK/nested-note.md" <<'EOF'
+# Goal
+
+## Must-have user journeys
+
+- **J-10: Recover the raw layer**
+  - Steps:
+    1. Visit `/recovery`
+  - Acceptance: the restored rows render
+  - **J-10 CLOSED — owner note, 2026-09-01**
+    - evidence kept in the dev handoff
+  - Side effects: none — the recovery page only reads the restored layer
+
+- **J-11: Launch a rebuild**
+  - Steps:
+    1. Open Rebuild; click Run
+  - Acceptance: a rebuild row appears
+
+## Anti-goals
+
+- no paid SaaS
+EOF
+GN_OUT="$(python3 "$GL" "$WORK/nested-note.md" 2>&1)"
+if printf '%s' "$GN_OUT" | grep -q 'side-effects-invalid'; then
+  assert "G5: a nested owner note under the same journey id is not a second definition ($GN_OUT)" "fail"
+else
+  printf '%s' "$GN_OUT" | grep -qE 'WARN side-effects-undeclared .*J-11 step 1' \
+    && assert "G5: a nested same-id owner note keeps J-10's declaration valid; J-11's 'click Run' is still flagged" "pass" \
+    || assert "G5: nested note + undeclared J-11 ($GN_OUT)" "fail"
+fi
 
 # ── Part L: iter_spec.py preflight rules ─────────────────────────────────────
 echo "== L. preflight lint rules (iter_spec.py)"
@@ -614,6 +791,7 @@ spec() {
   } > "$f"
 }
 LINT_OUT=""; LINT_RC=0
+export PROBE
 lint() { LINT_OUT="$(python3 "$PROBE" lint "$@" 2>&1)"; LINT_RC=$?; }
 has_rule() { printf '%s' "$LINT_OUT" | grep -qE "^\[spec-lint\] (ERROR|WARN) $1 "; }
 rule_line() { printf '%s' "$LINT_OUT" | grep -E "^\[spec-lint\] (ERROR|WARN) $1 " | head -1; }
@@ -696,6 +874,20 @@ lint "$SPECS/l10.md" --side-effects "$WORK/ledger-corrupt.json"
 [[ "$LINT_RC" == "1" ]] && has_rule E15 \
   && assert "L10b: policy none + CORRUPT ledger -> E15" "pass" \
   || assert "L10b: E15 corrupt (rc=$LINT_RC; $LINT_OUT)" "fail"
+python3 - "$LED_NONE" "$WORK/ledger-otherbuild.json" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1])); d["build_id"] = "an-earlier-build"
+json.dump(d, open(sys.argv[2], "w"))
+PY
+lint "$SPECS/l10.md" --side-effects "$WORK/ledger-otherbuild.json" --side-effects-build-id "this-build"
+[[ "$LINT_RC" == "1" ]] && has_rule E15 && rule_line E15 | grep -q 'stale' \
+  && assert "L10e: a ledger left over from another build (the build that should have replaced it failed) -> E15" "pass" \
+  || assert "L10e: stale ledger (rc=$LINT_RC; $LINT_OUT)" "fail"
+printf '\xff\xfe{ bad bytes' > "$WORK/ledger-bytes.json"
+lint "$SPECS/l10.md" --side-effects "$WORK/ledger-bytes.json"
+[[ "$LINT_RC" == "1" ]] && has_rule E15 \
+  && assert "L10f: an undecodable ledger is unavailable evidence (E15), never a linter crash" "pass" \
+  || assert "L10f: undecodable ledger (rc=$LINT_RC; $LINT_OUT)" "fail"
 cp "$LED_NONE" "$WORK/ledger-unreadable.json"; chmod 000 "$WORK/ledger-unreadable.json"
 if [[ -r "$WORK/ledger-unreadable.json" ]]; then
   assert "L10c: (skipped — running as a user that can read a mode-000 file)" "pass"
@@ -783,6 +975,48 @@ lint "$SPECS/l18b.md" --side-effects "$LED_DECL"
 has_rule E16 && rule_line E16 | grep -q 'DEFINITION OF DONE' \
   && assert "L18b: a DoD prohibition is scanned too" "pass" \
   || assert "L18b: DoD prohibition (rc=$LINT_RC; $LINT_OUT)" "fail"
+# A re-planned spec explains the rejected wording in BACKGROUND / NOTES; that
+# prose — TC- bullets included — must not block the corrected spec again.
+spec "$SPECS/l18c.md" allowed "J-04" "J-02" "$OOSFIX" "$TCFIX"
+python3 - "$SPECS/l18c.md" <<'PY'
+import sys
+t = open(sys.argv[1]).read()
+t = t.replace("## GOAL\n\nConfirm; no code change, no new run.\n",
+              "## GOAL\n\nConfirm; no code change, no new run.\n\n## BACKGROUND\n\n"
+              "- TC-4 asserted that the ledger row count is unchanged, but J-04's own step launches a run.\n")
+t = t.rstrip("\n") + "\n- TC-4 (old wording \"no new run\") was a spec/journey contradiction.\n"
+open(sys.argv[1], "w").write(t)
+PY
+lint "$SPECS/l18c.md" --side-effects "$LED_DECL"
+[[ "$LINT_RC" == "0" ]] && ! has_rule E16 \
+  && assert "L18c: TC- bullets under BACKGROUND / NOTES are prose, not machine constraints" "pass" \
+  || assert "L18c: TC prose ignored (rc=$LINT_RC; $LINT_OUT)" "fail"
+_l18d=y
+for form in '- [ ] TC-3: given the ledger, when the replay ends, then the ledger row count is unchanged' \
+            '1. TC-3: given the ledger, when replayed, then the number of ledger rows is unchanged' \
+            '| TC-3 | replay J-04 | ledger row count unchanged |' \
+            $'- **TC-3** (J-04 confirm-only):\n  - then: no new portfolio runs exist'; do
+  spec "$SPECS/l18d.md" allowed "J-04" "J-02" "- Any code change to the engine" "$form"
+  lint "$SPECS/l18d.md" --side-effects "$LED_DECL"
+  { has_rule E16 && rule_line E16 | grep -q 'TC-3'; } || { _l18d=n; echo "      (not caught: $form)"; }
+done
+[[ "$_l18d" == y ]] \
+  && assert "L18d: checkbox, numbered, table and sub-bulleted TC- lines are scanned (and close wording variants)" "pass" \
+  || assert "L18d: TC forms" "fail"
+spec "$SPECS/l18e.md" allowed "J-04" "J-02"
+sed -i 's/^## OUT OF SCOPE$/## OUT OF SCOPE (this iteration)/; s/^## DEFINITION OF DONE$/## Definition of Done (DoD)/' "$SPECS/l18e.md"
+python3 - "$SPECS/l18e.md" <<'PY'
+import sys
+t = open(sys.argv[1]).read()
+t = t.replace("- Any code change to the engine", "- Launching a new backtest run from the UI")
+t = t.replace("- [ ] Target journeys pass via browser-qa-agent", "- [ ] The ledger is left untouched by the confirm pass")
+open(sys.argv[1], "w").write(t)
+PY
+lint "$SPECS/l18e.md" --side-effects "$LED_DECL"
+[[ "$(printf '%s' "$LINT_OUT" | grep -cE '^\[spec-lint\] ERROR E16 ' || true)" -ge 2 ]] \
+  && rule_line E16 | grep -q 'OUT OF SCOPE' && printf '%s' "$LINT_OUT" | grep -qE 'ERROR E16 .*DEFINITION OF DONE' \
+  && assert "L18e: suffixed OUT OF SCOPE / Definition of Done headings are still scanned" "pass" \
+  || assert "L18e: heading variants (rc=$LINT_RC; $LINT_OUT)" "fail"
 python3 "$PROBE" self-test >/dev/null 2>&1 \
   && assert "L19: iter_spec.py self-test passes (HARD-1 + HARD-2 + HARD-3 fixtures)" "pass" \
   || assert "L19: iter_spec.py self-test" "fail"
@@ -801,6 +1035,43 @@ assert len(se["prohibitions"]) == 2, se["prohibitions"]
 assert {p["section"] for p in se["prohibitions"]} == {"OUT OF SCOPE", "TC-4"}, se["prohibitions"]
 assert se["declaration_digest"], se
 PY
+_l22=y
+for label in '- **Side effect policy:** none' '- **Side-effects policy:** none' \
+             '- **Side-effect policy**: none' '* **Side-effect policy:** none'; do
+  spec "$SPECS/l22.md" - "J-01" "J-02"
+  python3 - "$SPECS/l22.md" "$label" <<'PY'
+import sys
+t = open(sys.argv[1]).read()
+t = t.replace("- **Work kind:** verify-only\n", "- **Work kind:** verify-only\n" + sys.argv[2] + "\n")
+open(sys.argv[1], "w").write(t)
+PY
+  lint "$SPECS/l22.md" --side-effects "$LED_DECL"
+  { [[ "$LINT_RC" == "1" ]] && has_rule E02 && rule_line E02 | grep -q 'Side-effect policy'; } \
+    || { _l22=n; echo "      (not caught: $label -> rc=$LINT_RC)"; }
+done
+[[ "$_l22" == y ]] \
+  && assert "L22: a near-miss Side-effect policy label is E02 (re-planned), never a silently absent policy" "pass" \
+  || assert "L22: near-miss policy labels" "fail"
+spec "$SPECS/l23.md" allowed "J-01" "J-04"
+lint "$SPECS/l23.md" --side-effects "$LED_OBS" --json-out "$WORK/l23.json"
+python3 - "$WORK/l23.json" "$LED_OBS" "$SPECS/l23.md" <<'PY' && assert "L23: a journey declared none but observed mutating is named as a DECLARATION CONFLICT to lanes, evaluator and report" "pass" || assert "L23: declaration conflict rendering" "fail"
+import json, subprocess, sys
+res = json.load(open(sys.argv[1]))
+assert res["side_effects"]["conflicts"] == ["J-04"], res["side_effects"]
+def ctx(mode):
+    return subprocess.run([sys.executable, __import__("os").environ["PROBE"], "side-effect-context", "--mode", mode,
+                           "--side-effects", sys.argv[2], "--spec", sys.argv[3]], capture_output=True, text=True).stdout
+ev, lane = ctx("evaluator"), ctx("lane")
+assert "J-04 (DECLARED NONE, but observed POST /api/runs in iter-8)" in ev, ev
+assert "DECLARATION CONFLICT: J-04 is declared 'none' in docs/goal.md" in ev and "never excused" in ev, ev
+assert "DECLARATION CONFLICT: J-04 is declared 'none'" in lane and "name the step that changes data" in lane, lane
+PY
+spec "$SPECS/l24.md" none "J-01, J-04" "J-02"
+sed -i 's/^- \*\*Mode:\*\* next$/- **Mode:** baseline/' "$SPECS/l24.md"
+lint "$SPECS/l24.md" --side-effects "$LED_DECL" --mode-expected baseline
+[[ "$LINT_RC" == "1" ]] && rule_line E13 | grep -q 'baseline' && ! rule_line E13 | grep -qi 'drop it from Target' \
+  && assert "L24: in a baseline spec the fix never suggests dropping a journey" "pass" \
+  || assert "L24: baseline fix text ($LINT_OUT)" "fail"
 spec "$SPECS/l21.md" - "J-01, J-04" "J-02"
 lint "$SPECS/l21.md" --side-effects "$LED_DECL"
 _se_rules="$(printf '%s' "$LINT_OUT" | grep -oE '^\[spec-lint\] (ERROR|WARN) (E06|E13|E14|E15|E16|W02|W09|W10|W11) ' | awk '{print $3}' | sort -u | tr '\n' ' ')"
@@ -1006,7 +1277,7 @@ verify() {  # verify <out-results> [extra args...] -> VRC
   local out="$1"; shift
   VRC=0
   PYTHONPATH="$FAKEPW" FAKE_PW_PLAN="${FAKE_PLAN:-$OBS/plan.json}" python3 "$DEMO_RUNNER_UNDER_TEST" --mode verify \
-    --scripts-dir "$OBS/scripts" --journeys "${VJOURNEYS:-J-02,J-04,J-06,J-07,J-08,J-09}" \
+    --scripts-dir "${VSCRIPTS:-$OBS/scripts}" --journeys "${VJOURNEYS:-J-02,J-04,J-06,J-07,J-08,J-09}" \
     --results "$out" --evidence-dir "$OBS/ev" --base-url "http://localhost:38801" \
     --phase-id "${VPHASE:-goal-obs-iter-8}" --repo-root "$OBS/repo" "$@" >"$out.log" 2>&1 || VRC=$?
 }
@@ -1021,9 +1292,9 @@ row "$OBS/res.md" J-04 | grep -qF '; side effects: 1 mutating request(s) (POST /
 row "$OBS/res.md" J-02 | grep -qF '; side effects: none observed; read-only exception applied: POST /api/policy/evaluate | PASS |' \
   && assert "O2b: J-02's read-only POST is suppressed AND the applied exception is shown" "pass" \
   || assert "O2b: J-02 row ($(row "$OBS/res.md" J-02))" "fail"
-row "$OBS/res.md" J-06 | grep -qF '; side effects: none observed | PASS |' \
+row "$OBS/res.md" J-06 | grep -qF '; side effects: none observed; auth request(s) not counted: POST /api/login | PASS |' \
   && row "$OBS/res.md" J-08 | grep -qF '; side effects: none observed | PASS |' \
-  && assert "O2c: auth POSTs, external analytics and dev-asset POSTs are not mutations" "pass" \
+  && assert "O2c: auth POSTs (reported as not counted), external analytics and dev-asset POSTs are not mutations" "pass" \
   || assert "O2c: J-06/J-08 rows ($(row "$OBS/res.md" J-06) / $(row "$OBS/res.md" J-08))" "fail"
 row "$OBS/res.md" J-07 | grep -qF '; side effects before the replay stopped: 1 mutating request(s) (POST /api/items) | FAIL |' \
   && assert "O2d: a FAILed replay reports what it mutated before it stopped" "pass" \
@@ -1049,6 +1320,10 @@ assert l4["requests"] == [{"method": "POST", "path": "/api/runs", "class": "muta
 assert j["J-02"]["latest"]["readonly_count"] == 1 and j["J-02"]["latest"]["mutating_count"] == 0
 assert j["J-02"]["latest"]["exceptions_applied"] == [{"method": "POST", "path": "/api/policy/evaluate"}]
 assert j["J-06"]["latest"]["auth_count"] == 1 and j["J-06"]["latest"]["mutating_count"] == 0
+assert j["J-06"]["latest"]["auth_ignored"] == [{"method": "POST", "path": "/api/login"}], j["J-06"]["latest"]
+g4 = l4["golden_sha256"]
+assert isinstance(g4, str) and len(g4) == 64 and list(j["J-04"]["goldens"]) == [g4], j["J-04"].get("goldens")
+assert l4["classifier_version"] == 2 and l4["observed_at"].endswith("Z"), l4
 l7 = j["J-07"]["latest"]
 assert l7["complete"] is False and l7["mutating_count"] == 1 and l7["verdict"] == "FAIL", l7
 assert j["J-07"]["mutating_history"][0]["sample"] == ["POST /api/items"]
@@ -1109,9 +1384,63 @@ cat > "$OBS/plan-clean.json" <<'EOF'
 {"requests": {}}
 EOF
 FAKE_PLAN="$OBS/plan-clean.json" VJOURNEYS="J-04" VPHASE="goal-obs-iter-10" verify "$OBS/res10.md" --side-effects-out "$SIDE"
-python3 -c "import json,sys; j=json.load(open('$SIDE'))['journeys']['J-04']; sys.exit(0 if j['latest']['mutating_count']==0 and j['latest']['iter']==10 and [h['iter'] for h in j['mutating_history']]==[8] else 1)" \
-  && assert "O7b: a COMPLETE clean replay of the same golden is authoritative (history keeps iter-8)" "pass" \
+PYTHONPATH="$LIB" python3 -c "import json,sys; from demo_runner import uncleared_mutations as u; j=json.load(open('$SIDE'))['journeys']['J-04']; sys.exit(0 if j['latest']['mutating_count']==0 and j['latest']['iter']==10 and [h['iter'] for h in j['mutating_history']]==[8] and u(j)==[] else 1)" \
+  && assert "O7b: a COMPLETE clean replay of the SAME golden clears the mutation (history keeps iter-8)" "pass" \
   || assert "O7b: complete clean replay clears" "fail"
+# O7c — the LLM lane / SPEED-21 re-derived J-04's golden into one that never
+# clicks Run: its clean replay must NOT clear the recorded mutation.
+SWAP="$OBS/swap"; mkdir -p "$SWAP/scripts"
+cp "$OBS/scripts/J-04.json" "$SWAP/scripts/J-04.json"
+SWAP_SIDE="$OBS/repo/runs/goal-session-swap/state/journey-side-effects.json"
+SWAP_REC="$OBS/repo/runs/goal-session-swap/iter-9/replay-side-effects.json"
+VSCRIPTS="$SWAP/scripts" VJOURNEYS="J-04" VPHASE="goal-swap-iter-8" verify "$OBS/res-swap8.md" --side-effects-out "$SWAP_SIDE"
+printf '%s\n' '{"schema_version": 1, "journey": "J-04", "name": "J-04 re-derived", "default_timeout_ms": 2000, "steps": [{"n": 1, "action": {"type": "goto", "url": "/runs/80f6"}}, {"n": 2, "action": {"type": "click", "target": {"role": "link", "name": "Compare"}}, "expect": {"text": "Engine"}}]}' \
+  > "$SWAP/scripts/J-04.json"
+FAKE_PLAN="$OBS/plan-clean.json" VSCRIPTS="$SWAP/scripts" VJOURNEYS="J-04" VPHASE="goal-swap-iter-9" \
+  verify "$OBS/res-swap9.md" --side-effects-out "$SWAP_SIDE" --side-effects-run-out "$SWAP_REC"
+PYTHONPATH="$LIB" python3 "$GG" side-effects "$OBS/goal.md" --sidecar "$SWAP_SIDE" --repo-root "$OBS/repo" --out "$OBS/led-swap.json" >/dev/null 2>&1
+PYTHONPATH="$LIB" python3 - "$SWAP_SIDE" "$SWAP_REC" "$OBS/led-swap.json" "$OBS/res-swap9.md" <<'PY' && assert "O7c: a clean replay of a DIFFERENT (re-derived) golden never clears J-04's mutation; the run record and the ledger say so" "pass" || assert "O7c: golden swap" "fail"
+import json, sys
+from demo_runner import uncleared_mutations
+j = json.load(open(sys.argv[1]))["journeys"]["J-04"]
+assert j["latest"]["iter"] == 9 and j["latest"]["mutating_count"] == 0, j["latest"]
+assert [m["iter"] for m in uncleared_mutations(j)] == [8], j
+assert len(j["goldens"]) == 2, j["goldens"]
+rec = json.load(open(sys.argv[2]))
+assert rec["sidecar"]["clear_refused"]["J-04"]["mutating_iter"] == 8, rec["sidecar"]
+led = json.load(open(sys.argv[3]))["journeys"]["J-04"]
+assert led["status"] == "mutating" and led["observation_sticky"] and led["observed_iter"] == 8, led
+assert "| PASS |" in open(sys.argv[4]).read()
+PY
+# O14 — the sidecar update times out (a writer holds the state/ lock): the
+# observation is not lost; the next preflight reads and repairs it.
+LOCK_DIR="$OBS/repo/runs/goal-session-lock/state"; mkdir -p "$LOCK_DIR"
+LOCK_SIDE="$LOCK_DIR/journey-side-effects.json"; printf '{"schema_version": 1, "journeys": {}}\n' > "$LOCK_SIDE"
+LOCK_REC="$OBS/repo/runs/goal-session-lock/iter-5/replay-side-effects.json"
+python3 -c 'import fcntl, os, sys, time
+fd = os.open(sys.argv[1], os.O_RDONLY); fcntl.flock(fd, fcntl.LOCK_EX)
+open(sys.argv[2], "w").write("locked"); time.sleep(60)' "$LOCK_DIR" "$OBS/lock-ready" &
+LOCK_PID=$!; DUMMY_PIDS+=("$LOCK_PID")
+for _ in $(seq 1 100); do [[ -f "$OBS/lock-ready" ]] && break; sleep 0.1; done
+CHAIN_SIDE_EFFECT_LOCK_TIMEOUT=0.3 VJOURNEYS="J-04" VPHASE="goal-lock-iter-5" \
+  verify "$OBS/res-lock.md" --side-effects-out "$LOCK_SIDE" --side-effects-run-out "$LOCK_REC"
+kill "$LOCK_PID" 2>/dev/null; wait "$LOCK_PID" 2>/dev/null
+LOCK_RC=$VRC
+PYTHONPATH="$LIB" python3 "$GG" side-effects "$OBS/goal.md" --sidecar "$LOCK_SIDE" --repo-root "$OBS/repo" \
+  --out "$OBS/led-lock.json" --iter 6 --iter-name goal-lock-iter-6 --step preflight --record-digest > "$OBS/lock-events.txt" 2>/dev/null
+python3 - "$LOCK_REC" "$OBS/led-lock.json" "$LOCK_SIDE" "$OBS/lock-events.txt" "$OBS/res-lock.md" "$LOCK_RC" <<'PY' && assert "O14: a sidecar lock timeout loses nothing: the run record keeps J-04's mutation, the next ledger counts it and the preflight repairs the sidecar" "pass" || assert "O14: lock timeout recovery" "fail"
+import json, sys
+rec = json.load(open(sys.argv[1]))
+assert rec["sidecar"]["updated"] is False and "could not lock" in rec["sidecar"]["message"], rec["sidecar"]
+assert sys.argv[6] == "0" and "1 mutating request(s) (POST /api/runs) | PASS |" in open(sys.argv[5]).read()
+led = json.load(open(sys.argv[2]))
+assert led["complete"] and led["journeys"]["J-04"]["status"] == "mutating", led["journeys"]["J-04"]
+assert led["run_records_pending"], led
+side = json.load(open(sys.argv[3]))
+assert rec["run_id"] in side["merged_runs"] and side["journeys"]["J-04"]["latest"]["mutating_count"] == 1, side
+events = [l.split("\t", 1)[0] for l in open(sys.argv[4]) if "\t" in l]
+assert "side_effect_observations_repaired" in events and "side_effect_declaration_conflict" in events, events
+PY
 verify "$OBS/res-off.md"
 if grep -q 'side effects' "$OBS/res-off.md"; then
   assert "O8: without the observer flags the results rows are unchanged (no suffix)" "fail"
@@ -1181,10 +1510,19 @@ with open(arg("--results"), "w") as fh:
 run = arg("--side-effects-run-out")
 if run:
     os.makedirs(os.path.dirname(run), exist_ok=True)
-    json.dump({"iter": 3, "iter_name": arg("--phase-id"), "journeys": {"J-04": {
+    state = os.environ.get("STUB_SIDECAR_STATE", "ok")
+    side = {"path": arg("--side-effects-out"), "updated": state != "failed",
+            "message": "sidecar update failed: could not lock x within 10s" if state == "failed" else "updated"}
+    if state == "refused":
+        side["clear_refused"] = {"J-04": {"golden_sha256": "b" * 64, "mutating_golden_sha256": "a" * 64,
+                                          "mutating_iter": 2, "mutating_iter_name": "goal-rl-iter-2",
+                                          "sample": ["POST /api/runs"]}}
+    json.dump({"run_id": "stub", "iter": 3, "iter_name": arg("--phase-id"), "sidecar": side, "journeys": {"J-04": {
         "mutating_count": 1, "auth_count": 1, "readonly_count": 1, "complete": True, "verdict": "PASS",
+        "golden_sha256": "a" * 64,
         "requests": [{"method": "POST", "path": "/api/runs", "class": "mutating", "count": 1}],
-        "exceptions_applied": [{"method": "POST", "path": "/api/policy/evaluate"}]}}}, open(run, "w"))
+        "exceptions_applied": [{"method": "POST", "path": "/api/policy/evaluate"}],
+        "auth_ignored": [{"method": "POST", "path": "/api/login"}]}}}, open(run, "w"))
 sys.exit(0)
 PYEOF
 echo '{"journey":"J-04","steps":[]}' > "$RSBX/runs/goal-session-rl/journey-scripts/J-04.json"
@@ -1212,9 +1550,23 @@ ev = [l.rstrip("\n").split("\t", 1) for l in open(sys.argv[1]) if "\t" in l]
 obs = [json.loads(p) for e, p in ev if e == "side_effect_observed"]
 exc = [json.loads(p) for e, p in ev if e == "side_effect_exception_applied"]
 assert obs == [{"iter_name": "goal-rl-iter-3", "journey": "J-04", "mutating_count": 1, "auth_count": 1,
-                "readonly_count": 1, "sample": ["POST /api/runs"], "complete": True}], obs
-assert exc == [{"iter_name": "goal-rl-iter-3", "journey": "J-04", "method": "POST", "path": "/api/policy/evaluate"}], exc
+                "readonly_count": 1, "sample": ["POST /api/runs"], "complete": True, "golden": "a" * 12}], obs
+assert exc == [{"iter_name": "goal-rl-iter-3", "journey": "J-04", "kind": "read-only", "method": "POST",
+                "path": "/api/policy/evaluate"},
+               {"iter_name": "goal-rl-iter-3", "journey": "J-04", "kind": "auth", "method": "POST",
+                "path": "/api/login"}], exc
+assert not [e for e, _ in ev if e in ("side_effect_sidecar_update_failed", "side_effect_clear_refused")], ev
 PY
+STUB_SIDECAR_STATE=failed rl_run
+grep -q '^side_effect_sidecar_update_failed	.*"journeys": \["J-04"\]' "$WORK/rl-events.txt" \
+  && grep -q 'side-effect sidecar was NOT updated' "$WORK/rl-log.txt" \
+  && assert "R2b: a failed sidecar update is loud (side_effect_sidecar_update_failed + a warning), never silent" "pass" \
+  || assert "R2b: sidecar update failure ($(cat "$WORK/rl-events.txt"))" "fail"
+STUB_SIDECAR_STATE=refused rl_run
+grep -q '^side_effect_clear_refused	.*"mutating_iter": 2' "$WORK/rl-events.txt" \
+  && grep -q 'stays MUTATING' "$WORK/rl-log.txt" \
+  && assert "R2c: a clean replay that cannot clear an earlier mutation emits side_effect_clear_refused" "pass" \
+  || assert "R2c: clear refused ($(cat "$WORK/rl-events.txt"))" "fail"
 echo '{"stale": true}' > "$RSBX/runs/goal-session-rl/iter-3/replay-side-effects.json"
 CHAIN_SIDE_EFFECT_OBSERVER=false rl_run
 if grep -q -- '--side-effects' "$WORK/rl-argv.txt" || [[ -s "$WORK/rl-events.txt" ]]; then
@@ -1223,8 +1575,9 @@ else
   assert "R3: CHAIN_SIDE_EFFECT_OBSERVER=false passes no observer flag and emits nothing" "pass"
 fi
 [[ ! -f "$RSBX/runs/goal-session-rl/iter-3/replay-side-effects.json" ]] \
-  && assert "R4: a previous run's record is removed at partition entry (never read as this run's)" "pass" \
-  || assert "R4: stale run record removed" "fail"
+  && grep -lq '"stale": true' "$RSBX/runs/goal-session-rl/iter-3/"replay-side-effects.*.json 2>/dev/null \
+  && assert "R4: a previous run's record is ARCHIVED at partition entry (never read as this run's, never deleted)" "pass" \
+  || assert "R4: stale run record archived ($(ls "$RSBX/runs/goal-session-rl/iter-3/"))" "fail"
 _r3b=y
 for v in 0 off no FALSE; do
   CHAIN_SIDE_EFFECT_OBSERVER="$v" rl_run
@@ -1244,7 +1597,10 @@ grep -q "CHAIN_SIDE_EFFECT_OBSERVER='flase'" "$WORK/rl-log.txt" || _r3b=n
   [[ "$out" == "SIDE-EFFECT CONTEXT (deterministic, engine-built): spec Side-effect policy: allowed; MUTATING: J-04 (declared); NONE: J-02; Unknown: J-01."$'\n'* ]] || exit 1
   printf '%s' "$out" | grep -qF 'Execute every numbered step EXACTLY as written even when it creates or changes data.' || exit 1
   printf '%s' "$out" | grep -qF 'In each row'"'"'s Actual cell name any create/update/delete you performed or write "no data changed".' || exit 1
-) && assert "R5: side_effects_prompt_block renders the plan's block only when context applies (empty otherwise)" "pass" \
+  [[ "$out" != *"full-depth run"* ]] || exit 1
+  full="$(side_effects_prompt_block "$LED_DECL" "$SPECS/l3.md" full)"
+  [[ "$full" == "$out (In this full-depth run, a numbered step also means a numbered step of a UT- test case you were asked to execute.)" ]] || exit 1
+) && assert "R5: side_effects_prompt_block renders the plan's block only when context applies (empty otherwise); 'full' adds the UT- note" "pass" \
   || assert "R5: side_effects_prompt_block" "fail"
 
 # ── Part E: the REAL run-goal.sh engine ──────────────────────────────────────
@@ -1357,6 +1713,9 @@ e_run() {  # e_run <kind> [env=val ...]  (fresh session; E_PRESEED_SIDECAR seeds
     mkdir -p "$ESBX/runs/goal-session-$E_SID/state"
     printf '%s' "$E_PRESEED_SIDECAR" > "$ESBX/runs/goal-session-$E_SID/state/journey-side-effects.json"
   fi
+  # A directory where the ledger file belongs: the build can neither remove it
+  # nor write the ledger (goal_gate.py exits 2) — a wholly unavailable ledger.
+  [[ -n "${E_PRESEED_LEDGER_DIR:-}" ]] && mkdir -p "$ESBX/runs/goal-session-$E_SID/iter-0/side-effects.json/x"
   local kind="$1"; shift
   e_invoke "$E_SID" "$kind" "" "$@"
 }
@@ -1409,6 +1768,11 @@ _x=$(grep -n 'Dispatching LEAN pipeline' "$E_LOG" | head -1 | cut -d: -f1)
 [[ -s "$E_SESSION/state/journey-side-effects.json" ]] && python3 -c "import json,sys; d=json.load(open('$E_SESSION/state/journey-side-effects.json')); sys.exit(0 if d['declaration_digest'] and d['declarations']['J-04']['declared']=='mutating' else 1)" \
   && assert "E1g: the engine-owned sidecar records the declaration digest and declarations" "pass" \
   || assert "E1g: sidecar bookkeeping" "fail"
+python3 - "$E_SESSION/iter-0/spec-lint.json" <<'PY' && assert "E1h: the lint verified the ledger against this run's preflight build id (freshness check armed)" "pass" || assert "E1h: build id checked" "fail"
+import json, sys
+se = json.load(open(sys.argv[1]))["side_effects"]
+assert se["availability"] == "ok" and isinstance(se["build_id"], str) and se["build_id"], se
+PY
 
 # E2 — the tripwire: the re-plan flips none -> allowed and keeps the prohibition.
 e_run iter9-none STUB_SPEC_KIND_2=iter9-allowed
@@ -1453,6 +1817,20 @@ e_run iter9-allowed CHAIN_SPEC_LINT=warn
 [[ "$(e_count developer)" -ge 1 && "$(e_count goal-decomposer)" == "1" ]] && grep -q 'dispatching anyway' "$E_LOG" \
   && assert "E5: CHAIN_SPEC_LINT=warn logs E16 loudly and dispatches without a re-plan" "pass" \
   || assert "E5: warn mode (dev=$(e_count developer))" "fail"
+
+# E5b — ... but warn mode never relaxes E15's fail-closed check.
+E_PRESEED_SIDECAR='{ corrupt' e_run nonenone CHAIN_SPEC_LINT=warn
+[[ "$(e_status)" == "GATE_BLOCKED" && "$(e_count developer)" == "0" && "$(e_count browser-qa-agent)" == "0" ]] \
+  && e_halt GATE_BLOCKED_SIDE_EFFECT_LEDGER side-effect-ledger && grep -q '"lint_mode": *"warn"' "$E_SESSION/telemetry.jsonl" \
+  && grep -q 'CHAIN_SPEC_LINT=warn does not relax this' "$E_LOG" \
+  && assert "E5b: CHAIN_SPEC_LINT=warn + E15 still halts GATE_BLOCKED_SIDE_EFFECT_LEDGER with zero dispatch" "pass" \
+  || assert "E5b: warn never relaxes E15 (status=$(e_status) dev=$(e_count developer))" "fail"
+
+# E5c — CHAIN_SPEC_LINT=off is an announced kill switch for the whole lint.
+E_PRESEED_SIDECAR='{ corrupt' e_run nonenone CHAIN_SPEC_LINT=off
+[[ "$(e_count developer)" -ge 1 ]] && grep -q 'CHAIN_SPEC_LINT=off: the spec lint does not run, so the HARD-3 side-effect preflight' "$E_LOG" \
+  && assert "E5c: CHAIN_SPEC_LINT=off skips the preflight too, and says so" "pass" \
+  || assert "E5c: lint off (dev=$(e_count developer))" "fail"
 
 # E6 — CHAIN_SIDE_EFFECT_PREFLIGHT=false disables only the ledger rules.
 e_run iter9-allowed CHAIN_SIDE_EFFECT_PREFLIGHT=false
@@ -1500,6 +1878,19 @@ assert any(c.get("journey") == "J-04" and c.get("from") == "mutating" and c.get(
 s = json.load(open(sys.argv[2]))
 assert s["declaration_digest_prev"] and s["declaration_digest_prev"] != s["declaration_digest"], s
 PY
+
+# E12 — a wholly UNAVAILABLE ledger (the build could not write it at all).
+E_PRESEED_LEDGER_DIR=1 e_run nonenone
+[[ "$(e_status)" == "GATE_BLOCKED" && "$(e_count developer)" == "0" ]] \
+  && e_halt GATE_BLOCKED_SIDE_EFFECT_LEDGER side-effect-ledger \
+  && grep -q '^\[spec-lint\] ERROR E15 ' "$E_SESSION/iter-0/spec-lint.txt" && grep -q 'Side-effect ledger (preflight) UNAVAILABLE' "$E_LOG" \
+  && assert "E12: policy none + a ledger the build could not write (goal_gate rc 2) -> GATE_BLOCKED, zero dispatch" "pass" \
+  || assert "E12: unavailable ledger under none (status=$(e_status) dev=$(e_count developer))" "fail"
+E_PRESEED_LEDGER_DIR=1 e_run allowedplain
+[[ "$(e_status)" != "GATE_BLOCKED" && "$(e_count developer)" -ge 1 ]] \
+  && grep -q '^\[spec-lint\] WARN W11 ' "$E_SESSION/iter-0/spec-lint.txt" \
+  && assert "E12b: the same unavailable ledger under policy allowed -> W11 only, dispatch continues" "pass" \
+  || assert "E12b: unavailable ledger under allowed (status=$(e_status) dev=$(e_count developer))" "fail"
 
 # E11 — an ABSENT policy line does not disarm E16 either.
 e_run iter9-absent STUB_SPEC_KIND_2=fixed
@@ -1643,12 +2034,13 @@ grep -qxF 'SIDE-EFFECT CONTEXT (deterministic, engine-built): spec Side-effect p
   && assert "P3: the iter-0 LLM browser lane prompt carries the context block right after the two numbered instructions" "pass" \
   || assert "P3: lean lane block ($(grep -n 'SIDE-EFFECT' "$BQA0" 2>/dev/null | head -2))" "fail"
 EV0="$PP/goal-evaluator-1.txt"
-grep -qF "  Side-effect ledger (deterministic): $PS/iter-0/side-effects.json <-- policy: allowed; MUTATING: J-04 (observed POST /api/runs in iter-0); NONE: (none); Unknown: J-01; declaration digest " "$EV0" \
+grep -qF "  Side-effect ledger (deterministic): $PS/iter-0/side-effects.json <-- policy: allowed; MUTATING: J-04 (DECLARED NONE, but observed POST /api/runs in iter-0); NONE: (none); Unknown: J-01; declaration digest " "$EV0" \
+  && grep -qF "DECLARATION CONFLICT: J-04 is declared 'none' in docs/goal.md, yet the deterministic replay observed a mutation" "$EV0" \
   && grep -qF 'classify it as a spec/journey contradiction rather than a product regression' "$EV0" \
-  && assert "P4: the evaluator prompt names the REFRESHED ledger (this iteration's observed POST) and the scoring rule" "pass" \
+  && assert "P4: the evaluator prompt names the REFRESHED ledger (this iteration's observed POST), the declaration conflict and the scoring rule" "pass" \
   || assert "P4: evaluator ledger line ($(grep -n 'Side-effect ledger' "$EV0" 2>/dev/null | head -2))" "fail"
 D1P="$PP/goal-decomposer-2.txt"
-grep -qF 'Side-effect ledger (deterministic, engine-built): ' "$D1P" && grep -qF 'MUTATING: J-04 (observed POST /api/runs in iter-0)' "$D1P" \
+grep -qF 'Side-effect ledger (deterministic, engine-built): ' "$D1P" && grep -qF 'MUTATING: J-04 (DECLARED NONE, but observed POST /api/runs in iter-0)' "$D1P" \
   && grep -qF 'Side-effect rule (BINDING' "$D1P" && grep -qF -- '- **Side-effect policy:** none | allowed' "$D1P" \
   && assert "P5: the iter-1 decomposer prompt carries the ledger digest line, the rule and the new metadata field" "pass" \
   || assert "P5: decomposer prompt" "fail"
@@ -1662,6 +2054,9 @@ j = json.load(open(sys.argv[1]))["journeys"]["J-04"]
 assert j["status"] == "mutating" and j["declared"] == "none" and j["status_source"] == "observed", j
 assert j["observed_iter"] == 0 and j["requests"][0]["path"] == "/api/runs", j
 PY
+grep -q '"event": *"side_effect_declaration_conflict"' "$PS/telemetry.jsonl" \
+  && assert "P7c: the iter-1 preflight records the declared-none / observed-mutating conflict (side_effect_declaration_conflict)" "pass" \
+  || assert "P7c: declaration conflict telemetry" "fail"
 BQA1="$PP/browser-qa-agent-2.txt"
 if [[ -f "$BQA1" ]]; then
   assert "P7b: (iteration 1 never reached its browser lane — the scripted developer pause comes first)" "fail"
@@ -1673,8 +2068,8 @@ LSBX="$WORK/lproj"; mk_psbx "$LSBX" legacy
 p_run "$LSBX" legacy 1 P_POL0=
 BQAL="$P_PROMPTS/legacy/browser-qa-agent-1.txt"
 EVL="$P_PROMPTS/legacy/goal-evaluator-1.txt"
-_between="$(awk '/^  2\. Execute the steps with Chrome MCP/{f=1;next} /^Frontend URL:/{f=0} f' "$BQAL" 2>/dev/null)"
-[[ -f "$BQAL" && -f "$EVL" && -z "$_between" ]] && ! grep -q 'SIDE-EFFECT' "$BQAL" && ! grep -q 'Side-effect ledger' "$EVL" \
+_between="$(awk '/^  2\. Execute the steps with Chrome MCP/{f=1;n=0;next} /^Frontend URL:/{if(f)print n; f=0} f{n++; if($0!="")print "nonblank"}' "$BQAL" 2>/dev/null | tr '\n' ' ')"
+[[ -f "$BQAL" && -f "$EVL" && "$_between" == "1 " ]] && ! grep -q 'SIDE-EFFECT' "$BQAL" && ! grep -q 'Side-effect ledger' "$EVL" \
   && assert "P8: no declaration + no policy -> lane and evaluator prompts carry NO side-effect text (byte-identical shape)" "pass" \
   || assert "P8: legacy prompts (between='$_between'; files: $(ls "$P_PROMPTS/legacy" 2>/dev/null | tr '\n' ' '))" "fail"
 grep -qF 'Side-effect ledger (deterministic, engine-built): ' "$P_PROMPTS/legacy/goal-decomposer-1.txt" \
@@ -1738,7 +2133,8 @@ import sys
 w = open(sys.argv[1]).read()
 wo = open(sys.argv[2]).read()
 start = w.index("\nSIDE-EFFECT CONTEXT (deterministic, engine-built): spec Side-effect policy: allowed; MUTATING: J-04 (declared); NONE: (none); Unknown: J-01.\n")
-end = w.index('write "no data changed".', start) + len('write "no data changed".')
+tail = 'write "no data changed". (In this full-depth run, a numbered step also means a numbered step of a UT- test case you were asked to execute.)'
+end = w.index(tail, start) + len(tail)
 assert "GOAL-MODE REGRESSION LANES" in w[:start], "the block belongs to the goal-lanes note"
 assert w[:start] + w[end:] == wo, "only the block differs"
 assert "SIDE-EFFECT" not in wo
@@ -1762,7 +2158,8 @@ RL="$LIB/replay-lane.sh"
 _w1_missing=""
 for pat in 'journey-side-effects.json' 'CHAIN_SIDE_EFFECT_PREFLIGHT' 'CHAIN_SIDE_EFFECT_STRICT' 'Side-effect ledger' \
            'GATE_BLOCKED_SIDE_EFFECT_LEDGER' 'side_effect_ledger_unavailable' 'side_effect_unknown' \
-           'CHAIN_SIDE_EFFECTS_FILE' '--strict-side-effects' '--makeup-journeys'; do
+           'CHAIN_SIDE_EFFECTS_FILE' '--strict-side-effects' '--makeup-journeys' '--side-effects-build-id' \
+           'side_effect_declaration_conflict'; do
   grep -qF -- "$pat" "$RG" || _w1_missing+="$pat "
 done
 [[ -z "$_w1_missing" ]] \
@@ -1815,7 +2212,9 @@ grep -qE '^  - Side effects: mutating — ' "$ENGINE_ROOT/templates/project-goal
 _tdoc="$ENGINE_ROOT/docs/goal-mode-telemetry.md"
 _miss=""
 for ev in side_effect_observed side_effect_declaration_changed side_effect_exception_applied side_effect_unknown \
-          side_effect_ledger_unavailable GATE_BLOCKED_SIDE_EFFECT_LEDGER side_effect_rules; do
+          side_effect_ledger_unavailable GATE_BLOCKED_SIDE_EFFECT_LEDGER side_effect_rules \
+          side_effect_clear_refused side_effect_sidecar_update_failed side_effect_declaration_conflict \
+          side_effect_observations_repaired CHAIN_SIDE_EFFECT_LOCK_TIMEOUT; do
   grep -q "$ev" "$_tdoc" || _miss+="$ev "
 done
 [[ -z "$_miss" ]] && grep -q 'journey-side-effects.json' "$ENGINE_ROOT/runs/SCHEMA.md" \
@@ -1824,6 +2223,12 @@ done
   || assert "W10: docs (missing: $_miss)" "fail"
 grep -q 'tests/automation/test-side-effects.sh' "$ENGINE_ROOT/scripts/automation/run-evals.sh" \
   && assert "W11: run-evals.sh runs this suite" "pass" || assert "W11: run-evals wiring" "fail"
+if grep -nE 'rm .*REPLAY_SIDE_EFFECTS_RUN' "$RL" "$LEAN" "$FULLQA" >/dev/null \
+   || [[ "$(grep -c 'replay_side_effects_retire "\${REPLAY_SIDE_EFFECTS_RUN' "$RL" "$LEAN" | awk -F: '{s+=$2} END {print s}')" -lt 3 ]]; then
+  assert "W13: per-run side-effect records are archived (partition entry + both fork reaps), never deleted" "fail"
+else
+  assert "W13: per-run side-effect records are archived (partition entry + both fork reaps), never deleted" "pass"
+fi
 if grep -nE '(^|[^_])(pkill|fuser -k|killall)\b' "$SCRIPT_DIR/test-side-effects.sh" | grep -v 'grep -nE' >/dev/null; then
   assert "W12: this harness never kills by pattern or port (HARD-5)" "fail"
 else

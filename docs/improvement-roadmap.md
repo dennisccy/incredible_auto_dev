@@ -5574,12 +5574,74 @@ Four root causes: governors read proxies instead of facts (HARD-1..3); ownership
     malformed format still counts as mutating (a malformed line never makes a journey less
     restrictive). (5) Declarations are parsed with a correctly-bounded block splitter — see
     CAND-JOURNEY-BLOCKS in §16 for the pre-existing `_journey_blocks` quirk it avoids.
-  - *Verify:* `bash tests/automation/test-side-effects.sh` (193 checks incl. the exact TenSteps
-    iteration-9 contradiction, the none→allowed tripwire, E15 fail-closed with zero dispatch, the
-    real lean executor with a fake Playwright) · self-tests of `demo_runner.py`, `goal_gate.py`,
-    `goal_lint.py`, `iter_spec.py`, `artifact_schemas.py` · `./scripts/automation/run-evals.sh`.
+  - *Verify:* `bash tests/automation/test-side-effects.sh` (236 checks after revision 2, incl. the
+    exact TenSteps iteration-9 contradiction, the none→allowed tripwire, E15 fail-closed with zero
+    dispatch in block AND warn mode, the real lean executor with a fake Playwright) · self-tests of
+    `demo_runner.py`, `goal_gate.py`, `goal_lint.py`, `iter_spec.py`, `artifact_schemas.py` ·
+    `./scripts/automation/run-evals.sh`.
+  - *Revision 2 (2026-09-17, after the pre-merge adversarial review of `cd3472d`; RED: the
+    revised suite fails 45 checks against `cd3472d`, GREEN 236/0 after):*
+    - **C1 certification path:** `_normalize_block` now drops ONLY well-formed declaration lines
+      (canonical label, own list item, `none`/`mutating`, well-formed note). A malformed
+      declaration-shaped line — prose after `side effect:`, `none (…)`, `mutating, …` — is
+      journey text again, so editing it is goal-edit drift; `declaration_hash` covers a malformed
+      line's full text. (cd3472d dropped every declaration-shaped line and hid those edits from both
+      the drift gate and the digest.)
+    - **I1 observation durability:** observations carry `golden_sha256` (canonical steps +
+      default timeout). A mutation counts until a strictly newer COMPLETE clean replay of the SAME
+      golden exists (per-golden evidence in the sidecar, order-independent); a re-derived golden's
+      clean replay cannot clear it (`side_effect_clear_refused`, ledger `observation_sticky`).
+    - **I2 / I8 unreadable or missed observations:** per-run records are archived (renamed), never
+      deleted — at partition entry, before every verify call and in both fork reaps. The ledger
+      applies records the sidecar has not merged (`run_records_pending`), the preflight record
+      step merges them (`side_effect_observations_repaired`), a moved-aside sidecar is rebuilt
+      from them, and a declared-`none` journey whose observations cannot be read is `unknown`
+      (`declared-unverified`), never `none`. A failed sidecar update is loud
+      (`side_effect_sidecar_update_failed`); `CHAIN_SIDE_EFFECT_LOCK_TIMEOUT` (default 10 s).
+    - **I3 (decision taken under the owner's rule "never turn an unreadable restrictive-policy
+      ledger into permission to proceed"; the plan's E15 text has no warn carve-out):** E15 now
+      halts under `CHAIN_SPEC_LINT=warn` too; only the announced switches `CHAIN_SPEC_LINT=off`
+      and `CHAIN_SIDE_EFFECT_PREFLIGHT=false` skip it. E13/E14/E16 stay advisory under `warn`
+      (HARD-2's contract). **Owner to confirm.**
+    - **I4:** `TC-` lines under GOAL / BACKGROUND / NOTES (and the metadata section) are prose; TC
+      lines elsewhere are scanned in bullet, numbered, checkbox and table form, sub-bullets
+      included; `OUT OF SCOPE (…)` / `Definition of Done (DoD)` heading variants are scanned; close
+      wording variants of the plan's patterns were added ("no new portfolio runs", "number of
+      ledger rows unchanged", "must not start a run", "launching a new run", "creating/editing
+      ledger rows", "ledger left untouched").
+    - **I5:** a journey declared `none` but observed mutating is rendered as `DECLARED NONE, but
+      observed …` plus a `DECLARATION CONFLICT` sentence (lanes, evaluator, decomposer), reported in
+      `side_effect_declaration_conflict`; methodology A.8 / self-check 6 make it a finding.
+    - **I6:** a near-miss `Side-effect policy` label in the metadata section is E02 (re-planned),
+      never a silently absent policy.
+    - **I7 (semantics narrowed; owner may prefer another rule):** auth exclusions match whole
+      segments at the START of the path after an optional `/api[/vN]` prefix, POST/DELETE only,
+      never when the remainder names a resource id; an override naming `/` or an API root is
+      rejected (`ignore_paths_rejected`); every applied auth exclusion is reported (row suffix
+      `auth request(s) not counted: …`, ledger `auth_ignored`, `side_effect_exception_applied`
+      `kind:"auth"`). Residual by design: `POST /auth/register`, `POST /api/auth/users`.
+    - **Minor:** innermost-journey declaration attribution (a nested same-id owner note is not a
+      second definition — the trendora J-10 shape); ledger writes before the digest is recorded
+      (`--record-digest` needs `--out`); a preflight build id the lint checks (a ledger left from a
+      failed build is stale → E15/W11), and an un-removable ledger path no longer crashes the engine
+      under `set -e` (cd3472d did — test E12); undecodable/over-deep ledgers are unavailable, not a
+      linter crash; the baseline fix text never suggests dropping a journey; the full lane gets a
+      one-sentence UT- note; `/goal-lint` documents `--sidecar`; `spec_lint` gains `mutating` for
+      the tripwire; the step-hint heuristic counts only actions a step performs (imperative,
+      operated control, all-caps label) — 35 hints across the five goal files instead of ~100;
+      observers also count `ping`/`other` requests and LAN/private/single-label/local backends,
+      and never exempt a path with an encoded separator.
+    - *Known false-positive class (plan pattern list):* developer-scope phrases such as "must not
+      create new endpoints" or "no write access" match E16's patterns; across 612 historical
+      specs, 35 carry ≥1 prohibition-shaped line. Each costs one re-plan ONLY when a checked
+      journey is mutating; the decomposer contract tells it to avoid those phrases.
+    - *Pre-existing, out of scope:* `goal_lint.py`'s `duplicate-id` rule already reports trendora's
+      nested `- **J-10 CLOSED — …**` owner note as an ERROR (advisory lint).
   - *Owed:* G8 fresh-session certification; the G9-gated real session (a replay-observed mutation in
-    the sidecar, no TC failed on a journey's own mutation); vendored per-file sync.
+    the sidecar, no TC failed on a journey's own mutation); vendored per-file sync — products must
+    sync this `goal_gate.py` BEFORE adding `- Side effects:` lines (older code hashes those lines as
+    journey text, which would read as goal-edit drift); owner confirmation of the I3 and I7
+    decisions above; M6 (the GOAL_ACHIEVED two-key confirm prompt carries no side-effect context).
 
 ### HARD-4A · Engine identity token + lock-before-mutation ordering + owner-guarded `engine.pid`
 - **Priority:** P1 · **Effort:** M · **Risk:** MED · **Status:** PARTIAL — sub-commit **A0 landed with HARD-5** (`lib/engine-identity.sh`: `engine_token_mint`/`engine_token_alive`/`engine_token_self`/`engine_proc_env`). **A1 remains TODO** (prologue reorder, lock-before-mutation ordering, owner-guarded `engine.pid`, signal-time takeover revalidation, `.engine.lock/token`).

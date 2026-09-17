@@ -155,10 +155,10 @@ Also included as a section inside `reports/qa/<phase>-qa.md` when `Frontend Pres
 | Coherence audit per iter (goal mode) | `runs/goal-session-<sid>/iter-<N>/coherence.md` |
 | Goal-edit drift note (goal mode) | `runs/goal-session-<sid>/iter-<N>/journeys-changed.md` |
 | Canonical spec-field halt marker (goal mode, HARD-2) | `runs/goal-session-<sid>/iter-<N>/spec-field-unavailable` — written when the executor exited 78 because a `## Goal Mode Metadata` machine field could not be read at runtime (`reason=`, `rc=`, `spec=`, `iter=`, `detected_at_step=`). The iteration is neither evaluated nor advanced |
-| Spec-lint report (goal mode, HARD-2) | `runs/goal-session-<sid>/iter-<N>/spec-lint.txt` and `.json` — the deterministic iteration-spec lint's findings (`[spec-lint] ERROR\|WARN <rule> <name>: <msg>` lines; the JSON adds the parsed metadata and `work_kind_derived`, and — HARD-3, when the side-effect preflight ran — a `side_effects` block: `policy`, `availability` of the ledger, `journeys_checked` with their `roles` and `statuses`, `mutating`/`unknown`/`none`, the explicit `prohibitions` found (`section`, `line`, `text`, `pattern`) and the `declaration_digest` it was checked against; this is the preflight view even after the ledger file is refreshed for the evaluator). Written on every linted iteration, clean or not. `spec-lint.stderr` holds the linter's own stderr and is what `spec_lint_crash` samples |
+| Spec-lint report (goal mode, HARD-2) | `runs/goal-session-<sid>/iter-<N>/spec-lint.txt` and `.json` — the deterministic iteration-spec lint's findings (`[spec-lint] ERROR\|WARN <rule> <name>: <msg>` lines; the JSON adds the parsed metadata and `work_kind_derived`, and — HARD-3, when the side-effect preflight ran — a `side_effects` block: `policy`, `availability` of the ledger, `journeys_checked` with their `roles` and `statuses`, `mutating`/`unknown`/`none`, the declared-none / observed-mutating `conflicts`, the `sticky` journeys, the explicit `prohibitions` found (`section`, `line`, `text`, `pattern`), the `declaration_digest` and `build_id` it was checked against; this is the preflight view even after the ledger file is refreshed for the evaluator). Written on every linted iteration, clean or not. `spec-lint.stderr` holds the linter's own stderr and is what `spec_lint_crash` samples |
 | Side-effect ledger per iteration (goal mode, HARD-3) | `runs/goal-session-<sid>/iter-<N>/side-effects.json` — see "Journey side-effect ledger" below |
 | Side-effect sidecar (goal mode, HARD-3, engine-owned) | `runs/goal-session-<sid>/state/journey-side-effects.json` |
-| Replay side-effect run record (goal mode, HARD-3) | `runs/goal-session-<sid>/iter-<N>/replay-side-effects.json` |
+| Replay side-effect run records (goal mode, HARD-3) | `runs/goal-session-<sid>/iter-<N>/replay-side-effects.json` (current) and `replay-side-effects.<stamp>-<pid>-<n>.json` (archived, never deleted) |
 | Read-only endpoint exceptions (owner-authored, optional, HARD-3) | `project-extensions/side-effects/read-only-endpoints.txt` |
 | Evidence-mode refusal marker (goal mode, HARD-1) | `runs/goal-session-<sid>/iter-<N>/evidence-mode-refused` — written by `goal-iter-lean.sh` when an evidence-only dispatch was refused because the spec plans implementation work (`reason=`, `spec=`, `work=`); the engine re-dispatches the iteration lean. On the evidence micro-path the dev handoff carries `**Developer status:** NOT_DISPATCHED` and the review file carries `**Review status:** NOT_DISPATCHED` (no verdict line) |
 | GOAL_ACHIEVED delivered wrap (MD) | `reports/goal-session-<sid>-delivered.md` |
@@ -395,90 +395,121 @@ mechanism — a missing hash means "unknown", not "stale".
 
 A journey's **side-effect status** is `mutating`, `none` or `unknown`: `mutating` when the
 owner declared `- Side effects: mutating — <note>` in its `docs/goal.md` block OR a
-deterministic replay observed it send a same-project POST/PUT/PATCH/DELETE (an observation
-always outranks a `none` declaration); `none` when the owner declared `none` and nothing was
-observed; `unknown` otherwise (no line, or an invalid one). Declaration lines are dropped
-before a journey's `spec_hash` is computed (journey-hash-neutral); their provenance is the
-`declaration_digest` below plus `side_effect_declaration_changed` telemetry.
+deterministic replay observed it send a same-project POST/PUT/PATCH/DELETE that no later
+complete replay of the SAME golden script cleared (an observation always outranks a `none`
+declaration); `none` when the owner declared `none`, nothing was observed, and the
+observations could be read; `unknown` otherwise (no line, an invalid one, or unreadable
+observations). Only a WELL-FORMED declaration line is dropped before a journey's `spec_hash`
+is computed (journey-hash-neutral); a malformed declaration-shaped line is ordinary journey
+text (editing it is goal-edit drift). Declaration provenance is the `declaration_digest`
+below plus `side_effect_declaration_changed` telemetry.
 
 ### runs/goal-session-\<sid\>/iter-\<N\>/side-effects.json
 
 Written by `run-goal.sh` via `lib/goal_gate.py side-effects` (atomically): once BEFORE the
-goal-decomposer (`built_at_step: "preflight"` — an existing file is removed first, so a failed
-build can never leave a stale ledger) and refreshed before the goal-evaluator
-(`"pre-evaluator"`, keeping the preflight file if the refresh fails). Readers: the spec lint
-(`iter_spec.py lint --side-effects`), both browser lanes (`CHAIN_SIDE_EFFECTS_FILE`), the
-decomposer and evaluator prompts. Shape:
+goal-decomposer (`built_at_step: "preflight"`, stamped with a fresh `build_id` that the spec
+lint must see — an existing file is removed first, and a file that survives a failed build
+carries another build id, so the lint reads it as unavailable) and refreshed before the
+goal-evaluator (`"pre-evaluator"`, keeping the preflight file if the refresh fails). Readers:
+the spec lint (`iter_spec.py lint --side-effects … --side-effects-build-id …`), both browser
+lanes (`CHAIN_SIDE_EFFECTS_FILE`), the decomposer and evaluator prompts. Shape:
 
 ```json
-{"schema_version": 1, "built_at": "...", "built_at_step": "preflight", "iter": 9,
- "iter_name": "goal-<sid>-iter-9", "complete": true, "errors": [],
+{"schema_version": 1, "build_id": "<id|null>", "built_at": "...", "built_at_step": "preflight",
+ "iter": 9, "iter_name": "goal-<sid>-iter-9", "complete": true, "errors": [],
  "declaration_digest": "<sha256>", "declaration_digest_prev": "<sha256|null>",
  "declaration_digest_changed_iter": 7, "declaration_digest_changed_this_iter": false,
  "readonly_endpoints": {"path": "...", "present": true, "sha256": "...", "entries": [["POST", "/api/policy/evaluate"]], "invalid": [], "error": null},
  "ignore_paths": ["/login", "/logout", "/auth", "/session", "/token", "/csrf"], "ignore_paths_default": true,
+ "ignore_paths_rejected": [], "run_records_pending": [],
  "journeys": {"J-04": {"name": "...", "declared": "mutating", "declaration_valid": true,
    "declaration_errors": [], "declaration_hash": "<sha256>", "note": "...",
    "observed_mutating": true, "observed_iter": 8, "observed_iter_name": "goal-<sid>-iter-8",
-   "observation_complete": true, "observation_basis": "recorded",
+   "observation_complete": true, "observation_basis": "recorded", "observation_established": true,
+   "observation_sticky": false, "sticky_detail": null, "observed_at": "2026-09-17T00:00:00.000000Z",
+   "golden_sha256": "<sha256>", "declaration_conflict": false,
    "requests": [{"method": "POST", "path": "/api/runs", "class": "mutating", "count": 1}],
-   "exceptions_applied": [], "status": "mutating", "status_source": "declared+observed",
-   "step_hints": [{"n": 1, "text": "Open Backtests → Portfolio run; click Run", "words": ["run"]}]}},
- "summary": {"mutating": ["J-04"], "none": [], "unknown": []}, "declaration_errors": []}
+   "exceptions_applied": [], "auth_ignored": [{"method": "POST", "path": "/api/login"}],
+   "status": "mutating", "status_source": "declared+observed",
+   "step_hints": [{"n": 1, "text": "click Run", "words": ["run"]}]}},
+ "summary": {"mutating": ["J-04"], "none": [], "unknown": []}, "conflicts": [], "declaration_errors": []}
 ```
 
 `complete: false` (with `errors`) means observed mutations or read-only exceptions could not be
-established (corrupt sidecar, unreadable exception file); declared statuses are still present.
-A spec with `Side-effect policy: none` fails closed on an incomplete or missing ledger (E15);
+established (corrupt sidecar, unreadable per-run record, unreadable exception file); declared
+mutations and any mutation that can still be read stay `mutating`, and a declared `none` whose
+observations cannot be read is `unknown` (`status_source: "declared-unverified"`). A spec with
+`Side-effect policy: none` fails closed on an incomplete, missing or stale ledger (E15);
 any other policy only warns (W11). `declaration_digest` = sha256 over the sorted parsed
 declarations (journey, value, normalized note, `declaration_hash`) plus the exception file's
-sha256 — formatting-only edits do not change it, value/note/exception edits do.
-`observation_basis`: `recorded`, `reclassified` (the exception file or the auth list changed
-since the observation, so the stored `{method, path}` sample was re-classified with the current
-rules) or `reclassification-unverifiable` (a truncated sample — kept mutating, fail closed).
+sha256 — formatting-only edits of a well-formed line do not change it; value, note, exception
+edits and ANY edit of a malformed line do. `observation_basis`: `recorded`, `reclassified`
+(the exception file, the auth list or the classifier rules changed since the observation, so
+the stored `{method, path}` sample was re-classified with the current rules) or
+`reclassification-unverifiable` (a truncated sample — kept mutating, fail closed).
+`observation_sticky` marks a mutation a newer complete clean replay could not clear because it
+replayed a different golden script (`sticky_detail` names that replay). `declaration_conflict`
+(and the top-level `conflicts` list) marks a journey declared `none` that was observed
+mutating. `run_records_pending` lists per-run records the sidecar has not merged yet (they are
+applied in memory; the preflight's record step merges them).
 
 ### runs/goal-session-\<sid\>/state/journey-side-effects.json
 
-The engine-owned sidecar. Two writers, each touching only its own keys, both read-modify-write
-under an exclusive `flock` on the `state/` directory itself (no lock file) with atomic replace:
-the replay lane (`demo_runner.py --side-effects-out`) writes `journeys.<J>.latest` /
-`last_attempt` / `mutating_history` (last 5); the preflight ledger build writes
-`declarations`, `declaration_digest`, `declaration_digest_prev`,
-`declaration_digest_changed_iter`, `readonly_endpoints_sha256`, `ignore_paths` (the auth/session
-exclusion list in force — a change emits `side_effect_declaration_changed` with
-`source:"auth-ignore-paths"`). `last_attempt` is always the
-newest observation; `latest` — what the status is derived from — is replaced only by a
-COMPLETE observation (the replay passed end-to-end with the observer attached) or by one that
-did mutate: a replay that stopped early can add a mutation but never clear one. A corrupt or
-wrongly-shaped sidecar is never overwritten by either writer. Deleting the file erases the
-observation history (the next ledger falls back to declarations only).
+The engine-owned sidecar. Two writers, both read-modify-write under an exclusive `flock` on the
+`state/` directory itself (no lock file, `CHAIN_SIDE_EFFECT_LOCK_TIMEOUT` seconds, default 10)
+with atomic replace: the replay lane (`demo_runner.py --side-effects-out`) and the preflight
+record step (`goal_gate.py side-effects --record-digest`), which first merges every per-run
+record whose `run_id` is not in `merged_runs` yet (repair — telemetry
+`side_effect_observations_repaired`) and then writes `declarations`, `declaration_digest`,
+`declaration_digest_prev`, `declaration_digest_changed_iter`, `readonly_endpoints_sha256`,
+`ignore_paths` (the auth/session exclusion list in force — a change emits
+`side_effect_declaration_changed` with `source:"auth-ignore-paths"`) and
+`declaration_conflicts` (the declared-none / observed-mutating conflicts already reported).
+Per journey (`journeys.<J>`): `last_attempt` (the newest observation), `latest` (the newest
+complete-or-mutating observation — display), `mutating_history` (last 5) and the status
+evidence `goldens.<golden_sha256|"unidentified">: {mutating, clean}` — the newest mutating
+observation (request samples unioned across uncleared observations) and the newest COMPLETE
+clean replay of that golden. A mutation counts until a strictly newer complete clean replay of
+the SAME golden exists: a partial, blind or other-golden replay never clears it, a mutation
+without a golden identity is never cleared, and the result does not depend on the order the
+observations were merged in. `merged_runs` lists every merged run id. A corrupt or
+wrongly-shaped sidecar is never overwritten by either writer; moving it aside loses nothing,
+because the next ledger is rebuilt from the per-run records.
 
 ### runs/goal-session-\<sid\>/iter-\<N\>/replay-side-effects.json
 
-This iteration's replay observations (`demo_runner.py --side-effects-run-out`): `run_id`,
-`iter`, `iter_name`, `observed_at`, the exception file's path/sha256/invalid lines, the auth
-ignore list, `journeys.<J>` observation records and `sidecar: {path, updated, message}`. Removed
-at replay-lane entry (never read as this run's output). `lib/replay-lane.sh` emits
-`side_effect_observed` / `side_effect_exception_applied` from it. Observation records keep only
-`{method, path, class, count}` per distinct request (at most 20; `truncated` says when more
-existed) — never a query string, header or body.
+One replay run's observations (`demo_runner.py --side-effects-run-out`): `run_id`, `iter`,
+`iter_name`, `observed_at` (microsecond UTC), `classifier_version`, the exception file's
+path/sha256/invalid lines, the auth ignore list (and any rejected entries), `journeys.<J>`
+observation records (with `golden_sha256`, the identity of the golden script's executable
+content) and `sidecar: {path, updated, message, clear_refused?}`. Written even when the sidecar
+update fails. Before every verify call, at replay-lane entry and when a forked lane is reaped,
+an existing record is ARCHIVED beside it as `replay-side-effects.<stamp>-<pid>-<n>.json` —
+never deleted: all of them together are the session's durable observation history, which the
+ledger reads. `lib/replay-lane.sh` emits `side_effect_observed` / `side_effect_exception_applied`
+/ `side_effect_clear_refused` / `side_effect_sidecar_update_failed` from the current one.
+Observation records keep only `{method, path, class, count}` per distinct request (at most 20;
+`truncated` says when more existed) — never a query string, header or body.
 
 ### project-extensions/side-effects/read-only-endpoints.txt (owner-authored, optional)
 
 One `METHOD /path-prefix` per line (`#` comments), e.g. `POST /api/policy/evaluate` for an
 endpoint that computes without persisting. Matching is method-exact and whole-segment-prefix
-(`/api/policy/evaluate/42` yes, `/api/policy/evaluate-and-save` no); a path with a dot segment
-never matches. Lines naming a non-mutating method, a relative path or a bare `/` are reported
-and never applied. Its sha256 is part of the declaration digest, and every applied exception is
-reported in the results row and in telemetry. The framework never writes this file.
+(`/api/policy/evaluate/42` yes, `/api/policy/evaluate-and-save` no); a path with a dot segment,
+a backslash or an encoded separator never matches. Lines naming a non-mutating method, a
+relative path, a bare `/` or such a path are reported and never applied. Its sha256 is part of
+the declaration digest, and every applied exception is reported in the results row and in
+telemetry. The framework never writes this file.
 
 ### Replay results row suffix
 
 With the observer on, every replayed journey's Actual cell (`UT-J-<n>` rows of
 `regression-replay-results.md`, and therefore of the merged `ui-test-results.md`) ends with
 `; side effects: N mutating request(s) (POST /api/runs)` or `; side effects: none observed`,
-optionally followed by `; read-only exception applied: POST /api/…`; a FAILed replay reads
-`; side effects before the replay stopped: …`. The 8-cell row shape is unchanged.
+optionally followed by `; read-only exception applied: POST /api/…` and
+`; auth request(s) not counted: POST /api/login`; a FAILed replay reads
+`; side effects before the replay stopped: …`; a replay whose observer could not attach reads
+`; side effects: NOT observed (…)`. The 8-cell row shape is unchanged.
 
 ---
 
