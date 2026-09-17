@@ -5574,7 +5574,7 @@ Four root causes: governors read proxies instead of facts (HARD-1..3); ownership
     malformed format still counts as mutating (a malformed line never makes a journey less
     restrictive). (5) Declarations are parsed with a correctly-bounded block splitter — see
     CAND-JOURNEY-BLOCKS in §16 for the pre-existing `_journey_blocks` quirk it avoids.
-  - *Verify:* `bash tests/automation/test-side-effects.sh` (287 checks after revision 7, incl. the
+  - *Verify:* `bash tests/automation/test-side-effects.sh` (289 checks after revision 8, incl. the
     exact TenSteps iteration-9 contradiction, the none→allowed tripwire, E15 fail-closed with zero
     dispatch in block AND warn mode, the real lean executor with a fake Playwright) · self-tests of
     `demo_runner.py`, `goal_gate.py`, `goal_lint.py`, `iter_spec.py`, `artifact_schemas.py` ·
@@ -5853,11 +5853,84 @@ Four root causes: governors read proxies instead of facts (HARD-1..3); ownership
       activity with a negation (rewrite guidance in the E16 text); inverted word order ("at no point is a
       new run launched") is not read; negative-path detection is a keyword test on the sentence (a
       refusal word that is not itself negated).
+  - *Revision 8 (2026-09-17, after a seventh adversarial review of `153ee31`; RED: the revised suite
+    fails 5 checks against `153ee31`, GREEN 289/0):* the seventh round found that revision 7
+    missed 47 realistic prohibitions an earlier revision caught, and that one unclosed fence inside a
+    mutating journey's step still made goal.md read that journey as `none`, so the exact iteration-9
+    spec linted clean.
+    - **goal.md (Critical, C1):** a journey header read as fenced still ends the live block above it (as
+      the certified splitter does), so a stray fence never lets one journey's block run on through
+      another's lines. A live definition whose `mutating` line only a fence-blind read sees is `ambiguous`
+      (`fenced-declaration`) and counts as mutating. An observed write against any uncertain `none` is a
+      POSSIBLE conflict (unattributed ids included). D8r pins the reviewer's shape end to end (E13 + E16).
+    - **The rule, refined (Critical, C2–C4, I1):**
+      - *Vocabulary.* Activities now include changing, removing or reordering ledger rows or "the ledger",
+        and any run or backtest (not only a "new" one). Modal passives ("must not be started") count, and
+        so do reduced forms: "no run launched", "Ledger writes: none", "New runs launched: 0". In OUT OF
+        SCOPE, the listed nouns count anywhere in an item.
+      - *Normalisation.* The scan reads text after HTML entities, look-alike apostrophes, hyphens and
+        spaces, emphasis, code spans, ellipses and abbreviations are normalised.
+      - *Negations.* A TC or DoD sentence is a prohibition when a negation REACHES the activity:
+        - a verbal negation (not, never, cannot, avoid, forbid, out of scope, …) anywhere in the sentence;
+        - a noun-phrase negation (no, none, nothing, nobody, neither, nor, without, except, excluding,
+          and a contrastive ", not a …") only before the activity in its own clause, inside its phrase,
+          or as its predicate.
+      - *Exemptions, narrower and stated.*
+        - "pre-existing" qualifies only its own mention, and never exempts a negation that directly
+          governs a later activity.
+        - An activity whose own object is only pre-existing ROWS (never "the pre-existing ledger"), or
+          that is carved out for a journey's own step ("beyond J-04's own step 1"), is not one. This holds
+          in OUT OF SCOPE too.
+        - The idioms are exactly "not only", "whether or not", "if not", "or not", "no doubt" and
+          "no matter".
+        - A refused request, recognised by precise predicates rather than keywords, exempts only a
+          "no …" result.
+      - *Not activities.* A UI, code or tooling phrase ("the ledger rows grid", "the ledger writer",
+        "ledger/store.py", "the assumption ledger", "a pytest run", "run-verdict") is not an activity, and
+        re-running a JOURNEY is a replay.
+    - **Structure (C5, I2):**
+      - Headings inside HTML comments start no section. In the fence-blind reads, a prose heading glued to
+        a fence line (a quoted heading) starts none either.
+      - H1 and H3 section names, "Scope exclusions" and "Explicitly out of scope" are sections.
+      - TC ids are read in emphasis, in a second table column, as "Test case TC-4:", in a blockquote, and
+        with a non-breaking hyphen.
+      - A wrapped line that starts with a TC id continues its item, and so does an indented paragraph
+        after a blank line.
+      - A negated lead-in ("must not:") is read together with its sub-bullets.
+    - **Performance (I3):** every scan is linear: an item's text is joined once, and fence closers are
+      indexed per shape. L18q covers long lines, 8 000 wrapped lines and 16 000 never-closed fences within
+      10 s (revision 7 needs 43 s for the wrapped case).
+    - **Measured:**
+      - The labelled table (L18o) grows to 534 lines (rounds 4–7 plus the implementer's), all as
+        labelled.
+      - Relabelled against revision 7: 21 lines the revision-7 table labelled prohibitions only BY THE
+        RULE ("no error appears when launching a new run", "launching a new run takes no more than 2
+        seconds") are clean now. Two refused-request lines phrased with "not" are prohibitions.
+      - Over the 612 real specs, no line any revision flagged is lost. 43 lines are added against
+        `153ee31`. By hand, 39 are genuine exclusions or no-mutation statements ("No PnL-ledger append",
+        "no ledger write", "no reconciliation run is started", "promote appends no PnL-ledger row"). 4
+        are readings of the stated rule: a recovery tool that "never rewrites the ledger", "(not crashed,
+        not out-of-memory)" in a TenSteps run TC, and two OUT OF SCOPE items that mention an activity in
+        passing ("Any change to the ledger store/writer/render", "… triggers runs single-process").
+        The list is in `rev8/corpus_added_classified.txt`.
+      - 168 goal.md versions: the certified hash is unchanged against main (the template's hash moves
+        only by its declaration lines), and the ledger and digest are unchanged against `153ee31`.
+    - *Not changed (reported):*
+      - A soft hyphen inside a word joins the word ("new" + soft hyphen + "run" reads as "newrun").
+      - "re-run J-04" is not an activity.
+      - A numbered or table-row line below an item starts a new item, as markdown reads it.
+      - An OUT OF SCOPE item that mentions an activity in passing ("every compute … triggers runs …") is
+        a prohibition under the blunt rule.
+      - A verbal negation elsewhere in a long TC sentence ("… (not crashed)") still makes it a
+        prohibition.
+      - The suite's corrected example spec now says "edits to pre-existing ledger rows".
+      - Revision 8 has NOT been re-reviewed by an eighth round. The round 4–7 probe sets are the
+        regression material (all pass except the reported residuals).
   - *Owed:* G8 fresh-session certification; the G9-gated real session (a replay-observed mutation in
     the sidecar, no TC failed on a journey's own mutation); vendored per-file sync — products must
     sync this `goal_gate.py` together with `iter_spec.py` BEFORE adding `- Side effects:` lines (older code hashes those lines as
     journey text, which would read as goal-edit drift); owner confirmation of the I3 and I7
-    decisions above and of observation stickiness; M6 (the GOAL_ACHIEVED two-key confirm prompt
+    decisions above, of observation stickiness and of the stated E16 prohibition rule (revision 8); M6 (the GOAL_ACHIEVED two-key confirm prompt
     carries no side-effect context).
 
 ### HARD-4A · Engine identity token + lock-before-mutation ordering + owner-guarded `engine.pid`

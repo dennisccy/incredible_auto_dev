@@ -35,9 +35,12 @@ are quality signals:
                              `- Side effects: none | mutating — <note>` line
                              is malformed: another value (there is no
                              `read-only`), a wrong label, a missing dash
-                             before the note, or more than one line. The
-                             engine reads it as `unknown` (a clearly stated
-                             `mutating` still counts as mutating).
+                             before the note, or more than one line — or the
+                             id is ambiguous: a header with its id, or its
+                             `mutating` line, sits inside what the parser
+                             reads as a code fence. The engine reads it as
+                             `unknown` (a clearly stated `mutating` still
+                             counts as mutating).
     WARN  side-effects-undeclared  (HARD-3) a journey with no `Side effects:`
                              line whose numbered steps name a state-changing
                              action (create/submit/save/delete/run/launch/

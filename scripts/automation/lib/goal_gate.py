@@ -626,7 +626,7 @@ def _norm_newlines(text: str) -> str:
 
 def side_effect_journey_blocks(text: str) -> list[tuple[str, int, int]]:
     """(journey_id, start, end) spans over the newline-normalised text — nested
-    headers included, headers inside code fences ignored — with the header
+    headers included, headers inside code fences start no block — with the header
     indent measured on the header's OWN line.
 
     `_journey_blocks` (the certified spec_hash path — deliberately untouched)
@@ -636,7 +636,12 @@ def side_effect_journey_blocks(text: str) -> list[tuple[str, int, int]]:
     runs on into it. Declarations must never be attributed to the wrong journey,
     so side-effect parsing uses this corrected splitter (through
     side_effect_journey_views). Hash neutrality does not depend on it:
-    _normalize_block judges each line on its own."""
+    _normalize_block judges each line on its own.
+
+    A header inside what the parser reads as a code fence starts no block, but
+    it still ENDS the block above it, as it does for _journey_blocks: a stray
+    fence must never let one journey's block run on through another journey's
+    lines (side_effect_journey_views_all reads such a header's own item)."""
     text = _norm_newlines(text)
     fenced = fenced_line_flags(text.split("\n"))
 
@@ -645,14 +650,13 @@ def side_effect_journey_blocks(text: str) -> list[tuple[str, int, int]]:
         own = lead.rsplit("\n", 1)[-1]
         return m.start() + len(lead) - len(own), len(own.expandtabs(4))
 
-    headers = [m for m in _JOURNEY_HEADER_RE.finditer(text)
-               if not fenced[text.count("\n", 0, _line_start_and_indent(m)[0])]]
+    all_headers = [(m, *_line_start_and_indent(m)) for m in _JOURNEY_HEADER_RE.finditer(text)]
     blocks: list[tuple[str, int, int]] = []
-    for i, m in enumerate(headers):
-        start, indent = _line_start_and_indent(m)
+    for i, (m, start, indent) in enumerate(all_headers):
+        if fenced[text.count("\n", 0, start)]:
+            continue
         end = len(text)
-        for nm in headers[i + 1:]:
-            nstart, nindent = _line_start_and_indent(nm)
+        for _nm, nstart, nindent in all_headers[i + 1:]:
             if nindent <= indent:
                 end = nstart
                 break
@@ -800,7 +804,12 @@ def side_effect_journey_views_all(text: str) -> list[dict]:
     pairing leaves it unfenced. Its stated values are provenance only
     (`stated_values`): a stated `mutating` makes the journey mutating, a stated
     `none` is never trusted, and nothing in such a view is reported as the
-    owner's declaration."""
+    owner's declaration.
+
+    Every live view also carries `blind_values`: the values of the
+    declaration-shaped lines in it that only a fence-ignoring read sees (outside
+    the extra views' items). A `mutating` there makes the id `ambiguous` (reason
+    `fenced-declaration`): a stray fence may have hidden the journey's own line."""
     views = side_effect_journey_views(text)
     norm = _norm_newlines(text)
     doc_flags = fence_scan(norm.split("\n"))[0]
@@ -826,6 +835,20 @@ def side_effect_journey_views_all(text: str) -> list[dict]:
                   else own_flags)
         views.append({"jid": jid, "start": line_start, "end": stop, "own": block, "fenced": fenced,
                       "duplicate": False, "extra": kind, "reason": reason})
+    extra_spans = [(v["start"], v["end"]) for v in views if v.get("extra")]
+    for v in views:
+        if v.get("extra"):
+            continue
+        lines = _block_lines(v["own"])
+        live = {i for i, _m in _declaration_line_matches(lines, fenced=v["fenced"])}
+        offsets, pos = [], v["start"]
+        for ln in lines:
+            offsets.append(pos)
+            pos += len(ln) + 1
+        v["blind_values"] = sorted({
+            _parse_declaration_line(i, m)["value"] or "?"
+            for i, m in _declaration_line_matches(lines, fenced=[False] * len(lines))
+            if i not in live and not any(s <= offsets[i] < e for s, e in extra_spans)} - {"?"})
     return views
 
 
@@ -836,6 +859,10 @@ def side_effect_journey_own_blocks(text: str) -> list[tuple[str, int, int, str, 
     return [(v["jid"], v["start"], v["end"], v["own"], v["duplicate"]) for v in side_effect_journey_views(text)]
 
 
+_AMBIGUOUS_FENCED_LINE_ERROR = ("a 'Side effects: mutating' line in this journey sits inside what the parser reads as "
+                                "a code fence, so the journey counts as mutating and its other lines cannot be "
+                                "trusted — move the example out of the journey, or close a stray ``` / ~~~ line "
+                                "above it")
 _AMBIGUOUS_ERROR = ("a header for this journey id also sits inside what the parser reads as a code fence, so its "
                     "'Side effects:' lines cannot be attributed with certainty: a 'none' does not count, a "
                     "'mutating' does — rename the example's id, or close a stray fence above it")
@@ -848,7 +875,8 @@ def parse_side_effect_declarations(text: str) -> dict[str, dict]:
     declaration_hash (None when the journey has no declaration line)}; each
     line's `index` is relative to the journey block's first line. `declared`
     comes only from the journey's own definition(s). An id with an extra view
-    (side_effect_journey_views_all) also carries `unattributed` or `ambiguous`,
+    (side_effect_journey_views_all), or whose live block holds a `mutating` line
+    only a fence-ignoring read sees, also carries `unattributed` or `ambiguous`,
     `attribution_reason` and `stated_values` — the values stated anywhere for
     it, provenance only."""
     live: dict[str, list[dict]] = {}
@@ -856,6 +884,7 @@ def parse_side_effect_declarations(text: str) -> dict[str, dict]:
     kinds: dict[str, tuple[str, str]] = {}
     dup: set[str] = set()
     order: list[str] = []
+    blind: dict[str, set] = {}
     for v in side_effect_journey_views_all(text):
         jid = v["jid"]
         if jid not in order:
@@ -867,8 +896,13 @@ def parse_side_effect_declarations(text: str) -> dict[str, dict]:
             kinds.setdefault(jid, (v["extra"], v["reason"]))
         else:
             live.setdefault(jid, []).extend(found)
+            blind.setdefault(jid, set()).update(v.get("blind_values") or [])
             if v["duplicate"]:
                 dup.add(jid)
+    for jid, values in blind.items():
+        if "mutating" in values and jid not in kinds \
+                and "mutating" not in {f["value"] for f in live.get(jid, [])}:
+            kinds[jid] = ("ambiguous", "fenced-declaration")
     out: dict[str, dict] = {}
     for jid in order:
         d = _effective_declaration(live.get(jid, []), duplicate_block=jid in dup)
@@ -877,12 +911,13 @@ def parse_side_effect_declarations(text: str) -> dict[str, dict]:
             stated = _effective_declaration(extra.get(jid, []))
             d[kind] = True
             d["attribution_reason"] = reason
-            d["stated_values"] = sorted({f["value"] for f in extra.get(jid, []) + live.get(jid, []) if f["value"]})
+            d["stated_values"] = sorted({f["value"] for f in extra.get(jid, []) + live.get(jid, []) if f["value"]}
+                                        | blind.get(jid, set()))
             d["stated_hash"] = stated["declaration_hash"]   # any edit of those lines is provenance-visible
             if kind == "unattributed":
                 d["declaration_hash"] = stated["declaration_hash"]
             if kind == "ambiguous":
-                d["errors"].append(_AMBIGUOUS_ERROR)
+                d["errors"].append(_AMBIGUOUS_FENCED_LINE_ERROR if reason == "fenced-declaration" else _AMBIGUOUS_ERROR)
                 d["valid"] = False
         out[jid] = d
     return out
@@ -1222,7 +1257,9 @@ def build_side_effect_ledger(goal_text: str, sidecar=None, readonly_path=None, *
             "requests": o["requests"],
             "exceptions_applied": o["exceptions_applied"],
             "auth_ignored": o["auth_ignored"],
-            "declaration_conflict": bool(observed and d["declared"] == "none"),
+            # any block that says `none` for an observed journey is a conflict (POSSIBLE when uncertain)
+            "declaration_conflict": bool(observed and (
+                d["declared"] == "none" or ((unattr or ambiguous) and "none" in stated))),
             "unattributed": unattr,
             "ambiguous": ambiguous,
             "attribution_reason": d.get("attribution_reason"),
@@ -1418,6 +1455,9 @@ def record_side_effect_declarations(sidecar_path, ledger: dict, iter_n, iter_nam
 def attribution_problem(j: dict) -> str:
     """Plain words for an unattributed or ambiguous ledger entry (goal-lint and --suggest)."""
     reason = j.get("attribution_reason")
+    if j.get("ambiguous") and reason == "fenced-declaration":
+        return ("a 'Side effects: mutating' line in it sits inside what the parser reads as a code fence, so it "
+                "counts as mutating — move the example out of the journey, or close a stray ``` / ~~~ line above it")
     if j.get("ambiguous"):
         return ("a header with this id also sits inside a code fence — rename the example's id, or close a stray "
                 "``` / ~~~ line above it, so the parser knows which block is the journey")

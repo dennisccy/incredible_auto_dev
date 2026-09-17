@@ -85,6 +85,7 @@ evidence-only dispatch and the fix silently never happened.
 from __future__ import annotations
 
 import bisect
+import html
 import json
 import re
 import sys
@@ -511,17 +512,26 @@ _POLICY_LABEL = r"side[\s\-_\u2010-\u2015\u2212\u00ad]*effects?[\s\-_\u2010-\u20
 # "pre-existing (ledger) row count" is an invariant, not a prohibition.
 _PROHIBITION_RES: tuple = (
     ("row-count-unchanged",
-     re.compile(r"\b(?:row|record|ledger)s?\s+count\s+(?:(?:must|should|will|shall)\s+)?"
-                r"(?:(?:is|be|stays?|remains?|was)\s+)?(?:unchanged|the\s+same)\b"
-                r"|\b(?:row|record|ledger)s?\s+count\s+(?:does\s+not|doesn't|must\s+not|should\s+not)\s+change\b"
+     re.compile(r"\b(?:ledger|row|record|run)s?[\s-]*(?:row[\s-]*)?count\s*(?:[:=\u2013\u2014-]\s*)?"
+                r"(?:(?:must|should|will|shall|may)\s+)?(?:(?:is|be|stays?|remains?|was|still)\s+){0,2}"
+                r"(?:completely\s+|entirely\s+)?"
+                r"(?:unchanged|the\s+same|constant|stable|identical)\b"
+                r"|\b(?:ledger|row|record|run)s?[\s-]*(?:row[\s-]*)?count\s+(?:does\s+not|doesn't|must\s+not|should\s+not"
+                r"|may\s+not|will\s+not|never)\s+(?:change|increase|grow)\b"
                 r"|\bnumber\s+of\s+(?:ledger\s+)?(?:rows|records|runs|entries)\s+"
-                r"(?:(?:is|stays|remains|must\s+(?:stay|remain|be))\s+)?(?:unchanged|the\s+same)\b", re.I),
+                r"(?:(?:is|stays|remains|must\s+(?:stay|remain|be))\s+)?(?:still\s+)?(?:unchanged|the\s+same|constant"
+                r"|at\s+\d+)\b"
+                r"|\bledger\s+(?:still\s+)?(?:has|holds|contains)\s+(?:exactly\s+)?(?:the\s+same\s+number\s+of|\d+)\s+"
+                r"(?:rows|records|entries)\b", re.I),
      "any", True),
     ("no-new-row-run-record",
      re.compile(r"\bno\s+new\s+(?:[\w-]+\s+){0,2}?(?:rows?|runs?|records?|ledger\s+(?:rows?|entry|entries))\b", re.I),
      "any", False),
     ("ledger-unchanged",
-     re.compile(r"\bledger\s+(?:(?:is|stays|remains)\s+)?(?:left\s+)?(?:unchanged|frozen|untouched)\b", re.I),
+     re.compile(r"\bledger(?:[\s.-]+(?:rows?|entries|records?|file|table|store|db|database|jsonl?|csv|sqlite"
+                r"|parquet))?\s+(?:(?:must|should|will|shall|may)\s+)?"
+                r"(?:(?:is|are|be|stays?|remains?|was|were|still|left|kept)\s+){0,3}(?:completely\s+|entirely\s+"
+                r"|fully\s+)?(?:unchanged|frozen|untouched|unmodified)\b", re.I),
      "any", False),
     ("must-not-mutate",
      re.compile(r"\bmust\s+not\s+(?:create|launch|append|write)\b"
@@ -531,104 +541,255 @@ _PROHIBITION_RES: tuple = (
      re.compile(r"\bno\s+(?:writes?|mutations?|launch(?:es)?)\b(?![-\w])", re.I), "any", False),
     ("any-new-run-launch",
      re.compile(r"\bany\s+new\s+(?:[\w-]+\s+){0,3}?run\s+launch(?:es)?\b", re.I), "any", False),
-    # Listed as a noun at the start of an OUT OF SCOPE item: "New run launches",
-    # "New ledger rows", "Ledger row edits or …".
-    ("out-of-scope-new-run-or-row",
-     re.compile(r"^[\W_]*(?:\d+[.)]\s+)?(?:any\s+)?(?:new\s+(?:[\w-]+\s+){0,2}?runs?\s+launch(?:es)?|new\s+ledger\s+(?:rows?|entries"
-                r"|records)|ledger[\s-]+(?:row|entry|record)s?\s+(?:edits?|changes?|deletions?|writes?|updates?"
-                r"|additions?))\b", re.I),
-     "oos", False),
 )
 _PRE_EXISTING_ROWS_RE = re.compile(r"\bpre-?existing\s+(?:ledger\s+)?$", re.I)
-# "no run is launched / created", "no ledger rows are created" (the TenSteps
-# iteration-7/8 wording) — a prohibition, except in a negative-path test.
-_PASSIVE_NONE_RE = re.compile(
-    r"\bno\s+(?:runs?|ledger\s+(?:rows?|records?|entry|entries))\s+(?:(?:is|are|was|were|gets?|got)\s+"
-    r"|(?:will|shall|should|must|may|can)\s+be\s+)(?:launched|started|triggered|created|kicked\s+off|added"
-    r"|appended|written|inserted)\b", re.I)
 
-# Two ACTIVITIES — creating/editing/deleting/writing/appending/adding/inserting
-# ledger rows, and launching/starting/triggering a new run — are decided by one
-# rule the decomposer contract states word for word:
-#   * on an OUT OF SCOPE item, naming the activity is a prohibition;
-#   * on a TC or DEFINITION OF DONE item, a SENTENCE that names the activity and
-#     contains any negation (no, not, n't, never, nor, neither, none, nothing,
-#     nobody, without, cannot, avoid, refrain, prevent, prohibit, forbid,
-#     disallow, exclude, except, out of scope) is a prohibition — wherever the
-#     negation stands in the sentence;
-#   * the one exception is a negation whose object is qualified "pre-existing"
-#     ("no pre-existing ledger row is edited", "… must not modify any
-#     pre-existing row") — the invariant wording the fix text asks for — unless
-#     the activity is joined to that object by "or" / "nor" ("must not edit
-#     pre-existing rows or launch a new run");
-#   * idioms that negate nothing ("not only", "whether or not") are not
-#     negations; a sentence that states a refused request ("… responds 400 …", "…
-#     is rejected", "given an invalid …") is a negative-path assertion, not a
-#     prohibition.
-# A sentence ends at . ; ! or ? (not inside an abbreviation or a number); an
-# item's wrapped continuation lines are part of it. The rule errs toward
-# reporting: a false positive costs a rewrite the E16 text spells out, a false
-# negative lets the contradiction through.
+# Two ACTIVITIES — creating, editing, deleting, writing, appending, adding,
+# inserting, modifying, changing, updating, removing or reordering ledger rows
+# (or "the ledger"), and launching, starting, triggering, creating, executing,
+# submitting or re-running a run or backtest — are decided by one rule the
+# decomposer contract states word for word:
+#   * on an OUT OF SCOPE item, mentioning an activity (any verb form, a passive,
+#     or a noun such as "new run launches" / "ledger writes") is a prohibition;
+#   * on a TC or DEFINITION OF DONE item, a SENTENCE that mentions an activity is
+#     a prohibition when a negation in it reaches the activity:
+#       - "not", "n't", "never", "cannot", "avoid", "refrain", "prevent",
+#         "prohibit", "forbid", "disallow", "exclude(d)", "exclusion" and "out of
+#         scope" reach it wherever they stand in the sentence;
+#       - a noun-phrase negation — "no", "none", "nothing", "nobody", "no one",
+#         "neither", "nor", "without", "except", "excluding", and a "not" after a
+#         comma, "(", "and" or "but" and before "a" / "an" / "the" — reaches an
+#         activity after it in its own clause (no subordinator, semicolon, colon
+#         or dash in between; asides skipped), an activity whose own phrase
+#         holds it ("writes nothing to the ledger"), or an activity it follows as
+#         the predicate ("Ledger writes: none");
+#     "none", "0" or "zero" right after an activity ("New runs launched: 0") is a
+#     prohibition too;
+#   * except a negation about "pre-existing" data — its object ("no
+#     pre-existing row is edited", "must not modify any pre-existing row") or
+#     its subject clause ("…, pre-existing rows are not edited") — unless that
+#     negation directly governs an activity after it ("does not launch a new
+#     run");
+#   * an activity whose own object or subject is only "pre-existing" rows
+#     (entries, records, runs — never "the pre-existing ledger") is the
+#     invariant itself, in OUT OF SCOPE too ("edits to pre-existing ledger
+#     rows"), and so is one followed by a carve-out for a journey's own step
+#     ("launching runs beyond J-04's own step 1");
+#   * "not only", "whether or not", "if not", "or not", "no doubt", "no matter"
+#     negate nothing;
+#   * a sentence that states a refused request ("… is rejected", "… responds
+#     4xx / with an error", "… raises `…Refused`", "a validation error is
+#     shown", "the login page opens", a `refusal_…` field) may say with a
+#     noun-phrase negation that no row or run results from it ("… and no run is
+#     created", "… appends no ledger row"); a "not" still counts there.
+# Re-running a JOURNEY ("re-run J-04") is a replay, not an activity. A ledger
+# phrase that names a UI, code or tooling thing ("the ledger rows grid", "the
+# ledger writer", "ledger/store.py", "the assumption ledger") is not the ledger.
+# Text is read after markdown emphasis, code-span backticks, HTML entities and
+# look-alike apostrophes, hyphens and spaces are normalised (a soft hyphen is
+# dropped); an item's wrapped lines are part of it; a sentence ends at ; or at
+# . ! ? before a space, never inside parentheses, an abbreviation or a number.
+# The rule errs toward reporting: a false positive costs a rewrite the E16 text
+# spells out, a false negative lets the contradiction through.
 _RE_PREFIX = r"(?:\(re\))?\b(?:re-?)?"
-_LEDGER_TAIL = r"\b(?!-)[^.;:!?]{0,60}?\bledger\s+(?:rows?|entries|records)\b"   # not "append-only"
-_LEDGER_VERBS = (r"(?:creat(?:e|es|ing)|edit(?:s|ing)?|delet(?:e|es|ing)|writ(?:e|es|ing)|append(?:s|ing)?"
-                 r"|add(?:s|ing)?|insert(?:s|ing)?)")
-_RUN_VERBS = r"(?:launch(?:es|ing)?|start(?:s|ing)?|trigger(?:s|ing)?)"
-_RUN_TAIL = (r"(?!-)\s+(?:(?:\([^()]{0,60}\)|,[^,.;:!?]{0,40},|[\u2013\u2014][^\u2013\u2014.;:!?]{0,40}[\u2013\u2014])\s*)?"
-             r"(?:of\s+)?(?:[\w-]+\s+){0,2}?new\s+(?:[\w-]+\s+){0,2}?runs?\b")
-_ACTIVITY_RES: tuple = (
-    # (name, the activity anywhere, the form an OUT OF SCOPE item lists). An OUT
-    # OF SCOPE item lists a ledger activity as a gerund or as an imperative that
-    # opens the item ("- Create or edit ledger rows"); elsewhere there a base form
-    # is usually a noun ("an edit affordance for ledger rows").
-    ("ledger-row-edit",
-     re.compile(_RE_PREFIX + _LEDGER_VERBS + _LEDGER_TAIL, re.I),
-     re.compile(r"(?:(?:\(re\))?\b(?:re-?)?creating|\b(?:editing|deleting|writing|appending|adding|inserting))"
-                + _LEDGER_TAIL + r"|^[\W_]*(?:\d+[.)]\s+)?(?:re-?)?(?:create|edit|delete|write|append|add|insert)"
-                r"(?:\s+(?:or|and|a|an|any|the|new|more|extra|additional|(?:re-?)?(?:create|edit|delete|write|append"
-                r"|add|insert)))*\s+ledger\s+(?:rows?|entries|records)\b", re.I)),
-    ("any-new-run-launch",
-     re.compile(_RE_PREFIX + _RUN_VERBS + _RUN_TAIL, re.I),
-     re.compile(_RE_PREFIX + _RUN_VERBS + _RUN_TAIL, re.I)),
+_LEDGER_VERB = (r"(?:creat(?:e|es|ed|ing)|edit(?:s|ed|ing)?|delet(?:e|es|ed|ing)|writ(?:e|es|ing|ten)|wrote"
+                r"|append(?:s|ed|ing)?|add(?:s|ed|ing)?|insert(?:s|ed|ing)?|modif(?:y|ies|ied|ying)"
+                r"|chang(?:e|es|ed|ing)|updat(?:e|es|ed|ing)|remov(?:e|es|ed|ing)|mutat(?:e|es|ed|ing)"
+                r"|alter(?:s|ed|ing)?|touch(?:es|ed|ing)?|re-?order(?:s|ed|ing)?)(?!-\w)")   # not "append-only"
+_RUN_VERB = (r"(?:launch(?:es|ed|ing)?|start(?:s|ed|ing)?|trigger(?:s|ed|ing)?|creat(?:e|es|ed|ing)"
+             r"|execut(?:e|es|ed|ing)|submit(?:s|ted|ting)?|spawn(?:s|ed|ing)?|kick(?:s|ed|ing)?\s+off)")
+_ANY_VERB = r"(?:\(re\))?(?:re-?)?(?:" + _LEDGER_VERB + r"|" + _RUN_VERB + r")\b"
+_ROW_WORD = r"(?:rows?|entry|entries|records?)"
+# A noun right after "ledger (rows)" or "run" that makes the phrase a UI, code or tooling thing: "the
+# ledger rows grid", "the ledger writer", "the run list".
+_UI_NOUN = (r"(?:pages?|views?|tabs?|panels?|panes?|screens?|ui|widgets?|charts?|exports?|filters?|headers?"
+            r"|columns?|links?|buttons?|counts?|summar(?:y|ies)|reports?|grids?|lists?|sections?|cards?"
+            r"|modals?|dialogs?|drawers?|toolbars?|components?|api|endpoints?|schemas?|quer(?:y|ies)|logs?"
+            r"|histor(?:y|ies)|feeds?|affordances?|icons?|badges?|tooltips?|layouts?|styl(?:e|es|ing)"
+            r"|pagination|sort(?:ing)?|search|forms?|menus?|details?|status|fixtures?|mocks?|stubs?|samples?"
+            r"|examples?|templates?|docs?|documentation|tests?|specs?|kinds?|types?|paths?|writers?|readers?"
+            r"|modules?|code|class(?:es)?|functions?|services?|routers?|renderers?|helpers?|utils?|scripts?"
+            r"|tools?|logic|ids?|names?|dirs?|director(?:y|ies)|folders?|flows?|wizards?)")
+# ... or a code file or directory ("app/ledger.py", "ledger/store.py"), not the ledger's data.
+_CODE_FILE = r"(?:/\w|[\s.]+(?:py|ts|tsx|js|jsx|mjs|rb|go|rs|java|kt|sh|sql|md|ya?ml|toml)\b)"
+# "The assumption ledger" and "the anti-goal ledger" are goal-mode documents, not a product ledger.
+_LEDGER_WORD = (r"\b(?:\w[\w-]*-)?(?<!assumption )(?<!assumption-)(?<!anti-goal )(?<!anti-goal-)"
+                r"(?:(?<!/)|(?=ledger[\s.]+(?:jsonl?|csv|db|sqlite3?|parquet)\b))ledger")
+_LEDGER_OBJ = (_LEDGER_WORD + r"(?:[\s-]+" + _ROW_WORD + r")?\b"
+               r"(?![\s-]+(?:" + _ROW_WORD + r"[\s-]+)?" + _UI_NOUN + r"\b)(?!" + _CODE_FILE + r")")
+_LEDGER_NOUN = (r"(?:creation|insertion|deletion|removal|addition|append|edit|change|update|write|modification"
+                r"|mutation)s?")
+# A test / tooling run ("the pytest run", "a browser-QA run", "a dry run") is not the product's run.
+_TOOL_RUN = ("test", "tests", "pytest", "jest", "vitest", "cypress", "playwright", "lint", "build", "smoke", "e2e",
+             "unit", "eval", "evals", "suite", "qa", "replay", "dry", "ci", "check")
+_RUN_NOUN = ("".join(rf"(?<!\b{w} )(?<!\b{w}-)" for w in _TOOL_RUN)
+             + r"(?:runs?|backtests?)\b(?![\s-]+(?:" + _UI_NOUN + r"|rows?|table)\b)(?!/\w)(?!-\w)")
+_ASIDE = (r"(?:\([^()]{0,80}\)|,[^,.;!?]{0,60},|[\u2013\u2014][^\u2013\u2014.;!?]{0,60}[\u2013\u2014]"
+          r"|--\s[^.;!?]{0,60}?\s--)")
+# The words between a ledger verb and "ledger": plain words, a parenthesis, a short comma aside, a dash
+# aside, or a comma before another verb ("create, edit or delete ledger rows") — never a clause or a
+# list of other things ("never rewritten, every run an operator act, the ledger …").
+_LEDGER_GAP = (r"(?P<gap>(?:[^.;:!?,()\u2013\u2014]|\([^()]{0,60}\)|,(?=\s*(?:(?:or|and|nor)\s+)?" + _ANY_VERB
+               + r")|,[^.;:!?,()]{1,28},|[\u2013\u2014][^\u2013\u2014.;!?]{0,60}[\u2013\u2014]){0,80}?)")
+_PASSIVE_AUX = (r"(?:(?:is|are|was|were|be|been|being|gets?|got|has\s+been|have\s+been)\s+(?:not\s+|never\s+)?"
+                r"|(?:must|should|will|shall|may|can|could|would|might)\s+(?:not\s+|never\s+)?be\s+)(?:ever\s+)?")
+_LEDGER_PARTICIPLE = (r"(?:(?:creat|edit|delet|append|add|insert|modifi|chang|updat|remov|mutat|alter|touch"
+                      r"|re-?order)ed|written)\b")
+_RUN_PARTICIPLE = r"(?:launched|started|triggered|created|executed|submitted|spawned|kicked\s+off)\b"
+# "Ledger rows added: 0", "New runs launched - none": a count or "none" right after the activity
+_COUNT_SEP = r"\s*(?:[:=\u2013\u2014]|\s-\s)"
+_COUNT_NONE_RE = re.compile(_COUNT_SEP + r"\s*(?:0|zero|none|nothing)\b|" + _COUNT_SEP + r"\s*no\b(?=\s*(?:$|[.,;:!?)]))",
+                            re.I)
+_ACTIVITY_PARTS: tuple = (
+    # (name, form, pattern) — each an activity MENTION. `form` says where the object stands: "verb" = in
+    # the named group `gap` after the verb; "subject" = the words right before the match.
+    ("ledger-row-edit", "verb", _RE_PREFIX + _LEDGER_VERB + r"\b" + _LEDGER_GAP + r"\b" + _LEDGER_OBJ),
+    ("ledger-row-edit", "subject", _LEDGER_OBJ + r"\s+(?:[\w'-]+\s+){0,3}?" + _PASSIVE_AUX + r"(?:left\s+)?(?:re-?)?"
+                                   + _LEDGER_VERB + r"\b"),
+    ("ledger-row-edit", "subject", _LEDGER_OBJ + r"\s+(?:re-?)?" + _LEDGER_PARTICIPLE + r"(?=" + _COUNT_SEP + r")"),
+    ("ledger-row-edit", "verb", r"\bno\s+(?P<gap>(?:[\w-]+\s+){0,2}?)" + _LEDGER_OBJ + r"\s+(?:re-?)?"
+                                + _LEDGER_PARTICIPLE),
+    ("ledger-row-edit", "subject", _LEDGER_WORD + r"[\s-]+(?:" + _ROW_WORD + r"[\s-]+)?" + _LEDGER_NOUN
+                                   + r"\b(?![\s-]+" + _UI_NOUN + r"\b)"),
+    ("ledger-row-edit", "verb", _LEDGER_NOUN + r"\s+(?:of|to|in)\s+(?P<gap>(?:(?:new|the|any|existing|pre-?existing)"
+                                r"\s+)?(?:[\w-]+\s+)?)" + _LEDGER_OBJ),
+    ("any-new-run-launch", "verb", r"(?<!-)" + _RE_PREFIX + r"(?P<verb>" + _RUN_VERB + r")(?:\s*" + _ASIDE
+                                   + r")?\s+(?P<gap>(?:[\w-]+[\s-]+){0,4}?)" + _RUN_NOUN),
+    ("any-new-run-launch", "subject", r"\b" + _RUN_NOUN + r"\s+(?:re-?)?" + _RUN_PARTICIPLE + r"(?=" + _COUNT_SEP
+                                      + r")"),
+    ("any-new-run-launch", "verb", r"\bno\s+(?P<gap>(?:[\w-]+\s+){0,2}?)" + _RUN_NOUN + r"\s+(?:re-?)?"
+                                   + _RUN_PARTICIPLE),
+    ("any-new-run-launch", "subject", r"\b" + _RUN_NOUN + r"\s+(?:[\w'-]+\s+){0,3}?" + _PASSIVE_AUX
+                                      + r"(?:re-?)?(?:launched|started|triggered|created|executed|submitted|spawned"
+                                      r"|kicked\s+off)\b"),
+    ("any-new-run-launch", "verb", r"\b(?:is|are|was|were)\s+(?P<gap>(?:an?\s+|any\s+|the\s+)?(?:[\w-]+\s+){0,2}?)"
+                                   r"runs?\s+(?:ever\s+)?(?:re-?)?(?:launched|started|triggered|created)\b"),
+    ("any-new-run-launch", "subject", r"\bruns?[\s-]+launch(?:es)?\b(?![\s-]+" + _UI_NOUN + r"\b)"),
+    ("any-new-run-launch", "verb", r"\blaunch(?:es)?\s+of\s+(?P<gap>(?:an?\s+|any\s+)?(?:new\s+)?(?:[\w-]+\s+)?)"
+                                   r"runs?\b"),
+    ("any-new-run-launch", "verb", r"\bre-?run(?:s|ning)?\s+(?P<gap>(?:the\s+)?(?:[\w-]+\s+)?)" + _RUN_NOUN),
+    ("any-new-run-launch", "verb", r"\brun(?:s|ning)?\s+(?P<gap>(?:an?|any|another|the|new|more|extra)\s+"
+                                   r"(?:[\w-]+\s+){0,2}?)backtests?\b"),
 )
-_ACTIVITY_START_RE = re.compile(_RE_PREFIX + r"(?:" + _LEDGER_VERBS + r"|" + _RUN_VERBS + r")\b", re.I)
+_ACTIVITY_RES: tuple = tuple((name, form, re.compile(rx, re.I)) for name, form, rx in _ACTIVITY_PARTS)
+_MENTION_INFO: dict = {rx: (name, form) for name, form, rx in _ACTIVITY_RES}
+_LEDGER_VERB_RX = _ACTIVITY_RES[0][2]
+_LEDGER_RXS = frozenset(rx for name, _f, rx in _ACTIVITY_RES if name == "ledger-row-edit")
+_ROW_OBJECT_RE = re.compile(r"ledger[\s-]+" + _ROW_WORD + r"\b", re.I)
+_RUN_VERB_RX = next(rx for _n, _f, rx in _ACTIVITY_RES if "(?P<verb>" in rx.pattern)
+# "Add sorting to ledger records", "a CSV export of ledger entries": the verb's object is another thing.
+_UI_HEAD_RE = re.compile(r"\b" + _UI_NOUN + r"\s+(?:of|for|to|on|in|from|with|into|about)\s+"
+                         r"(?:(?:the|a|an|all|any|its|their|our|new|existing)\s+)?$", re.I)
+# "Launching runs beyond J-04's own step 1": the journey's own step is carved out of the activity.
+_CARVE_OUT_RE = re.compile(r"\s*,?\s*(?:beyond|other\s+than|besides|apart\s+from|except(?:ing)?(?:\s+for)?"
+                           r"|outside(?:\s+of)?|on\s+top\s+of)\s+(?:what\s+|those\s+of\s+)?(?:the\s+)?J-\d+(?:'s)?"
+                           r"\s+(?:own\s+)?(?:numbered\s+|run\s+)?steps?\b", re.I)
+# "Start the app and run the tests": a "run" right after a conjunction or modal is a verb.
+_VERB_RUN_GAP_RE = re.compile(r"(?:^|\s)(?:and|or|nor|to|then|not|also|can|will|must|should)\s+$", re.I)
+# "The launched run", "the triggered backfill runs": a participle before its noun is an adjective; the
+# past tense takes a determiner ("never launched a new run").
+_PARTICIPLE_RE = re.compile(r"(?:ed|off)$", re.I)
+_DETERMINER_START_RE = re.compile(r"(?:an?|any|another|the|new|more|extra|fresh|additional|further|second|one|two"
+                                  r"|three|its|their|his|her|our|this|that|these|those|no|several|some|each|every"
+                                  r"|multiple|many|all|\d+)\b", re.I)
+# OUT OF SCOPE also lists bare nouns as an item or list element: "Any new run", "New portfolio runs",
+# "Excluded: the new ledger rows" (not "Styling of new ledger rows", not "any prior runs").
+_OOS_NOUN_RE = re.compile(
+    r"(?:^[ \t]*(?:>[ \t]*)?(?:(?:[-*+]|\d+[.)]|[a-z][.)])[ \t]+)?(?:\[[ xX]\][ \t]+)?(?:[A-Za-z][\w -]{0,30}:\s*)?"
+    r"|[,;/|(:]\s*|\s-\s+|\b(?:or|and|nor|plus|no)\s+)(?:(?:the|a|an)\s+)?"
+    r"(?:(?:any|new|more|extra|additional)\s+(?!(?:existing|prior|previous|old|older|earlier|completed|finished|past"
+    r"|archived|stored|pre-?existing|historical|recorded|cited)\b)(?:[\w-]+\s+){0,2}?" + _RUN_NOUN
+    + r"|new\s+(?:[\w-]+\s+)?ledger\s+(?:rows?|entries|records)\b)", re.I)
 _NEG_CUE_RE = re.compile(
-    r"\b(?:no\s+one|no|not|never|nor|neither|none|nothing|nobody|without|cannot|[a-z]+n't|avoid(?:s|ed|ing)?"
-    r"|refrain(?:s|ed|ing)?|prevent(?:s|ed|ing)?|prohibit(?:s|ed|ing)?|forbid(?:s|den|ding)?"
-    r"|disallow(?:s|ed|ing)?|exclud(?:e|es|ed|ing)|except|out\s+of\s+scope)\b", re.I)
-_IDIOM_BEFORE_RE = re.compile(r"\b(?:or|if|whether)\s*$", re.I)                    # "or not", "if not"
-_IDIOM_AFTER_RE = re.compile(r"^\s*(?:only|just|merely|least|doubt|matter)\b", re.I)  # "not only", "no doubt"
+    r"\b(?:no[\s-]one|no|not|never|nor|neither|none|nothing|nobody|without|cannot|cant|[a-z]+n't|dont|doesnt|didnt"
+    r"|wont|isnt|arent|wasnt|werent|mustnt|shouldnt|shant|hasnt|havent|hadnt|couldnt|wouldnt"
+    r"|avoid(?:s|ed|ing)?|refrain(?:s|ed|ing)?|prevent(?:s|ed|ing)?|prohibit(?:s|ed|ing)?"
+    r"|forbid(?:s|den|ding)?|forbade|disallow(?:s|ed|ing)?|exclu(?:de|des|ded|ding|sions?)|except(?:ing)?"
+    r"|exception\s+of|out[\s-]+of[\s-]+scope)\b", re.I)
+# A DETERMINER negation negates what follows it; every other negation word negates its clause's verb.
+_DETERMINER_CUE_RE = re.compile(r"(?:no|none|nothing|nobody|no[\s-]one|neither|nor|without|except(?:ing)?"
+                                r"|excluding|exception\s+of)$", re.I)
+# "…, not a stale screenshot", "writes X and not the canonical file": a "not" that negates a noun phrase
+_CONTRASTIVE_BEFORE_RE = re.compile(r"(?:[,(]|\b(?:and|but))\s*$", re.I)
+_CONTRASTIVE_AFTER_RE = re.compile(r"\s+(?:a|an|the)\b", re.I)
+# "Ledger writes: none", "new runs launched - none", "… are none": the determiner IS the predicate.
+_PREDICATE_NONE_RE = re.compile(r"(?:[:=\u2013\u2014]|\s-|\b(?:is|are|was|were|be))\s*$", re.I)
+_PREDICATE_WORDS = ("no", "none", "nothing")
+_PREDICATE_NO_END_RE = re.compile(r"\s*(?:$|[.,;:!?)])")                       # "…: no" ends its clause
+_IDIOM_NOT_BEFORE_RE = re.compile(r"\b(?:or|if|whether\s+or)\s+$", re.I)         # "or not", "if not"
+_IDIOM_NOT_AFTER_RE = re.compile(r"^\s+only\b", re.I)                            # "not only"
+_IDIOM_NO_AFTER_RE = re.compile(r"^\s+(?:doubt|matter)\b", re.I)                 # "no doubt", "no matter"
 _PRE_EXISTING_RE = re.compile(r"\bpre-?existing\b", re.I)
 _PRE_EXISTING_SUBJECT_RE = re.compile(
     r"\bpre-?existing\s+(?:[\w-]+\s+){0,2}?(?:rows?|records?|entries|entry|runs?|data)\s+(?:(?:is|are|was|were"
     r"|must|should|will|shall|can|may|do|does|did|stays?|remains?)\s+)?$", re.I)
-_CLAUSE_BREAK_RE = re.compile(r"[,;:]|[\u2013\u2014]|\s-\s")
-_OR_JOIN_RE = re.compile(r"[^,;:.!?\u2013\u2014]*\b(?:or|nor)\s+$", re.I)
+_WORD_RE = re.compile(r"[\w'-]+")
+_PRE_EXISTING_WORDS = frozenset({"pre-existing", "preexisting"})
+_QUALIFIER_WORDS = (frozenset({"any", "all", "the", "a", "an", "its", "their", "our", "these", "those", "such", "of",
+                              "one", "single", "existing", "older", "old", "prior", "previous", "earlier", "ever",
+                              "again", "also", "even", "already", "to", "into", "in", "on", "from", "within"})
+                    | _PRE_EXISTING_WORDS)
+_COORD_WORDS = frozenset({"or", "and", "nor", "either", "both", "re", "ever", "again", "also", "even"})
+_SUBJECT_WORDS = _QUALIFIER_WORDS | _COORD_WORDS | {"new", "ledger", "row", "rows", "entry", "entries", "record",
+                                                   "records", "run", "runs"}
+_CLAUSE_BREAK_RE = re.compile(r"[,;:()\u2013\u2014]")
+_GOVERN_ASIDE_RE = re.compile(r"\([^()]{0,80}\)|[\u2013\u2014]\s*[^\u2013\u2014.;!?]{0,60}[\u2013\u2014]"
+                              r"|--\s[^.;!?]{0,60}?\s--|,\s*(?:[^,.;!?\s()]+\s+){0,4}[^,.;!?\s()]+\s*,")
+_ONCE_RE = re.compile(r"^\s*once\b", re.I)                   # "without once launching", "never once"
+_GOVERN_BREAK_RE = re.compile(r"[;:\u2013\u2014]|\s-\s")
+_VERB_WORD_RE = re.compile(r"(?:re-?)?(?:" + _LEDGER_VERB + "|" + _RUN_VERB + ")", re.I)
+_SUBORDINATOR_RE = re.compile(r"\b(?:when|whenever|while|after|before|if|unless|until|once|because|since|as"
+                              r"|whereas)\b", re.I)
 _REFUSAL_RE = re.compile(
-    r"\b(?:is|are|was|were|gets?|got|being|been)\s+(?:\w+\s+)?(?:refused|rejected|denied)\b"
-    r"|\b(?:responds?|returns?|answers?|replies|reply|fails?)\s+(?:with\s+)?(?:an?\s+|the\s+)?"
-    r"(?:HTTP\s+|status\s+)?(?:[45]\d\d|error)\b"
-    r"|\b(?:shows?|displays?|renders?|raises?|surfaces?)\s+(?:an?\s+|the\s+)?(?:[\w-]+\s+){0,2}?error\b"
-    r"|\b(?:an?|the)\s+(?:[\w-]+\s+){0,2}?error\s+(?:message\s+)?(?:is|was|gets|appears)\b"
-    r"|\bfails?\s+validation\b|\bvalidation\s+fails\b"
-    r"|\braises?\s+(?:an?\s+)?`?\w*(?:Refused|Rejected|Denied|Error|Exception)\b"   # raises `ConcurrentRunnerRefused`
-    r"|\b(?:refusal|rejection)_\w+", re.I)                                             # a refusal field
-_OTHER_REQUEST_RE = re.compile(r"\b(?:that|which|who|previously|earlier|already|once)\s*$", re.I)
-_GIVEN_INVALID_RE = re.compile(
-    r"^\W*(?:TC-\d+[a-z]?\W+)?given\s+(?:an?\s+|the\s+|some\s+)?(?:[\w-]+\s+){0,3}?(?:expired|invalid|unknown"
-    r"|malformed|duplicate|unauthori[sz]ed|forbidden|missing|empty|wrong|bad|revoked|locked|disabled"
-    r"|out-of-range)\b", re.I)
+    r"\b(?:is|are|was|were|gets?|got)\s+(?:\w+\s+)?(?:refused|rejected|denied)\b"
+    r"|\b(?:responds?|returns?|answers?|replies|reply)\s+(?:with\s+)?(?:an?\s+|HTTP\s+|status\s+)?"
+    r"(?:4\d\d\b|error\b(?!-)(?!\s+(?:count|panel|log|logs|rate|list|page|tab)\b))"
+    r"|\braises?\s+(?:an?\s+)?\w*(?:Refused|Rejected|Denied|Error|Exception)\b"
+    r"|\b(?:an?|the)\s+(?:validation\s+)?error\s+(?:message\s+)?(?:is|was|gets)\s+(?:shown|displayed|returned|raised"
+    r"|rendered)\b|\b(?:an?|the)\s+(?:validation\s+)?error\s+appears\b"
+    r"|\b(?:shows?|displays?|renders?)\s+(?:an?|the)\s+(?:validation\s+)?error\b(?!-)"
+    r"(?!\s+(?:count|panel|log|logs|rate|list|page|tab)\b)"
+    r"|\b(?:refusal|rejection)_\w+\s*(?:reads|is|=|:)"
+    r"|\b(?:redirects?\s+to|opens?|is\s+redirected\s+to)\s+the\s+(?:login|sign[\s-]?in)\s+page\b"
+    r"|\bthe\s+(?:login|sign[\s-]?in)\s+page\s+(?:opens|loads|appears|is\s+(?:shown|displayed))\b", re.I)
+_OTHER_REQUEST_RE = re.compile(r"\b(?:that|which|who|whose|previously|earlier|already|once|still)\s*$", re.I)
+_NOT_A_BREAK_RE = re.compile(r"\b(?:e\.g|i\.e|etc|vs|cf|approx|incl|resp|fig|max|min|ca)\.|\bno\.(?=\s*\d)"
+                             r"|(?<=\d)\.(?=\d)", re.I)
+_SENTENCE_END_RE = re.compile(r"[.!?](?=\s|$|[\"')\]])|;")
 _PAREN_RE = re.compile(r"\([^()]*\)")
-_NOT_A_BREAK_RE = re.compile(r"\b(?:e\.g|i\.e|etc|vs|cf|approx|incl|resp)\.|(?<=\d)\.(?=\d)", re.I)
-_QUALIFIER_WINDOW = 160
-_SENTENCE_END_RE = re.compile(r"[.!?](?=\s|$|[\"')\]*_`])|;")   # not the dot of `run.py`
+_CODE_SPAN_RE = re.compile(r"`([^`]*)`")
+_ZERO_WIDTH_RE = re.compile("[\u200b\u200c\u200d\u2060\ufeff\u00ad]")
+_HYPHEN_LOOKALIKE_RE = re.compile("[\u2010\u2011\u2012\u2212]")
+_APOSTROPHE_LOOKALIKE_RE = re.compile("[\u2018\u2019\u02bc\u00b4\uff07]")
+_EMPHASIS_UNDERSCORE_RE = re.compile(r"(?<![A-Za-z0-9])_+|_+(?![A-Za-z0-9])")
+_ELLIPSIS_RE = re.compile("[.]{3}|\u2026")
+_WINDOW = 300
+
+
+def _scan_form(line: str) -> str:
+    """The text the prohibition rule reads: HTML entities decoded, look-alike
+    spaces / hyphens / apostrophes unified, zero-width characters and soft
+    hyphens dropped, markdown emphasis and code-span backticks removed (a code
+    span's sentence punctuation becomes a space), and the periods of
+    abbreviations and numbers blanked."""
+    s = html.unescape(line)
+    s = _ZERO_WIDTH_RE.sub("", s).replace("\u00a0", " ").replace("\u202f", " ")
+    s = _HYPHEN_LOOKALIKE_RE.sub("-", s)
+    s = _APOSTROPHE_LOOKALIKE_RE.sub("'", s)
+    s = re.sub(r"(?<=[A-Za-z])`(?=t\b)", "'", s)                     # doesn`t
+    s = _CODE_SPAN_RE.sub(lambda m: re.sub(r"[.;:!?]", " ", m.group(1)), s)
+    s = s.replace("`", "").replace("*", "")
+    s = _EMPHASIS_UNDERSCORE_RE.sub("", s)
+    s = _ELLIPSIS_RE.sub("   ", s)                                  # "must never... launch"
+    return _NOT_A_BREAK_RE.sub(lambda a: a.group(0).replace(".", " "), s)
 
 
 def _sentences(text: str) -> list[tuple[int, int]]:
-    """(start, end) spans of the sentences of `text`: they end at ; or at . ! ?
-    before a space or the end — never at the dot of a file name, an
-    abbreviation or a number."""
-    masked = _NOT_A_BREAK_RE.sub(lambda a: a.group(0).replace(".", " "), text)
+    """(start, end) spans of the sentences of `text` (already in scan form):
+    they end at ; or at . ! ? before a space, never inside parentheses."""
+    masked = text
+    for _ in range(3):
+        masked = _PAREN_RE.sub(lambda p: re.sub(r"[.;!?]", " ", p.group(0)), masked)
     spans, start = [], 0
     for m in _SENTENCE_END_RE.finditer(masked):
         spans.append((start, m.end()))
@@ -638,76 +799,200 @@ def _sentences(text: str) -> list[tuple[int, int]]:
     return spans
 
 
+def _false_mention(m: "re.Match[str]") -> bool:
+    """A match that is not the activity: a carve-out for a journey's own step
+    follows it ("launching runs beyond J-04's own step 1"), another thing is
+    the verb's object, the "run" is a verb, or the participle is an
+    adjective."""
+    if _CARVE_OUT_RE.match(m.string, m.end()):
+        return True
+    if m.re is _LEDGER_VERB_RX:
+        return bool(_UI_HEAD_RE.search(m.group("gap")))
+    if m.re is _RUN_VERB_RX:
+        gap = m.group("gap")
+        return bool(_VERB_RUN_GAP_RE.search(gap)
+                    or (_PARTICIPLE_RE.search(m.group("verb")) and not _DETERMINER_START_RE.match(gap)))
+    return False
+
+
+def _mentions(text: str) -> list["re.Match[str]"]:
+    """Every activity mention in `text`, sorted by start."""
+    found = []
+    for _name, _form, rx in _ACTIVITY_RES:
+        pos = 0
+        while pos <= len(text):
+            m = rx.search(text, pos)
+            if not m:
+                break
+            if _false_mention(m):
+                pos = m.start() + 1            # look for a later start
+                continue
+            found.append(m)
+            pos = max(m.end(), m.start() + 1)
+    return sorted(found, key=lambda m: m.start())
+
+
+def _mention_name(m: "re.Match[str]") -> str:
+    return _MENTION_INFO[m.re][0]
+
+
+def _mention_qualified(text: str, m: "re.Match[str]") -> bool:
+    """Is this mention's own object only "pre-existing" data — "edit or delete
+    any pre-existing ledger row", "no pre-existing ledger row is edited"? Such a
+    mention is the invariant itself, not the activity. Only ROWS (entries,
+    records, runs) can be pre-existing this way: "the pre-existing ledger" is
+    the ledger."""
+    if m.re in _LEDGER_RXS and not _ROW_OBJECT_RE.search(m.group(0)):
+        return False
+    if _MENTION_INFO[m.re][1] == "verb":
+        words = _WORD_RE.findall((m.groupdict().get("gap") or "").lower())
+        i = 0
+        while i < len(words) and (words[i] in _COORD_WORDS or _VERB_WORD_RE.fullmatch(words[i])):
+            i += 1                              # "edit or delete …" shares one object
+        rest = words[i:]
+        return bool(rest) and all(w in _QUALIFIER_WORDS for w in rest) \
+            and any(w in _PRE_EXISTING_WORDS for w in rest)
+    tail = []
+    before = _CLAUSE_BREAK_RE.split(text[max(0, m.start() - 80):m.start()])[-1]      # its own clause
+    for w in reversed(_WORD_RE.findall(before.lower())):
+        if w not in _SUBJECT_WORDS:
+            break
+        tail.append(w)
+    return any(w in _PRE_EXISTING_WORDS for w in tail) and "new" not in tail
+
+
 def _counting_cues(sentence: str) -> list["re.Match[str]"]:
-    return [c for c in _NEG_CUE_RE.finditer(sentence)
-            if not (_IDIOM_BEFORE_RE.search(sentence[:c.start()]) or _IDIOM_AFTER_RE.match(sentence[c.end():]))]
+    cues = []
+    for c in _NEG_CUE_RE.finditer(sentence):
+        word = c.group(0).lower()
+        before = sentence[max(0, c.start() - 20):c.start()]
+        after = sentence[c.end():c.end() + 20]
+        if word == "not" and (_IDIOM_NOT_BEFORE_RE.search(before) or _IDIOM_NOT_AFTER_RE.match(after)):
+            continue
+        if word == "no" and _IDIOM_NO_AFTER_RE.match(after):
+            continue
+        cues.append(c)
+    return cues
 
 
-def _qualified_end(sentence: str, cue: "re.Match[str]", starts: list[int]) -> "int | None":
-    """Where the "pre-existing" qualification of this negation ends, or None.
-    The negation's object is qualified when "pre-existing" follows within six
-    words, in the same clause, with no unqualified activity between ("no
-    pre-existing row is edited", "must not modify any pre-existing row", "does
-    not edit or delete any pre-existing ledger row"); its subject is qualified
-    when the clause before the negation names "pre-existing" data and no
-    unqualified activity ("…, pre-existing rows are not edited"). `starts` are
-    the sorted start offsets of the sentence's unqualified activities."""
-    def _activity_in(lo: int, hi: int) -> bool:
-        k = bisect.bisect_left(starts, lo)
-        return k < len(starts) and starts[k] < hi
-    rest = sentence[cue.end():cue.end() + _QUALIFIER_WINDOW]
+def _qualified(sentence: str, cue: "re.Match[str]", plain_starts: list[int]) -> bool:
+    """Is this negation about "pre-existing" data (its object within six words
+    of the same clause, or its subject clause), with no unqualified activity
+    in between?"""
+    rest = sentence[cue.end():cue.end() + 160]
     q = _PRE_EXISTING_RE.search(rest)
     if q:
         between = rest[:q.start()]
-        if not (len(between.split()) > 6 or _CLAUSE_BREAK_RE.search(between)
-                or _activity_in(cue.end(), cue.end() + q.start())):
-            return cue.end() + q.end()
-    head = sentence[max(0, cue.start() - _QUALIFIER_WINDOW):cue.start()]
-    clause = _CLAUSE_BREAK_RE.split(head)[-1]
-    # "…, pre-existing (ledger) rows are | must not …" — and no activity shares that subject
-    if _PRE_EXISTING_SUBJECT_RE.search(clause) and not _activity_in(cue.start() - len(clause), cue.start()):
-        return cue.end()
+        k = bisect.bisect_left(plain_starts, cue.end())
+        if (len(between.split()) <= 6 and not re.search(r"[;:]|[\u2013\u2014]", between)
+                and not (k < len(plain_starts) and plain_starts[k] < cue.end() + q.start())):
+            return True
+    head = sentence[max(0, cue.start() - 160):cue.start()]
+    clause = re.split(r"[,;:]|[\u2013\u2014]", head)[-1]
+    if _PRE_EXISTING_SUBJECT_RE.search(clause):
+        k = bisect.bisect_left(plain_starts, cue.start() - len(clause))
+        return not (k < len(plain_starts) and plain_starts[k] < cue.start())
+    return False
+
+
+def _governs(sentence: str, cue: "re.Match[str]", plain: list, starts: list[int],
+             determiner: bool) -> "re.Match[str] | None":
+    """The activity this negation reaches AFTER it in its own clause: no
+    subordinator or semicolon in between (asides skipped) and, for a
+    determiner, no colon or lone dash either ("must not edit X — or launch Y"
+    still reaches Y)."""
+    k = bisect.bisect_left(starts, cue.end())
+    if k >= len(plain):
+        return None
+    between = sentence[cue.end():starts[k]]
+    if len(between) > _WINDOW:
+        return None
+    bare = _ONCE_RE.sub(" ", _GOVERN_ASIDE_RE.sub(" ", between))
+    if _SUBORDINATOR_RE.search(bare) or ";" in bare or (determiner and _GOVERN_BREAK_RE.search(bare)):
+        return None
+    return plain[k]
+
+
+def _containing(plain: list, starts: list[int], reach: list[int], cue: "re.Match[str]") -> "re.Match[str] | None":
+    """The activity mention whose own phrase holds this negation ("writes
+    nothing to the ledger")."""
+    k = bisect.bisect_right(starts, cue.start()) - 1
+    if k < 0 or reach[k] < cue.end():
+        return None
+    while k >= 0:
+        if plain[k].end() >= cue.end():
+            return plain[k]
+        k -= 1
     return None
 
 
 def _refused(sentence: str) -> bool:
-    """Does the sentence state a refused request (a negative-path assertion)?"""
-    if _GIVEN_INVALID_RE.search(sentence):
-        return True
+    """Does the sentence state that the request it tests is refused?"""
     masked = _PAREN_RE.sub(lambda p: " " * len(p.group(0)), sentence)
     for r in _REFUSAL_RE.finditer(masked):
-        before = " ".join(masked[:r.start()].split()[-3:])
-        if _NEG_CUE_RE.search(r.group(0)) or _NEG_CUE_RE.search(before) or _OTHER_REQUEST_RE.search(before):
-            continue       # negated, or about another request ("the earlier request that was rejected")
+        before = masked[max(0, r.start() - 40):r.start()]
+        near = " ".join(before.split()[-3:])
+        if _NEG_CUE_RE.search(r.group(0)) or _NEG_CUE_RE.search(near) or _OTHER_REQUEST_RE.search(before) \
+                or re.search(r"\b(?:is|are|was|were)\s+still\s+", r.group(0), re.I):
+            continue
         return True
     return False
 
 
-def _sentence_prohibition(sentence: str, rx: "re.Pattern[str]") -> "re.Match[str] | None":
-    """The activity `rx` a TC / DoD sentence prohibits (see the rule above)."""
-    acts = [m for m in (rx.match(sentence, s.start()) for s in _ACTIVITY_START_RE.finditer(sentence)) if m]
-    # an activity on pre-existing data is itself the invariant ("… edit any pre-existing ledger row")
-    plain = [a for a in acts if not _PRE_EXISTING_RE.search(a.group(0))]
+def _sentence_prohibition(sentence: str) -> "re.Match[str] | None":
+    """The activity mention a TC / DoD sentence prohibits (see the rule above)."""
+    mentions = _mentions(sentence)
+    if not mentions:
+        return None
+    # an activity whose own object is only "pre-existing" is the invariant itself
+    plain = [m for m in mentions if not _mention_qualified(sentence, m)]
     if not plain:
         return None
+    for m in plain:
+        if _COUNT_NONE_RE.match(sentence, m.end()):
+            return m                         # "Ledger writes: none", "new runs launched: 0"
     cues = _counting_cues(sentence)
-    if not cues or _refused(sentence):
+    if not cues:
         return None
-    starts = [a.start() for a in plain]
+    starts = [m.start() for m in plain]
+    reach, far = [], -1
+    for m in plain:
+        far = max(far, m.end())
+        reach.append(far)
+    refused = None
     for cue in cues:
-        q = _qualified_end(sentence, cue, starts)
-        if q is None:
+        determiner = bool(_DETERMINER_CUE_RE.fullmatch(cue.group(0))) or (
+            cue.group(0).lower() == "not" and _CONTRASTIVE_AFTER_RE.match(sentence, cue.end()) is not None
+            and _CONTRASTIVE_BEFORE_RE.search(sentence[max(0, cue.start() - 12):cue.start()]) is not None)
+        if determiner:
+            if refused is None:
+                refused = _refused(sentence)
+            if refused:
+                continue                     # "… is rejected and no run is created"
+        governed = _governs(sentence, cue, plain, starts, determiner)
+        if governed is not None:
+            return governed                  # "does not launch a new run": never exempt
+        if determiner:
+            inside = _containing(plain, starts, reach, cue)
+            if inside is not None:
+                return inside                # "writes nothing to the ledger"
+            k = bisect.bisect_left(starts, cue.start())
+            if not (k and cue.group(0).lower() in _PREDICATE_WORDS
+                    and _PREDICATE_NONE_RE.search(sentence[max(0, cue.start() - 12):cue.start()])
+                    and (cue.group(0).lower() != "no" or _PREDICATE_NO_END_RE.match(sentence, cue.end()))):
+                continue                     # "no stored run has …, when … launches a run"
+            if not _qualified(sentence, cue, starts):
+                return plain[k - 1]          # "Ledger writes: none"
+            continue
+        if not _qualified(sentence, cue, starts):
             return plain[0]
-        k = bisect.bisect_left(starts, q)          # only the next activity can be joined by "or"
-        if k < len(plain) and _OR_JOIN_RE.fullmatch(sentence[q:plain[k].start()]):
-            return plain[k]
     return None
 
 
 _TC_LINE_RE = re.compile(
-    r"^(?P<indent>[ \t]*)(?P<heading>#{1,6}[ \t]+)?(?:(?:[-*+]|\d+[.)])[ \t]+)?(?:\[[ xX]\][ \t]+)?(?:\|[ \t]*)?"
-    r"(?:\*\*|__)?[`(\[]?(?P<tc>TC-\d+[a-z]?)\b", re.I)
-_ANY_HEADING_RE = re.compile(r"^[ \t]{0,3}#{1,6}[ \t]")
+    r"^(?P<indent>[ \t]*)(?:>[ \t]*)*(?P<heading>#{1,6}[ \t]+)?(?:(?:[-*+]|\d+[.)])[ \t]+)?(?:\[[ xX]\][ \t]+)?"
+    r"(?:\|(?:[^|\n]{0,12}\|){0,2}[ \t]*)?(?:\*{1,3}|_{1,3})?(?:test[ \t]+case[ \t]+)?[`(\[]?"
+    r"(?P<tc>TC[-\u2010\u2011\u2012\u2013\u2212]\d+[a-z]?)(?![A-Za-z0-9])", re.I)
 _PROSE_SECTIONS = ("GOAL", "BACKGROUND", "NOTES", "NOTE", "CONTEXT", "RATIONALE", "HISTORY")
 
 # ── markdown code fences (shared with goal_gate.py) ──────────────────────────
@@ -755,6 +1040,7 @@ def fence_scan(lines: list[str]) -> tuple[list[bool], list[int]]:
     depth = [_QUOTE_PREFIX_RE.match(ln).group(0).count(">") for ln in text]
     closes: list = [None] * n
     by_char: dict[str, list[int]] = {"`": [], "~": []}
+    top_closers: dict = {}
     for j, ln in enumerate(text):
         c = _FENCE_CLOSE_RE.match(ln)
         if c:
@@ -785,13 +1071,15 @@ def fence_scan(lines: list[str]) -> tuple[list[bool], list[int]]:
                 and closes[j][2] == qd and closes[j][3] <= col + 3 and not (qd and depth[j] < qd)
             end = j if closed_here else j - 1
         else:
-            positions = by_char[ch]
-            for j in positions[bisect.bisect_right(positions, i):]:
-                c = closes[j]
-                if c[1] >= size and c[2] == 0 and c[3] <= col + 3:
-                    end = j
-                    break
-            if end is None:
+            key = (ch, size, col)
+            if key not in top_closers:          # the top-level closers this opener shape accepts
+                top_closers[key] = [j for j in by_char[ch]
+                                    if closes[j][1] >= size and closes[j][2] == 0 and closes[j][3] <= col + 3]
+            positions = top_closers[key]
+            k = bisect.bisect_right(positions, i)
+            if k < len(positions):
+                end = positions[k]
+            else:
                 unclosed.append(i)
         if end is None:
             i += 1
@@ -832,29 +1120,69 @@ def _html_comment_flags(lines: list[str]) -> list[bool]:
     return flags
 
 
+_ANY_HEADING_LINE_RE = re.compile(r"^[ \t]{0,3}(?P<hashes>#{1,6})[ \t]+(?P<title>.*?)[ \t#]*$")
+
+
 def _section_kind(title: str) -> str:
     words = re.sub(r"[^A-Z]+", " ", title.upper()).split()
     joined = " ".join(words)
     if joined.startswith(_METADATA_H2.upper()):
         return "metadata"
-    if joined.startswith(("OUT OF SCOPE", "NOT IN SCOPE", "NON GOALS", "NONGOALS")):
+    if re.search(r"\b(?:OUT OF SCOPE|NOT IN SCOPE|NON GOALS|NONGOALS|EXCLUSIONS?)\b", joined):
         return "OUT OF SCOPE"
-    if joined.startswith("DEFINITION OF DONE") or (words and words[0] == "DOD"):
+    if re.search(r"\bDEFINITION OF DONE\b", joined) or (words and words[0] == "DOD"):
         return "DEFINITION OF DONE"
-    if words and words[0] in _PROSE_SECTIONS:
+    first = title.strip().split()[0] if title.strip() else ""
+    if (words and words[0] in _PROSE_SECTIONS and len(words) <= 3
+            and not re.match(r"[A-Za-z]+-", first)):          # "Goal-level acceptance tests" is not prose
         return "prose"
     return "other"
 
 
-def _line_sections(lines: list[str], fenced: list[bool]) -> list[str]:
+def _glued_headings(lines: list[str]) -> list[bool]:
+    """True for a line in the same blank-line-free block as an earlier fence
+    line, with another fence line somewhere below: a heading there may sit
+    inside a code fence ("```" / "## Notes" / … / "```") whatever the pairing
+    says."""
+    fence = [bool(_FENCE_OPEN_RE.match(ln) or _FENCE_CLOSE_RE.match(ln)) for ln in lines]
+    below, seen = [False] * len(lines), False
+    for i in range(len(lines) - 1, -1, -1):
+        below[i] = seen
+        seen = seen or fence[i]
+    glued, in_block = [False] * len(lines), False
+    for i, ln in enumerate(lines):
+        if not ln.strip():
+            in_block = False
+        elif fence[i]:
+            in_block = True
+        else:
+            glued[i] = in_block and below[i]
+    return glued
+
+
+def _line_sections(lines: list[str], fenced: list[bool], hidden: "list[bool] | None" = None,
+                   glued: "list[bool] | None" = None, glued_kinds: tuple = ()) -> list[str]:
+    """The section kind of every line ('heading' for a heading line). A level-2
+    heading always starts a section; a level-1 or level-3 heading does when its
+    name is a known section (OUT OF SCOPE, DoD, a prose section, the metadata).
+    A heading inside a fence or inside an HTML comment region (`hidden`) starts
+    nothing, and neither does a heading of a `glued_kinds` kind that may sit
+    inside a fence (`glued`, for the fence-ignoring reads: a section that hides
+    lines must never be opened by what may be a quotation)."""
     kinds: list[str] = []
     kind = "other"
-    for ln, f in zip(lines, fenced):
-        h2 = None if f else _H2_LINE_RE.match(ln)
-        if h2:
-            kind = _section_kind(h2.group(1))
-            kinds.append("heading")
-            continue
+    for i, (ln, f) in enumerate(zip(lines, fenced)):
+        h = None if f or (hidden is not None and hidden[i]) else _ANY_HEADING_LINE_RE.match(ln)
+        if h:
+            level = len(h.group("hashes"))
+            named = _section_kind(h.group("title"))
+            if glued is not None and glued[i] and named in glued_kinds:
+                kinds.append(kind)
+                continue
+            if level == 2 or (level in (1, 3) and named != "other"):
+                kind = named
+                kinds.append("heading")
+                continue
         kinds.append(kind)
     return kinds
 
@@ -864,94 +1192,113 @@ def _indent_of(line: str) -> int:
     return len(expanded) - len(expanded.lstrip())
 
 
-_ITEM_START_RE = re.compile(r"^[ \t]*(?:(?:[-*+]|\d+[.)])[ \t]|\|)")
+_ITEM_START_RE = re.compile(r"^[ \t]*(?:>[ \t]*)?(?:(?:[-*+]|\d+[.)]|[a-z][.)])[ \t]|\|)")
+_MARKED_TC_RE = re.compile(r"^[ \t]*(?:>[ \t]*)*(?:#{1,6}[ \t]+|(?:[-*+]|\d+[.)])[ \t]+|\|)")
 
 
-def _item_hit(text: str, label: str) -> "tuple[str, int, int] | None":
-    """(pattern, start, end) of the first prohibition in one item's joined text."""
-    text = text.replace("\u2019", "'").replace("\u00a0", " ")
+def _item_hit(scan: str, label: str) -> "tuple[str, int, int] | None":
+    """(pattern, start, end) of the first prohibition in one item's text (scan form)."""
     for name, rx, where, qualified in _PROHIBITION_RES:
         if where == "oos" and label != "OUT OF SCOPE":
             continue
-        for m in rx.finditer(text):
-            if qualified and _PRE_EXISTING_ROWS_RE.search(text[:m.start()]):
+        for m in rx.finditer(scan):
+            if qualified and _PRE_EXISTING_ROWS_RE.search(scan[max(0, m.start() - 40):m.start()]):
                 continue
             return name, m.start(), m.end()
-    spans = _sentences(text)
-    for a, b in spans:
-        passive = _PASSIVE_NONE_RE.search(text, a, b)
-        if passive and not _refused(text[a:b]):
-            return "no-new-row-run-record", passive.start(), passive.end()
-    for name, anywhere, listed in _ACTIVITY_RES:
-        if label == "OUT OF SCOPE":
-            m = listed.search(text)
-            if m:
-                return name, m.start(), m.end()
-            continue
-        for a, b in spans:
-            m = _sentence_prohibition(text[a:b], anywhere)
-            if m:
-                return name, a + m.start(), a + m.end()
+    if label == "OUT OF SCOPE":
+        found = [m for m in _mentions(scan) if not _mention_qualified(scan, m)]
+        if found:
+            return _mention_name(found[0]), found[0].start(), found[0].end()
+        noun = _OOS_NOUN_RE.search(scan)
+        if noun:
+            return "any-new-run-launch" if re.search(r"runs?|backtests?", noun.group(0), re.I) \
+                else "ledger-row-edit", noun.start(), noun.end()
+        return None
+    for a, b in _sentences(scan):
+        m = _sentence_prohibition(scan[a:b])
+        if m:
+            return _mention_name(m), a + m.start(), a + m.end()
     return None
 
 
-def _scan_prohibitions(lines: list[str], fenced: list[bool]) -> list[dict]:
-    """One finding per ITEM — a bullet, numbered, checkbox or table line, or a
-    TC line, together with its wrapped continuation lines (indented, or lazy at
-    column 0 right below a TC line) — reported at the line where the match
-    starts."""
-    kinds = _line_sections(lines, fenced)
-    items: list[list] = []
-    current: "list | None" = None
-    tc_label, tc_indent, tc_heading = None, 0, False
+def _scan_prohibitions(lines: list[str], fenced: list[bool], comments: list[bool]) -> list[dict]:
+    """One finding per ITEM — a bullet, numbered, lettered, checkbox or table
+    line, or a TC line, with its wrapped continuation lines (indented, or lazy
+    right below it) — reported at the line where the match starts. A child
+    bullet under a lead-in that ends with ":" is read together with that
+    lead-in ("must not:" / "- launch a new run")."""
+    blind = not any(fenced)
+    kinds = _line_sections(lines, fenced, [f or c for f, c in zip(fenced, comments)],
+                           _glued_headings(lines) if blind else None, ("prose", "metadata"))
+    items: list[dict] = []
+    current: "dict | None" = None
+    tc_label, tc_indent, tc_heading = None, 0, 0
+    gap = False                                   # a blank line since the item's last line
     for i, line in enumerate(lines, 1):
         kind = kinds[i - 1]
         stripped = line.strip()
         if fenced[i - 1] or kind in ("heading", "prose", "metadata"):
             if kind == "heading":
-                tc_label = None
-            current = None
+                tc_label, tc_heading = None, 0
+            current, gap = None, False
             continue
+        if not stripped:
+            gap = True
+            continue
+        heading = _ANY_HEADING_LINE_RE.match(line)
         tc = _TC_LINE_RE.match(line)
-        in_tc_item = current is not None and current[0] == tc_label
-        if tc:
-            tc_label, tc_indent = tc.group("tc").upper(), _indent_of(tc.group("indent"))
-            tc_heading = bool(tc.group("heading"))
+        deeper = current is not None and _indent_of(line) > current["indent"]
+        if tc and kind not in ("OUT OF SCOPE", "DEFINITION OF DONE") and (
+                _MARKED_TC_RE.match(line) or _indent_of(line) == 0 or current is None):
+            tc_label, tc_indent = re.sub(r"\W", "-", tc.group("tc").upper()), _indent_of(tc.group("indent"))
+            tc_heading = len(heading.group("hashes")) if heading else 0
             label = tc_label
-        elif tc_label and tc_heading and not _ANY_HEADING_RE.match(line):
-            label = tc_label                       # the body of a `### TC-4` heading
-        elif (tc_label and not tc_heading and stripped and not _ANY_HEADING_RE.match(line)
+            starts = True
+        elif tc_label and tc_heading and not (heading and len(heading.group("hashes")) <= tc_heading):
+            label = tc_label                      # the body of a `### TC-4` heading (deeper headings included)
+            starts = bool(_ITEM_START_RE.match(line)) or current is None or gap
+        elif (tc_label and not tc_heading and not heading
               and not line.lstrip().startswith("|")
-              and (_indent_of(line) > tc_indent or (in_tc_item and not _ITEM_START_RE.match(line)))):
-            label = tc_label                       # a TC continued (or sub-bulleted) below its line
+              and (_indent_of(line) > tc_indent or (not gap and current is not None
+                                                    and current["label"] == tc_label
+                                                    and not _ITEM_START_RE.match(line)))):
+            label = tc_label                      # a TC continued (or sub-bulleted) below its line
+            starts = bool(_ITEM_START_RE.match(line)) or (gap and not deeper)
         else:
-            tc_label = None
+            tc_label, tc_heading = None, 0
             if kind in ("OUT OF SCOPE", "DEFINITION OF DONE"):
                 label = kind
+                starts = (bool(_ITEM_START_RE.match(line)) or current is None or current["label"] != label
+                          or (gap and not deeper))
             else:
-                current = None
+                current, gap = None, False
                 continue
-        if not stripped:
-            current = None
-            continue
-        if tc or current is None or current[0] != label or _ITEM_START_RE.match(line):
-            current = [label, []]
+        gap = False                               # an indented paragraph after a blank line continues its item
+        if starts or current is None or current["label"] != label:
+            lead = ""
+            if (current is not None and _ITEM_START_RE.match(line) and _indent_of(line) > current["indent"]
+                    and current["parts"][-1][2].rstrip().endswith(":")):
+                lead = current["lead"] + " ".join(s for _n, _t, s in current["parts"]) + " "   # "must not:" / "- launch …"
+            current = {"label": label, "indent": _indent_of(line), "parts": [], "lead": lead}
             items.append(current)
-        current[1].append((i, stripped))
+        current["parts"].append((i, stripped, _scan_form(stripped)))
     found: list[dict] = []
-    for label, parts in items:
-        text = " ".join(t for _n, t in parts)
-        hit = _item_hit(text, label)
+    for item in items:
+        scan = item["lead"] + " ".join(s for _n, _t, s in item["parts"])
+        hit = _item_hit(scan, item["label"])
         if not hit:
             continue
         name, start, end = hit
-        line_no, pos = parts[0][0], 0
-        for n, t in parts:
-            if start < pos + len(t) + 1:
+        start -= len(item["lead"])
+        line_no, pos = item["parts"][0][0], 0
+        for n, _t, s in item["parts"]:
+            if start < pos + len(s) + 1:
                 line_no = n
                 break
-            pos += len(t) + 1
-        found.append({"section": label, "line": line_no, "pattern": name, "match": text[start:end],
+            pos += len(s) + 1
+        text = " ".join(t for _n, t, _s in item["parts"])
+        found.append({"section": item["label"], "line": line_no, "pattern": name,
+                      "match": scan[start + len(item["lead"]):end],
                       "text": text if len(text) <= 240 else text[:239] + "…"})
     return found
 
@@ -966,10 +1313,12 @@ def find_mutation_prohibitions(spec_text: str) -> list[dict]:
     fence can shift the pairing of every fence after it without leaving a trace
     — a prohibition must never disappear because the fence reading was wrong. A
     re-planned spec therefore never quotes a rejected section WITH its heading,
-    even inside a code fence (agents/goal-decomposer/body.md)."""
+    even inside a code fence (agents/goal-decomposer/body.md). Headings inside
+    HTML comments start no section in either pass."""
     lines = spec_text.splitlines()
-    found = {p["line"]: p for p in _scan_prohibitions(lines, fenced_line_flags(lines))}
-    for p in _scan_prohibitions(lines, [False] * len(lines)):
+    comments = _html_comment_flags(lines)
+    found = {p["line"]: p for p in _scan_prohibitions(lines, fenced_line_flags(lines), comments)}
+    for p in _scan_prohibitions(lines, [False] * len(lines), comments):
         if p["line"] not in found:
             p["fence_blind"] = True
             found[p["line"]] = p
@@ -990,7 +1339,7 @@ _POLICY_HTML_TAG_RE = re.compile(r"</?(?:b|strong|em|i|u|code|span|mark|kbd)\b[^
 _POLICY_SEP_RE = re.compile(r"[:|=]")
 _POLICY_LEAD_RE = re.compile(
     r"^(?:[*_` \t]|[-\u2013\u2014\u2192>]+(?=[ \t*_`]|$))*(?:(?:is|stays|remains|set[ \t]+to)\b[ \t]*)?", re.I)
-_POLICY_QUOTES = "`*_\"'‘’“”"
+_POLICY_QUOTES = "`*_\"'\u2018\u2019\u201c\u201d"
 _POLICY_PLAIN_ALLOWED_RE = re.compile(
     rf"^[{_POLICY_QUOTES}]*allowed[{_POLICY_QUOTES}]*[.;,!]?(?:[ \t]+[-\u2013\u2014]+[ \t]+(?P<note>.*))?$", re.I)
 _POLICY_NOTE_RESTRICTIVE_RE = re.compile(
@@ -1030,11 +1379,13 @@ def _policy_value_restrictive(value: str) -> bool:
 
 def _policy_intent_pass(lines: list[str], canonical, blind: bool) -> dict:
     n = len(lines)
+    real_comments = _html_comment_flags(lines)
     if blind:
         fenced = comments = [False] * n
     else:
-        fenced, comments = fenced_line_flags(lines), _html_comment_flags(lines)
-    kinds = _line_sections(lines, fenced)
+        fenced, comments = fenced_line_flags(lines), real_comments
+    kinds = _line_sections(lines, fenced, [f or c for f, c in zip(fenced, real_comments)],
+                           _glued_headings(lines) if blind else None, ("prose",))
     in_section: list[tuple[int, str]] = []
     outside: list[tuple[int, str]] = []
     for i, ln in enumerate(lines):
@@ -1168,13 +1519,16 @@ def _observation_text(rec: dict) -> str:
 
 def _mutating_desc(jid: str, rec: dict, roles: set) -> str:
     src = []
-    if rec.get("declared") == "mutating":
+    uncertain = rec.get("ambiguous") or rec.get("unattributed")
+    if rec.get("declared") == "mutating" and not uncertain:
         src.append("declared mutating" + (f": '{rec['note']}'" if rec.get("note") else ""))
-    elif "mutating" in (rec.get("stated_values") or []):
+    elif rec.get("declared") == "mutating" or "mutating" in (rec.get("stated_values") or []):
         src.append(f"a 'Side effects: mutating' line that cannot be tied to it with certainty ({_attribution(rec)}) "
                    "— read as mutating, fail-closed")
     if rec.get("observed_mutating"):
-        conflict = "declared none, but " if rec.get("declared") == "none" else ""
+        conflict = ""
+        if rec.get("declaration_conflict"):
+            conflict = "a block says none (uncertain), but " if uncertain else "declared none, but "
         src.append(conflict + _observation_text(rec))
     hints = rec.get("step_hints") or []
     hint = f"; its step {hints[0]['n']}: '{hints[0]['text']}'" if hints else ""
@@ -1182,6 +1536,8 @@ def _mutating_desc(jid: str, rec: dict, roles: set) -> str:
 
 
 def _attribution(rec: dict) -> str:
+    if rec.get("ambiguous") and rec.get("attribution_reason") == "fenced-declaration":
+        return "ambiguous: a 'Side effects: mutating' line in it sits inside a code fence"
     if rec.get("ambiguous"):
         return "ambiguous: a header with this id also sits inside a code fence"
     if rec.get("attribution_reason") == "fenced-header":
@@ -1275,9 +1631,11 @@ def side_effect_findings(spec_text: str, md: dict, ledger_path: str | None, stri
                 blind = (" (found with code fences ignored: a stray fence can make a live line read as fenced, so "
                          "fenced prohibition-shaped text counts — never quote a rejected section with its heading)"
                          if p.get("fence_blind") else "")
-                rule = (" (a TC / DEFINITION OF DONE sentence that names this activity and contains any negation is a "
-                        "prohibition — write it positively, keep the activity out of the negated sentence, or say "
-                        "'pre-existing' if the negation is about earlier data)"
+                rule = (" (a TC / DEFINITION OF DONE sentence that names this activity is a prohibition when a "
+                        "negation reaches it: 'not', 'never', 'cannot', 'avoid', 'forbid' or 'out of scope' anywhere "
+                        "in the sentence, or 'no', 'none', 'nothing' or 'without' before it in its own clause — write "
+                        "it positively, put the negation in a sentence of its own, or say 'pre-existing' if the "
+                        "negation is about earlier data)"
                         if p["pattern"] in ("ledger-row-edit", "any-new-run-launch")
                         and p["section"] != "OUT OF SCOPE" else "")
                 err("E16", f"{p['section']} (line {p['line']}){blind} forbids a mutation ('{p['text']}'){rule} but {descs}. "
@@ -1344,11 +1702,16 @@ _DECOMPOSER_RULE = (
     "\"row/record/ledger count unchanged\", \"no new row/run/record\", \"ledger unchanged/frozen\", "
     "\"must not create/launch/append/write\", \"no write/mutation/launch\", \"Any new ... run launch\", "
     "\"no run is launched\" — while a MUTATING journey is in the iteration (E16). The same holds for the "
-    "activities creating/editing/deleting/writing/appending/adding/inserting ledger rows and "
-    "launching/starting/triggering a new run: naming one in OUT OF SCOPE is a prohibition, and a TC or "
-    "DEFINITION OF DONE sentence that names one and contains ANY negation (no, not, n't, never, without, none, "
-    "nothing, avoid, prevent, forbid, …) is a prohibition — unless the negation is about data called "
-    "\"pre-existing\"; write such sentences positively or keep the activity out of them. Never copy a rejected "
+    "activities creating/editing/deleting/writing/appending/adding/inserting/changing/removing ledger rows and "
+    "launching/starting/triggering/creating/executing a run: naming one in OUT OF SCOPE is a prohibition; a TC "
+    "or DEFINITION OF DONE sentence that names one is a prohibition when it contains not, n't, never, cannot, "
+    "avoid, prevent, prohibit, forbid, disallow, exclude(d) or \"out of scope\" ANYWHERE, or when no, none, "
+    "nothing, nobody, neither, nor, without, except or excluding stands before the activity in the same clause, "
+    "inside its phrase (\"writes nothing to the ledger\") or as its predicate (\"Ledger writes: none\") — "
+    "unless the negation is about data called \"pre-existing\" (a refused request may add \"and no run is "
+    "created\"). An activity on pre-existing rows only (\"edits to pre-existing ledger rows\") or carved out for a "
+    "journey's own step (\"launching runs beyond J-04's own step 1\") is not one, in OUT OF SCOPE too. Write such "
+    "sentences positively, or give the negation a sentence of its own. Never copy a rejected "
     "section heading or policy line into the spec, not even inside a code fence. Never drop a "
     "Required-still-passing journey to avoid a conflict.")
 
@@ -1361,14 +1724,15 @@ def _status_list(jids: list[str], recs: dict, with_source: bool) -> str:
             out.append(j)
             continue
         src = []
-        if rec.get("declared") == "mutating":
-            src.append("declared")
-        elif "mutating" in (rec.get("stated_values") or []):
-            src.append("ambiguous declaration" if rec.get("ambiguous") else "unattributed declaration")
+        uncertain = rec.get("ambiguous") or rec.get("unattributed")
+        if rec.get("declared") == "mutating" or "mutating" in (rec.get("stated_values") or []):
+            src.append(("ambiguous declaration" if rec.get("ambiguous") else "unattributed declaration")
+                       if uncertain else "declared")
         if rec.get("observed_mutating"):
             conflict = ""
-            if rec.get("declared") == "none":
-                conflict = "AMBIGUOUS, one block says none, but " if rec.get("ambiguous") else "DECLARED NONE, but "
+            if rec.get("declaration_conflict"):
+                conflict = ("AMBIGUOUS, one block says none, but " if rec.get("ambiguous")
+                            else "UNATTRIBUTED, a block says none, but " if uncertain else "DECLARED NONE, but ")
             src.append(conflict + _observation_text(rec))
         out.append(f"{j} ({'; '.join(src)})" if src else j)
     return ", ".join(out) or "(none)"
@@ -1386,15 +1750,17 @@ _CONFLICT_EVAL = ("DECLARATION CONFLICT: {jids} {is_are} declared 'none' in docs
                   "regression or a wrong declaration); it is never excused as the journey's own step.")
 _CONFLICT_LANE = ("DECLARATION CONFLICT: {jids} {is_are} declared 'none' in docs/goal.md, yet a replay observed a "
                   "mutation — name the step that changes data in {its} row's Actual cell.")
-# The same when the `none` comes from an AMBIGUOUS id (a header with the id also
-# sits inside a code fence): which block is the journey is uncertain.
-_CONFLICT_AMBIG_EVAL = ("POSSIBLE DECLARATION CONFLICT: a docs/goal.md block for {jids} says 'none', but a header with "
-                        "the same id also sits inside a code fence, so which block is the journey is uncertain — and "
-                        "the deterministic replay observed a mutation: report it in Summary and assumptions.md as a "
-                        "finding to check (a product regression or a wrong or misplaced declaration).")
-_CONFLICT_AMBIG_LANE = ("POSSIBLE DECLARATION CONFLICT: a docs/goal.md block for {jids} says 'none' (the id is "
-                        "ambiguous), yet a replay observed a mutation — name the step that changes data in {its} "
-                        "row's Actual cell.")
+# The same when the `none` comes from an AMBIGUOUS or UNATTRIBUTED id (a header
+# with the id sits inside a code fence, or no definition covers it): which block,
+# if any, is the journey is uncertain.
+_CONFLICT_AMBIG_EVAL = ("POSSIBLE DECLARATION CONFLICT: a docs/goal.md block for {jids} says 'none', but which block "
+                        "(if any) defines the journey is uncertain (a header with the id sits inside what the parser "
+                        "reads as a code fence, or only other journeys mention it) — and the deterministic replay "
+                        "observed a mutation: report it in Summary and assumptions.md as a finding to check (a "
+                        "product regression or a wrong or misplaced declaration).")
+_CONFLICT_AMBIG_LANE = ("POSSIBLE DECLARATION CONFLICT: a docs/goal.md block for {jids} says 'none' (the id's "
+                        "definition is uncertain), yet a replay observed a mutation — name the step that changes "
+                        "data in {its} row's Actual cell.")
 _FULL_LANE_NOTE = ("(In this full-depth run, a numbered step also means a numbered step of a UT- test case you "
                    "were asked to execute.)")
 
@@ -1438,8 +1804,9 @@ def render_side_effect_context(mode: str, ledger_path: str | None, spec_text: st
              f"NONE: {_status_list([j for j in relevant if status[j] == 'none'], recs, False)}; "
              f"Unknown: {_status_list([j for j in relevant if status[j] == 'unknown'], recs, False)}")
     policy_txt = policy or "not declared"
-    conflicts = [j for j in mut if (recs.get(j) or {}).get("declaration_conflict") and not recs[j].get("ambiguous")]
-    ambiguous = [j for j in mut if (recs.get(j) or {}).get("declaration_conflict") and recs[j].get("ambiguous")]
+    uncertain = {j for j in mut if (recs.get(j) or {}).get("ambiguous") or (recs.get(j) or {}).get("unattributed")}
+    conflicts = [j for j in mut if (recs.get(j) or {}).get("declaration_conflict") and j not in uncertain]
+    ambiguous = [j for j in mut if (recs.get(j) or {}).get("declaration_conflict") and j in uncertain]
     incomplete = info["availability"] == "incomplete"
     if mode == "lane":
         head = ("SIDE-EFFECT CONTEXT (deterministic, engine-built): spec Side-effect policy: "
