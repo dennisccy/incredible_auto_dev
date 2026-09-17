@@ -524,7 +524,9 @@ because the next ledger is rebuilt from the per-run records.
 ### runs/goal-session-\<sid\>/iter-\<N\>/replay-side-effects.json
 
 One replay run's observations (`demo_runner.py --side-effects-run-out`): `run_id`, `iter`,
-`iter_name`, `observed_at` (microsecond UTC), `classifier_version`, the exception file's
+`iter_name`, `observed_at` (microsecond UTC), `classifier_version` (3 since the auth exclusions name
+endpoints rather than subtrees — an observation recorded under another version is re-classified
+by the ledger with the current rules), the exception file's
 path/sha256/invalid lines, the auth ignore list (and any rejected entries), `journeys.<J>`
 observation records (with `golden_sha256`, the identity of the golden script's executable
 content) and `sidecar: {path, updated, message, clear_refused?}`. Written even when the sidecar

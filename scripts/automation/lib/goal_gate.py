@@ -91,7 +91,19 @@ import re
 import sys
 from pathlib import Path
 
-from iter_spec import fence_scan, fenced_line_flags
+
+# iter_spec is loaded on first use, not at import: goal-slice runs before the
+# step checkpoints are verified and must not rewrite a sibling's bytecode
+# (tracked in some trees) and so move the checkpoint tree hash.
+def fence_scan(lines: list[str]) -> tuple[list[bool], list[int]]:
+    from iter_spec import fence_scan as _impl  # noqa: PLC0415
+    return _impl(lines)
+
+
+def fenced_line_flags(lines: list[str]) -> list[bool]:
+    from iter_spec import fenced_line_flags as _impl  # noqa: PLC0415
+    return _impl(lines)
+
 
 PASSING_STATUSES = {"passing", "already_passing"}
 
@@ -1073,12 +1085,25 @@ def _scan_run_records(sidecar) -> tuple[list, list]:
     return recs, errs
 
 
+def _sample_total(reqs: list) -> int:
+    """How many requests a stored sample accounts for (-1 when a count is unreadable)."""
+    total = 0
+    for r in reqs:
+        try:
+            total += int(r.get("count") or 0)
+        except (TypeError, ValueError):
+            return -1
+    return total
+
+
 def _reclassify(ev: dict, ro: dict, ignore: list[str], classify, version: int):
     """(still_mutating, requests, exceptions_applied, auth_ignored, basis) for one
     recorded observation. When the exception file, the auth list or the
     classifier rules changed since it was recorded, its stored {method, path}
-    sample is re-classified with the CURRENT rules; a truncated sample cannot
-    be, so it stays mutating if it held any candidate request (fail closed)."""
+    sample is re-classified with the CURRENT rules; a sample that cannot be —
+    truncated, or whose request counts do not account for every request the
+    observation counted — stays mutating if it held any candidate request
+    (fail closed)."""
     try:
         mut = int(ev.get("mutating_count") or 0)
         auth = int(ev.get("auth_count") or 0)
@@ -1100,7 +1125,7 @@ def _reclassify(ev: dict, ro: dict, ignore: list[str], classify, version: int):
              or list(ev.get("ignore_paths") or []) != list(ignore))
     if not stale:
         return mut > 0, [dict(r) for r in reqs], _pairs("exceptions_applied"), _pairs("auth_ignored"), "recorded"
-    if ev.get("truncated"):
+    if ev.get("truncated") or _sample_total(reqs) < mut + auth + roc:
         return (mut + auth + roc) > 0, [dict(r) for r in reqs], [], [], "reclassification-unverifiable"
     entries = [] if ro.get("error") else (ro.get("entries") or [])
     shown = []
@@ -1108,7 +1133,7 @@ def _reclassify(ev: dict, ro: dict, ignore: list[str], classify, version: int):
         r2 = dict(r)
         r2["class"] = classify(str(r.get("method") or ""), str(r.get("path") or "/"), ignore, entries)
         shown.append(r2)
-    observed = any(r["class"] == "mutating" for r in shown) or (mut > 0 and not reqs)
+    observed = any(r["class"] == "mutating" for r in shown)
     exceptions = [{"method": r.get("method"), "path": r.get("path")} for r in shown
                   if r["class"] == "ignored-readonly"]
     auth_ignored = [{"method": r.get("method"), "path": r.get("path")} for r in shown

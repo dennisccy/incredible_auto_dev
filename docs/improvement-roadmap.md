@@ -5543,10 +5543,16 @@ Four root causes: governors read proxies instead of facts (HARD-1..3); ownership
     observed; else `unknown`), records `declaration_digest`/`declaration_digest_prev` in the
     engine-owned `state/journey-side-effects.json` and emits `side_effect_declaration_changed`
     (also for edits to the exception file and to `CHAIN_SIDE_EFFECT_IGNORE_PATHS`). It is refreshed
-    before the evaluator. `_normalize_block` drops every `Side effects:` line before hashing
-    (**certification path — the G8 reviewer must sign this off explicitly**; verified that no
-    goal.md in the four products or this repo contains such a line today, so no recorded
-    `spec_hash` moves).
+    before the evaluator. `_normalize_block` drops only WELL-FORMED `Side effects:` declaration
+    lines before hashing: a malformed declaration-shaped line, and one the document's code-fence
+    reading places inside a fence, stays journey text (a change to it is goal-edit drift). Every
+    declaration change stays visible through the separate `declaration_digest`
+    (`side_effect_declaration_changed`), and the side-effect parser never lets an ambiguous or
+    fenced definition turn a known mutation into `none` (revisions 5–8). (**Certification path —
+    the G8 reviewer must sign this off explicitly**; across 168 goal.md versions of the four
+    products and this repo, no `spec_hash` moves for a goal.md without well-formed declaration
+    lines.) *(Corrected 2026-09-17: the first version of this entry said every `Side effects:`
+    line was dropped — true only of `cd3472d`; revision 2 narrowed it.)*
   - *Observer:* `demo_runner.py --side-effects-out/--side-effects-run-out` (verify mode only;
     `CHAIN_SIDE_EFFECT_OBSERVER`), pure `classify_request`, digest-tracked
     `project-extensions/side-effects/read-only-endpoints.txt`, results-row suffix, per-run record
@@ -5558,8 +5564,15 @@ Four root causes: governors read proxies instead of facts (HARD-1..3); ownership
     (`none` + unavailable/incomplete ledger → `GATE_BLOCKED_SIDE_EFFECT_LEDGER`, no re-plan), E16
     (prohibition vs mutating journey under ANY policy), W09, W10, W11. `CHAIN_SIDE_EFFECT_PREFLIGHT`,
     `CHAIN_SIDE_EFFECT_STRICT`; unrecognised knob values resolve to ON with a warning.
-    `CHAIN_SPEC_LINT=warn` continues past E15 saying UNVERIFIED (HARD-2's crash semantics);
-    `off` skips the whole lint, preflight included.
+    E15 is not re-plannable and fails closed under `CHAIN_SPEC_LINT=block` AND `warn`: the engine
+    decides it before the re-plan and crash branches, and when the lint crashed or did not finish its
+    side-effect pass it reads the policy and the ledger itself, halting `GATE_BLOCKED_SIDE_EFFECT_LEDGER`
+    with zero dispatch. E13/E14/E16 keep HARD-2's warn behaviour (`block`: one re-plan, then
+    `GATE_BLOCKED`; `warn`: logged, dispatch continues). `CHAIN_SPEC_LINT=off` skips the whole lint
+    and `CHAIN_SIDE_EFFECT_PREFLIGHT=false` skips E13–E16/W09–W11 (E06/W02 still run); both print an
+    announcement, and in both cases no side-effect check, E15 included, is evaluated. *(Corrected
+    2026-09-17: the first version of this entry said warn mode continued past E15 — revision 2
+    changed that.)*
   - *Prompts:* `side_effects_prompt_block` (both lanes), evaluator ledger line, decomposer ledger
     line + rule + the new metadata field; lane/evaluator text is absent — prompts byte-identical —
     unless a policy is declared or a checked journey is mutating.
@@ -5574,7 +5587,7 @@ Four root causes: governors read proxies instead of facts (HARD-1..3); ownership
     malformed format still counts as mutating (a malformed line never makes a journey less
     restrictive). (5) Declarations are parsed with a correctly-bounded block splitter — see
     CAND-JOURNEY-BLOCKS in §16 for the pre-existing `_journey_blocks` quirk it avoids.
-  - *Verify:* `bash tests/automation/test-side-effects.sh` (289 checks after revision 8, incl. the
+  - *Verify:* `bash tests/automation/test-side-effects.sh` (303 checks after the post-revision-8 cleanup, incl. the
     exact TenSteps iteration-9 contradiction, the none→allowed tripwire, E15 fail-closed with zero
     dispatch in block AND warn mode, the real lean executor with a fake Playwright) · self-tests of
     `demo_runner.py`, `goal_gate.py`, `goal_lint.py`, `iter_spec.py`, `artifact_schemas.py` ·
@@ -5926,6 +5939,41 @@ Four root causes: governors read proxies instead of facts (HARD-1..3); ownership
       - The suite's corrected example spec now says "edits to pre-existing ledger rows".
       - Revision 8 has NOT been re-reviewed by an eighth round. The round 4–7 probe sets are the
         regression material (all pass except the reported residuals).
+  - *Cleanup after revision 8 (2026-09-17, targeted review of `c0ae3b1`; RED: the revised suite
+    against `c0ae3b1` — 293 passed / 10 failed; GREEN 303/0):* bounded fixes, no heuristic redesign.
+    - **Auth exclusions name endpoints, not subtrees (fail-open closed; the rule itself is still an
+      owner decision, see I7).** `c0ae3b1` excluded any POST/DELETE whose path STARTED with an
+      excluded word, so `POST /api/auth/users`, `POST /api/auth/register`, `DELETE
+      /api/session/all`, `POST /api/login/history/clear` and an override `/oauth` covering `POST
+      /api/oauth/clients` were silently not counted. Now an entry (default or
+      `CHAIN_SIDE_EFFECT_IGNORE_PATHS`) matches only the endpoint itself, ONE sign-in step below it
+      (`login`, `logout`, `signin`, `signout`, `sign-in`, `sign-out`, `session`, `token`, `refresh`,
+      `csrf`, `callback`) or, below an `…/auth` endpoint, NextAuth's `callback|signin/<provider>`;
+      POST/DELETE only as before. A path with an empty segment (`//`) is ambiguous like a dot segment
+      (never excluded, and rejected in overrides and exception lines); an override that is not one
+      plain path (wildcard, query, whitespace) is rejected and reported. The classifier version is
+      now 3, so every observation recorded under the old rule is re-classified by the ledger (a
+      registration the old rule did not count becomes a mutation; the excluded sign-in stays listed
+      in `auth_ignored`); a stale sample whose request counts do not account for every counted
+      request is never re-classified as clean (`reclassification-unverifiable`, like a truncated
+      one). Tests C7e–C7j, C8e–C8f, D15e–D15f (C7h and C7i pin the sign-in steps that stay excluded and
+      PUT/PATCH, which never were); the before/after matrix is in the handoff.
+    - **Still for the owner (auth):** the step vocabulary above; bare `POST /api/session` and `POST
+      /api/token` (sign-in in most APIs, persistent token creation in some) stay excluded;
+      verification steps (`/auth/verify`, `/login/mfa/verify`), `POST /api/token/revoke` and
+      `DELETE /api/session/current` now count as mutations; matching stays case-insensitive; an
+      override naming a catch-all endpoint (`/graphql`) would exempt every request to it (reported).
+    - **Checkpoint regression fixed (introduced by HARD-3).** `goal_gate.py` imported `iter_spec` at
+      module load, so `goal-slice` (run inside an iteration, before the step checkpoints are
+      verified) refreshed a stale `iter_spec` bytecode file. In a tree that tracks `__pycache__`
+      (the checkpoint suite's sandbox does), that moved the checkpoint tree hash:
+      `test-goal-checkpoints.sh` failed on its own, 5 passed / 6 failed, on `c0ae3b1` too.
+      `run-evals.sh` hid it because it sets `PYTHONDONTWRITEBYTECODE=1`. `iter_spec` is now loaded
+      on first use, so `goal-slice` again loads no sibling module, as on main (W15). Commands that
+      parse declarations (`hash-journeys`, `side-effects`) still load it by design.
+    - **Docs corrected:** the AS BUILT summary's warn-mode E15 sentence and its `_normalize_block`
+      sentence (both described `cd3472d`, not the current code); the classifier knob comment, the
+      telemetry `kind:"auth"` row and SCHEMA's run-record note describe the endpoint rule.
   - *Owed:* G8 fresh-session certification; the G9-gated real session (a replay-observed mutation in
     the sidecar, no TC failed on a journey's own mutation); vendored per-file sync — products must
     sync this `goal_gate.py` together with `iter_spec.py` BEFORE adding `- Side effects:` lines (older code hashes those lines as

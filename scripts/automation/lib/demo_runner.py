@@ -176,18 +176,33 @@ _MUTATING_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
 _SIDE_EFFECT_RESOURCE_TYPES = frozenset({"fetch", "xhr", "document", "ping", "beacon", "other", ""})
 # Development-server plumbing (HMR, overlays) — never product state.
 _DEV_ASSET_PREFIXES = ("/_next/", "/__nextjs", "/sockjs-node", "/@vite", "/__vite")
-# Session plumbing a journey's own sign-in performs. An entry matches whole path
-# segments at the START of the path once an API prefix (/api, /api/v<N>, /v<N>)
-# is set aside on both sides: /api/login and /api/v1/login match /login, while
-# /api/chat/session/7, /api/users/4/token and /api/login-history do not. Only
-# POST and DELETE (sign-in, token refresh, sign-out) are ever excluded — a PUT or
-# PATCH on such a path is a real change — and never when the rest of the path
-# names a resource by id (/api/auth/users/5 is a user deletion, not a sign-out).
-# CHAIN_SIDE_EFFECT_IGNORE_PATHS (comma list) REPLACES this list; set-but-empty
-# disables every auth exclusion; an entry that names only an API root (/api,
-# /api/v1, /v2) or '/' is REJECTED.
+# Session plumbing a journey's own sign-in performs. An entry names an ENDPOINT,
+# not a subtree: once an API prefix (/api, /api/v<N>, /v<N>) is set aside on both
+# sides, a request matches entry E only when the rest of its path is
+#   * E itself                               /api/login, /api/v1/session, /csrf
+#   * E plus ONE sign-in step                /auth/login, /api/token/refresh
+#   * E plus callback|signin plus a provider name, when E ends in "auth"
+#     (NextAuth)                             /api/auth/callback/credentials
+# Anything else under E is a real change: /api/auth/users, /auth/register,
+# /api/session/all, /api/login/history/clear, /api/auth/users/5. Only POST and
+# DELETE (sign-in, token refresh, sign-out) are ever excluded — a PUT or PATCH on
+# such a path is a real change. An ambiguous path (dot segment, encoded
+# separator, backslash, empty segment) is never excluded.
+# CHAIN_SIDE_EFFECT_IGNORE_PATHS (comma list) REPLACES this list, with the same
+# endpoint semantics; set-but-empty disables every auth exclusion; an entry that
+# names only an API root (/api, /api/v1, /v2) or '/', or that is not a plain path
+# (dot segment, encoded separator, backslash, wildcard, query, whitespace), is
+# REJECTED and reported.
 _DEFAULT_AUTH_IGNORE_PATHS = ("/login", "/logout", "/auth", "/session", "/token", "/csrf")
 _AUTH_IGNORE_METHODS = frozenset({"POST", "DELETE"})
+# The one step an excluded endpoint may take below itself (sign-in, sign-out,
+# token / session refresh, CSRF, an OAuth callback).
+_AUTH_PLUMBING_STEPS = frozenset({"login", "logout", "signin", "signout", "sign-in", "sign-out", "sign_in",
+                                  "sign_out", "session", "token", "refresh", "csrf", "callback"})
+# NextAuth's provider forms below an ".../auth" endpoint: callback/<provider>, signin/<provider>.
+_AUTH_PROVIDER_STEPS = frozenset({"callback", "signin"})
+_PROVIDER_NAME_RE = re.compile(r"[a-z][a-z0-9_-]{0,39}")
+_NOT_A_PLAIN_PATH_RE = re.compile(r"[*?#\s]")
 _API_VERSION_RE = re.compile(r"v\d+(?:\.\d+)*", re.I)
 _ID_SEGMENT_RE = re.compile(
     r"\d+|[0-9a-f]{8}(?:-?[0-9a-f]{4}){3}-?[0-9a-f]{12}|[0-9a-f]{12,}|(?=[A-Za-z0-9_-]*\d)[A-Za-z0-9_-]{16,}", re.I)
@@ -203,7 +218,8 @@ SIDE_EFFECT_CLEARED_INDEX_CAP = 500
 MERGED_RUNS_CAP = 100_000  # a sanity bound: every run id a session ever merged
 # Bumped whenever classify_candidate's rules change: a recorded observation
 # classified under another version is always re-classified by the ledger.
-SIDE_EFFECT_CLASSIFIER_VERSION = 2
+# 3: auth exclusions name endpoints, not subtrees; an empty segment is ambiguous.
+SIDE_EFFECT_CLASSIFIER_VERSION = 3
 UNIDENTIFIED_GOLDEN = "unidentified"
 # A path that walks up, hides a walk-up or hides a separator can never be matched
 # against an exception, an auth exclusion or a dev-asset prefix — it is
@@ -222,9 +238,12 @@ def _has_dot_segment(segments: list[str]) -> bool:
 
 
 def _path_is_ambiguous(path: str) -> bool:
-    """A path whose meaning depends on how a server decodes or normalizes it."""
+    """A path whose meaning depends on how a server decodes or normalizes it:
+    a backslash, an encoded separator or dot, a dot segment, or an empty
+    segment ("//")."""
     p = path or ""
-    return "\\" in p or bool(_ENCODED_PATH_CHAR_RE.search(p)) or _has_dot_segment(_path_segments(p))
+    return ("\\" in p or "//" in p or bool(_ENCODED_PATH_CHAR_RE.search(p))
+            or _has_dot_segment(_path_segments(p)))
 
 
 def _strip_api_prefix(segments: list[str]) -> list[str]:
@@ -239,9 +258,10 @@ def _strip_api_prefix(segments: list[str]) -> list[str]:
 def side_effect_ignore_paths_report(env=None) -> "tuple[tuple, tuple]":
     """(effective, rejected) auth/session exclusions. UNSET → the documented
     default list; SET (even empty) → exactly the listed paths, minus every entry
-    that could silence more than session plumbing ('/', an API root such as
-    /api or /api/v1, a dot segment or an encoded separator), which is REJECTED
-    and reported rather than applied."""
+    that could silence more than session plumbing or does not name one plain
+    path ('/', an API root such as /api or /api/v1, a dot segment, an encoded
+    separator, a backslash, an empty segment, a wildcard, a query or
+    whitespace), which is REJECTED and reported rather than applied."""
     env = os.environ if env is None else env
     raw = env.get("CHAIN_SIDE_EFFECT_IGNORE_PATHS")
     if raw is None:
@@ -253,7 +273,8 @@ def side_effect_ignore_paths_report(env=None) -> "tuple[tuple, tuple]":
         if not part:
             continue
         segs = _path_segments(part)
-        if not segs or _path_is_ambiguous(part) or not _strip_api_prefix(segs):
+        if (not segs or _path_is_ambiguous(part) or _NOT_A_PLAIN_PATH_RE.search(part)
+                or not _strip_api_prefix(segs)):
             if part not in rejected:
                 rejected.append(part)
             continue
@@ -297,7 +318,8 @@ def parse_readonly_endpoints(text: str) -> "tuple[list, list]":
             continue
         if _path_is_ambiguous(prefix):
             invalid.append((lineno, raw.strip(),
-                            "dot segments, backslashes and encoded separators are not allowed in an exception"))
+                            "dot segments, backslashes, encoded separators and empty segments are not allowed "
+                            "in an exception"))
             continue
         entry = (method, "/" + "/".join(segs))
         if entry not in entries:
@@ -329,6 +351,21 @@ def load_readonly_endpoints(path) -> dict:
     return info
 
 
+def _auth_endpoint_match(body: list, entry: list) -> bool:
+    """Does a request path (API prefix set aside, lower-cased) name the excluded
+    endpoint itself, one sign-in step below it, or a provider callback / sign-in
+    below an '.../auth' endpoint?"""
+    if body[:len(entry)] != entry:
+        return False
+    rest = body[len(entry):]
+    if not rest:
+        return True
+    if len(rest) == 1:
+        return rest[0] in _AUTH_PLUMBING_STEPS
+    return (len(rest) == 2 and entry[-1] == "auth" and rest[0] in _AUTH_PROVIDER_STEPS
+            and bool(_PROVIDER_NAME_RE.fullmatch(rest[1])) and not _ID_SEGMENT_RE.fullmatch(rest[1]))
+
+
 def classify_candidate(method: str, path: str, ignored_paths, readonly_endpoints) -> str:
     """Class of a request ALREADY known to be a same-project mutating-method
     request. Pure; shared with the ledger builder (goal_gate.py), which
@@ -343,8 +380,7 @@ def classify_candidate(method: str, path: str, ignored_paths, readonly_endpoints
         body = [s.lower() for s in _strip_api_prefix(segs)]
         for ip in ignored_paths or ():
             needle = [s.lower() for s in _strip_api_prefix(_path_segments(str(ip)))]
-            if (needle and body[:len(needle)] == needle
-                    and not any(_ID_SEGMENT_RE.fullmatch(x) for x in body[len(needle):])):
+            if needle and _auth_endpoint_match(body, needle):
                 return "ignored-auth"
     for em, ep in readonly_endpoints or ():
         eps = _path_segments(ep)
@@ -1329,16 +1365,27 @@ def _t_classify_request_matrix() -> None:
                          ("DELETE", "/api/session/3f2a9c1e-0b7d-4c2a-9e51-7d1f0c2b8a64")):
         assert classify_candidate(method, path, auth, ()) == "mutating", (method, path)
     assert classify_candidate("POST", "/api/auth/callback/credentials", auth, ()) == "ignored-auth"
+    # an entry names an endpoint: one sign-in step below it, or a NextAuth provider form — nothing else
+    for method, path in (("POST", "/api/auth/login"), ("POST", "/api/token/refresh"), ("DELETE", "/api/auth/session"),
+                         ("POST", "/api/auth/signin/github"), ("POST", "/API/Auth/Logout")):
+        assert classify_candidate(method, path, auth, ()) == "ignored-auth", (method, path)
+    for method, path in (("POST", "/api/auth/users"), ("POST", "/auth/register"), ("DELETE", "/api/session/all"),
+                         ("POST", "/api/login/history/clear"), ("POST", "/api/auth/callback/credentials/x"),
+                         ("POST", "/api/auth/callback/5"), ("POST", "/api/token/revoke"),
+                         ("POST", "//api//login"), ("PUT", "/api/auth/login")):
+        assert classify_candidate(method, path, auth, ()) == "mutating", (method, path)
 
 
 def _t_side_effect_env_override() -> None:
     assert side_effect_ignore_paths({}) == _DEFAULT_AUTH_IGNORE_PATHS
     assert side_effect_ignore_paths({"CHAIN_SIDE_EFFECT_IGNORE_PATHS": ""}) == ()
     eff, rej = side_effect_ignore_paths_report(
-        {"CHAIN_SIDE_EFFECT_IGNORE_PATHS": "signin, /, /api/x/, /api, api/v1, /v2, /a/../b"})
+        {"CHAIN_SIDE_EFFECT_IGNORE_PATHS": "signin, /, /api/x/, /api, api/v1, /v2, /a/../b, /api/*, /x?y, //x"})
     assert eff == ("/signin", "/api/x"), eff
-    assert rej == ("/", "/api", "api/v1", "/v2", "/a/../b"), rej
+    assert rej == ("/", "/api", "api/v1", "/v2", "/a/../b", "/api/*", "/x?y", "//x"), rej
     assert classify_candidate("POST", "/api/runs", eff, ()) == "mutating"
+    assert classify_candidate("POST", "/api/x/y", eff, ()) == "mutating"
+    assert classify_candidate("POST", "/api/x/refresh", eff, ()) == "ignored-auth"
 
 
 def _t_readonly_endpoint_file() -> None:

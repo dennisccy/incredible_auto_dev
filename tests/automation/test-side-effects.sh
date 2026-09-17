@@ -113,6 +113,32 @@ case("C7d: an auth word deeper in the path, a PUT/PATCH, or a resource id is a r
 case("C7c: an auth word that is only part of a segment is still a mutation",
      classify_request("POST", "fetch", FE + "/api/login-history/clear", FE) == "mutating"
      and classify_request("POST", "fetch", FE + "/api/sessions", FE) == "mutating")
+case("C7e: under an auth root only sign-in plumbing is excluded — account administration is a mutation",
+     all(classify_request(m, "fetch", FE + p, FE) == "mutating" for m, p in (
+         ("POST", "/api/auth/users"), ("POST", "/api/auth/register"), ("POST", "/auth/register"),
+         ("POST", "/api/auth/users/invite"), ("POST", "/api/auth/password/reset"),
+         ("POST", "/api/auth/verify-email"), ("POST", "/api/token/revoke"), ("POST", "/api/login/mfa/verify"))))
+case("C7f: bulk session operations are mutations, not sign-out plumbing",
+     all(classify_request(m, "fetch", FE + p, FE) == "mutating" for m, p in (
+         ("DELETE", "/api/session/all"), ("DELETE", "/api/auth/sessions"), ("POST", "/api/session/transfer"),
+         ("DELETE", "/api/session/others"))))
+case("C7g: an excluded entry names ONE endpoint — deeper paths, and a provider form with extra or id segments, are mutations",
+     all(classify_request("POST", "fetch", FE + p, FE) == "mutating" for p in (
+         "/api/auth/callback/credentials/extra", "/api/auth/callback/5", "/api/login/history/clear",
+         "/api/token/refresh/all")))
+case("C7h: narrowly identified sign-in plumbing stays excluded (sign-in, sign-out, refresh, csrf, provider callbacks)",
+     all(classify_request(m, "fetch", FE + p, FE) == "ignored-auth" for m, p in (
+         ("POST", "/api/auth/login"), ("POST", "/api/auth/logout"), ("POST", "/api/auth/signin"),
+         ("POST", "/api/auth/signout"), ("POST", "/api/auth/refresh"), ("POST", "/api/token/refresh"),
+         ("POST", "/api/auth/session"), ("POST", "/api/auth/csrf"), ("POST", "/api/auth/signin/github"),
+         ("DELETE", "/api/auth/session"), ("POST", "/API/Auth/Login"))))
+case("C7i: PUT and PATCH never gain an auth exemption, on any excluded endpoint",
+     all(classify_request(m, "fetch", FE + p, FE) == "mutating" for m in ("PUT", "PATCH")
+         for p in ("/api/login", "/api/auth/login", "/api/session", "/api/token/refresh",
+                   "/api/auth/callback/credentials")))
+case("C7j: a doubled slash makes a path ambiguous — it rides no exemption",
+     classify_request("POST", "fetch", FE + "//api//login//", FE) == "mutating"
+     and classify_request("POST", "fetch", FE + "/api//login", FE) == "mutating")
 os.environ["CHAIN_SIDE_EFFECT_IGNORE_PATHS"] = "/signin, /api/refresh"
 case("C8: CHAIN_SIDE_EFFECT_IGNORE_PATHS REPLACES the default list",
      classify_request("POST", "fetch", FE + "/api/signin", FE) == "ignored-auth"
@@ -129,6 +155,16 @@ eff, rej = side_effect_ignore_paths_report({"CHAIN_SIDE_EFFECT_IGNORE_PATHS": "/
 case("C8d: an override naming '/' or an API root (/api, api/v1, /v2) is REJECTED and reported, never applied",
      eff == ("/login",) and rej == ("/api", "api/v1", "/", "/v2")
      and classify_request("POST", "fetch", FE + "/api/runs", FE, ignored_paths=eff) == "mutating")
+eff2, _rej2 = side_effect_ignore_paths_report({"CHAIN_SIDE_EFFECT_IGNORE_PATHS": "/oauth"})
+case("C8e: an override entry names an endpoint too — it covers that endpoint and its sign-in steps, never a subtree",
+     eff2 == ("/oauth",)
+     and classify_request("POST", "fetch", FE + "/api/oauth", FE, ignored_paths=eff2) == "ignored-auth"
+     and classify_request("POST", "fetch", FE + "/api/oauth/token", FE, ignored_paths=eff2) == "ignored-auth"
+     and classify_request("POST", "fetch", FE + "/api/oauth/clients", FE, ignored_paths=eff2) == "mutating")
+eff3, rej3 = side_effect_ignore_paths_report({"CHAIN_SIDE_EFFECT_IGNORE_PATHS":
+                                              "/a/../b, /api/%2e%2e, /x\\y, //api//v1//, /api/*, /login?x=1, /log in"})
+case("C8f: an override naming an ambiguously normalized path, a wildcard, a query or a space is REJECTED",
+     eff3 == () and set(rej3) == {"/a/../b", "/api/%2e%2e", "/x\\y", "//api//v1//", "/api/*", "/login?x=1", "/log in"})
 entries, invalid = parse_readonly_endpoints(
     "# owner-authored read-only endpoints\n"
     "POST /api/policy/evaluate\n"
@@ -536,6 +572,29 @@ lf_doc = ("- **J-01: Export**\n  1. Open /export\n     ```\n     - Side effects:
           "  - Acceptance: exported\n")
 case("D29: CRLF line endings never change which declaration-shaped lines the certified hash drops",
      G._journey_hashes(lf_doc.replace("\n", "\r\n"))["J-01"] == G._journey_hashes(lf_doc)["J-01"])
+def legacy_hashes(doc):
+    """The certified hash as the pre-HARD-3 engine computed it: the same block
+    splitter and normaliser, nothing dropped."""
+    return {jid: hashlib.sha256(G._normalize_text(doc[s:e]).encode("utf-8")).hexdigest()
+            for jid, s, e in G._journey_blocks(doc)}
+dup_doc = ("# Goal\n\n## Must-have user journeys\n\n- **J-01: Checkout**\n  1. Open /cart\n\n"
+           "- **J-01: Checkout (old copy)**\n  1. Open /basket\n  - Acceptance: listed\n\n"
+           "- **J-02: Browse**\n  1. Open /catalog\n```\nstray\n\n## Anti-goals\n- none\n")
+step_fence = ("# Goal\n\n## Must-have user journeys\n\n"
+              "- **J-04: Run backtest**\n  1. Click **Run**; the log shows:\n     ```text\n     started\n"
+              "  - Side effects: mutating — launches a run\n\n"
+              "- **J-05: Logs**\n  1. Open /logs\n  2. The page shows:\n     ```\n     tail\n     ```\n"
+              "  - Side effects: none\n\n## Anti-goals\n- none\n")
+no_decl = step_fence.replace("  - Side effects: mutating — launches a run\n", "").replace("  - Side effects: none\n", "")
+h_step, leg_step = G._journey_hashes(step_fence), legacy_hashes(step_fence)
+case("D30: the certified hash is the pre-HARD-3 hash for shapes without well-formed declarations (duplicate ids, a "
+     "stray fence, an unclosed fence inside a step); only a LIVE well-formed line is dropped (CRLF-stable)",
+     G._journey_hashes(dup_doc) == legacy_hashes(dup_doc)
+     and G._journey_hashes(no_decl) == legacy_hashes(no_decl)
+     and h_step["J-04"] == leg_step["J-04"]
+     and h_step["J-05"] == legacy_hashes(step_fence.replace("  - Side effects: none\n", ""))["J-05"]
+     and G._journey_hashes(step_fence.replace("\n", "\r\n")) == h_step
+     and G._journey_hashes(step_fence.replace("launches a run", "launches two runs"))["J-04"] != h_step["J-04"])
 bor_goal = ("# Goal\n\n## Must-have user journeys\n\n"
             "- **J-01: Checkout**\n  1. Open /cart and click **Pay**\n  - Acceptance: listed\n"
             "  - Side effects: mutating — places an order\n\n"
@@ -699,6 +758,33 @@ dropped = ledger(text, sidecar=gpath, ro=os.path.join(repo, "absent.txt"))["jour
 case("D15d: a request a clean replay did not count (read-only exception) counts again once the exception is withdrawn",
      kept["status"] == "none" and kept["exceptions_applied"] and dropped["status"] == "mutating"
      and dropped["observation_basis"] == "reclassified")
+auth_ev = {"iter": 9, "iter_name": "goal-x-iter-9", "run_id": "ra9", "observed_at": "2026-09-17T00:19:00.000000Z",
+           "complete": True, "verdict": "PASS", "golden_sha256": "a" * 64, "mutating_count": 0, "auth_count": 2,
+           "readonly_count": 0, "truncated": False, "classifier_version": 2,
+           "requests": [{"method": "POST", "path": "/api/login", "class": "ignored-auth", "count": 1},
+                        {"method": "POST", "path": "/api/auth/register", "class": "ignored-auth", "count": 1}],
+           "exceptions_applied": [], "auth_ignored": [{"method": "POST", "path": "/api/login"},
+                                                      {"method": "POST", "path": "/api/auth/register"}],
+           "readonly_endpoints_sha256": ro_sha, "readonly_endpoints_error": None,
+           "ignore_paths": ["/login", "/logout", "/auth", "/session", "/token", "/csrf"]}
+def one_journey_sidecar(path, ev):
+    json.dump({"schema_version": 1, "journeys": {"J-02": {"latest": dict(ev), "last_attempt": dict(ev),
+               "goldens": {ev["golden_sha256"]: {"clean": dict(ev)}}}}}, open(path, "w"))
+    return path
+ra = ledger(text, sidecar=one_journey_sidecar(os.path.join(repo, "state", "auth-reclass.json"), auth_ev),
+            ro=ro)["journeys"]["J-02"]
+case("D15e: an observation recorded under the old auth rule is re-classified — a registration it did not count is a "
+     "mutation now, and the sign-in it still excludes stays visible",
+     ra["status"] == "mutating" and ra["observation_basis"] == "reclassified"
+     and {"method": "POST", "path": "/api/auth/register", "class": "mutating", "count": 1} in ra["requests"]
+     and ra["auth_ignored"] == [{"method": "POST", "path": "/api/login"}])
+short_ev = dict(auth_ev, run_id="rs9", auth_count=3, ignore_paths=["/login", "/auth"],
+                requests=[{"method": "POST", "path": "/api/login", "class": "ignored-auth", "count": 1}],
+                auth_ignored=[{"method": "POST", "path": "/api/login"}])
+rs = ledger(text, sidecar=one_journey_sidecar(os.path.join(repo, "state", "auth-short.json"), short_ev),
+            ro=ro)["journeys"]["J-02"]
+case("D15f: a stale sample that does not account for every request it counted is never re-classified as clean",
+     rs["status"] == "mutating" and rs["observation_basis"] == "reclassification-unverifiable")
 bad = os.path.join(repo, "state", "bad.json")
 open(bad, "w").write("{ not json")
 L7 = ledger(text, sidecar=bad, ro=ro)
@@ -874,6 +960,15 @@ changed = jload(fz_out)
 case("D25b: ... but changed inputs (a declaration edit) are rebuilt, and that view is what gets frozen",
      rc3 == 0 and not changed.get("frozen") and changed["journeys"].get("J-02", {}).get("status") == "mutating"
      and jload(fz_snap).get("build_id") == "b3")
+open(fz_side, "w").write("{ corrupt")
+rc4, _, _ = fz_build(fz_goal, "b4")
+broken = jload(fz_out)
+ok_rc = subprocess.run([sys.executable, os.path.join(os.environ["PYTHONPATH"].split(":")[0], "iter_spec.py"),
+                        "ledger-ok", fz_out, "--build-id", "b4"], capture_output=True).returncode
+case("D25c: a resumed preflight never falls back to the frozen view when the current evidence cannot be read — the "
+     "lint sees the incomplete ledger",
+     rc4 == 3 and broken.get("complete") is False and not broken.get("frozen") and broken.get("build_id") == "b4"
+     and jload(fz_snap).get("build_id") == "b3" and ok_rc != 0)
 # a sidecar moved aside keeps its declaration history through the newest earlier ledger
 sd_dir = os.path.join(repo, "runs", "goal-session-sd")
 os.makedirs(os.path.join(sd_dir, "state"))
@@ -2649,7 +2744,7 @@ assert j["J-06"]["latest"]["auth_count"] == 1 and j["J-06"]["latest"]["mutating_
 assert j["J-06"]["latest"]["auth_ignored"] == [{"method": "POST", "path": "/api/login"}], j["J-06"]["latest"]
 g4 = l4["golden_sha256"]
 assert isinstance(g4, str) and len(g4) == 64 and list(j["J-04"]["goldens"]) == [g4], j["J-04"].get("goldens")
-assert l4["classifier_version"] == 2 and l4["observed_at"].endswith("Z"), l4
+assert l4["classifier_version"] == 3 and l4["observed_at"].endswith("Z"), l4
 l7 = j["J-07"]["latest"]
 assert l7["complete"] is False and l7["mutating_count"] == 1 and l7["verdict"] == "FAIL", l7
 assert j["J-07"]["mutating_history"][0]["sample"] == ["POST /api/items"]
@@ -3334,6 +3429,19 @@ grep -q 'Re-planning a resumed iteration' "$E_LOG" && grep -q 'J-02 (DECLARED NO
   && assert "E13t: re-planning a resumed iteration rebuilds the ledger — the rewrite sees the write its own replay observed" "pass" \
   || assert "E13t: re-plan after a frozen resume ($(grep -c 'Re-planning a resumed' "$E_LOG" || true))" "fail"
 
+# E13u — a resume whose evidence became unreadable never falls back to the frozen view.
+e_run nonenone
+_e13u_first="$(e_count developer)"
+printf '%s' '{ corrupt' > "$E_SESSION/state/journey-side-effects.json"
+e_invoke "$E_SID" nonenone "--resume"
+[[ "$_e13u_first" -ge 1 && "$(e_status)" == "GATE_BLOCKED" && "$(e_count developer)" == "0" \
+   && "$(e_count browser-qa-agent)" == "0" && "$(e_count goal-decomposer)" == "0" \
+   && -s "$E_SESSION/iter-0/side-effects.preflight.json" ]] \
+  && e_halt GATE_BLOCKED_SIDE_EFFECT_LEDGER side-effect-ledger \
+  && python3 -c "import json,sys; d=json.load(open('$E_SESSION/iter-0/side-effects.json')); sys.exit(0 if d.get('complete') is False and not d.get('frozen') else 1)" \
+  && assert "E13u: a resume whose side-effect evidence became unreadable never reuses the frozen view — E15, zero dispatch" "pass" \
+  || assert "E13u: resume against unreadable evidence (first dev=$_e13u_first status=$(e_status) dev=$(e_count developer) decomp=$(e_count goal-decomposer))" "fail"
+
 # E11 — an ABSENT policy line does not disarm E16 either.
 e_run iter9-absent STUB_SPEC_KIND_2=fixed
 grep -q 'ERROR E16' "$CANARY.prompt-2" 2>/dev/null && grep -q 'WARN W02' "$CANARY.prompt-2" \
@@ -3682,6 +3790,35 @@ body = open(sys.argv[1]).read().split("_side_effect_ledger_build() {", 1)[1].spl
 reset = body.find("SIDE_EFFECTS_FROZEN=false")
 fail_return = body.find("return 0")
 assert 0 <= reset < fail_return, (reset, fail_return)
+PY
+# W15: goal-slice runs inside an iteration, before the step checkpoints are
+# verified. Like main, it must load no sibling module, so it cannot rewrite a
+# stale tracked .pyc and move the checkpoint tree hash (test-goal-checkpoints.sh
+# copies scripts/ into a sandbox, stale bytecode included).
+python3 - "$LIB" "$WORK/w15" <<'PY' && assert "W15: goal-slice writes no bytecode (the step-checkpoint tree hash stays put)" "pass" || assert "W15: goal-slice bytecode" "fail"
+import hashlib, os, py_compile, shutil, subprocess, sys
+from pathlib import Path
+lib, work = Path(sys.argv[1]), Path(sys.argv[2])
+dst = work / "lib"
+dst.mkdir(parents=True)
+for f in lib.glob("*.py"):
+    shutil.copyfile(f, dst / f.name)
+    py_compile.compile(str(dst / f.name), doraise=True, invalidation_mode=py_compile.PycInvalidationMode.TIMESTAMP)
+    os.utime(dst / f.name, (1_000_000_000, 1_000_000_000))  # the bytecode is now stale, as after `cp -r`
+def snap():
+    return {p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in (dst / "__pycache__").iterdir()}
+before = snap()
+goal, hist, out = work / "goal.md", work / "journey-history.json", work / "slice.md"
+goal.write_text("# Goal\n\n## Must-have user journeys\n\n- **J-01: Open the page**\n  - Acceptance: it loads\n"
+                "  - Side effects: none\n- **J-02: Save a note**\n  - Acceptance: it is saved\n\n## Anti-goals\n- none\n")
+hist.write_text('{"journeys": {"J-01": {"name": "Open the page", "status": "passing"}}}')
+env = {k: v for k, v in os.environ.items() if k not in ("PYTHONDONTWRITEBYTECODE", "PYTHONPYCACHEPREFIX")}
+r = subprocess.run([sys.executable, str(dst / "goal_gate.py"), "goal-slice", str(goal), "--history", str(hist),
+                    "--targets", "J-02", "--out", str(out)], env=env)
+assert r.returncode == 0, r.returncode
+assert "(stable; digested)" in out.read_text(), out.read_text()
+changed = sorted(k for k in set(before) | set(snap()) if before.get(k) != snap().get(k))
+assert not changed, changed
 PY
 if grep -nE '(^|[^_])(pkill|fuser -k|killall)\b' "$SCRIPT_DIR/test-side-effects.sh" | grep -v 'grep -nE' >/dev/null; then
   assert "W12: this harness never kills by pattern or port (HARD-5)" "fail"

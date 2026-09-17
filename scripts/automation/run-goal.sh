@@ -163,8 +163,11 @@
 #   CHAIN_SIDE_EFFECT_OBSERVER=true    (default) — false stops the replay lane's
 #                      request observer (lib/replay-lane.sh).
 #   CHAIN_SIDE_EFFECT_IGNORE_PATHS     (unset = /login,/logout,/auth,/session,
-#                      /token,/csrf) — the auth/session exclusions; set-empty
-#                      disables them; '/' and API roots are rejected.
+#                      /token,/csrf) — the auth/session exclusions. Each entry
+#                      names an ENDPOINT (plus one sign-in step below it, e.g.
+#                      /auth/login, /token/refresh), never a subtree; POST and
+#                      DELETE only. Set-empty disables them; '/', API roots and
+#                      entries that are not one plain path are rejected.
 #   CHAIN_SIDE_EFFECT_LOCK_TIMEOUT=10  seconds a sidecar writer waits for the
 #                      state/ lock (a timeout loses nothing — see above).
 #   An unrecognised value for any of the three boolean knobs is treated as ON
