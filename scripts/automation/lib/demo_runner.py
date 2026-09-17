@@ -20,15 +20,27 @@ Self-test (no browser, no network):
 Exit codes: 0 ok/soft-skip · 2 bad args/JSON · 3 playwright missing · 4 no DISPLAY (live)
 · 5 verify found ≥1 FAIL · 6 browser infrastructure failure (launch/crash — verify only;
 callers route replay journeys back to the LLM lane so nothing is silently unverified).
+
+HARD-3 side-effect observer (verify mode only, active when --side-effects-out and/or
+--side-effects-run-out is given): every journey's browser context is watched for
+same-project POST/PUT/PATCH/DELETE requests (see classify_request). Each replayed row's
+Actual cell gains a `; side effects: …` suffix (the 8-cell row shape is unchanged), the
+engine-owned sidecar runs/goal-session-<sid>/state/journey-side-effects.json is updated
+read-modify-write under a directory lock, and a per-run record is written for the lane's
+telemetry. Observer failures never change a replay verdict.
 """
 from __future__ import annotations
 
+import contextlib
 import datetime
+import hashlib
 import json
 import os
+import re
 import sys
+import time
 from pathlib import Path
-from urllib.parse import urlsplit, urlunsplit
+from urllib.parse import urljoin, urlsplit, urlunsplit
 
 # ── pure logic (deterministic, browser-free) ─────────────────────────────────
 
@@ -145,6 +157,394 @@ def compute_regression_verdict(results: list[dict]) -> str:
     if all(v == "SKIP" for v in verdicts):
         return "SKIPPED"
     return "PASS"
+
+
+# ── HARD-3: side-effect observer (pure, deterministic, browser-free) ─────────
+# A journey MUTATES persisted state when, during its deterministic replay, the
+# browser issues a same-project POST/PUT/PATCH/DELETE from a fetch/xhr call or a
+# document (form) navigation. Observation outranks the owner's declaration in
+# docs/goal.md: an owner `none` never hides an observed, unlisted mutation. The
+# ONLY owner remedy for a legitimately read-only POST is the digest-tracked
+# exception file below, and every applied exception is reported, never silent.
+# Only {method, path} is ever recorded — never a query string, header or body.
+_MUTATING_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
+_SIDE_EFFECT_RESOURCE_TYPES = frozenset({"fetch", "xhr", "document"})
+# Development-server plumbing (HMR, overlays) — never product state.
+_DEV_ASSET_PREFIXES = ("/_next/", "/__nextjs", "/sockjs-node", "/@vite", "/__vite")
+# Session plumbing a journey's own sign-in performs. Matched as a contiguous run
+# of whole path segments anywhere in the path (`/api/login` matches `/login`;
+# `/api/login-history` does not). CHAIN_SIDE_EFFECT_IGNORE_PATHS (comma list)
+# REPLACES this list; set-but-empty disables every auth exclusion.
+_DEFAULT_AUTH_IGNORE_PATHS = ("/login", "/logout", "/auth", "/session", "/token", "/csrf")
+_SIDE_EFFECT_LOCAL_HOSTS = frozenset(_LOCAL_HOSTS | {"::1"})
+# Owner-authored, digest-tracked exceptions: one `METHOD /path-prefix` per line.
+READONLY_ENDPOINTS_RELPATH = "project-extensions/side-effects/read-only-endpoints.txt"
+SIDE_EFFECT_SAMPLE_CAP = 20
+SIDE_EFFECT_HISTORY_CAP = 5
+# A path that walks up or hides a walk-up can never be matched against an
+# exception or an auth exclusion — it is classified mutating (fail closed).
+_DOT_SEGMENTS = frozenset({".", "..", "%2e", "%2e%2e", ".%2e", "%2e."})
+
+
+def _path_segments(path: str) -> list[str]:
+    return [s for s in (path or "").split("/") if s]
+
+
+def _has_dot_segment(segments: list[str]) -> bool:
+    return any(s.lower() in _DOT_SEGMENTS for s in segments)
+
+
+def _segments_contain(hay: list[str], needle: list[str]) -> bool:
+    n = len(needle)
+    if n == 0:
+        return False
+    h = [s.lower() for s in hay]
+    nd = [s.lower() for s in needle]
+    return any(h[i:i + n] == nd for i in range(len(h) - n + 1))
+
+
+def side_effect_ignore_paths(env=None) -> tuple:
+    """The auth/session exclusions in force. UNSET → the documented default list;
+    SET (even empty) → exactly the listed paths (a bare '/' is never accepted —
+    it would silence the whole observer)."""
+    env = os.environ if env is None else env
+    raw = env.get("CHAIN_SIDE_EFFECT_IGNORE_PATHS")
+    if raw is None:
+        return _DEFAULT_AUTH_IGNORE_PATHS
+    out: list[str] = []
+    for part in raw.split(","):
+        segs = _path_segments(part.strip())
+        if not segs or _has_dot_segment(segs):
+            continue
+        p = "/" + "/".join(segs)
+        if p not in out:
+            out.append(p)
+    return tuple(out)
+
+
+def parse_readonly_endpoints(text: str) -> "tuple[list, list]":
+    """(entries, invalid) from the owner's exception file. entries are
+    (METHOD, /normalized/prefix) tuples; invalid are (lineno, text, reason) and
+    are REPORTED, never applied."""
+    entries: list = []
+    invalid: list = []
+    for lineno, raw in enumerate(text.splitlines(), 1):
+        line = raw.split("#", 1)[0].strip()
+        if not line:
+            continue
+        parts = line.split()
+        if len(parts) != 2:
+            invalid.append((lineno, raw.strip(), "expected exactly 'METHOD /path-prefix'"))
+            continue
+        method, prefix = parts[0].upper(), parts[1].split("?", 1)[0]
+        if method not in _MUTATING_METHODS:
+            invalid.append((lineno, raw.strip(),
+                            f"method {parts[0]!r} is not POST/PUT/PATCH/DELETE — only a mutating method needs an exception"))
+            continue
+        if not prefix.startswith("/"):
+            invalid.append((lineno, raw.strip(), "the path prefix must start with '/'"))
+            continue
+        segs = _path_segments(prefix)
+        if not segs:
+            invalid.append((lineno, raw.strip(),
+                            "a bare '/' would silence every request of that method — name the endpoint"))
+            continue
+        if _has_dot_segment(segs):
+            invalid.append((lineno, raw.strip(), "dot segments are not allowed in an exception"))
+            continue
+        entry = (method, "/" + "/".join(segs))
+        if entry not in entries:
+            entries.append(entry)
+    return entries, invalid
+
+
+def load_readonly_endpoints(path) -> dict:
+    """The exception file as a dict: present / sha256 (over the raw bytes — the
+    declaration digest input) / entries / invalid / error. Absent is normal;
+    unreadable is an ERROR (the caller treats its ledger as incomplete)."""
+    info = {"path": str(path) if path else None, "present": False, "sha256": None,
+            "entries": [], "invalid": [], "error": None}
+    if not path:
+        return info
+    try:
+        data = Path(path).read_bytes()
+    except FileNotFoundError:
+        return info
+    except OSError as exc:
+        info["present"] = True
+        info["error"] = f"unreadable: {exc.strerror or exc}"
+        return info
+    info["present"] = True
+    info["sha256"] = hashlib.sha256(data).hexdigest()
+    entries, invalid = parse_readonly_endpoints(data.decode("utf-8", errors="replace"))
+    info["entries"] = [list(e) for e in entries]
+    info["invalid"] = [{"line": i[0], "text": i[1], "reason": i[2]} for i in invalid]
+    return info
+
+
+def classify_candidate(method: str, path: str, ignored_paths, readonly_endpoints) -> str:
+    """Class of a request ALREADY known to be a same-project mutating-method
+    fetch/xhr/document request. Pure; shared with the ledger builder
+    (goal_gate.py), which re-checks recorded requests when the exception file or
+    the auth list changed since they were observed."""
+    segs = _path_segments(path)
+    if _has_dot_segment(segs):
+        return "mutating"
+    for ip in ignored_paths or ():
+        if _segments_contain(segs, _path_segments(ip)):
+            return "ignored-auth"
+    m = (method or "").upper()
+    for em, ep in readonly_endpoints or ():
+        eps = _path_segments(ep)
+        if str(em).upper() == m and eps and segs[:len(eps)] == eps:
+            return "ignored-readonly"
+    return "mutating"
+
+
+def classify_request(method, resource_type, url, base_url, ignored_paths=None,
+                     readonly_endpoints=()) -> "str | None":
+    """'mutating' | 'ignored-auth' | 'ignored-readonly' | None (not a side effect).
+
+    None: a non-mutating method, a resource type other than fetch/xhr/document,
+    a non-http(s) URL, a different host (external analytics/CDN), or development
+    plumbing. Same project = the base URL's host, or any loopback host when the
+    base is loopback (the frontend on :3xxx calling the backend on :8xxx)."""
+    m = (method or "").upper()
+    if m not in _MUTATING_METHODS:
+        return None
+    if (resource_type or "").lower() not in _SIDE_EFFECT_RESOURCE_TYPES:
+        return None
+    u = urlsplit(url or "")
+    if not u.scheme:
+        u = urlsplit(urljoin(base_url or "", url or ""))
+    if (u.scheme or "").lower() not in ("http", "https"):
+        return None
+    host = (u.hostname or "").lower()
+    base_host = (urlsplit(base_url or "").hostname or "").lower()
+    if host != base_host and not (host in _SIDE_EFFECT_LOCAL_HOSTS
+                                  and (not base_host or base_host in _SIDE_EFFECT_LOCAL_HOSTS)):
+        return None
+    path = u.path or "/"
+    if path.startswith(_DEV_ASSET_PREFIXES):
+        return None
+    if ignored_paths is None:
+        ignored_paths = side_effect_ignore_paths()
+    return classify_candidate(m, path, ignored_paths, readonly_endpoints)
+
+
+class SideEffectRecorder:
+    """Per-journey request observer. `on_request` is the Playwright handler; it
+    never raises (a broken request object is counted, not propagated)."""
+
+    def __init__(self, base_url, ignored_paths=None, readonly_endpoints=(), cap=SIDE_EFFECT_SAMPLE_CAP):
+        self.base_url = base_url
+        self.ignored_paths = side_effect_ignore_paths() if ignored_paths is None else tuple(ignored_paths)
+        self.readonly_endpoints = [tuple(e) for e in (readonly_endpoints or ())]
+        self.cap = cap
+        self._counts = {"mutating": 0, "ignored-auth": 0, "ignored-readonly": 0}
+        self._pairs: dict = {}
+        self._exceptions: dict = {}
+        self._truncated = False
+        self._errors = 0
+
+    def on_request(self, request) -> None:
+        try:
+            method = request.method
+            url = request.url
+            cls = classify_request(method, request.resource_type, url, self.base_url,
+                                   self.ignored_paths, self.readonly_endpoints)
+            if cls is None:
+                return
+            u = urlsplit(url or "")
+            if not u.scheme:
+                u = urlsplit(urljoin(self.base_url or "", url or ""))
+            key = (str(method).upper(), u.path or "/")
+            self._counts[cls] += 1
+            if cls == "ignored-readonly" and key not in self._exceptions and len(self._exceptions) < self.cap:
+                self._exceptions[key] = {"method": key[0], "path": key[1]}
+            rec = self._pairs.get(key)
+            if rec is not None:
+                rec["count"] += 1
+            elif len(self._pairs) < self.cap:
+                self._pairs[key] = {"method": key[0], "path": key[1], "class": cls, "count": 1}
+            else:
+                self._truncated = True
+        except Exception:  # noqa: BLE001 — observer failures are per request, never fatal
+            self._errors += 1
+
+    def summary(self) -> dict:
+        return {
+            "mutating_count": self._counts["mutating"],
+            "auth_count": self._counts["ignored-auth"],
+            "readonly_count": self._counts["ignored-readonly"],
+            "requests": [dict(r) for r in self._pairs.values()],
+            "truncated": self._truncated,
+            "exceptions_applied": [dict(e) for e in self._exceptions.values()],
+            "observer_errors": self._errors,
+        }
+
+
+def render_side_effect_suffix(summary: dict, partial: bool = False) -> str:
+    """The results row's Actual-cell suffix. Never contains a table pipe."""
+    head = "side effects before the replay stopped" if partial else "side effects"
+    n = int(summary.get("mutating_count") or 0)
+    if n > 0:
+        pairs = [f"{r.get('method')} {r.get('path')}" for r in summary.get("requests") or []
+                 if r.get("class") == "mutating"]
+        shown = pairs[:3]
+        detail = ", ".join(shown)
+        if len(pairs) > len(shown):
+            detail += f" +{len(pairs) - len(shown)} more"
+        if summary.get("truncated"):
+            detail += (" " if detail else "") + "(sample truncated)"
+        text = f"; {head}: {n} mutating request(s)" + (f" ({detail})" if detail else "")
+    else:
+        text = f"; {head}: none observed"
+    exc = summary.get("exceptions_applied") or []
+    if exc:
+        text += "; read-only exception applied: " + ", ".join(
+            f"{e.get('method')} {e.get('path')}" for e in exc[:3])
+        if len(exc) > 3:
+            text += f" +{len(exc) - 3} more"
+    return text.replace("|", "%7C").replace("\n", " ")
+
+
+def _utc_now() -> str:
+    return datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def merge_side_effect_observations(sidecar, observations: dict, now: "str | None" = None) -> dict:
+    """Pure merge of this run's per-journey observations into the sidecar dict.
+
+    Only the `journeys` records of the observed journeys change; every other key
+    (the engine's declaration bookkeeping) and every other journey is kept.
+    `last_attempt` is always the newest observation. `latest` — the record the
+    ledger's status is derived from — is replaced by a COMPLETE replay, or by a
+    partial replay that did mutate: a replay that stopped early can upgrade a
+    journey to mutating but can never clear an earlier mutation."""
+    data = sidecar if isinstance(sidecar, dict) else {}
+    data.setdefault("schema_version", 1)
+    journeys = data.get("journeys")
+    if not isinstance(journeys, dict):
+        journeys = {}
+        data["journeys"] = journeys
+    for jid, obs in (observations or {}).items():
+        if not isinstance(obs, dict):
+            continue
+        rec = journeys.get(jid)
+        if not isinstance(rec, dict):
+            rec = {}
+        try:
+            mut = int(obs.get("mutating_count") or 0)
+        except (TypeError, ValueError):
+            mut = 1  # an unreadable count is treated as a mutation (fail closed)
+        rec["last_attempt"] = obs
+        if obs.get("complete") is True or mut > 0:
+            rec["latest"] = obs
+        if mut > 0:
+            prior = rec.get("mutating_history")
+            hist = [h for h in prior if isinstance(h, dict)] if isinstance(prior, list) else []
+            hist.append({
+                "iter": obs.get("iter"), "iter_name": obs.get("iter_name"), "run_id": obs.get("run_id"),
+                "sample": [f"{r.get('method')} {r.get('path')}" for r in (obs.get("requests") or [])
+                           if isinstance(r, dict) and r.get("class") == "mutating"][:3],
+            })
+            rec["mutating_history"] = hist[-SIDE_EFFECT_HISTORY_CAP:]
+        journeys[jid] = rec
+    data["observations_updated_at"] = now or _utc_now()
+    return data
+
+
+@contextlib.contextmanager
+def _locked_dir(dirpath, timeout: float = 10.0):
+    """Exclusive flock on the DIRECTORY itself — no lock file is created (a lock
+    file under runs/ would be committed as evidence; HARD-7's hygiene rule)."""
+    import fcntl  # noqa: PLC0415 — POSIX only; imported where used
+    fd = os.open(str(dirpath), os.O_RDONLY)
+    try:
+        deadline = time.monotonic() + timeout
+        while True:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                if time.monotonic() >= deadline:
+                    raise TimeoutError(f"could not lock {dirpath} within {timeout:.0f}s")
+                time.sleep(0.05)
+        try:
+            yield
+        finally:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+    finally:
+        os.close(fd)
+
+
+def _atomic_write_json(path, data) -> None:
+    p = Path(path)
+    tmp = p.with_name(f".{p.name}.tmp.{os.getpid()}")
+    try:
+        with open(tmp, "w", encoding="utf-8") as fh:
+            json.dump(data, fh, indent=1, sort_keys=True)
+            fh.write("\n")
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(tmp, p)
+    finally:
+        with contextlib.suppress(OSError):
+            tmp.unlink()
+
+
+def _sidecar_shape_error(current) -> "str | None":
+    """Why an existing sidecar may not be merged into, or None."""
+    if not isinstance(current, dict):
+        return "the top level is not an object"
+    journeys = current.get("journeys", {})
+    if not isinstance(journeys, dict):
+        return "'journeys' is not an object"
+    for jid, rec in journeys.items():
+        if not isinstance(rec, dict):
+            return f"record {jid} is not an object"
+        for key in ("latest", "last_attempt"):
+            if key in rec and not isinstance(rec[key], dict):
+                return f"record {jid}.{key} is not an object"
+        if "mutating_history" in rec and not isinstance(rec["mutating_history"], list):
+            return f"record {jid}.mutating_history is not a list"
+    return None
+
+
+def update_side_effects_sidecar(path, observations: dict, lock_timeout: float = 10.0) -> "tuple[bool, str]":
+    """Read-modify-write the engine-owned sidecar. A corrupt or wrongly-shaped
+    existing file is NEVER overwritten: losing recorded mutations would silently
+    downgrade journeys to their declarations (the ledger reports it instead)."""
+    p = Path(path)
+    try:
+        p.parent.mkdir(parents=True, exist_ok=True)
+        with _locked_dir(p.parent, lock_timeout):
+            current = None
+            if p.exists():
+                try:
+                    current = json.loads(p.read_text(encoding="utf-8"))
+                except (OSError, ValueError) as exc:
+                    return False, (f"{p} is unreadable or corrupt ({exc}) — not overwritten; "
+                                   "inspect or move it aside, then re-run")
+                shape_error = _sidecar_shape_error(current)
+                if shape_error:
+                    return False, f"{p} has the wrong shape ({shape_error}) — not overwritten"
+            try:
+                merged = merge_side_effect_observations(current, observations)
+            except Exception as exc:  # noqa: BLE001 — never overwrite what cannot be merged
+                return False, f"{p} could not be merged ({exc}) — not overwritten"
+            _atomic_write_json(p, merged)
+    except (OSError, TimeoutError) as exc:
+        return False, f"sidecar update failed: {exc}"
+    return True, "updated"
+
+
+def _observation_record(summary: dict, verdict: str, complete: bool, run_meta: dict) -> dict:
+    rec = dict(run_meta)
+    rec.update({"verdict": verdict, "complete": bool(complete)})
+    rec.update(summary)
+    return rec
 
 
 def _today() -> str:
@@ -534,7 +934,74 @@ def _t_derive_prefix_without_journey_key() -> None:
     assert golden["steps"][0]["action"]["type"] == "goto"
 
 
+def _t_classify_request_matrix() -> None:
+    fe, be = "http://localhost:3017", "http://localhost:8017"
+    ro = [("POST", "/api/policy/evaluate")]
+    assert classify_request("POST", "fetch", fe + "/api/runs", fe, ()) == "mutating"
+    assert classify_request("GET", "fetch", fe + "/api/runs", fe, ()) is None
+    assert classify_request("POST", "image", fe + "/x", fe, ()) is None
+    assert classify_request("POST", "fetch", fe + "/_next/data/x", fe, ()) is None
+    assert classify_request("POST", "xhr", be + "/api/runs", fe, ()) == "mutating"
+    assert classify_request("POST", "fetch", "https://stats.example.com/c", fe, ()) is None
+    assert classify_request("POST", "fetch", fe + "/api/login", fe) == "ignored-auth"
+    assert classify_request("POST", "fetch", fe + "/api/policy/evaluate", fe, (), ro) == "ignored-readonly"
+    assert classify_request("POST", "fetch", fe + "/api/policy/evaluate", fe, (), ()) == "mutating"
+    assert classify_request("POST", "fetch", fe + "/api/policy/evaluate/../../runs", fe, (), ro) == "mutating"
+    assert classify_request("POST", "document", "/runs/new", fe, ()) == "mutating"
+
+
+def _t_side_effect_env_override() -> None:
+    assert side_effect_ignore_paths({}) == _DEFAULT_AUTH_IGNORE_PATHS
+    assert side_effect_ignore_paths({"CHAIN_SIDE_EFFECT_IGNORE_PATHS": ""}) == ()
+    assert side_effect_ignore_paths({"CHAIN_SIDE_EFFECT_IGNORE_PATHS": "signin, /, /api/x/"}) == ("/signin", "/api/x")
+
+
+def _t_readonly_endpoint_file() -> None:
+    entries, invalid = parse_readonly_endpoints("# c\nPOST /api/a # x\nGET /b\nPOST /\n")
+    assert entries == [("POST", "/api/a")], entries
+    assert [i[0] for i in invalid] == [3, 4], invalid
+
+
+def _t_side_effect_recorder_and_suffix() -> None:
+    class _R:
+        def __init__(self, m, t, u):
+            self.method, self.resource_type, self.url = m, t, u
+    rec = SideEffectRecorder("http://localhost:3017", (), [("POST", "/api/eval")])
+    for r in (_R("POST", "fetch", "/api/runs"), _R("POST", "fetch", "/api/eval"), _R("GET", "fetch", "/api/runs")):
+        rec.on_request(r)
+    s = rec.summary()
+    assert s["mutating_count"] == 1 and s["readonly_count"] == 1, s
+    assert render_side_effect_suffix(s) == ("; side effects: 1 mutating request(s) (POST /api/runs); "
+                                            "read-only exception applied: POST /api/eval"), render_side_effect_suffix(s)
+    assert render_side_effect_suffix(SideEffectRecorder("http://x").summary()) == "; side effects: none observed"
+
+
+def _t_side_effect_merge_never_downgrades_on_partial() -> None:
+    mut = {"complete": True, "mutating_count": 1, "requests": [{"method": "POST", "path": "/a", "class": "mutating"}], "iter": 1}
+    part = {"complete": False, "mutating_count": 0, "requests": [], "iter": 2}
+    clean = {"complete": True, "mutating_count": 0, "requests": [], "iter": 3}
+    d = merge_side_effect_observations({"declaration_digest": "x"}, {"J-01": mut})
+    d = merge_side_effect_observations(d, {"J-01": part})
+    assert d["journeys"]["J-01"]["latest"]["iter"] == 1 and d["journeys"]["J-01"]["last_attempt"]["iter"] == 2
+    d = merge_side_effect_observations(d, {"J-01": clean})
+    assert d["journeys"]["J-01"]["latest"]["iter"] == 3 and d["declaration_digest"] == "x"
+
+
+def _t_validate_tolerates_observed_mirror() -> None:
+    # A golden may carry an `observed` block (HARD-3 mirror field); the replay
+    # contract ignores it.
+    data = {"schema_version": 1, "observed": {"mutating_count": 1},
+            "steps": [{"n": 1, "action": {"type": "goto", "url": "/"}}]}
+    assert validate_script(data) == [], validate_script(data)
+
+
 _SELF_TEST_CHECKS = [
+    _t_classify_request_matrix,
+    _t_side_effect_env_override,
+    _t_readonly_endpoint_file,
+    _t_side_effect_recorder_and_suffix,
+    _t_side_effect_merge_never_downgrades_on_partial,
+    _t_validate_tolerates_observed_mirror,
     _t_normalize_url_relative,
     _t_normalize_url_rewrites_localhost,
     _t_normalize_url_keeps_external,
@@ -1088,6 +1555,137 @@ def run_live(script: dict, opts, base_url: str) -> int:
     return 0
 
 
+class _SideEffectRun:
+    """HARD-3 observer state for one run_verify invocation. Inert (every method a
+    no-op, row text unchanged) unless --side-effects-out or --side-effects-run-out
+    was given."""
+
+    def __init__(self, opts, base_url: str, phase_id: str, iteration):
+        self.sidecar = getattr(opts, "side_effects_out", None)
+        self.run_out = getattr(opts, "side_effects_run_out", None)
+        self.enabled = bool(self.sidecar or self.run_out)
+        self.base_url = base_url
+        self.observations: dict = {}
+        self._cur = None
+        self._attached = False
+        self._flushed = False
+        if not self.enabled:
+            return
+        try:
+            self._setup(opts, phase_id, iteration)
+        except Exception as exc:  # noqa: BLE001 — the replay verdict must not depend on the observer
+            self.enabled = False
+            print(f"[demo_runner] side-effect observer DISABLED for this run ({exc}); no observation is "
+                  "recorded and nothing recorded earlier is changed", file=sys.stderr)
+
+    def _setup(self, opts, phase_id: str, iteration) -> None:
+        self.ignore = side_effect_ignore_paths()
+        root = Path(getattr(opts, "repo_root", None) or ".")
+        self.ro = load_readonly_endpoints(root / READONLY_ENDPOINTS_RELPATH)
+        if self.ro["error"]:
+            print(f"[demo_runner] side effects: {self.ro['path']} is {self.ro['error']} — NO read-only "
+                  "exception is applied this run (every listed POST counts as a mutation)", file=sys.stderr)
+        for bad in self.ro["invalid"]:
+            print(f"[demo_runner] side effects: ignoring invalid exception line {bad['line']} "
+                  f"({bad['text']!r}): {bad['reason']}", file=sys.stderr)
+        it = iteration
+        try:
+            it = int(it) if it is not None else None
+        except (TypeError, ValueError):
+            it = None
+        if it is None:
+            m = re.search(r"-iter-(\d+)$", phase_id or "")
+            it = int(m.group(1)) if m else None
+        stamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        self.meta = {
+            "run_id": f"{phase_id}:{stamp}:{os.getpid()}",
+            "iter": it,
+            "iter_name": phase_id,
+            "observed_at": _utc_now(),
+            "readonly_endpoints_sha256": self.ro["sha256"],
+            "readonly_endpoints_error": self.ro["error"],
+            "ignore_paths": list(self.ignore),
+        }
+
+    def begin(self, jid: str, context) -> None:
+        if not self.enabled:
+            return
+        rec = SideEffectRecorder(self.base_url, self.ignore, self.ro["entries"])
+        self._cur = (jid, rec)
+        self._attached = False
+        # Context-level: covers every page and popup the journey opens.
+        try:
+            context.on("request", rec.on_request)
+            self._attached = True
+        except Exception:  # noqa: BLE001 — fall back to the page in attach_page
+            self._attached = False
+
+    def attach_page(self, page) -> None:
+        if not self.enabled or self._cur is None or self._attached:
+            return
+        try:
+            page.on("request", self._cur[1].on_request)
+            self._attached = True
+        except Exception as exc:  # noqa: BLE001
+            print(f"[demo_runner] side effects: request observer could not attach for {self._cur[0]}: "
+                  f"{str(exc).splitlines()[0][:120]}", file=sys.stderr)
+
+    def end(self, verdict: str) -> str:
+        """Close the current journey; returns the row's Actual-cell suffix."""
+        if not self.enabled or self._cur is None:
+            return ""
+        jid, rec = self._cur
+        self._cur = None
+        summ = rec.summary()
+        # Only a clean, fully observed PASS may later CLEAR an earlier mutation;
+        # a blind or error-hit observation can only ever add one.
+        complete = verdict == "PASS" and self._attached and summ["observer_errors"] == 0
+        obs = _observation_record(summ, verdict, complete, self.meta)
+        obs["observer_attached"] = self._attached
+        self.observations[jid] = obs
+        if not self._attached:
+            return "; side effects: NOT observed (the request observer could not attach)"
+        return render_side_effect_suffix(summ, partial=(verdict != "PASS"))
+
+    def abort(self) -> None:
+        if self._cur is not None:
+            self.end("INFRA")
+
+    def flush(self) -> None:
+        if not self.enabled or self._flushed:
+            return
+        self._flushed = True
+        try:
+            self._flush()
+        except Exception as exc:  # noqa: BLE001 — bookkeeping never changes the replay outcome
+            print(f"[demo_runner] side-effect bookkeeping failed ({exc}); the replay verdict is unaffected",
+                  file=sys.stderr)
+
+    def _flush(self) -> None:
+        state = {"path": self.sidecar, "updated": False,
+                 "message": "not requested" if not self.sidecar else "no journey was replayed"}
+        if self.sidecar and self.observations:
+            ok, msg = update_side_effects_sidecar(self.sidecar, self.observations)
+            state = {"path": self.sidecar, "updated": ok, "message": msg}
+            if not ok:
+                print(f"[demo_runner] side-effect sidecar NOT updated ({msg}); the replay verdict is unaffected",
+                      file=sys.stderr)
+        if self.run_out:
+            record = dict(self.meta)
+            record.update({
+                "schema_version": 1,
+                "base_url": self.base_url,
+                "readonly_endpoints": {k: self.ro[k] for k in ("path", "present", "sha256", "invalid", "error")},
+                "journeys": self.observations,
+                "sidecar": state,
+            })
+            try:
+                Path(self.run_out).parent.mkdir(parents=True, exist_ok=True)
+                _atomic_write_json(self.run_out, record)
+            except OSError as exc:
+                print(f"[demo_runner] side-effect run record not written ({exc})", file=sys.stderr)
+
+
 def run_verify(opts, base_url: str) -> int:
     """Deterministic regression replay (no model in the loop).
 
@@ -1100,7 +1698,11 @@ def run_verify(opts, base_url: str) -> int:
     Returns 0 when nothing failed, 5 when ≥1 journey FAILED (so the caller can
     re-confirm just those journeys with the LLM agent — guards against a brittle
     selector causing a false regression). A journey with no/invalid golden script
-    is SKIP (the caller routes those to the LLM lane)."""
+    is SKIP (the caller routes those to the LLM lane).
+
+    HARD-3: with --side-effects-out / --side-effects-run-out the side-effect
+    observer is attached to every journey's context (see the module docstring);
+    its bookkeeping never alters a verdict or the return code."""
     from playwright.sync_api import sync_playwright
 
     scripts_dir = Path(opts.scripts_dir or ".")
@@ -1111,12 +1713,15 @@ def run_verify(opts, base_url: str) -> int:
     if evidence_dir:
         evidence_dir.mkdir(parents=True, exist_ok=True)
 
+    observer = _SideEffectRun(opts, base_url, phase_id, iteration)
+
     def _write(results: list[dict]) -> None:
         if opts.results:
             Path(opts.results).parent.mkdir(parents=True, exist_ok=True)
             Path(opts.results).write_text(
                 render_regression_results_md(phase_id, base_url, iteration, results, "verify"),
                 encoding="utf-8")
+        observer.flush()
 
     if not journeys:
         _write([])
@@ -1153,7 +1758,9 @@ def run_verify(opts, base_url: str) -> int:
                 steps = data.get("steps") or []
                 default_tmo = _default_timeout(data, opts)
                 context = browser.new_context(viewport={"width": 1280, "height": 800})
+                observer.begin(jid, context)
                 page = context.new_page()
+                observer.attach_page(page)
                 verdict, actual = "PASS", "journey replayed end-to-end; all expects held"
                 for step in steps:
                     n = int(step.get("n", 0))
@@ -1179,6 +1786,7 @@ def run_verify(opts, base_url: str) -> int:
                         shot_rel = _rel(str(shot_abs), opts.repo_root)
                     except Exception:  # noqa: BLE001
                         pass
+                actual += observer.end(verdict)
                 results.append({"journey": jid, "name": name, "verdict": verdict,
                                 "expected": "journey replays end-to-end; all expects hold",
                                 "actual": actual, "evidence": shot_rel})
@@ -1190,6 +1798,7 @@ def run_verify(opts, base_url: str) -> int:
         # caller (goal-iter-lean.sh) routes every replay journey back to the LLM
         # lane. Previously this crashed with rc=1 and the replay journeys were
         # silently left unverified for the iteration.
+        observer.abort()   # a journey interrupted mid-replay keeps what it DID observe (partial)
         done = {r["journey"] for r in results}
         for jid in journeys:
             if jid not in done:
@@ -1235,6 +1844,11 @@ def main(argv: list[str]) -> int:
                    help="verify mode: comma-separated journey IDs to replay")
     p.add_argument("--evidence-dir", default=None,
                    help="verify mode: per-journey screenshot evidence dir")
+    p.add_argument("--side-effects-out", default=None,
+                   help="verify mode (HARD-3): engine-owned sidecar "
+                        "runs/goal-session-<sid>/state/journey-side-effects.json, updated read-modify-write")
+    p.add_argument("--side-effects-run-out", default=None,
+                   help="verify mode (HARD-3): per-run observation record (the lane's telemetry source)")
     opts = p.parse_args(argv)
     live = opts.mode in ("live", "session-live")
     verify = opts.mode == "verify"

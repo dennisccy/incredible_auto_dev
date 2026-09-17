@@ -361,6 +361,11 @@ journey passes — follow the 'Golden replay script' section of your agent
 instructions for the exact JSON shape. Best-effort: if you cannot produce one for
 a journey, skip it (that journey just falls back to the LLM lane next time).
 $(if [[ -n "${_bqa_nudge:-}" ]]; then echo "REQUIRED DELIVERABLE (golden-coverage nudge): journey $_bqa_nudge keeps passing but still has NO golden replay script, so it rides this slow LLM lane every iteration. After verifying it this run you MUST write $JOURNEY_SCRIPTS_DIR/$_bqa_nudge.json before finishing — for THIS one journey the golden is NOT best-effort."; fi)"
+  # HARD-3: the engine-built side-effect context (lib/replay-lane.sh), appended
+  # to the goal-lanes note. Empty when no context applies — the prompt is then
+  # byte-identical. Goal-session iterations only (plain phase mode never sees it).
+  _se_block="$(side_effects_prompt_block "${CHAIN_SIDE_EFFECTS_FILE:-}" "$SPEC")"
+  [[ -n "$_se_block" ]] && _goal_lanes_note+=$'\n'"$_se_block"
 fi
 
 SERVICES_NOTE="Note: browser-qa-phase.sh manages backend (${BACKEND_HEALTH_URL}, log: ${QA_BACKEND_LOG}) and frontend (${FRONTEND_URL}, log: ${QA_FRONTEND_LOG}). Services are restarted automatically if they die during quota-retry sleeps."

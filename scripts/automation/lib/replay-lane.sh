@@ -56,7 +56,16 @@
 #        REPLAY_LANE_CANARY_CAPABLE (SPEED-22; set only by goal-iter-lean.sh)
 #   Set by replay_lane_paths: EVIDENCE_DIR, SID, JOURNEY_SCRIPTS_DIR,
 #        REGRESSION_RESULTS, LLM_RESULTS, CANARY_RESULTS, DEMO_RUNNER,
-#        MERGE_RESULTS
+#        MERGE_RESULTS, REPLAY_SIDE_EFFECTS_SIDECAR, REPLAY_SIDE_EFFECTS_RUN
+#        (HARD-3 — pure derivations, recomputed on both sides of the fork)
+#
+# HARD-3 side-effect observer: unless CHAIN_SIDE_EFFECT_OBSERVER is off, every
+# verify call also records same-project POST/PUT/PATCH/DELETE requests into the
+# engine-owned sidecar runs/goal-session-<sid>/state/journey-side-effects.json
+# (read at the NEXT iteration's preflight) and this iteration's run record
+# iter-<N>/replay-side-effects.json, from which side_effect_observed /
+# side_effect_exception_applied telemetry is emitted. side_effects_prompt_block
+# renders the engine-built SIDE-EFFECT CONTEXT for BOTH browser lanes.
 #   Out of partition+verify: R_REPLAY, R_LLM, _use_replay, REPLAY_FAILED,
 #        REPLAY_SKIPPED_INFRA, REPLAY_MASS_FAIL, REPLAY_CANARIES (SPEED-22)
 
@@ -64,6 +73,25 @@ _REPLAY_LANE_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 _replay_lane_log()  { echo "[${REPLAY_LANE_TAG:-replay-lane}] $*"; }
 _replay_lane_warn() { echo "[${REPLAY_LANE_TAG:-replay-lane}] $*" >&2; }
+
+# side_effect_knob_on <VAR> <on|off default> — HARD-3 boolean knob parser,
+# shared by the lanes and run-goal.sh (which sources this lib for it). Exit 0 =
+# on. UNSET or empty -> the default; true/1/yes/on and false/0/no/off (any case)
+# as written; any OTHER value is a typo that must never quietly weaken a safety
+# layer, so it resolves to ON (the protective state for every HARD-3 knob) and
+# says so on stderr.
+side_effect_knob_on() {
+  local _sk_var="$1" _sk_default="${2:-on}" _sk_val
+  _sk_val="${!_sk_var:-}"
+  case "${_sk_val,,}" in
+    "") [[ "$_sk_default" == "on" ]] ;;
+    true|1|yes|on) return 0 ;;
+    false|0|no|off) return 1 ;;
+    *)
+      echo "[side-effects] $_sk_var='$_sk_val' is not true/false — treating it as ON (an unrecognised value never disables a HARD-3 safety layer)" >&2
+      return 0 ;;
+  esac
+}
 
 # Journey IDs from a spec line, e.g. `replay_lane_spec_journeys 'Target journeys:' "$SPEC"`
 # → "J-01 J-03 ". First matching line wins. The `|| true` is load-bearing: a
@@ -131,15 +159,84 @@ replay_lane_paths() {
   CANARY_RESULTS="$REPO_ROOT/reports/phase-${_rl_iter}-ui-test-results.canary.md"
   DEMO_RUNNER="$_REPLAY_LANE_LIB_DIR/demo_runner.py"
   MERGE_RESULTS="$_REPLAY_LANE_LIB_DIR/merge_ui_test_results.py"
+  REPLAY_SIDE_EFFECTS_SIDECAR="$REPO_ROOT/runs/goal-session-${SID}/state/journey-side-effects.json"
+  REPLAY_SIDE_EFFECTS_RUN="$REPO_ROOT/runs/goal-session-${SID}/iter-${_rl_iter##*-iter-}/replay-side-effects.json"
 }
 
 # One verify invocation over the golden set — extracted so the REL-5 retry is
 # literally the same command. $1 = iter/phase name, $2 = journey csv.
+# HARD-3: the side-effect observer rides every verify call unless
+# CHAIN_SIDE_EFFECT_OBSERVER is off (rollback knob, default on).
 _replay_lane_verify_once() {
+  local _se=()
+  if side_effect_knob_on CHAIN_SIDE_EFFECT_OBSERVER on; then
+    _se=(--side-effects-out "$REPLAY_SIDE_EFFECTS_SIDECAR" --side-effects-run-out "$REPLAY_SIDE_EFFECTS_RUN")
+  fi
   python3 "$DEMO_RUNNER" --mode verify \
     --scripts-dir "$JOURNEY_SCRIPTS_DIR" --journeys "$2" \
     --results "$REGRESSION_RESULTS" --evidence-dir "$EVIDENCE_DIR" \
-    --base-url "$FRONTEND_URL" --phase-id "$1" --repo-root "$REPO_ROOT"
+    --base-url "$FRONTEND_URL" --phase-id "$1" --repo-root "$REPO_ROOT" \
+    ${_se[@]+"${_se[@]}"}
+}
+
+# HARD-3: emit side_effect_observed (one per replayed journey — zero counts
+# included, so a status flip between iterations is visible) and
+# side_effect_exception_applied (one per applied read-only exception) from THIS
+# run's record, plus one log line naming the mutating journeys. Never fails the
+# lane. $1 = iter/phase name.
+_replay_lane_side_effect_events() {
+  local _se_iter="$1" _se_name _se_payload
+  [[ -f "${REPLAY_SIDE_EFFECTS_RUN:-}" ]] || return 0
+  while IFS=$'\t' read -r _se_name _se_payload; do
+    [[ -n "$_se_name" && -n "$_se_payload" ]] || continue
+    if [[ "$_se_name" == "log" ]]; then
+      _replay_lane_log "Side effects observed during replay (mutating requests per journey): $_se_payload — recorded in $(basename "${REPLAY_SIDE_EFFECTS_SIDECAR:-journey-side-effects.json}"); the next iteration's preflight reads it."
+    elif declare -F record_telemetry_event >/dev/null 2>&1; then
+      record_telemetry_event "$_se_name" "$_se_payload" || true
+    fi
+  done < <(python3 - "$REPLAY_SIDE_EFFECTS_RUN" "$_se_iter" 2>/dev/null <<'PYEVENTS' || true
+import json, sys
+try:
+    rec = json.load(open(sys.argv[1]))
+except Exception:
+    sys.exit(0)
+name = sys.argv[2]
+mutated = []
+for jid, o in sorted((rec.get("journeys") or {}).items()):
+    if not isinstance(o, dict):
+        continue
+    count = int(o.get("mutating_count") or 0)
+    sample = [str(r.get("method")) + " " + str(r.get("path")) for r in (o.get("requests") or [])
+              if isinstance(r, dict) and r.get("class") == "mutating"][:3]
+    if count:
+        mutated.append(jid + "(" + str(count) + ")")
+    print("side_effect_observed\t" + json.dumps({
+        "iter_name": name, "journey": jid, "mutating_count": count,
+        "auth_count": int(o.get("auth_count") or 0), "readonly_count": int(o.get("readonly_count") or 0),
+        "sample": sample, "complete": bool(o.get("complete"))}, sort_keys=True))
+    for e in o.get("exceptions_applied") or []:
+        if isinstance(e, dict):
+            print("side_effect_exception_applied\t" + json.dumps(
+                {"iter_name": name, "journey": jid, "method": e.get("method"), "path": e.get("path")},
+                sort_keys=True))
+if mutated:
+    print("log\t" + " ".join(mutated))
+PYEVENTS
+)
+  return 0
+}
+
+# side_effects_prompt_block <ledger> <spec> — the engine-built SIDE-EFFECT
+# CONTEXT for a browser-lane prompt (HARD-3), or NOTHING when no context applies
+# (no readable ledger, or neither a declared policy nor a MUTATING journey in
+# the spec's journey set) — the caller's prompt is then byte-identical.
+# The engine-scheduled make-up journeys (CHAIN_BQA_MAKEUP_JOURNEYS) join the set.
+side_effects_prompt_block() {
+  local _sp_ledger="${1:-}" _sp_spec="${2:-}"
+  [[ -n "$_sp_ledger" && -f "$_sp_ledger" ]] || return 0
+  python3 "$_REPLAY_LANE_LIB_DIR/iter_spec.py" side-effect-context --mode lane \
+    --side-effects "$_sp_ledger" ${_sp_spec:+--spec "$_sp_spec"} \
+    --makeup-journeys "${CHAIN_BQA_MAKEUP_JOURNEYS:-}" 2>/dev/null || true
 }
 
 # REL-5: record the lane state SKIPPED-INFRA after a double browser-infra
@@ -340,7 +437,7 @@ replay_lane_partition_and_verify() {
   # into this run — a merge would ingest them as current output, and a lane
   # that does not engage this run (no goldens, hatch off) would leave last
   # run's files masquerading as this iteration's. Absent beats stale.
-  rm -f "$REGRESSION_RESULTS" "$LLM_RESULTS" "$CANARY_RESULTS" 2>/dev/null || true
+  rm -f "$REGRESSION_RESULTS" "$LLM_RESULTS" "$CANARY_RESULTS" "${REPLAY_SIDE_EFFECTS_RUN:-}" 2>/dev/null || true
 
   # A golden that fails validation is quarantined (renamed *.json.invalid) and
   # its journey routed to the LLM lane — previously an invalid golden produced
@@ -398,6 +495,7 @@ replay_lane_partition_and_verify() {
       _replay_rc=0
       _replay_lane_verify_once "$_rl_iter" "$_replay_csv" || _replay_rc=$?
     fi
+    _replay_lane_side_effect_events "$_rl_iter"
     if [[ "$_replay_rc" -eq 5 ]]; then
       REPLAY_FAILED="$(grep -E '^\| UT-J-[0-9]+ ' "$REGRESSION_RESULTS" 2>/dev/null | grep -F '| FAIL |' | grep -oE 'J-[0-9]+' | sort -u | tr '\n' ' ')"
       _replay_lane_log "Replay flagged possible regression(s) — re-confirming via LLM: $REPLAY_FAILED"

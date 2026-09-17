@@ -4467,13 +4467,19 @@ but appreciated.
   the vendored copies (tapeology, trendora) and an explicit decision on whether `post-goal`
   should ever be re-attached to a lifecycle point. "No in-repo caller" is not sufficient.
 
-### CAND-PERM-1 · Zero-human-prompt interactive goal mode (IN-PROGRESS — commits 1–7 landed, oracle + acceptance run owed)
+### CAND-PERM-1 · Zero-human-prompt interactive goal mode (IN-PROGRESS — commits 1–7 landed; Task 10 DEFERRED, not accepted)
 - **Proposed:** P1 · Effort L · Risk MED · **Status:** IN-PROGRESS on branch `perm-stall-closure`
   (commits 1–7 landed, `b422b6e..HEAD`, including the whole-branch-review fix wave — comment-safe
   tokenizer, restored policy rationale, stall-definition docs, per-message retry counters,
   unresolved-use diagnostic, false-deny fixes; no deny-rule change). Task 10 (native-oracle
   probe, then one real interactive acceptance iteration) is operator-gated — spends tokens
   (G9) — and not started; that run is still owed.
+- **Task 10 — DEFERRED by the owner (2026-09-16).** Deferred means *postponed*: Task 10 is NOT
+  completed and NOT accepted, the native permission oracle has NOT been run, and no
+  permission-acceptance Goal Mode session has been run. Every acceptance criterion under "DoD /
+  Acceptance criteria" below is still unproven. Nothing else in the backlog may treat CAND-PERM-1 as
+  accepted or depend on Task 10 (HARD-3 was implemented without it). Resuming Task 10 needs its own
+  cost estimate and owner authorization under G9.
 - **Problem (verified against Claude Code 2.1.260, 2,236 session transcripts, repo @ `b422b6e`):**
   interactive goal-mode Bash dispatches occasionally reach a native approval dialog no autonomous
   agent can answer — observed shape: `cd <dir> && \`-newline-continued `sed -i ...` then `grep`,
@@ -4621,6 +4627,24 @@ but appreciated.
   `./scripts/automation/run-evals.sh` · `bash tests/automation/test-doc-drift.sh`.
 
 ---
+
+### CAND-JOURNEY-BLOCKS · `_journey_blocks` mis-bounds a journey preceded by extra blank lines (staged — do not start)
+- **Proposed:** P2 · Effort S · Risk MED (certified `spec_hash` path) · **Status:** staged 2026-09-16
+  by HARD-3 (found while testing; deliberately not fixed there).
+- **Problem:** `lib/goal_gate.py _journey_blocks` measures a header's indent as `len(m.group(1))`,
+  and the `^(\s*)` group also swallows the blank lines before the header. A journey preceded by
+  two blank lines therefore has "indent 2" and is not a boundary for a journey preceded by one
+  blank line ("indent 1"): the earlier block runs on into it. Verified on `main` 80fe48f: with
+  `J-02 … \n\n\n- **J-03`, J-02's block contains J-03 and J-02's `spec_hash` changes when ONLY
+  J-03's text is edited — a spurious goal-edit drift note (and the goal slice / goal-lint read the
+  same over-long block).
+- **Why staged, not fixed:** the fix changes recorded `spec_hash` values for goal files with
+  uneven spacing, which re-opens journey verification in running sessions — an owner decision on
+  the migration (re-record vs. tolerate). HARD-3 side-steps it for declarations only
+  (`side_effect_journey_blocks`); hash neutrality holds either way.
+- **Change spec (when approved):** measure the indent on the header's own line (as
+  `side_effect_journey_blocks` does), keep block starts byte-identical for evenly spaced files, add
+  a one-time drift acknowledgement for sessions whose hashes move, pin with a fixture.
 
 ## 17. Absorbed-from-README ledger (traceability)
 
@@ -5493,8 +5517,11 @@ Four root causes: governors read proxies instead of facts (HARD-1..3); ownership
   `goal_new_fullstack_journey`'s parser was NOT consolidated.
 
 ### HARD-3 · Journey side-effect model + contradiction preflight
-- **Priority:** P0 · **Effort:** M-L · **Risk:** MED · **Status:** TODO (after HARD-2; schema
-  owner-approved 2026-09-07: `Side effects: none | mutating — <note>`, absent = unknown).
+- **Priority:** P0 · **Effort:** M-L · **Risk:** MED · **Status:** IN-PROGRESS (branch
+  `hard-3-side-effect-preflight`, started 2026-09-16; schema owner-approved 2026-09-07:
+  `Side effects: none | mutating — <note>`, absent = unknown). Independent of CAND-PERM-1 Task 10
+  (DEFERRED). G8 fresh-session certification and the G9-gated real-session acceptance are both
+  still owed — the implementing session does not mark this DONE.
 - **Problem:** a confirm-only spec forbade "new run / ledger write" while target J-04's own
   step 1 launches a run (TenSteps iter-9); nothing structural represents mutations.
 - **Change spec:** goal.md optional per-journey line (journey-hash-neutral; separate
@@ -5510,6 +5537,49 @@ Four root causes: governors read proxies instead of facts (HARD-1..3); ownership
   `CHAIN_SIDE_EFFECT_PREFLIGHT=false`, `CHAIN_SIDE_EFFECT_OBSERVER=false`.
 - **Stop-and-ask:** the `_normalize_block` hash exclusion (certification path) needs reviewer
   sign-off; an E13 re-plan that flips `none`→`allowed` without E16 blocking is a framework bug.
+- **AS BUILT 2026-09-16 (branch `hard-3-side-effect-preflight`; NOT merged; G8 + G9 owed).**
+  - *Model:* `lib/goal_gate.py side-effects` builds `iter-<N>/side-effects.json` before every
+    decomposer dispatch (status `mutating` = declared OR observed; `none` = declared none and never
+    observed; else `unknown`), records `declaration_digest`/`declaration_digest_prev` in the
+    engine-owned `state/journey-side-effects.json` and emits `side_effect_declaration_changed`
+    (also for edits to the exception file and to `CHAIN_SIDE_EFFECT_IGNORE_PATHS`). It is refreshed
+    before the evaluator. `_normalize_block` drops every `Side effects:` line before hashing
+    (**certification path — the G8 reviewer must sign this off explicitly**; verified that no
+    goal.md in the four products or this repo contains such a line today, so no recorded
+    `spec_hash` moves).
+  - *Observer:* `demo_runner.py --side-effects-out/--side-effects-run-out` (verify mode only;
+    `CHAIN_SIDE_EFFECT_OBSERVER`), pure `classify_request`, digest-tracked
+    `project-extensions/side-effects/read-only-endpoints.txt`, results-row suffix, per-run record
+    `iter-<N>/replay-side-effects.json` (lane telemetry `side_effect_observed` /
+    `side_effect_exception_applied`). The sidecar is read-modify-write under a flock on the
+    `state/` directory (no lock file); a corrupt sidecar is never overwritten; a replay that stopped
+    early can add a mutation but never clear one.
+  - *Preflight (HARD-2's loop):* E06/W02 (policy field), E13, E14 (strict: W09 and W10), E15
+    (`none` + unavailable/incomplete ledger → `GATE_BLOCKED_SIDE_EFFECT_LEDGER`, no re-plan), E16
+    (prohibition vs mutating journey under ANY policy), W09, W10, W11. `CHAIN_SIDE_EFFECT_PREFLIGHT`,
+    `CHAIN_SIDE_EFFECT_STRICT`; unrecognised knob values resolve to ON with a warning.
+    `CHAIN_SPEC_LINT=warn` continues past E15 saying UNVERIFIED (HARD-2's crash semantics);
+    `off` skips the whole lint, preflight included.
+  - *Prompts:* `side_effects_prompt_block` (both lanes), evaluator ledger line, decomposer ledger
+    line + rule + the new metadata field; lane/evaluator text is absent — prompts byte-identical —
+    unless a policy is declared or a checked journey is mutating.
+  - *Contracts:* decomposer 2.8.0, evaluator 1.13.0 (+ methodology A.8 / self-check 6),
+    browser-qa-agent 1.4.0; `/goal-lint` Side effects section; template line on J-01.
+  - *Deviations from the plan text (reported, not silently taken):* (1) the golden mirror
+    `data["observed"]` is NOT written — it would rewrite golden scripts, which plan §H lists as a
+    non-goal; `validate_script` tolerance is pinned and the sidecar + run record are the stores.
+    (2) The observer listens on the browser CONTEXT (popups included), falling back to `page.on`.
+    (3) Extra artifact `iter-<N>/replay-side-effects.json` and the pre-evaluator ledger refresh
+    (the preflight view stays in `spec-lint.json`). (4) A clearly stated `mutating` with a
+    malformed format still counts as mutating (a malformed line never makes a journey less
+    restrictive). (5) Declarations are parsed with a correctly-bounded block splitter — see
+    CAND-JOURNEY-BLOCKS in §16 for the pre-existing `_journey_blocks` quirk it avoids.
+  - *Verify:* `bash tests/automation/test-side-effects.sh` (193 checks incl. the exact TenSteps
+    iteration-9 contradiction, the none→allowed tripwire, E15 fail-closed with zero dispatch, the
+    real lean executor with a fake Playwright) · self-tests of `demo_runner.py`, `goal_gate.py`,
+    `goal_lint.py`, `iter_spec.py`, `artifact_schemas.py` · `./scripts/automation/run-evals.sh`.
+  - *Owed:* G8 fresh-session certification; the G9-gated real session (a replay-observed mutation in
+    the sidecar, no TC failed on a journey's own mutation); vendored per-file sync.
 
 ### HARD-4A · Engine identity token + lock-before-mutation ordering + owner-guarded `engine.pid`
 - **Priority:** P1 · **Effort:** M · **Risk:** MED · **Status:** PARTIAL — sub-commit **A0 landed with HARD-5** (`lib/engine-identity.sh`: `engine_token_mint`/`engine_token_alive`/`engine_token_self`/`engine_proc_env`). **A1 remains TODO** (prologue reorder, lock-before-mutation ordering, owner-guarded `engine.pid`, signal-time takeover revalidation, `.engine.lock/token`).

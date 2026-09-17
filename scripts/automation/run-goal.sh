@@ -133,6 +133,31 @@
 #                      Artifacts: iter-<N>/spec-lint.{txt,json}. Telemetry:
 #                      spec_lint, spec_replan, spec_lint_crash, spec_lint_config_invalid.
 #
+# HARD-3 journey side-effect model + contradiction preflight (plan WP3):
+#   Every iteration, BEFORE the goal-decomposer, the engine builds
+#   iter-<N>/side-effects.json (lib/goal_gate.py side-effects) from docs/goal.md's
+#   optional `- Side effects: none | mutating — <note>` lines, the replay
+#   observations in state/journey-side-effects.json (an observed mutation always
+#   outranks a `none`) and project-extensions/side-effects/read-only-endpoints.txt,
+#   records the declaration digest (side_effect_declaration_changed) and exports
+#   CHAIN_SIDE_EFFECTS_FILE for both browser lanes. The spec lint then checks the
+#   spec's `Side-effect policy` and its explicit no-mutation prohibitions against
+#   targets ∪ required ∪ make-up journeys: E13/E16 buy HARD-2's one re-plan, E15
+#   (policy none but the ledger unavailable/incomplete) halts at once
+#   (GATE_BLOCKED, reason GATE_BLOCKED_SIDE_EFFECT_LEDGER — never re-planned).
+#   The ledger is refreshed before the goal-evaluator, whose prompt names it.
+#   CHAIN_SIDE_EFFECT_PREFLIGHT=true   (default) — false skips E13-E16/W09-W11
+#                      (the rollback; the policy field's own E06/W02 still run).
+#   CHAIN_SIDE_EFFECT_STRICT=false     (default) — true turns W09/W10 (unknown
+#                      journeys under a restrictive policy / a prohibition) into E14.
+#   CHAIN_SIDE_EFFECT_OBSERVER=true    (default) — false stops the replay lane's
+#                      request observer (lib/replay-lane.sh).
+#   An unrecognised value for any of the three is treated as ON (with a warning)
+#   and never silently disables a safety layer. Telemetry: side_effect_observed,
+#   side_effect_exception_applied, side_effect_declaration_changed,
+#   side_effect_unknown, side_effect_ledger_unavailable; spec_lint gains
+#   side_effect_policy / side_effect_rules / prohibitions.
+#
 # Quota waiting is owned below the engine: claude_with_quota_retry sleeps until
 # the quota resets and resumes the same agent (within CHAIN_CLAUDE_MAX_QUOTA_RETRIES),
 # and run-phase.sh's _run_step retries its own steps. A FULL executor
@@ -155,6 +180,9 @@ source "$SCRIPT_DIR/lib/goal-gates.sh"
 source "$SCRIPT_DIR/lib/engine-lock.sh"
 source "$SCRIPT_DIR/lib/plain-language.sh"
 source "$SCRIPT_DIR/lib/host-guard-registry.sh"
+# HARD-3: side_effect_knob_on (the one knob parser the browser lanes also use).
+# The lib only defines functions; nothing runs at source time.
+source "$SCRIPT_DIR/lib/replay-lane.sh"
 
 # ── Host-guard self-wrap (hardware protection) ─────────────────────────────
 # Origin: a mini-PC host hard-reset instantly (no OOM, no thermal log, no
@@ -412,6 +440,9 @@ if [[ "${CHAIN_OUTPUT_STYLES:-false}" == "true" || -n "${CHAIN_AGENT_OUTPUT_STYL
   echo "[run-goal] output-style experiment ARMED: $_STYLE_ARM (judges refuse by construction)"
 fi
 JOURNEY_HISTORY="$GOAL_SESSION_DIR_LOCAL/state/journey-history.json"
+# HARD-3: engine-owned side-effect sidecar (replay observations + the recorded
+# declaration digest). Written by the replay lane and by the ledger build below.
+SIDE_EFFECT_SIDECAR="$GOAL_SESSION_DIR_LOCAL/state/journey-side-effects.json"
 EVALUATOR_LOG="$GOAL_SESSION_DIR_LOCAL/state/evaluator-log.md"
 # REL-6: the evaluator-written, decomposer-read iteration digest (single
 # writer: only the goal-evaluator's step 7 creates/overwrites this file).
@@ -856,6 +887,67 @@ _tail_or_placeholder() {
   else
     printf '%s\n' "$placeholder"
   fi
+}
+
+# ── HARD-3: journey side-effect ledger ────────────────────────────────────
+# _side_effect_ledger_build <preflight|pre-evaluator>
+# Builds iter-<N>/side-effects.json (lib/goal_gate.py side-effects; written
+# atomically) from docs/goal.md's declarations, the engine-owned sidecar's
+# replay observations and the owner's read-only exception file.
+#   preflight      removes any previous ledger FIRST (a stale file must never
+#                  stand in for a build that failed this run), records the
+#                  declaration digest in the sidecar and emits
+#                  side_effect_declaration_changed for what changed.
+#   pre-evaluator  read-only refresh with this iteration's observations; when it
+#                  fails the preflight file stays in place.
+# A failed or incomplete build is loud (side_effect_ledger_unavailable) but is
+# never decided here: the spec lint fails closed on it under
+# `Side-effect policy: none` (E15) and warns otherwise (W11). Returns 0.
+_side_effect_ledger_build() {
+  local _sl_step="$1" _sl_out="$ITER_DIR/side-effects.json" _sl_rc=0 _sl_events _sl_name _sl_payload
+  [[ "$_sl_step" == "preflight" ]] && rm -f "$_sl_out" 2>/dev/null
+  local _sl_args=(side-effects "$GOAL_FILE" --sidecar "$SIDE_EFFECT_SIDECAR" --out "$_sl_out"
+                  --repo-root "$REPO_ROOT" --iter "$CURRENT_ITER" --iter-name "$ITER_NAME" --step "$_sl_step")
+  [[ "$_sl_step" == "preflight" ]] && _sl_args+=(--record-digest)
+  _sl_events="$(python3 "$SCRIPT_DIR/lib/goal_gate.py" "${_sl_args[@]}")" || _sl_rc=$?
+  while IFS=$'\t' read -r _sl_name _sl_payload; do
+    [[ -n "$_sl_name" && -n "$_sl_payload" ]] || continue
+    record_telemetry_event "$_sl_name" "$_sl_payload" || true
+    echo "[run-goal] Side-effect declaration changed: $_sl_payload"
+  done <<< "$_sl_events"
+  local _sl_reproduce="python3 scripts/automation/lib/goal_gate.py side-effects docs/goal.md --sidecar ${SIDE_EFFECT_SIDECAR#"$REPO_ROOT"/}"
+  if [[ "$_sl_rc" -ne 0 && "$_sl_rc" -ne 3 || ! -s "$_sl_out" ]]; then
+    local _sl_kept="and wrote no ledger"
+    [[ "$_sl_step" == "pre-evaluator" && -s "$_sl_out" ]] && _sl_kept="— the preflight ledger is kept for the evaluator"
+    echo "[run-goal] Side-effect ledger ($_sl_step) UNAVAILABLE: goal_gate.py side-effects exited $_sl_rc $_sl_kept. A 'Side-effect policy: none' spec fails closed on an unavailable preflight ledger (E15); any other policy only warns (W11). Reproduce: $_sl_reproduce" >&2
+    record_telemetry_event "side_effect_ledger_unavailable" "$(jq -cn --arg n "$ITER_NAME" --arg s "$_sl_step" --arg rc "$_sl_rc" \
+      '{iter_name:$n, step:$s, rc:($rc|tonumber), reason:"ledger build failed"}' 2>/dev/null \
+      || printf '{"iter_name":"%s","step":"%s"}' "$ITER_NAME" "$_sl_step")" || true
+    return 0
+  fi
+  local _sl_summary
+  _sl_summary="$(python3 - "$_sl_out" <<'PYLEDGER' 2>/dev/null || true
+import json, sys
+d = json.load(open(sys.argv[1]))
+s = d.get("summary") or {}
+def names(k):
+    return ", ".join(s.get(k) or []) or "(none)"
+print("mutating: %s; none: %s; unknown: %s; declaration digest %s%s%s" % (
+    names("mutating"), names("none"), names("unknown"), (d.get("declaration_digest") or "")[:12],
+    "" if d.get("ignore_paths_default", True) else
+    "; auth/session exclusions OVERRIDDEN by CHAIN_SIDE_EFFECT_IGNORE_PATHS: " + (", ".join(d.get("ignore_paths") or []) or "(none)"),
+    "" if d.get("complete") else " — INCOMPLETE: " + "; ".join(d.get("errors") or [])))
+PYLEDGER
+)"
+  echo "[run-goal] Side-effect ledger ($_sl_step): ${_sl_out#"$REPO_ROOT"/} — ${_sl_summary:-(summary unavailable)}"
+  if [[ "$_sl_rc" -eq 3 ]]; then
+    echo "[run-goal] Side-effect ledger ($_sl_step) is INCOMPLETE — observed mutations or read-only exceptions could not be established. A 'Side-effect policy: none' spec fails closed on this (E15); any other policy only warns (W11). Reproduce: $_sl_reproduce" >&2
+    record_telemetry_event "side_effect_ledger_unavailable" "$(jq -cn --arg n "$ITER_NAME" --arg s "$_sl_step" \
+      --arg r "${_sl_summary##*INCOMPLETE: }" \
+      '{iter_name:$n, step:$s, rc:3, reason:$r}' 2>/dev/null \
+      || printf '{"iter_name":"%s","step":"%s","rc":3}' "$ITER_NAME" "$_sl_step")" || true
+  fi
+  return 0
 }
 
 if [[ "$RESET" == "true" && -d "$GOAL_SESSION_DIR_LOCAL" ]]; then
@@ -2494,6 +2586,16 @@ except Exception: print(0)" 2>/dev/null || echo 0)"
     unset CHAIN_BQA_MAKEUP_JOURNEYS CHAIN_BQA_PREV_ATTEMPTS 2>/dev/null || true
   fi
 
+  # ── HARD-3 side-effect ledger (preflight) ─────────────────────────────────
+  # Built BEFORE the decomposer (its prompt carries the ledger line and the
+  # side-effect rule) and before the spec lint (E13-E16 read it); exported for
+  # both browser lanes. Re-built on every resume, so a repaired input is seen.
+  SIDE_EFFECTS_FILE="$ITER_DIR/side-effects.json"
+  export CHAIN_SIDE_EFFECTS_FILE="$SIDE_EFFECTS_FILE"
+  _side_effect_ledger_build preflight
+  _SE_DECOMPOSER_CONTEXT="$(python3 "$SCRIPT_DIR/lib/iter_spec.py" side-effect-context --mode decomposer \
+    --side-effects "$SIDE_EFFECTS_FILE" 2>/dev/null || true)"
+
   echo "[run-goal] Step 1: goal-decomposer (mode: $DECOMPOSER_MODE)"
   # Pre-trim historical state — pass only the tail to the decomposer so token
   # usage stays flat as the session grows. Spec asks for "last 3 entries";
@@ -2522,6 +2624,12 @@ except Exception: print(0)" 2>/dev/null || echo 0)"
   # contradiction and never dispatches on an unverified spec while the gate is
   # armed (CHAIN_SPEC_LINT=block, the default).
   _SPEC_LINT_FEEDBACK=""
+  # HARD-3 knobs, resolved once per iteration (an unrecognised value is ON).
+  _SE_PREFLIGHT="off"; side_effect_knob_on CHAIN_SIDE_EFFECT_PREFLIGHT on && _SE_PREFLIGHT="on"
+  _SE_STRICT="off"; side_effect_knob_on CHAIN_SIDE_EFFECT_STRICT off && _SE_STRICT="on"
+  if [[ "$_SE_PREFLIGHT" == "off" ]]; then
+    echo "[run-goal] HARD-3 side-effect preflight DISABLED (CHAIN_SIDE_EFFECT_PREFLIGHT=false): E13-E16 / W09-W11 are not evaluated this iteration." >&2
+  fi
   for _spec_attempt in 1 2; do
   # Resume-skip: a prior attempt of this same iteration already wrote a spec
   # that parses (checkpoint + Depth line) — don't redo the planning call.
@@ -2600,6 +2708,7 @@ $ITER_STATE_INLINE
 \`\`\`
 \"Do not redo\" entries above are BINDING — do not re-plan or re-test them — unless docs/goal.md changed for that item.
 $( [[ -n "${CHAIN_BQA_MAKEUP_JOURNEYS:-}" ]] && echo "Pending-infra make-up targets: $CHAIN_BQA_MAKEUP_JOURNEYS. BINDING — include them as verify-only targets this iteration; do NOT re-plan their implementation — the code is present, only browser evidence is missing (prior browser-infra failure)." )
+${_SE_DECOMPOSER_CONTEXT}
 
 $( [[ $CURRENT_ITER -gt 0 && -f "$GOAL_SESSION_DIR_LOCAL/iter-$((CURRENT_ITER-1))/eval.md" ]] && echo "Last iteration eval: $GOAL_SESSION_DIR_LOCAL/iter-$((CURRENT_ITER-1))/eval.md")
 
@@ -2611,10 +2720,13 @@ The spec MUST include a 'Goal Mode Metadata' section with at minimum:
   - **Depth:** lean | full | evidence
   - **Target journeys:** <comma-separated journey IDs>
   - **Work kind:** implementation | evidence-only | verify-only
+  - **Side-effect policy:** none | allowed
 Write these as BOLD markdown fields exactly as shown (- **Field:** value). A deterministic
 linter reads them; a plain-form field is a lint ERROR and costs the session a re-plan.
 'Work kind' must agree with IN SCOPE: 'implementation' iff IN SCOPE lists a concrete
 Backend/Frontend bullet, 'evidence-only' or 'verify-only' iff it lists none.
+'Side-effect policy' must agree with the side-effect ledger above: 'none' only when no
+target, required or make-up journey is MUTATING, otherwise 'allowed' (see the Side-effect rule).
 $_SPEC_LINT_FEEDBACK
 Do NOT write code or implement anything. The iteration spec and any blueprint edits are planning documents, not code. STOP after writing them." || _decomp_rc=$?
 
@@ -2686,6 +2798,12 @@ Do NOT write code or implement anything. The iteration spec and any blueprint ed
     [[ -n "${PRIOR_VERDICT:-}" ]] && _lint_args+=(--prior-verdict "$PRIOR_VERDICT")
     [[ -n "${DECOMPOSER_MODE:-}" ]] && _lint_args+=(--mode-expected "$DECOMPOSER_MODE")
     [[ -f "$JOURNEY_HISTORY" ]] && _lint_args+=(--journey-history "$JOURNEY_HISTORY")
+    # HARD-3: the side-effect ledger rules. The path is passed even when the
+    # build failed — an absent ledger is exactly what E15/W11 must see.
+    if [[ "$_SE_PREFLIGHT" == "on" ]]; then
+      _lint_args+=(--side-effects "$SIDE_EFFECTS_FILE" --makeup-journeys "${CHAIN_BQA_MAKEUP_JOURNEYS:-}")
+      [[ "$_SE_STRICT" == "on" ]] && _lint_args+=(--strict-side-effects)
+    fi
     _lint_rc=0
     python3 "$SCRIPT_DIR/lib/iter_spec.py" lint "$ITER_SPEC_PATH" "${_lint_args[@]}" \
       > "$_lint_txt" 2>"$ITER_DIR/spec-lint.stderr" || _lint_rc=$?
@@ -2700,10 +2818,40 @@ Do NOT write code or implement anything. The iteration spec and any blueprint ed
     # own "0" and only neutralises its exit status for `set -e`.
     _lint_errs="$(grep -c '^\[spec-lint\] ERROR' "$_lint_txt" 2>/dev/null || true)"; _lint_errs="${_lint_errs:-0}"
     _lint_warns="$(grep -c '^\[spec-lint\] WARN' "$_lint_txt" 2>/dev/null || true)"; _lint_warns="${_lint_warns:-0}"
+    # HARD-3 fields (from the lint JSON): the declared policy, the side-effect
+    # rule ids that fired, and how many explicit prohibitions the spec carries
+    # (null when the preflight did not run). A replan whose attempt 2 flipped the
+    # policy to `allowed` while `prohibitions` stayed >0 and E16 did NOT fire is
+    # the framework-bug tripwire. Fields default to JSON-valid values so the
+    # jq payload can never degrade on the clean path.
+    _se_pol="" _se_rules="" _se_proh="" _se_unknown=""
+    if [[ -s "$_lint_json" ]]; then
+      IFS=$'\x1f' read -r _se_pol _se_rules _se_proh _se_unknown < <(python3 - "$_lint_json" 2>/dev/null <<'PYSELINT' || true
+import json, sys
+d = json.load(open(sys.argv[1]))
+ids = ("E06", "E13", "E14", "E15", "E16", "W02", "W09", "W10", "W11")
+rules = sorted({f["rule"] for f in (d.get("errors") or []) + (d.get("warnings") or []) if f.get("rule") in ids})
+se = d.get("side_effects") or None
+pol = (d.get("metadata") or {}).get("side_effect_policy") or ""
+proh = len(se.get("prohibitions") or []) if se else None
+unknown = " ".join(se.get("unknown") or []) if se else ""
+print("\x1f".join([pol, json.dumps(rules), json.dumps(proh), unknown]))
+PYSELINT
+) || true
+    fi
+    _se_rules="${_se_rules:-[]}"; _se_proh="${_se_proh:-null}"
     record_telemetry_event "spec_lint" "$(jq -cn --arg n "$ITER_NAME" --arg a "$_spec_attempt" \
       --arg rc "$_lint_rc" --arg e "$_lint_errs" --arg w "$_lint_warns" --arg m "$_SPEC_LINT_MODE" \
-      '{iter_name:$n, attempt:($a|tonumber), rc:($rc|tonumber), errors:($e|tonumber), warnings:($w|tonumber), mode:$m}' \
+      --arg sp "$_se_pol" --argjson sr "$_se_rules" --argjson spr "$_se_proh" \
+      '{iter_name:$n, attempt:($a|tonumber), rc:($rc|tonumber), errors:($e|tonumber), warnings:($w|tonumber), mode:$m,
+        side_effect_policy:$sp, side_effect_rules:$sr, prohibitions:$spr}' \
       2>/dev/null || printf '{"iter_name":"%s","rc":%s}' "$ITER_NAME" "$_lint_rc")"
+    if [[ -n "$_se_unknown" ]]; then
+      record_telemetry_event "side_effect_unknown" "$(jq -cn --arg n "$ITER_NAME" --arg a "$_spec_attempt" \
+        --arg j "$_se_unknown" --arg sp "$_se_pol" --arg st "$_SE_STRICT" \
+        '{iter_name:$n, attempt:($a|tonumber), journeys:($j|split(" ")), count:($j|split(" ")|length), policy:$sp, strict:($st=="on")}' \
+        2>/dev/null || printf '{"iter_name":"%s","journeys":"%s"}' "$ITER_NAME" "$_se_unknown")" || true
+    fi
     [[ -s "$_lint_txt" ]] && sed 's/^/[run-goal]   /' "$_lint_txt"
 
     if [[ "$_lint_rc" -eq 2 ]]; then
@@ -2726,6 +2874,24 @@ Do NOT write code or implement anything. The iteration spec and any blueprint ed
       fi
       echo "[run-goal] WARNING: spec lint exited 2 (crash/unreadable) — CHAIN_SPEC_LINT=$_SPEC_LINT_MODE, continuing UNVERIFIED." >&2
       break
+    fi
+
+    # ── HARD-3 E15: a restrictive side-effect policy without its ledger ───────
+    # Not re-plannable (the planner cannot repair the evidence source), so it is
+    # checked BEFORE the re-plan branch and halts at once in block mode. Nothing
+    # has been dispatched past the decomposer at this point.
+    if [[ "$_lint_rc" -eq 1 ]] && grep -qE '^\[spec-lint\] ERROR E15 ' "$_lint_txt" 2>/dev/null; then
+      if [[ "$_SPEC_LINT_MODE" == "block" ]]; then
+        echo "[run-goal] The spec declares 'Side-effect policy: none' but the deterministic side-effect ledger is unavailable or incomplete (E15) — halting BEFORE any dispatch. This is not re-planned: the planner cannot repair the evidence source." >&2
+        echo "[run-goal]   Ledger:  ${SIDE_EFFECTS_FILE#"$REPO_ROOT"/}   Sidecar: ${SIDE_EFFECT_SIDECAR#"$REPO_ROOT"/}" >&2
+        echo "[run-goal]   Reproduce:  python3 scripts/automation/lib/goal_gate.py side-effects docs/goal.md --sidecar ${SIDE_EFFECT_SIDECAR#"$REPO_ROOT"/}" >&2
+        echo "[run-goal]   Fix the input (repair or move aside a corrupt sidecar, make read-only-endpoints.txt readable), then:  /goal-resume $SESSION_ID  (the ledger is rebuilt and the spec re-linted)" >&2
+        record_telemetry_event "halt" '{"reason":"GATE_BLOCKED_SIDE_EFFECT_LEDGER","detected_at_step":"side-effect-ledger"}'
+        write_session_summary "GATE_BLOCKED" "$CURRENT_ITER"
+        explain_goal_status "GATE_BLOCKED" "$SESSION_ID" "$REPO_ROOT" >&2
+        exit 0
+      fi
+      echo "[run-goal] WARNING: E15 — 'Side-effect policy: none' without its side-effect ledger; CHAIN_SPEC_LINT=$_SPEC_LINT_MODE, continuing UNVERIFIED." >&2
     fi
 
     if [[ "$_lint_rc" -ne 0 && "$_SPEC_LINT_MODE" == "block" ]]; then
@@ -3405,6 +3571,18 @@ PYEOF
     echo "[run-goal] Goal-edit drift: passing journeys whose goal.md text changed since last verification — see $ITER_DIR/journeys-changed.md"
   fi
 
+  # ── HARD-3 side-effect ledger (pre-evaluator refresh) ─────────────────────
+  # This iteration's replay observations are in the sidecar now, so the
+  # evaluator scores against the refreshed ledger (the preflight view stays in
+  # spec-lint.json). A failed refresh keeps the preflight file. The prompt line
+  # is empty — and the prompt byte-identical — when no context applies.
+  _side_effect_ledger_build pre-evaluator
+  _SE_EVAL_LINE="$(python3 "$SCRIPT_DIR/lib/iter_spec.py" side-effect-context --mode evaluator \
+    --side-effects "$SIDE_EFFECTS_FILE" --spec "$ITER_SPEC_PATH" \
+    --makeup-journeys "${CHAIN_BQA_MAKEUP_JOURNEYS:-}" 2>/dev/null || true)"
+  _SE_EVAL_LINE_NL=""
+  [[ -n "$_SE_EVAL_LINE" ]] && _SE_EVAL_LINE_NL=$'\n'"$_SE_EVAL_LINE"
+
   # 4. Goal evaluator
   iter_budget_check "goal-evaluator"
   echo "[run-goal] Step 3: goal-evaluator"
@@ -3464,7 +3642,7 @@ Iteration artifacts (read what exists):
   Evidence: reports/qa/${ITER_NAME}-evidence/
   Browser-infra token: $ITER_DIR/browser-infra.json  <-- if present: its listed journeys hit a browser INFRA failure (services/Chrome), not a product defect. With no fresh screenshot, score them partial with gap 'pending-infra' and set pending_infra: true in journey-history (methodology A.3); attempts >= 2 in the token = treat the browser infrastructure as a human-owned blocker (STALLED-class)
   Coherence audit: $COHERENCE_OUTPUT  <-- COHERENCE-FAIL vetoes GOAL_ACHIEVED and drives a consolidation CONTINUE
-  Goal-edit drift note: $ITER_DIR/journeys-changed.md  <-- if present, each listed journey's prior pass is VOID until re-verified against the CURRENT goal text (your step 3)
+  Goal-edit drift note: $ITER_DIR/journeys-changed.md  <-- if present, each listed journey's prior pass is VOID until re-verified against the CURRENT goal text (your step 3)${_SE_EVAL_LINE_NL}
   Prior walkthrough recording (methodology A.6 evidence durability — stays valid for journeys whose product code is unchanged since it was recorded): $_prior_demo_line
   Product diff this iteration (deterministic; bookkeeping excluded): $_pdiff_status
 

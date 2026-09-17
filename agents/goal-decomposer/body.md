@@ -49,6 +49,7 @@ Write the iteration spec to `docs/phases/goal-<sid>-iter-<N>.md`. The file MUST 
 - **Target journeys:** J-01, J-03, J-07
 - **Required-still-passing journeys:** J-02, J-04
 - **Work kind:** implementation | evidence-only | verify-only
+- **Side-effect policy:** none | allowed
 - **Anti-goal reminders:**
   - <verbatim anti-goal that this iteration must respect>
 
@@ -141,19 +142,45 @@ Errors, in plain words:
 
 - **E01** — no `## Goal Mode Metadata` section, or a machine field that is missing from it. **A machine field counts only inside that section.** A `- **Depth:** lean` line under OUT OF SCOPE, NOTES or a test-case example is prose: it never satisfies the field, and the engine reads its depth, target journeys and full trigger from the metadata section alone. If E01 says a field is misplaced, move it into the metadata block rather than adding a second copy.
 - **E12** — the same machine field declared twice inside the metadata section with different values, or a second `## Goal Mode Metadata` section. The engine refuses to pick one by document order; keep exactly one line and one section. An identical repeat is harmless.
-- **E02** — `Depth`, `Target journeys`, `Required-still-passing journeys` or `Work kind` written without the bold markers.
+- **E02** — `Depth`, `Target journeys`, `Required-still-passing journeys`, `Work kind` or `Side-effect policy` written without the bold markers.
 - **E03** — `Depth` is not `lean`, `full` or `evidence`.
 - **E04** — a `Target journeys:` line that names no `J-<n>` id.
 - **E05** — `Work kind` is not `implementation`, `evidence-only` or `verify-only`.
+- **E06** — `Side-effect policy` is not exactly `none` or `allowed` (put any reasoning in BACKGROUND, not on the line).
 - **E07** — `Depth: evidence` or `Work kind: evidence-only` while IN SCOPE plans real work. An evidence iteration dispatches no developer, so that work would never be built (this is the TenSteps iteration-7 loss). "Real work" means a concrete bullet under `### Backend` or `### Frontend`, **or** a loose bullet directly under `## IN SCOPE` that reads as construction. A loose bullet counts as harmless description only when it opens with capture/verification vocabulary, names no file or path, and contains no construction verb anywhere — so `- verify-only baseline` is fine, while `- review the flow and change login to persist tokens` is work however it opens. Unknown phrasing counts as work: put real items under `### Backend`/`### Frontend` and the question never arises.
 - **E08** — `Work kind: verify-only` with implementation work listed, structured or actionable-loose.
 - **E09** — a baseline (iteration 0) spec with implementation work, structured or actionable-loose. The engine knows the iteration is the baseline from its own state, so writing `Mode: next` does not avoid this.
 - **E10** — `Depth: evidence` after a prior `ESCALATE` verdict.
 - **E11** — `Depth: evidence` while one of your target journeys is not recorded passing.
+- **E13 / E14 / E15 / E16** — the side-effect contradictions; see "Side-effect policy" below. E15 is never re-planned: it halts the session at once.
 
-Warnings do not block: a missing `Work kind` line (the engine derives it from IN SCOPE), no `Target journeys:` line, `lean` after ESCALATE (the engine promotes it to full anyway), contract additions with no bullets to build them, bullets sitting loose under `## IN SCOPE`, a sentinel spec with no IN SCOPE at all, and `full` without a `Full trigger:` line.
+Warnings do not block: a missing `Work kind` line (the engine derives it from IN SCOPE), a missing `Side-effect policy` line (W02), no `Target journeys:` line, `lean` after ESCALATE (the engine promotes it to full anyway), contract additions with no bullets to build them, bullets sitting loose under `## IN SCOPE`, a sentinel spec with no IN SCOPE at all, `full` without a `Full trigger:` line, and the side-effect warnings W09 / W10 / W11 below.
 
 Self-check before you finish: **Work kind, Depth and IN SCOPE must agree.** If you listed a Backend or Frontend bullet, the work kind is `implementation` and the depth is `lean` or `full` — never `evidence`.
+
+## Side-effect policy (deterministic — HARD-3)
+
+Some journeys change persisted data as part of their own steps (J-04 "click Run" launches a run and appends a ledger row). Before you are dispatched, the engine builds a **side-effect ledger** for every journey and puts it in your prompt ("Side-effect ledger (deterministic, engine-built): … MUTATING / NONE / Unknown"). A journey is:
+
+- **MUTATING** — the owner declared `- Side effects: mutating — <note>` in `docs/goal.md`, OR a deterministic replay OBSERVED it send a POST/PUT/PATCH/DELETE. An observation always beats a `none` declaration.
+- **NONE** — the owner declared `- Side effects: none` and nothing was observed.
+- **Unknown** — no valid declaration and no observation.
+
+You never edit `docs/goal.md` to change these; you plan around them. Write exactly one of:
+
+- `- **Side-effect policy:** none` — ONLY when no target, required or make-up journey is MUTATING. An Unknown journey under `none` is a warning (W09), an error under the owner's strict mode (E14).
+- `- **Side-effect policy:** allowed` — whenever a journey this iteration executes changes data. Then every TC and DEFINITION OF DONE line must be an **invariant on PRE-EXISTING rows** ("no pre-existing ledger row is edited or deleted; J-04's own Run step may add its new row"), never "nothing changes".
+
+Whatever the policy line says, the engine also scans OUT OF SCOPE, every `TC-` line and DEFINITION OF DONE for explicit no-mutation prohibitions — "row/record/ledger count unchanged", "no new row/run/record", "ledger unchanged/frozen", "must not create/launch/append/write", "no write/mutation/launch", "Any new … run launch". Use those phrases only when you truly mean "the browser run must not change data", and never while a MUTATING journey is in the iteration. Scope exclusions about CODE ("no change to versions.py") are fine.
+
+The contradictions, in plain words:
+
+- **E13** — `policy none`, but a target/required/make-up journey is MUTATING. The error names the journey, why it is mutating (declared, or the observed request and iteration) and the step that mutates.
+- **E16** — an explicit prohibition meets a MUTATING journey. This fires under `allowed`, `none` or no policy line at all: changing `none` to `allowed` does NOT fix it — rewrite the prohibition as an invariant on pre-existing rows. This is exactly the TenSteps iteration-9 failure (OUT OF SCOPE "Any new portfolio run launch … ledger write" and a TC asserting "row count is unchanged", while target J-04's own step 1 clicks Run).
+- **E15** — `policy none` while the ledger itself is unavailable or incomplete. The engine halts (`GATE_BLOCKED`) without a re-plan; do not declare `none` when your prompt says the ledger is UNAVAILABLE or INCOMPLETE.
+- **W10** — a prohibition with only Unknown journeys in the iteration (E14 in strict mode). **W11** — the ledger is unavailable under `allowed`/no policy (dispatch continues).
+
+Fixing a side-effect error: declare `allowed` and rewrite the TC/DoD/OUT OF SCOPE line as an invariant, or drop the journey from **Target journeys**. **Never drop a Required-still-passing or make-up journey to dodge a conflict** — the error says so when the journey may not be dropped.
 
 ## Picking target journeys (priority rubric — apply top-down)
 
@@ -240,6 +267,7 @@ In `Mode: baseline` (iter 0), write a spec that:
 - Sets DEFINITION OF DONE to "every journey verified against current state, results recorded"
 - Notes in BACKGROUND that this is a baseline assessment, not a feature delivery
 - Sets the `Mode:` field of Goal Mode Metadata to `baseline`
+- Sets `Side-effect policy` from the ledger: the baseline executes EVERY journey, so write `allowed` unless the ledger lists every journey as NONE, and keep the TCs free of no-mutation prohibitions
 
 For an existing project, this is the moment that distinguishes "already implemented" from "yet to build" — the goal-evaluator will mark already-passing journeys as `already_passing` so subsequent iterations skip them.
 
@@ -253,7 +281,7 @@ Keep the blueprint to roughly one screen — human-reviewable in ~3 minutes. By 
 
 Always restate the anti-goals from `docs/goal.md` verbatim under Goal Mode Metadata. Even though every agent reads goal.md, repeating them in the iter spec keeps them salient for the developer and evaluator.
 
-## Pre-write self-check (before saving the spec — all six must hold)
+## Pre-write self-check (before saving the spec — all seven must hold)
 
 1. **Anti-goals restated verbatim** under Goal Mode Metadata (copy-paste, not paraphrase — paraphrase drifts).
 2. **Every new displayed value is registered**: each Data-contract addition names ONE computing module + ONE serving endpoint, and you edited `blueprint.md` to match. "None" is written explicitly when true.
@@ -261,6 +289,8 @@ Always restate the anti-goals from `docs/goal.md` verbatim under Goal Mode Metad
 4. **Depth is justified**: the evaluator's depth recommendation is binding by default — a full spec against a lean/evidence recommendation must satisfy an escape condition (prior ESCALATE/REGRESSION, prior coherence FAIL, cadence due, or a brand-new full-stack journey), not merely cite a trigger. Full cites which numbered trigger (1-4) in BACKGROUND AND carries the matching `Full trigger: <1|2|3|4> — <one-line reason>` metadata line (the engine demotes a full spec without it to lean); lean states "no full trigger holds" — needing unit tests is never the cited reason. ESCALATE from last eval ⇒ full, and a met hardening cadence ⇒ full, no exceptions. Neither `Depth enforcement:` nor `Maintenance isolation:` appears anywhere in the spec — they are operator-only lines and writing one is a self-granted exception (anti-pattern 25); the need goes in BACKGROUND prose instead.
 5. **Target selection followed the priority rubric** — if you deviated (e.g., skipped a regressed journey), the reason is stated in BACKGROUND.
 6. **Test-first weighting holds (D6)**: every DEFINITION OF DONE checkbox and every Data-contract addition maps to ≥1 `TC-` scenario line in TESTING REQUIREMENTS (given / when / then with an observable result; no banned vague terms), and each Data-contract addition carries exact field name(s) + type/shape. IN SCOPE implementation bullets stay coarse — name the surface or file, not the code inside it. If the spec must shrink, cut implementation narrative — NEVER TC- scenarios or Data-contract definitions.
+
+7. **Side effects are coherent**: the `Side-effect policy` line matches the ledger in your prompt (`none` only with no MUTATING target/required/make-up journey, never when the ledger is UNAVAILABLE/INCOMPLETE), and no OUT OF SCOPE / TC- / DoD line forbids a mutation that a MUTATING journey's own step performs — whatever the policy line says.
 
 If any check fails, fix the spec before writing it — downstream agents execute what you wrote, not what you meant.
 

@@ -110,6 +110,24 @@ your overall impression of the iteration.
    screenshot showing wrong behavior is a failure, not a capture defect; only presentation
    (range choice, crop, missing recording) can be defective while the behavior is confirmed.
 
+8. **Side effects (HARD-3).** When your prompt names a side-effect ledger
+   (`runs/goal-session-<sid>/iter-<N>/side-effects.json`, refreshed after this iteration's
+   replay), use it to separate a journey's OWN data changes from real problems:
+   - A MUTATING journey (declared by the owner, or OBSERVED by the deterministic replay —
+     the replay rows name it as `; side effects: N mutating request(s) (POST /api/…)`) that
+     creates or changes data in one of its numbered steps is behaving as specified. That
+     change is never, by itself, a failure or a regression.
+   - When the iteration spec forbids that change (a TC asserting "row count unchanged", an
+     OUT OF SCOPE "no new run"), the SPEC contradicts the journey. Record a
+     **spec/journey contradiction** (Summary + assumptions.md), score the TC on the invariant
+     that matters — no PRE-EXISTING row edited or deleted — and do not mark the journey
+     `failing` for it. The preflight should normally have blocked such a spec, so say that
+     it reached execution.
+   - A mutation that is NOT one of the journey's numbered steps (the LLM lane changed data it
+     was not asked to), or an edit to pre-existing rows, stays a real finding.
+   - `Unknown` means nobody declared the journey and no replay observed it; it is not
+     evidence either way.
+
 ## B. Anti-goal checklist (per category — answer each with yes/no + citation)
 
 Work from `scan-report.md` + `iter-diff.md` (fallback: your own bounded diff). For EACH
@@ -171,7 +189,7 @@ maintenance isolation, the lane was withheld by contract rather than skipped by 
 every journey keeps its prior status (A3, second carve-out). The test is the DECLARED reason,
 never the bare absence of a row.
 
-## E. Pre-finalize self-check (all five, in your head, before writing eval.md)
+## E. Pre-finalize self-check (all six, in your head, before writing eval.md)
 
 1. **Consistency**: does the verdict I'm about to write follow from the journey-history I
    just wrote via the decision tree? (E.g., any `regressed` status ⇒ verdict must be
@@ -183,5 +201,8 @@ never the bare absence of a row.
 4. **Coherence**: is coherence.md's verdict reflected — and vetoing — per the tree?
 5. **Honesty**: is anything I couldn't verify marked `unknown` rather than guessed? If a
    screenshot contradicted prose anywhere, did the screenshot win?
+6. **Side effects**: did I score every data change a MUTATING journey's own step made as
+   expected behaviour — and name any spec/journey contradiction (A.8) instead of failing the
+   journey or ignoring the contradiction?
 
 If any answer is "no", fix the evaluation — do not ship it with a caveat.

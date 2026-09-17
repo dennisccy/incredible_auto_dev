@@ -29,11 +29,30 @@ consolidation are HARD-2 concerns):
 
     iter_spec.py lint <spec> [--prior-verdict V] [--mode-expected baseline|next]
                              [--journey-history P] [--json-out P]
+                             [--side-effects LEDGER] [--strict-side-effects]
+                             [--makeup-journeys J-01,J-02]
         exit 0  clean, or warnings only
         exit 1  at least one deterministic ERROR — the spec must not dispatch
         exit 2  unreadable spec (the caller fails closed; see run-goal.sh's
                 CHAIN_SPEC_LINT block mode)
         stdout  one `[spec-lint] ERROR|WARN <rule>: <msg>` line per finding.
+        HARD-3: `Side-effect policy` is a machine field (E02/E06/W02 always run).
+        With --side-effects (the engine's iter-<N>/side-effects.json ledger,
+        lib/goal_gate.py side-effects) the contradiction preflight also runs over
+        targets ∪ required ∪ make-up journeys: E13 (policy none vs a MUTATING
+        journey), E15 (policy none but the ledger is unavailable or incomplete —
+        fail closed, never re-planned), E16 (an explicit no-mutation prohibition
+        in OUT OF SCOPE / a TC- line / DEFINITION OF DONE vs a MUTATING journey —
+        whatever the policy says), W09/W10 (unknown journeys under policy none /
+        under a prohibition; E14 with --strict-side-effects), W11 (ledger
+        unavailable under an allowed or absent policy).
+
+    iter_spec.py side-effect-context --mode lane|evaluator|decomposer
+                             --side-effects LEDGER [--spec P] [--makeup-journeys CSV]
+        exit 0 always. Prints the engine-built side-effect prompt context, or
+        NOTHING when no context applies (lane/evaluator prompts then stay
+        byte-identical): a lane/evaluator block needs a readable ledger AND a
+        declared policy or a MUTATING journey in the spec's journey set.
 
     iter_spec.py self-test
 
@@ -159,14 +178,19 @@ _FIELDS: dict[str, str] = {
     "target_journeys": "Target journeys",
     "required_journeys": "Required-still-passing journeys",
     "work_kind": "Work kind",
+    "side_effect_policy": "Side-effect policy",
     "frontend_present": "Frontend Present",
 }
 # Fields whose canonical form the lint enforces (E02). Session ID / Iteration /
 # Full trigger / Frontend Present are informational and are not bold-enforced.
-_BOLD_ENFORCED = ("depth", "target_journeys", "required_journeys", "work_kind")
+_BOLD_ENFORCED = ("depth", "target_journeys", "required_journeys", "work_kind", "side_effect_policy")
 
 _VALID_DEPTH = ("lean", "full", "evidence")
 _VALID_WORK_KIND = ("implementation", "evidence-only", "verify-only")
+# HARD-3: `none` = no target/required journey executed this iteration mutates
+# persisted state; `allowed` = journey mutations are expected (TCs must then be
+# invariants on PRE-EXISTING rows). Absent = unspecified (W02).
+_VALID_POLICY = ("none", "allowed")
 _VALID_MODE = ("baseline", "next")
 _JOURNEY_ID_RE = re.compile(r"J-\d+")
 # Operator-only lines the decomposer may never write but a RESUMED spec may
@@ -280,6 +304,7 @@ def read_metadata(spec_text: str) -> dict:
         "mode": _norm(values.get("mode")),
         "depth": _norm(values.get("depth")),
         "work_kind": _norm(values.get("work_kind")),
+        "side_effect_policy": _norm(values.get("side_effect_policy")),
         "full_trigger": values.get("full_trigger"),
         "frontend_present": (True if fp in ("yes", "true") else False if fp in ("no", "false") else None),
         "target_journeys": _JOURNEY_ID_RE.findall(values.get("target_journeys") or ""),
@@ -303,23 +328,29 @@ _RULE_TEXT = {
     "E03": "depth-invalid",
     "E04": "targets-empty",
     "E05": "workkind-invalid",
-    # E06 (policy-invalid) is RESERVED for HARD-3's `Side-effect policy` field.
-    # E12 sits BELOW HARD-3's reserved E13-E16 block, so HARD-3 needs no renumbering.
+    "E06": "policy-invalid",                                  # HARD-3
     "E07": "evidence-with-implementation",
     "E08": "verify-only-with-implementation",
     "E09": "baseline-with-implementation",
     "E10": "evidence-after-escalate",
     "E11": "evidence-target-not-passing",
     "E12": "metadata-field-conflict",
+    # HARD-3 contradiction preflight (need the engine's side-effect ledger).
+    "E13": "policy-none-vs-mutating-journey",
+    "E14": "unknown-journey-under-strict-side-effects",
+    "E15": "policy-none-ledger-unavailable",
+    "E16": "explicit-prohibition-vs-mutating-journey",
     "W01": "workkind-missing",
-    # W02 (policy-missing) is RESERVED for HARD-3.
+    "W02": "policy-missing",                                  # HARD-3
     "W03": "targets-line-absent",
     "W04": "lean-after-escalate",
     "W05": "contract-additions-without-bullets",
     "W06": "loose-in-scope-bullets",
     "W07": "sentinel-spec",
     "W08": "full-without-trigger",
-    # W09-W11 are RESERVED for HARD-3's side-effect warnings.
+    "W09": "policy-none-with-unknown-journeys",               # HARD-3
+    "W10": "prohibition-with-unknown-journeys",               # HARD-3
+    "W11": "side-effect-ledger-unavailable",                  # HARD-3
     "W12": "field-shadowed-outside-metadata",
 }
 
@@ -440,14 +471,341 @@ def _passing_targets(history_path: str, targets: list[str]) -> list[str]:
     return bad
 
 
+# ── HARD-3: side-effect contradiction preflight ─────────────────────────────
+# The spec's machine policy and its explicit deterministic mutation constraints
+# must agree with the journeys it executes BEFORE any browser dispatch. The
+# journey statuses come from the engine-built ledger (lib/goal_gate.py
+# side-effects): owner declaration in docs/goal.md + replay observation, with an
+# observed mutation always outranking a `none` declaration. The policy line can
+# only ADD a contradiction (E13/E15) — it can never excuse one (E16 ignores it).
+_SIDE_EFFECT_STATUSES = ("none", "mutating", "unknown")
+# Explicit no-mutation prohibitions (plan WP3, matched case-insensitively, one
+# finding per line) — scanned ONLY in `## OUT OF SCOPE`, on `TC-<n>` lines and in
+# `## DEFINITION OF DONE`. GOAL / BACKGROUND / NOTES prose is never a machine
+# constraint.
+_PROHIBITION_RES: tuple = (
+    ("row-count-unchanged",
+     re.compile(r"\b(?:row|record|ledger)s?\s+count\s+(?:is\s+|stays\s+|remains\s+|was\s+)?unchanged\b", re.I)),
+    ("no-new-row-run-record",
+     re.compile(r"\bno\s+new\s+(?:rows?|runs?|records?|ledger\s+(?:rows?|entry|entries))\b", re.I)),
+    ("ledger-unchanged",
+     re.compile(r"\bledger\s+(?:is\s+|stays\s+|remains\s+)?(?:unchanged|frozen)\b", re.I)),
+    ("must-not-mutate",
+     re.compile(r"\bmust\s+not\s+(?:create|launch|append|write)\b", re.I)),
+    ("no-write-mutation-launch",
+     re.compile(r"\bno\s+(?:writes?|mutations?|launch(?:es)?)\b(?![-\w])", re.I)),
+    ("any-new-run-launch",
+     re.compile(r"\bany\s+new\s+(?:[\w-]+\s+){0,3}?run\s+launch(?:es)?\b", re.I)),
+)
+_TC_LINE_RE = re.compile(r"^\s*(?:[-*+]\s+)?(?:\*\*)?(?P<tc>TC-\d+)\b", re.I)
+_FENCE_LINE_RE = re.compile(r"^\s*(```|~~~)")
+_PROHIBITION_SECTIONS = ("OUT OF SCOPE", "DEFINITION OF DONE")
+
+
+def find_mutation_prohibitions(spec_text: str) -> list[dict]:
+    """[{section, line, text, pattern, match}] — section is 'OUT OF SCOPE',
+    'DEFINITION OF DONE' or the TC id ('TC-4')."""
+    found: list[dict] = []
+    section = None
+    in_fence = False
+    for i, line in enumerate(spec_text.splitlines(), 1):
+        if _FENCE_LINE_RE.match(line):
+            in_fence = not in_fence
+            continue
+        if in_fence:
+            continue
+        h2 = _H2_LINE_RE.match(line)
+        if h2:
+            section = h2.group(1).strip().upper()
+            continue
+        tc = _TC_LINE_RE.match(line)
+        if tc:
+            label = tc.group("tc").upper()
+        elif section in _PROHIBITION_SECTIONS:
+            label = section
+        else:
+            continue
+        for name, rx in _PROHIBITION_RES:
+            m = rx.search(line)
+            if m:
+                text = line.strip()
+                found.append({"section": label, "line": i, "pattern": name, "match": m.group(0),
+                              "text": text if len(text) <= 240 else text[:239] + "…"})
+                break
+    return found
+
+
+def load_side_effect_ledger(path: str | None) -> dict:
+    """{availability: ok|incomplete|unavailable, reason, ledger}. NEVER raises;
+    anything that is not a well-formed, complete ledger is reported as such so a
+    restrictive policy can fail closed on it (E15)."""
+    def _bad(reason: str) -> dict:
+        return {"availability": "unavailable", "reason": reason, "ledger": None}
+    if not path:
+        return _bad("no ledger path was given")
+    try:
+        with open(path, encoding="utf-8") as fh:
+            raw = fh.read()
+    except OSError as exc:
+        return _bad(f"cannot read it: {exc.strerror or exc}")
+    try:
+        data = json.loads(raw)
+    except ValueError as exc:
+        return _bad(f"not valid JSON: {exc}")
+    if not isinstance(data, dict) or not isinstance(data.get("journeys"), dict):
+        return _bad("wrong shape (no 'journeys' object)")
+    for jid, j in data["journeys"].items():
+        if not isinstance(j, dict) or j.get("status") not in _SIDE_EFFECT_STATUSES:
+            return _bad(f"journey {jid} has no usable status")
+    if data.get("complete") is not True:
+        errs = data.get("errors") if isinstance(data.get("errors"), list) else []
+        return {"availability": "incomplete",
+                "reason": "; ".join(str(e) for e in errs) or "the ledger is marked incomplete",
+                "ledger": data}
+    return {"availability": "ok", "reason": "", "ledger": data}
+
+
+def _journey_roles(md: dict, makeup: list[str]) -> dict[str, set]:
+    roles: dict[str, set] = {}
+    for j in md["target_journeys"]:
+        roles.setdefault(j, set()).add("target")
+    for j in md["required_journeys"]:
+        roles.setdefault(j, set()).add("required")
+    for j in makeup:
+        roles.setdefault(j, set()).add("make-up")
+    return roles
+
+
+def _role_text(roles: set) -> str:
+    return "/".join(r for r in ("target", "required", "make-up") if r in roles)
+
+
+def _observed_sample(rec: dict) -> tuple[str, str]:
+    sample = next((f"{r.get('method')} {r.get('path')}" for r in rec.get("requests") or []
+                   if isinstance(r, dict) and r.get("class") == "mutating"), "a mutating request")
+    if rec.get("observed_iter") is not None:
+        when = f"iter-{rec['observed_iter']}"
+    else:
+        when = rec.get("observed_iter_name") or "an earlier iteration"
+    return sample, when
+
+
+def _mutating_desc(jid: str, rec: dict, roles: set) -> str:
+    src = []
+    if rec.get("declared") == "mutating":
+        src.append("declared mutating" + (f": '{rec['note']}'" if rec.get("note") else ""))
+    if rec.get("observed_mutating"):
+        sample, when = _observed_sample(rec)
+        src.append(f"observed {sample} in {when}")
+    hints = rec.get("step_hints") or []
+    hint = f"; its step {hints[0]['n']}: '{hints[0]['text']}'" if hints else ""
+    return f"{_role_text(roles)} journey {jid} is MUTATING ({'; '.join(src) or 'ledger status mutating'}{hint})"
+
+
+def _conflict_fix(jids: list[str], roles: dict[str, set]) -> str:
+    pinned = [j for j in jids if roles[j] & {"required", "make-up"}]
+    base = ("Fix: declare '- **Side-effect policy:** allowed' and phrase every TC / DEFINITION OF DONE line "
+            "that assumes nothing changes as an invariant on PRE-EXISTING rows (e.g. 'no pre-existing ledger "
+            "row is edited or deleted; the journey's own step may add a new row')")
+    if pinned:
+        kinds = "Required-still-passing or engine-scheduled make-up"
+        return (f"{base}. {', '.join(pinned)} {'is a' if len(pinned) == 1 else 'are'} {kinds} "
+                f"journey{'' if len(pinned) == 1 else 's'} and may NOT be dropped to dodge the conflict.")
+    return f"{base}, or drop it from Target journeys (never from Required-still-passing)."
+
+
+def side_effect_findings(spec_text: str, md: dict, ledger_path: str | None, strict: bool,
+                         makeup: list[str], err, warn) -> dict:
+    """Append the HARD-3 findings through err()/warn(); return the report block."""
+    policy_raw = md.get("side_effect_policy")
+    policy = policy_raw if policy_raw in _VALID_POLICY else None
+    roles = _journey_roles(md, makeup)
+    checked = list(roles)
+    info = load_side_effect_ledger(ledger_path)
+    avail = info["availability"]
+    ledger = info["ledger"] or {}
+    recs = ledger.get("journeys") or {}
+    if avail == "unavailable":
+        statuses = {j: "unavailable" for j in checked}
+    else:
+        statuses = {j: (recs.get(j) or {}).get("status", "unknown") for j in checked}
+    mutating = [j for j in checked if statuses[j] == "mutating"]
+    unknown = [j for j in checked if statuses[j] == "unknown"]
+    prohibitions = find_mutation_prohibitions(spec_text)
+    ledger_ref = ledger_path or "(none)"
+    reproduce = ("Reproduce: python3 scripts/automation/lib/goal_gate.py side-effects docs/goal.md "
+                 "--sidecar runs/goal-session-<sid>/state/journey-side-effects.json")
+
+    if avail != "ok":
+        what = "could not be built or read" if avail == "unavailable" else "is INCOMPLETE"
+        if policy == "none":
+            err("E15", f"'Side-effect policy: none' is declared, but the deterministic side-effect ledger "
+                       f"{ledger_ref} {what} ({info['reason']}). A restrictive policy is never trusted "
+                       f"without its evidence source, so the session stops here (not re-planned) — fix the "
+                       f"ledger input, then resume. {reproduce}")
+        else:
+            warn("W11", f"the deterministic side-effect ledger {ledger_ref} {what} ({info['reason']}); the "
+                        f"policy is '{policy_raw or 'not declared'}', so dispatch continues, but journeys whose "
+                        f"status could not be established are not checked against this spec. {reproduce}")
+
+    if policy == "none":
+        for j in mutating:
+            err("E13", "Side-effect policy: none, but " + _mutating_desc(j, recs[j], roles[j])
+                + " — a browser lane executing it WILL change persisted data. " + _conflict_fix([j], roles))
+
+    if avail != "unavailable":
+        undeclared_hint = ("declare their '- Side effects:' lines in docs/goal.md "
+                           "(python3 scripts/automation/lib/goal_gate.py side-effects docs/goal.md --suggest)")
+        if policy == "none" and unknown:
+            msg = (f"Side-effect policy: none, but {', '.join(unknown)} "
+                   f"{'has' if len(unknown) == 1 else 'have'} no known side-effect status (no valid declaration "
+                   f"and no replay observation), so the policy cannot be verified for "
+                   f"{'it' if len(unknown) == 1 else 'them'} — {undeclared_hint}")
+            if strict:
+                err("E14", "strict side-effect mode (CHAIN_SIDE_EFFECT_STRICT=true): " + msg)
+            else:
+                warn("W09", msg + ". CHAIN_SIDE_EFFECT_STRICT=true makes this an error")
+        if prohibitions and mutating:
+            descs = "; ".join(_mutating_desc(j, recs[j], roles[j]) for j in mutating)
+            for p in prohibitions:
+                err("E16", f"{p['section']} (line {p['line']}) forbids a mutation ('{p['text']}') but {descs}. "
+                           f"The Side-effect policy line ('{policy_raw or 'absent'}') cannot resolve this: the "
+                           f"spec forbids what its own journey does. " + _conflict_fix(mutating, roles))
+        elif prohibitions and unknown:
+            p = prohibitions[0]
+            msg = (f"{p['section']} (line {p['line']}) forbids a mutation ('{p['text']}') but "
+                   f"{', '.join(unknown)} {'has' if len(unknown) == 1 else 'have'} an unknown side-effect "
+                   f"status, so the prohibition cannot be checked against "
+                   f"{'it' if len(unknown) == 1 else 'them'} — {undeclared_hint}")
+            if strict:
+                err("E14", "strict side-effect mode (CHAIN_SIDE_EFFECT_STRICT=true): " + msg)
+            else:
+                warn("W10", msg)
+
+    return {
+        "ledger": ledger_path,
+        "availability": avail,
+        "reason": info["reason"],
+        "policy": policy,
+        "policy_raw": policy_raw,
+        "strict": bool(strict),
+        "journeys_checked": checked,
+        "roles": {j: sorted(r) for j, r in roles.items()},
+        "statuses": statuses,
+        "mutating": mutating,
+        "unknown": unknown,
+        "none": [j for j in checked if statuses[j] == "none"],
+        "prohibitions": prohibitions,
+        "declaration_digest": ledger.get("declaration_digest"),
+    }
+
+
+# Prompt-context text. The lane and evaluator rules are the plan's wording
+# verbatim (WP3 "Prompt injections"); a test pins them.
+_LANE_RULE = (
+    "Execute every numbered step EXACTLY as written even when it creates or changes data. Do not fail the "
+    "journey merely because one of its own declared numbered steps mutates state; if that required mutation "
+    "conflicts with the iteration spec, report it in the row's Actual cell as a spec/journey contradiction "
+    "(the deterministic preflight should normally have blocked it before execution). Never perform a mutation "
+    "that is not a numbered step. In each row's Actual cell name any create/update/delete you performed or "
+    "write \"no data changed\".")
+_EVAL_RULE = (
+    "Do not fail the product journey merely because one of its own declared numbered steps mutates state. If "
+    "that required mutation conflicts with the iteration spec, classify it as a spec/journey contradiction "
+    "rather than a product regression (the deterministic preflight should normally have blocked it before "
+    "execution); score such a TC on the invariant that matters (no PRE-EXISTING row edited) and name the "
+    "contradiction in Summary and assumptions.md — never ignore an actual spec contradiction.")
+_DECOMPOSER_RULE = (
+    "Side-effect rule (BINDING — the deterministic spec lint enforces it before anything is dispatched): write "
+    "'- **Side-effect policy:** none' only when NO target, required or make-up journey is MUTATING (E13); an "
+    "Unknown journey under 'none' is a warning (an error in strict mode). When any of them changes persisted "
+    "data, write '- **Side-effect policy:** allowed' and phrase every TC and DEFINITION OF DONE line as an "
+    "invariant on PRE-EXISTING rows (\"no pre-existing ledger row is edited or deleted\"). Whatever the policy "
+    "says, never put a no-mutation prohibition in OUT OF SCOPE, a TC- line or DEFINITION OF DONE — "
+    "\"row/record/ledger count unchanged\", \"no new row/run/record\", \"ledger unchanged/frozen\", "
+    "\"must not create/launch/append/write\", \"no write/mutation/launch\", \"Any new ... run launch\" — while a "
+    "MUTATING journey is in the iteration (E16). Never drop a Required-still-passing journey to avoid a conflict.")
+
+
+def _status_list(jids: list[str], recs: dict, with_source: bool) -> str:
+    out = []
+    for j in jids:
+        rec = recs.get(j) or {}
+        if not with_source:
+            out.append(j)
+            continue
+        src = []
+        if rec.get("declared") == "mutating":
+            src.append("declared")
+        if rec.get("observed_mutating"):
+            sample, when = _observed_sample(rec)
+            src.append(f"observed {sample} in {when}")
+        out.append(f"{j} ({'; '.join(src)})" if src else j)
+    return ", ".join(out) or "(none)"
+
+
+def render_side_effect_context(mode: str, ledger_path: str | None, spec_text: str | None = None,
+                               makeup: list[str] | None = None) -> str:
+    info = load_side_effect_ledger(ledger_path)
+    ledger = info["ledger"] or {}
+    recs = ledger.get("journeys") or {}
+    digest = (ledger.get("declaration_digest") or "")[:12]
+    if mode == "decomposer":
+        if info["availability"] == "unavailable":
+            return ("Side-effect ledger (deterministic, engine-built): UNAVAILABLE this iteration "
+                    f"({info['reason']}) — do NOT write '- **Side-effect policy:** none': a restrictive policy "
+                    "without its deterministic ledger fails closed (E15).\n" + _DECOMPOSER_RULE)
+        allj = list(recs)
+        line = (f"Side-effect ledger (deterministic, engine-built): {ledger_path} — "
+                f"MUTATING: {_status_list([j for j in allj if recs[j]['status'] == 'mutating'], recs, True)}; "
+                f"NONE: {_status_list([j for j in allj if recs[j]['status'] == 'none'], recs, False)}; "
+                f"Unknown: {_status_list([j for j in allj if recs[j]['status'] == 'unknown'], recs, False)}; "
+                f"declaration digest {digest or '(none)'}.")
+        if info["availability"] == "incomplete":
+            line += (f" INCOMPLETE ({info['reason']}) — do NOT write '- **Side-effect policy:** none' this "
+                     "iteration (E15).")
+        return line + "\n" + _DECOMPOSER_RULE
+    if info["availability"] == "unavailable":
+        return ""
+    md = read_metadata(spec_text) if spec_text is not None else None
+    policy = md["side_effect_policy"] if md and md["side_effect_policy"] in _VALID_POLICY else None
+    if md is not None:
+        relevant = list(_journey_roles(md, list(makeup or [])))
+    else:
+        relevant = list(recs)
+    status = {j: (recs.get(j) or {}).get("status", "unknown") for j in relevant}
+    mut = [j for j in relevant if status[j] == "mutating"]
+    if policy is None and not mut:
+        return ""
+    lists = (f"MUTATING: {_status_list(mut, recs, True)}; "
+             f"NONE: {_status_list([j for j in relevant if status[j] == 'none'], recs, False)}; "
+             f"Unknown: {_status_list([j for j in relevant if status[j] == 'unknown'], recs, False)}")
+    policy_txt = policy or "not declared"
+    if mode == "lane":
+        return ("SIDE-EFFECT CONTEXT (deterministic, engine-built): spec Side-effect policy: "
+                f"{policy_txt}; {lists}.\n{_LANE_RULE}")
+    extra = ""
+    if info["availability"] == "incomplete":
+        extra += f"; INCOMPLETE ledger ({info['reason']})"
+    if ledger.get("declaration_digest_changed_this_iter"):
+        extra += f"; declarations changed this iteration (previous digest {(ledger.get('declaration_digest_prev') or '')[:12]})"
+    return (f"  Side-effect ledger (deterministic): {ledger_path} <-- policy: {policy_txt}; {lists}; "
+            f"declaration digest {digest or '(none)'}{extra}. {_EVAL_RULE}")
+
+
 def lint_spec(
     spec_text: str,
     *,
     prior_verdict: str | None = None,
     mode_expected: str | None = None,
     journey_history: str | None = None,
+    side_effects: str | None = None,
+    strict_side_effects: bool = False,
+    makeup_journeys: list[str] | None = None,
 ) -> dict:
-    """Pure lint. Returns {errors:[{rule,name,msg}], warnings:[...], metadata:{...}}."""
+    """Pure lint. Returns {errors:[{rule,name,msg}], warnings:[...], metadata:{...},
+    side_effects: {...} | None}. The HARD-3 ledger rules run only when
+    `side_effects` (the ledger path) is given."""
     md = read_metadata(spec_text)
     scope = md["in_scope"]
     errors: list[dict] = []
@@ -498,6 +856,16 @@ def lint_spec(
         err("E05", f"Work kind '{md['work_kind']}' is not one of {list(_VALID_WORK_KIND)}")
     if not md["present"].get("work_kind"):
         warn("W01", f"no 'Work kind:' line; derived from IN SCOPE as '{md['work_kind_derived']}'")
+
+    # HARD-3: the side-effect policy is a machine field in its own right.
+    if md["present"].get("side_effect_policy") and md["side_effect_policy"] not in _VALID_POLICY:
+        err("E06", f"Side-effect policy '{md['side_effect_policy']}' is not one of {list(_VALID_POLICY)} — write "
+                   "exactly '- **Side-effect policy:** none' or '- **Side-effect policy:** allowed' and put any "
+                   "reasoning in BACKGROUND")
+    if not md["present"].get("side_effect_policy"):
+        warn("W02", "no 'Side-effect policy:' line — write '- **Side-effect policy:** none' when no target or "
+                    "required journey may change persisted data this iteration, or 'allowed' when a journey's own "
+                    "steps create or change data (every TC must then be an invariant on PRE-EXISTING rows)")
 
     n = f"{scope['backend_bullets']} backend / {scope['frontend_bullets']} frontend / {scope['loose_bullets']} loose"
     # The three content-contradiction ERRORs key on STRUCTURED work — a bullet
@@ -563,8 +931,14 @@ def lint_spec(
     if md["depth"] == "full" and not md["present"].get("full_trigger"):
         warn("W08", "Depth: full without a 'Full trigger:' line naming which numbered trigger applies")
 
+    side_effects_report = None
+    if side_effects is not None:
+        side_effects_report = side_effect_findings(spec_text, md, side_effects, strict_side_effects,
+                                                   list(makeup_journeys or []), err, warn)
+
     return {"errors": errors, "warnings": warnings, "metadata": md,
-            "work_kind_derived": md["work_kind_derived"], "input_error": input_error}
+            "work_kind_derived": md["work_kind_derived"], "input_error": input_error,
+            "side_effects": side_effects_report}
 
 
 def _read_spec(path: str) -> str:
@@ -584,6 +958,8 @@ def cmd_metadata(path: str) -> int:
 
 _FIELD_ALIASES = {
     "depth": "depth", "mode": "mode", "work_kind": "work_kind", "work-kind": "work_kind",
+    "side_effect_policy": "side_effect_policy", "side-effect-policy": "side_effect_policy",
+    "side-effect_policy": "side_effect_policy",
     "full_trigger": "full_trigger", "full-trigger": "full_trigger",
     "target_journeys": "target_journeys", "target-journeys": "target_journeys",
     "required_journeys": "required_journeys", "required-journeys": "required_journeys",
@@ -629,16 +1005,29 @@ def cmd_field(argv: list[str]) -> int:
     return 0
 
 
-def cmd_lint(argv: list[str]) -> int:
-    path = argv[0]
-    opts: dict[str, str] = {}
-    i = 1
-    while i < len(argv) - 1:
-        if argv[i] in ("--prior-verdict", "--mode-expected", "--journey-history", "--json-out"):
+_LINT_VALUED = ("--prior-verdict", "--mode-expected", "--journey-history", "--json-out",
+                "--side-effects", "--makeup-journeys")
+_LINT_FLAGS = ("--strict-side-effects",)
+
+
+def _parse_opts(argv: list[str], valued: tuple, flags: tuple) -> dict:
+    opts: dict = {}
+    i = 0
+    while i < len(argv):
+        if argv[i] in valued and i + 1 < len(argv):
             opts[argv[i]] = argv[i + 1]
             i += 2
+        elif argv[i] in flags:
+            opts[argv[i]] = True
+            i += 1
         else:
             i += 1
+    return opts
+
+
+def cmd_lint(argv: list[str]) -> int:
+    path = argv[0]
+    opts = _parse_opts(argv[1:], _LINT_VALUED, _LINT_FLAGS)
     try:
         text = _read_spec(path)
     except OSError as exc:
@@ -649,6 +1038,9 @@ def cmd_lint(argv: list[str]) -> int:
         prior_verdict=opts.get("--prior-verdict"),
         mode_expected=opts.get("--mode-expected"),
         journey_history=opts.get("--journey-history"),
+        side_effects=opts.get("--side-effects"),
+        strict_side_effects=bool(opts.get("--strict-side-effects")),
+        makeup_journeys=_JOURNEY_ID_RE.findall(opts.get("--makeup-journeys") or ""),
     )
     for f in res["errors"]:
         print(f"[spec-lint] ERROR {f['rule']} {f['name']}: {f['msg']}")
@@ -716,16 +1108,19 @@ _FIXTURES: dict[str, tuple[str, int, dict]] = {
 
 
 def _md(depth: str = "lean", work_kind: str = "", extra: str = "", mode: str = "next",
-        targets: str = "J-01, J-02") -> str:
+        targets: str = "J-01, J-02", policy: str = "") -> str:
     """Build a metadata block. Every field stays INSIDE the metadata section —
     a `- **Work kind:** x` bullet appended after `## IN SCOPE` would land under
     `### Frontend` and be counted, correctly, as a concrete frontend bullet."""
     wk = f"- **Work kind:** {work_kind}\n" if work_kind else ""
+    pol = f"- **Side-effect policy:** {policy}\n" if policy else ""
     return ("## Goal Mode Metadata\n\n- **Session ID:** s\n- **Iteration:** 3\n"
             f"- **Mode:** {mode}\n- **Depth:** {depth}\n- **Target journeys:** {targets}\n"
-            f"- **Required-still-passing journeys:** J-03\n{wk}{extra}")
+            f"- **Required-still-passing journeys:** J-03\n{wk}{pol}{extra}")
 _WORK = "\n## IN SCOPE\n### Backend\n- [ ] add the endpoint\n### Frontend\n- none\n"
 _NOWORK = "\n## IN SCOPE\n### Backend\n- none\n### Frontend\n- N/A\n"
+_PROHIBIT = ("\n## OUT OF SCOPE\n- Any new portfolio run launch, sweep, or ledger write\n"
+             "\n## TESTING REQUIREMENTS\n- TC-4: given the replay, when it ends, then the ledger row count is unchanged\n")
 
 # (spec text, kwargs, expected rc, rule ids that MUST appear, rule ids that must NOT)
 _LINT_FIXTURES: dict[str, tuple[str, dict, int, tuple[str, ...], tuple[str, ...]]] = {
@@ -824,6 +1219,44 @@ _LINT_FIXTURES: dict[str, tuple[str, dict, int, tuple[str, ...], tuple[str, ...]
         2, ("INPUT",), ()),
     "E11 clean when every target passes": (
         _md("evidence", "evidence-only") + _NOWORK, {"journey_history": "@HIST_OK@"}, 0, (), ("E11",)),
+    # HARD-3: the policy field.
+    "E06 invalid side-effect policy": (
+        _md("lean", "implementation", policy="nothing") + _WORK, {}, 1, ("E06",), ()),
+    "W02 missing side-effect policy": (_md("lean", "implementation") + _WORK, {}, 0, ("W02",), ("E06",)),
+    "a declared policy is not W02": (
+        _md("lean", "implementation", policy="allowed") + _WORK, {}, 0, (), ("W02", "E06")),
+    # HARD-3: the contradiction preflight (ledger fixtures below).
+    "E13 policy none vs a declared-mutating target": (
+        _md("lean", "verify-only", policy="none") + _NOWORK, {"side_effects": "@LED_MUT@"}, 1, ("E13",), ("E16",)),
+    "policy allowed over a mutating target with no prohibition is clean": (
+        _md("lean", "verify-only", policy="allowed") + _NOWORK, {"side_effects": "@LED_MUT@"}, 0, (),
+        ("E13", "E16", "W09", "W10")),
+    "E16 prohibition vs a mutating target under policy allowed": (
+        _md("lean", "verify-only", policy="allowed") + _NOWORK + _PROHIBIT,
+        {"side_effects": "@LED_MUT@"}, 1, ("E16",), ("E13",)),
+    "E16 prohibition vs a mutating target with the policy absent": (
+        _md("lean", "verify-only") + _NOWORK + _PROHIBIT, {"side_effects": "@LED_MUT@"}, 1, ("E16", "W02"), ()),
+    "E16 and E13 under policy none": (
+        _md("lean", "verify-only", policy="none") + _NOWORK + _PROHIBIT,
+        {"side_effects": "@LED_MUT@"}, 1, ("E16", "E13"), ()),
+    "W10 prohibition with only unknown journeys": (
+        _md("lean", "verify-only", policy="allowed") + _NOWORK + _PROHIBIT,
+        {"side_effects": "@LED_UNK@"}, 0, ("W10",), ("E16", "E14")),
+    "W09 policy none with unknown journeys": (
+        _md("lean", "verify-only", policy="none") + _NOWORK, {"side_effects": "@LED_UNK@"}, 0, ("W09",), ("E14",)),
+    "E14 unknown journeys under strict mode": (
+        _md("lean", "verify-only", policy="none") + _NOWORK,
+        {"side_effects": "@LED_UNK@", "strict_side_effects": True}, 1, ("E14",), ("W09",)),
+    "E15 policy none with no ledger": (
+        _md("lean", "verify-only", policy="none") + _NOWORK, {"side_effects": "@LED_ABSENT@"}, 1, ("E15",), ()),
+    "E15 policy none with an incomplete ledger": (
+        _md("lean", "verify-only", policy="none") + _NOWORK, {"side_effects": "@LED_INCOMPLETE@"}, 1,
+        ("E15",), ()),
+    "W11 policy allowed with no ledger": (
+        _md("lean", "verify-only", policy="allowed") + _NOWORK, {"side_effects": "@LED_ABSENT@"}, 0,
+        ("W11",), ("E15",)),
+    "no ledger flag -> no ledger rules": (
+        _md("lean", "verify-only", policy="none") + _NOWORK + _PROHIBIT, {}, 0, (), ("E13", "E15", "E16")),
 }
 
 
@@ -843,11 +1276,27 @@ def _lint_self_test() -> int:
     with open(f"{tmp}/HIST_BAD_JSON.json", "w", encoding="utf-8") as fh:
         fh.write("{ not json at all")
     hists["@HIST_BAD_JSON@"] = None
+    # HARD-3 ledgers: J-01 declared mutating (a target in every fixture).
+    def _led(status1: str, complete: bool = True) -> dict:
+        rec = {"status": status1, "declared": "mutating" if status1 == "mutating" else None,
+               "note": "launches a run", "observed_mutating": False,
+               "step_hints": [{"n": 1, "text": "click Run", "words": ["run"]}]}
+        return {"complete": complete, "errors": [] if complete else ["sidecar unreadable"],
+                "declaration_digest": "0" * 64,
+                "journeys": {"J-01": rec, "J-02": {"status": "unknown"}, "J-03": {"status": "unknown"}}}
+    ledgers = {"@LED_MUT@": _led("mutating"), "@LED_UNK@": _led("unknown"),
+               "@LED_INCOMPLETE@": _led("mutating", complete=False)}
+    for token, payload in ledgers.items():
+        with open(f"{tmp}/{token.strip('@')}.json", "w", encoding="utf-8") as fh:
+            json.dump(payload, fh)
     for name, (text, kwargs, want_rc, must, must_not) in _LINT_FIXTURES.items():
         kwargs = dict(kwargs)
         jh = kwargs.get("journey_history")
         if jh in hists:
             kwargs["journey_history"] = f"{tmp}/{jh.strip('@')}.json"
+        se = kwargs.get("side_effects")
+        if isinstance(se, str) and se.startswith("@"):
+            kwargs["side_effects"] = f"{tmp}/{se.strip('@')}.json"
         res = lint_spec(text, **kwargs)
         got = {f["rule"] for f in res["errors"]} | {f["rule"] for f in res["warnings"]}
         rc = 2 if res["input_error"] else (1 if res["errors"] else 0)
@@ -856,11 +1305,27 @@ def _lint_self_test() -> int:
         ok = rc == want_rc and all(r in got for r in must) and not any(r in got for r in must_not)
         print(f"  {'PASS' if ok else 'FAIL'}  lint: {name} (rc={rc}, want {want_rc}; rules={sorted(got)})")
         fails += 0 if ok else 1
-    # Reserved for HARD-3 — must not be emitted by HARD-2.
-    for reserved in ("E06", "W02"):
-        if reserved in _RULE_TEXT:
-            print(f"  FAIL  lint: {reserved} is reserved for HARD-3 and must not be implemented here")
+    # HARD-3 owns the ids HARD-2 reserved for it; the block must be complete.
+    for rule in ("E06", "E13", "E14", "E15", "E16", "W02", "W09", "W10", "W11"):
+        if rule not in _RULE_TEXT:
+            print(f"  FAIL  lint: HARD-3 rule {rule} is not implemented")
             fails += 1
+    # The prompt context is byte-identical-safe: nothing when nothing applies.
+    unk = f"{tmp}/LED_UNK.json"
+    if render_side_effect_context("lane", unk, _md("lean", "verify-only") + _NOWORK) != "":
+        print("  FAIL  context: no policy + no mutating journey must render NOTHING")
+        fails += 1
+    lane = render_side_effect_context("lane", f"{tmp}/LED_MUT.json", _md("lean", "verify-only") + _NOWORK)
+    if not (lane.startswith("SIDE-EFFECT CONTEXT (deterministic, engine-built): spec Side-effect policy: "
+                            "not declared; MUTATING: J-01 (declared)") and _LANE_RULE in lane):
+        print(f"  FAIL  context: lane block for a mutating target ({lane!r})")
+        fails += 1
+    if render_side_effect_context("evaluator", f"{tmp}/LED_ABSENT.json", _md("lean", policy="none")) != "":
+        print("  FAIL  context: an unavailable ledger renders nothing in the evaluator prompt")
+        fails += 1
+    if "UNAVAILABLE" not in render_side_effect_context("decomposer", f"{tmp}/LED_ABSENT.json"):
+        print("  FAIL  context: the decomposer is told when the ledger is unavailable")
+        fails += 1
     print(f"iter_spec lint self-test: {'OK' if fails == 0 else 'FAILED'} "
           f"({len(_LINT_FIXTURES) - fails}/{len(_LINT_FIXTURES)})")
     return 1 if fails else 0
@@ -878,7 +1343,34 @@ def _self_test() -> int:
     return 1 if (fails or _lint_self_test()) else 0
 
 
+def cmd_side_effect_context(argv: list[str]) -> int:
+    """Prints the engine-built side-effect prompt context (or nothing). Never
+    fails the caller: any problem prints nothing and exits 0."""
+    opts = _parse_opts(argv, ("--mode", "--side-effects", "--spec", "--makeup-journeys"), ())
+    mode = opts.get("--mode", "lane")
+    if mode not in ("lane", "evaluator", "decomposer"):
+        print(f"iter_spec: unknown --mode {mode!r}", file=sys.stderr)
+        return 0
+    spec_text = None
+    if opts.get("--spec"):
+        try:
+            spec_text = _read_spec(opts["--spec"])
+        except OSError:
+            spec_text = None
+    try:
+        text = render_side_effect_context(mode, opts.get("--side-effects"), spec_text,
+                                          _JOURNEY_ID_RE.findall(opts.get("--makeup-journeys") or ""))
+    except Exception as exc:  # noqa: BLE001 — a prompt helper must never break a dispatch
+        print(f"iter_spec: side-effect context unavailable: {exc}", file=sys.stderr)
+        return 0
+    if text:
+        print(text)
+    return 0
+
+
 def main(argv: list[str]) -> int:
+    if argv and argv[0] == "side-effect-context":
+        return cmd_side_effect_context(argv[1:])
     if len(argv) >= 2 and argv[0] == "has-implementation-work":
         return cmd_has_implementation_work(argv[1])
     if len(argv) >= 2 and argv[0] == "metadata":

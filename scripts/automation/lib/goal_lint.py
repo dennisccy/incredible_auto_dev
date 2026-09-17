@@ -31,6 +31,20 @@ are quality signals:
                              word pair) but the Product Shape section is
                              absent or has no concrete content (an explicit
                              "none" counts as concrete)
+    ERROR side-effects-invalid  (HARD-3) a journey's optional
+                             `- Side effects: none | mutating — <note>` line
+                             is malformed: another value (there is no
+                             `read-only`), a wrong label, a missing dash
+                             before the note, or more than one line. The
+                             engine reads it as `unknown` (a clearly stated
+                             `mutating` still counts as mutating).
+    WARN  side-effects-undeclared  (HARD-3) a journey with no `Side effects:`
+                             line whose numbered steps name a state-changing
+                             action (create/submit/save/delete/run/launch/
+                             upload/edit/update/post; code spans ignored) —
+                             it stays `unknown` to the spec preflight.
+                             `goal_gate.py side-effects docs/goal.md --suggest`
+                             prints paste-ready lines.
 
 Exit codes: 0 clean, 1 warnings only, 2 structural errors (including
 unreadable file). Output: one line per finding + a summary; silent when
@@ -47,7 +61,8 @@ import sys
 from collections import namedtuple
 from pathlib import Path
 
-from goal_gate import _journey_blocks
+from goal_gate import (_journey_blocks, journey_step_hints, parse_side_effect_declarations,
+                       side_effect_journey_blocks)
 
 Finding = namedtuple("Finding", "severity rule line message")  # line: int|None
 
@@ -240,6 +255,37 @@ def lint_text(text: str) -> list[Finding]:
                     "veto rule (prohibition or measurable bound)",
                 ))
 
+    # side-effects-invalid (ERROR) / side-effects-undeclared (WARN) — HARD-3.
+    # The declaration parser and the step heuristic are goal_gate's (one source).
+    decls = parse_side_effect_declarations(text)
+    reported: set[str] = set()
+    for jid, start, end in side_effect_journey_blocks(text):
+        d = decls.get(jid)
+        if d is None or jid in reported:
+            continue
+        block_line0 = text.count("\n", 0, start) + 1
+        if not d["valid"]:
+            reported.add(jid)
+            first = d["lines"][0]["index"] if d["lines"] else 0
+            findings.append(Finding(
+                "ERROR", "side-effects-invalid", block_line0 + first,
+                f"journey {jid}: {'; '.join(d['errors'])} — the engine reads this journey as "
+                f"{d['declared'] or 'unknown'} (allowed: '- Side effects: none' or "
+                "'- Side effects: mutating — <what it creates or changes>')",
+            ))
+        elif not d["lines"]:
+            hints = journey_step_hints(text[start:end], cap=1)
+            if hints:
+                h = hints[0]
+                reported.add(jid)
+                findings.append(Finding(
+                    "WARN", "side-effects-undeclared", block_line0 + h["line"],
+                    f"journey {jid} step {h['n']} names a state-changing action "
+                    f"({', '.join(h['words'])}: '{h['text']}') but the journey has no 'Side effects:' "
+                    "line — add '- Side effects: mutating — <what it creates or changes>' (or "
+                    "'- Side effects: none — <why>'); until then the spec preflight treats it as unknown",
+                ))
+
     # product-shape-empty (WARN): >=2 journeys naming the same value/metric is
     # exactly the "same number differs across pages" risk the Product Shape
     # section exists to prevent.
@@ -337,12 +383,14 @@ A local-first notes app for one user.
     1. Visit `/notes`
     2. Click "New note", type "Milk", press Enter
   - Acceptance: the notes list gains a row titled "Milk" and the unread count reads 1
+  - Side effects: mutating — adds a note row
 
 - **J-02: Archive a note**
   - Steps:
     1. Visit `/notes`
     2. Click the archive icon on the "Milk" row
   - Acceptance: the row moves to the Archive tab and the unread count reads 0
+  - Side effects: mutating — moves the row to the archive
 
 ## Anti-goals
 
@@ -492,6 +540,27 @@ def _self_test() -> int:
     assert _by_rule(lint_text(distinct), "product-shape-empty") == [], \
         "no shared value/metric phrase → empty shape is fine (section is optional)"
     # clean fixture already covers: shared phrase + concrete content → no warning
+
+    # 7b. HARD-3 side-effects rules
+    bad_decl = _CLEAN.replace("  - Side effects: mutating — adds a note row",
+                              "  - Side effects: read-only")
+    f = lint_text(bad_decl)
+    b = _by_rule(f, "side-effects-invalid")
+    assert len(b) == 1 and b[0].severity == "ERROR" and "J-01" in b[0].message, f
+    assert bad_decl.splitlines()[b[0].line - 1].strip() == "- Side effects: read-only", b[0].line
+    assert exit_code(f) == 2
+    undeclared = _CLEAN.replace("  - Side effects: mutating — adds a note row\n", "").replace(
+        '    2. Click "New note", type "Milk", press Enter', '    2. Click "New note", type "Milk", click Save')
+    f = lint_text(undeclared)
+    u = _by_rule(f, "side-effects-undeclared")
+    assert len(u) == 1 and u[0].severity == "WARN" and "J-01" in u[0].message and "step 2" in u[0].message, f
+    assert undeclared.splitlines()[u[0].line - 1].strip().startswith("2. Click"), u[0].line
+    quiet = _CLEAN.replace("  - Side effects: mutating — adds a note row\n", "")
+    assert _by_rule(lint_text(quiet), "side-effects-undeclared") == [], \
+        "steps that name no state-changing action are not flagged"
+    code_only = quiet.replace("    1. Visit `/notes`", "    1. Visit `/notes/run-log`")
+    assert _by_rule(lint_text(code_only), "side-effects-undeclared") == [], \
+        "words inside code spans are never scanned"
 
     # 8. file-level exit codes through run_lint
     with tempfile.TemporaryDirectory() as tmp:
