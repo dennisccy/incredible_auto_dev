@@ -267,7 +267,8 @@ def _normalize_text(block: str) -> str:
     return "\n".join(lines)
 
 
-def _normalize_block(block: str, fenced: "list[bool] | None" = None) -> str:
+def _normalize_block(block: str, fenced: "list[bool] | None" = None,
+                     attributed: "set[int] | None" = None) -> str:
     """_normalize_text of a journey block minus its well-formed declarations.
 
     HARD-3 (certification path, owner-approved D.3): a WELL-FORMED
@@ -280,22 +281,35 @@ def _normalize_block(block: str, fenced: "list[bool] | None" = None) -> str:
     "well-formed" is parse_side_effect_declarations' own (one regex, one rule).
     `fenced` carries the DOCUMENT's code-fence flags for these lines, so a line
     is judged exactly as the declaration parser judges it (a block may start or
-    end inside a fence); without it the block's own fences are paired."""
+    end inside a fence); without it the block's own fences are paired.
+
+    HARD-3 revision 9 (B2): well-formedness is not enough. A line is hash-neutral
+    only where the side-effect model ACCOUNTS for it, so `attributed` (the
+    block-relative indices of the lines a side-effect view covers — see
+    declaration_attribution) narrows the drop set. An ORPHANED declaration, one
+    the certified splitter puts in this block but no side-effect view reads,
+    therefore stays in the hash and editing it is drift. Without the set (a
+    caller that cannot align the block's lines with the document's) nothing is
+    dropped: keeping a line is always the safe direction."""
     lines = _split_lines(block)
     drop = _well_formed_declaration_indices(lines, fenced)
+    drop &= attributed if attributed is not None else set()
     return _normalize_text("\n".join(ln for i, ln in enumerate(lines) if i not in drop))
 
 
 def _journey_hashes(text: str) -> dict[str, str]:
     """sha256 hex of each journey block's normalized text, keyed by J-NN."""
     flags = fenced_line_flags(text.split("\n"))
+    attributed = declaration_attribution(text)["attributed"]
     out: dict[str, str] = {}
     for jid, start, end in _journey_blocks(text):
         block = text[start:end]
         first = text.count("\n", 0, start)
         n = block.count("\n") + 1
-        fenced = flags[first:first + n] if len(_split_lines(block)) == n else None
-        out[jid] = hashlib.sha256(_normalize_block(block, fenced).encode("utf-8")).hexdigest()
+        aligned = len(_split_lines(block)) == n
+        fenced = flags[first:first + n] if aligned else None
+        own = {i for i in range(n) if first + i in attributed} if aligned else None
+        out[jid] = hashlib.sha256(_normalize_block(block, fenced, own).encode("utf-8")).hexdigest()
     return out
 
 
@@ -864,6 +878,54 @@ def side_effect_journey_views_all(text: str) -> list[dict]:
     return views
 
 
+def declaration_attribution(text: str) -> dict:
+    """Where every declaration-shaped line of goal.md lands.
+
+    {"attributed": {line index: journey id}, "orphans": [{index, jid, text}]},
+    line indices over the newline-normalised document.
+
+    ATTRIBUTED = a side-effect view covers the line — a live journey definition,
+    or the fail-closed extra view of a fenced / undefined header — so the
+    declaration parser reads its value and declaration_digest carries it.
+
+    An ORPHAN is a declaration-shaped line OUTSIDE every view: the certified
+    splitter (_journey_blocks, which runs a block on to the next header or
+    heading) and the side-effect splitter (which stops an unreadable header's
+    view at the end of its own list ITEM) disagree about where a journey ends,
+    so the line's meaning reaches nothing. `jid` names the certified journey
+    block that holds it — the innermost, when blocks nest — or is None when no
+    certified block does.
+
+    HARD-3 revision 9 (B2): the binding invariant is that a declaration never
+    disappears from the certified hash while being absent from the declaration
+    digest. Orphans are what used to fall through both, so _journey_hashes keeps
+    them in the hash, parse_side_effect_declarations reports an owned one as a
+    stated value (provenance only: a 'mutating' counts, a 'none' never does) and
+    build_side_effect_ledger fails an unowned one closed."""
+    norm = _norm_newlines(text)
+    lines = norm.split("\n")
+    attributed: dict[int, str] = {}
+    for v in side_effect_journey_views_all(norm):
+        first = norm.count("\n", 0, v["start"])
+        for i, _m in _declaration_line_matches(_block_lines(v["own"]), fenced=v["fenced"]):
+            attributed.setdefault(first + i, v["jid"])
+    offsets, pos = [], 0
+    for ln in lines:
+        offsets.append(pos)
+        pos += len(ln) + 1
+    blocks = _journey_blocks(norm)
+    orphans = []
+    for i, _m in _declaration_line_matches(lines):
+        if i in attributed:
+            continue
+        holder = None
+        for jid, start, end in blocks:
+            if start <= offsets[i] < end:
+                holder = jid                       # blocks nest: the last match is the innermost
+        orphans.append({"index": i, "jid": holder, "text": lines[i]})
+    return {"attributed": attributed, "orphans": orphans}
+
+
 def side_effect_journey_own_blocks(text: str) -> list[tuple[str, int, int, str, bool]]:
     """(journey_id, start, end, own_text, duplicate) per journey definition —
     see side_effect_journey_views (offsets refer to the newline-normalised
@@ -878,6 +940,11 @@ _AMBIGUOUS_FENCED_LINE_ERROR = ("a 'Side effects: mutating' line in this journey
 _AMBIGUOUS_ERROR = ("a header for this journey id also sits inside what the parser reads as a code fence, so its "
                     "'Side effects:' lines cannot be attributed with certainty: a 'none' does not count, a "
                     "'mutating' does — rename the example's id, or close a stray fence above it")
+_ORPHAN_ERROR = ("a 'Side effects:' line inside this journey's certified block belongs to no journey definition the "
+                 "side-effect parser can read, so it is not this journey's declaration: it counts only as a stated "
+                 "value (a 'mutating' does, a 'none' does not) and it stays in the journey's spec_hash, so editing "
+                 "it reads as goal drift — write the declaration as a list item inside the journey's own "
+                 "'- **J-NN: …**' item, and close any stray ``` / ~~~ fence above it")
 
 
 def parse_side_effect_declarations(text: str) -> dict[str, dict]:
@@ -887,10 +954,11 @@ def parse_side_effect_declarations(text: str) -> dict[str, dict]:
     declaration_hash (None when the journey has no declaration line)}; each
     line's `index` is relative to the journey block's first line. `declared`
     comes only from the journey's own definition(s). An id with an extra view
-    (side_effect_journey_views_all), or whose live block holds a `mutating` line
-    only a fence-ignoring read sees, also carries `unattributed` or `ambiguous`,
-    `attribution_reason` and `stated_values` — the values stated anywhere for
-    it, provenance only."""
+    (side_effect_journey_views_all), whose live block holds a `mutating` line
+    only a fence-ignoring read sees, or whose certified block holds an ORPHANED
+    declaration (declaration_attribution) also carries `unattributed`,
+    `ambiguous` or `orphaned`, `attribution_reason` and `stated_values` — the
+    values stated anywhere for it, provenance only."""
     live: dict[str, list[dict]] = {}
     extra: dict[str, list[dict]] = {}
     kinds: dict[str, tuple[str, str]] = {}
@@ -915,6 +983,26 @@ def parse_side_effect_declarations(text: str) -> dict[str, dict]:
         if "mutating" in values and jid not in kinds \
                 and "mutating" not in {f["value"] for f in live.get(jid, [])}:
             kinds[jid] = ("ambiguous", "fenced-declaration")
+    # An ORPHANED declaration — inside a journey's certified block, read by no
+    # side-effect view — is provenance, never the owner's declaration: it joins
+    # the journey's stated values (so a `mutating` still counts and the digest
+    # carries it), marks the journey `orphaned`, and invalidates its declaration.
+    # `kinds` gets the marker only when nothing else already explains the id, so
+    # the more specific reason (a fenced header, an ambiguous id) still wins.
+    orphaned: set[str] = set()
+    for o in declaration_attribution(text)["orphans"]:
+        jid = o["jid"]
+        if not jid:
+            continue                     # no certified block owns it: build_side_effect_ledger fails it closed
+        found = [_parse_declaration_line(o["index"], m)
+                 for _i, m in _declaration_line_matches([o["text"]], fenced=[False])]
+        if not found:
+            continue
+        if jid not in order:
+            order.append(jid)
+        extra.setdefault(jid, []).extend(found)
+        kinds.setdefault(jid, ("orphaned", "orphaned-declaration"))
+        orphaned.add(jid)
     out: dict[str, dict] = {}
     for jid in order:
         d = _effective_declaration(live.get(jid, []), duplicate_block=jid in dup)
@@ -931,6 +1019,10 @@ def parse_side_effect_declarations(text: str) -> dict[str, dict]:
             if kind == "ambiguous":
                 d["errors"].append(_AMBIGUOUS_FENCED_LINE_ERROR if reason == "fenced-declaration" else _AMBIGUOUS_ERROR)
                 d["valid"] = False
+        if jid in orphaned:
+            d["orphaned"] = True
+            d["errors"].append(_ORPHAN_ERROR)
+            d["valid"] = False
         out[jid] = d
     return out
 
@@ -1016,7 +1108,8 @@ def _readonly_token(ro: dict):
 def declaration_digest(decls: dict[str, dict], ro: dict) -> str:
     items = []
     for jid, d in sorted(decls.items()):
-        marker = "ambiguous" if d.get("ambiguous") else ("unattributed" if d.get("unattributed") else None)
+        marker = ("ambiguous" if d.get("ambiguous") else "unattributed" if d.get("unattributed")
+                  else "orphaned" if d.get("orphaned") else None)
         if marker:
             items.append([jid, d["declared"] or "unknown", d["note"], d["declaration_hash"],
                           f"{marker}:{d.get('attribution_reason')}", d.get("stated_values") or [],
@@ -1203,6 +1296,15 @@ def build_side_effect_ledger(goal_text: str, sidecar=None, readonly_path=None, *
                              side_effect_ignore_paths, side_effect_ignore_paths_report)
     errors: list[str] = []
     decls = parse_side_effect_declarations(goal_text)
+    # HARD-3 revision 9 (B2): a declaration-shaped line that no journey block
+    # holds at all cannot be attributed to any journey and cannot be protected by
+    # any spec_hash, so the ledger fails closed on it instead of ignoring it.
+    for o in declaration_attribution(goal_text)["orphans"]:
+        if not o["jid"]:
+            errors.append(f"goal.md line {o['index'] + 1} states a side effect "
+                          f"({' '.join(o['text'].split())!r}) outside every journey block, so it belongs to no "
+                          "journey and no spec_hash covers it — move it into the journey's "
+                          "'- **J-NN: …**' item, or delete it")
     views: dict[str, dict] = {}
     for v in side_effect_journey_views_all(goal_text):
         views.setdefault(v["jid"], v)
@@ -1239,10 +1341,11 @@ def build_side_effect_ledger(goal_text: str, sidecar=None, readonly_path=None, *
         established = not unestablished and not o["error"]
         observed = o["observed_mutating"]
         unattr, ambiguous = bool(d.get("unattributed")), bool(d.get("ambiguous"))
+        orphaned = bool(d.get("orphaned"))
         stated = d.get("stated_values") or []
         if observed or d["declared"] == "mutating" or "mutating" in stated:
             status = "mutating"
-        elif d["declared"] == "none" and established and not ambiguous:
+        elif d["declared"] == "none" and established and not ambiguous and not orphaned:
             status = "none"
         else:
             status = "unknown"   # includes a `none` whose observations cannot be read, or an ambiguous one
@@ -1254,6 +1357,8 @@ def build_side_effect_ledger(goal_text: str, sidecar=None, readonly_path=None, *
             source = "ambiguous"
         elif unattr:
             source = "unattributed"
+        elif orphaned:
+            source = "orphaned"
         elif d["declared"] == "none" and not established:
             source = "declared-unverified"
         elif d["declared"]:
@@ -1284,9 +1389,10 @@ def build_side_effect_ledger(goal_text: str, sidecar=None, readonly_path=None, *
             "auth_ignored": o["auth_ignored"],
             # any block that says `none` for an observed journey is a conflict (POSSIBLE when uncertain)
             "declaration_conflict": bool(observed and (
-                d["declared"] == "none" or ((unattr or ambiguous) and "none" in stated))),
+                d["declared"] == "none" or ((unattr or ambiguous or orphaned) and "none" in stated))),
             "unattributed": unattr,
             "ambiguous": ambiguous,
+            "orphaned": orphaned,
             "attribution_reason": d.get("attribution_reason"),
             "stated_values": stated,
             "status": status,
@@ -1478,8 +1584,12 @@ def record_side_effect_declarations(sidecar_path, ledger: dict, iter_n, iter_nam
 
 
 def attribution_problem(j: dict) -> str:
-    """Plain words for an unattributed or ambiguous ledger entry (goal-lint and --suggest)."""
+    """Plain words for an unattributed, ambiguous or orphaned ledger entry (goal-lint and --suggest)."""
     reason = j.get("attribution_reason")
+    if reason == "orphaned-declaration":
+        return ("a 'Side effects:' line inside its certified block belongs to no journey definition the parser can "
+                "read — write it as a list item inside the journey's own '- **J-NN: …**' item, and close any stray "
+                "``` / ~~~ line above it")
     if j.get("ambiguous") and reason == "fenced-declaration":
         return ("a 'Side effects: mutating' line in it sits inside what the parser reads as a code fence, so it "
                 "counts as mutating — move the example out of the journey, or close a stray ``` / ~~~ line above it")

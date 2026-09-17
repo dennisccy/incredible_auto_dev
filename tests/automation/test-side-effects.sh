@@ -595,6 +595,124 @@ case("D30: the certified hash is the pre-HARD-3 hash for shapes without well-for
      and h_step["J-05"] == legacy_hashes(step_fence.replace("  - Side effects: none\n", ""))["J-05"]
      and G._journey_hashes(step_fence.replace("\n", "\r\n")) == h_step
      and G._journey_hashes(step_fence.replace("launches a run", "launches two runs"))["J-04"] != h_step["J-04"])
+# --- D31: HARD-3 revision 9, blocker B2 -------------------------------------
+# A declaration must never disappear from the certified journey hash while being
+# absent from the declaration digest.  The reproduction: J-01 forgets a fence
+# closer, J-02's own fence closes it, and J-02's declaration follows at column 0
+# (FLAT style), outside the extent of any side-effect view.
+import goal_lint as GL
+B2_HEAD = "# Goal\n\nA console.\n\n## Must-have user journeys\n\n"
+B2_TAIL = "\n## Anti-goals\n\n- no paid SaaS\n"
+B2_FLAT = (B2_HEAD + "- **J-01: Open the page**\n- Steps:\n1. Visit `/`\n  ```text\n  GET / 200\n"
+           "- **J-02: Replay a portfolio**\n- Steps:\n1. Open Backtests, click Run\n  ```\n"
+           "- Side effects: {v} - launches a run\n" + B2_TAIL)
+B2_NESTED = (B2_HEAD + "- **J-01: Open the page**\n  - Steps:\n    1. Visit `/`\n    ```text\n    GET / 200\n"
+             "- **J-02: Replay a portfolio**\n  - Steps:\n    1. Open Backtests, click Run\n    ```\n"
+             "  - Side effects: {v} - launches a run\n" + B2_TAIL)
+B2_CLOSED = (B2_HEAD + "- **J-01: Open the page**\n- Steps:\n1. Visit `/`\n  ```text\n  GET / 200\n  ```\n"
+             "- **J-02: Replay a portfolio**\n- Steps:\n1. Open Backtests, click Run\n"
+             "- Side effects: {v} - launches a run\n" + B2_TAIL)
+B2_ATTRIBUTED = (B2_HEAD + "- **J-01: Open the page**\n  - Steps:\n    1. Visit `/`\n\n"
+                 "- **J-02: Replay a portfolio**\n  - Steps:\n    1. Open Backtests, click Run\n"
+                 "  - Side effects: {v} - launches a run\n" + B2_TAIL)
+B2_FENCED_EXAMPLE = (B2_HEAD + "- **J-02: Replay a portfolio**\n  - Steps:\n    1. Open Backtests, click Run\n"
+                     "  - Side effects: {v} - launches a run\n  - The template reads:\n    ```markdown\n"
+                     "    - Side effects: none\n    ```\n" + B2_TAIL)
+B2_OUTSIDE = (B2_HEAD + "- **J-02: Replay a portfolio**\n  - Steps:\n    1. Open Backtests, click Run\n"
+              "  - Side effects: mutating - launches a run\n" + B2_TAIL + "\n- Side effects: {v} - stray line\n")
+def b2(doc, v="mutating"):
+    t = doc.format(v=v)
+    d = G.parse_side_effect_declarations(t)
+    return {"text": t, "hashes": G._journey_hashes(t), "decls": d,
+            "digest": G.declaration_digest(d, {"sha256": None}),
+            "ledger": G.build_side_effect_ledger(t),
+            "lint": GL.lint_text(t)}
+def b2_moves(doc):
+    """(hash moved, digest moved) when the declaration flips mutating -> none."""
+    a, b = b2(doc, "mutating"), b2(doc, "none")
+    return a["hashes"] != b["hashes"], a["digest"] != b["digest"]
+def b2_rules(r, rule):
+    return [f for f in r["lint"] if f.rule == rule]
+flat, nested, closed = b2(B2_FLAT), b2(B2_NESTED), b2(B2_CLOSED)
+case("D31: the B2 document (flat item, unclosed fence, declaration at column 0) keeps the orphaned line in the "
+     "certified hash AND carries it in the declaration digest — it never vanishes from both",
+     b2_moves(B2_FLAT) == (True, True))
+case("D31b: ... its stated 'mutating' is not lost: J-02 reads mutating, from a stated value, never as a declaration",
+     flat["ledger"]["journeys"]["J-02"]["status"] == "mutating"
+     and flat["decls"]["J-02"]["declared"] is None
+     and flat["decls"]["J-02"]["stated_values"] == ["mutating"]
+     and flat["decls"]["J-02"]["stated_hash"])
+case("D31c: ... and flipping it to 'none' never makes J-02 'none' (a stated none is not trusted)",
+     b2(B2_FLAT, "none")["ledger"]["journeys"]["J-02"]["status"] == "unknown")
+case("D31d: the nested-style variant and the correctly-closed flat document keep the revision-8 contract: "
+     "the declaration is hash-neutral and digest-visible",
+     b2_moves(B2_NESTED) == (False, True) and b2_moves(B2_CLOSED) == (False, True)
+     and nested["ledger"]["journeys"]["J-02"]["status"] == "mutating"
+     and closed["decls"]["J-02"]["declared"] == "mutating" and closed["decls"]["J-02"]["valid"])
+attributed = b2(B2_ATTRIBUTED)
+case("D31e: a well-formed ATTRIBUTED declaration is unchanged — hash-neutral, digest-visible, no orphan finding",
+     b2_moves(B2_ATTRIBUTED) == (False, True)
+     and attributed["decls"]["J-02"]["declared"] == "mutating" and attributed["decls"]["J-02"]["valid"]
+     and not attributed["decls"]["J-02"].get("orphaned") and not b2_rules(attributed, "side-effects-orphaned"))
+mal = b2(B2_ATTRIBUTED.replace("- Side effects: {v} - launches a run", "- Side effects: {v}: launches a run"))
+mal2 = b2(B2_ATTRIBUTED.replace("- Side effects: {v} - launches a run", "- Side effects: {v} - x"), "read-only")
+case("D31f: a MALFORMED declaration is still journey text, not an orphan (editing it stays drift)",
+     b2_moves(B2_ATTRIBUTED.replace("- Side effects: {v} - launches a run",
+                                    "- Side effects: {v}: launches a run")) == (True, True)
+     and mal["decls"]["J-02"]["valid"] is False and not mal["decls"]["J-02"].get("orphaned")
+     and mal2["decls"]["J-02"]["declared"] is None and not b2_rules(mal, "side-effects-orphaned"))
+dupdoc = B2_ATTRIBUTED.replace("## Anti-goals", "- **J-02: Replay again**\n  - Steps:\n    1. Visit `/r`\n"
+                               "  - Side effects: none\n\n## Anti-goals")
+dup2 = b2(dupdoc)
+case("D31g: a duplicate journey id is still a duplicate-declaration error, not an orphan",
+     dup2["decls"]["J-02"]["valid"] is False and not dup2["decls"]["J-02"].get("orphaned")
+     and not b2_rules(dup2, "side-effects-orphaned"))
+example = b2(B2_FENCED_EXAMPLE)
+case("D31h: a declaration genuinely inside an example fence is neither read nor an orphan, and stays in the hash",
+     example["decls"]["J-02"]["declared"] == "mutating" and example["decls"]["J-02"]["valid"]
+     and not b2_rules(example, "side-effects-orphaned")
+     and G._journey_hashes(B2_FENCED_EXAMPLE.format(v="mutating"))["J-02"]
+     != G._journey_hashes(B2_FENCED_EXAMPLE.format(v="mutating").replace(
+         "    - Side effects: none\n", "    - Side effects: mutating\n"))["J-02"])
+outside = b2(B2_OUTSIDE)
+case("D31i: a declaration outside EVERY journey block belongs to no journey: the ledger fails closed on it and "
+     "goal-lint reports it as an error (no spec_hash can protect it)",
+     outside["ledger"]["complete"] is False
+     and any("outside every journey block" in e for e in outside["ledger"]["errors"])
+     and [f.severity for f in b2_rules(outside, "side-effects-orphaned")] == ["ERROR"])
+case("D31j: goal-lint names the orphan, the journey it lands in and what the preflight actually reads",
+     [f.severity for f in b2_rules(flat, "side-effects-orphaned")] == ["ERROR"]
+     and "J-02" in b2_rules(flat, "side-effects-orphaned")[0].message
+     and "reads J-02 as mutating" in b2_rules(flat, "side-effects-orphaned")[0].message
+     and "goal drift" in b2_rules(flat, "side-effects-orphaned")[0].message)
+case("D31k: goal-lint's unattributed message states what was FOUND, never that an absent 'mutating' is trusted",
+     "recovered from a line the parser cannot attribute"
+     in b2_rules(flat, "side-effects-unattributed")[0].message
+     and "no 'Side effects:' line it can attribute"
+     in b2_rules(b2(B2_FLAT.replace("- Side effects: {v} - launches a run", "- Notes: {v}")),
+                 "side-effects-unattributed")[0].message)
+case("D31l: the B2 document's hashes are CRLF-stable and unmoved by formatting-only edits",
+     G._journey_hashes(B2_FLAT.format(v="mutating").replace("\n", "\r\n"))
+     == G._journey_hashes(B2_FLAT.format(v="mutating"))
+     and G._journey_hashes(B2_FLAT.format(v="mutating").replace("\n", "  \n"))
+     == G._journey_hashes(B2_FLAT.format(v="mutating")))
+j2_led = flat["ledger"]["journeys"]["J-02"]
+case("D31n: the journey that owns the orphan is marked `orphaned`, its declaration is invalid, and the E16/E13 "
+     "diagnostics name BOTH the root cause (the fenced header) and the stray line",
+     flat["decls"]["J-02"]["orphaned"] is True and flat["decls"]["J-02"]["valid"] is False
+     and j2_led["orphaned"] is True and j2_led["status"] == "mutating"
+     and "its only header sits inside a code fence" in IS._mutating_desc("J-02", j2_led, {"target"})
+     and "sits inside no journey definition" in IS._mutating_desc("J-02", j2_led, {"target"})
+     and "cannot be tied to it with certainty" in IS._mutating_desc("J-02", j2_led, {"target"})
+     and "no definition of its own" not in IS._mutating_desc("J-02", j2_led, {"target"}))
+case("D31m: every declaration-shaped line is either attributed to a view or reported as an orphan",
+     all(sorted({i for i, _m in G._declaration_line_matches(G._norm_newlines(t).split("\n"))})
+         == sorted(set(G.declaration_attribution(t)["attributed"])
+                   | {o["index"] for o in G.declaration_attribution(t)["orphans"]})
+         for t in (B2_FLAT.format(v="mutating"), B2_NESTED.format(v="mutating"),
+                   B2_CLOSED.format(v="none"), B2_FENCED_EXAMPLE.format(v="mutating"),
+                   B2_OUTSIDE.format(v="none"), dupdoc.format(v="mutating"))))
+
 bor_goal = ("# Goal\n\n## Must-have user journeys\n\n"
             "- **J-01: Checkout**\n  1. Open /cart and click **Pay**\n  - Acceptance: listed\n"
             "  - Side effects: mutating — places an order\n\n"
@@ -1238,6 +1356,30 @@ for pol in allowed none -; do
     && assert "L8[$pol]: TenSteps iter-9 OUT OF SCOPE + TC-4 vs mutating J-04 -> E16 per prohibition, naming J-04's step (policy '$pol')" "pass" \
     || assert "L8[$pol]: iter-9 contradiction (rc=$LINT_RC n16=$_n16; $LINT_OUT)" "fail"
 done
+# HARD-3 revision 9 (blocker B1): the same contradiction with a POSSESSIVE run
+# object — the reviewer's two reproduced wordings, verbatim.
+POSS_OOS='- Launching the user'"'"'s portfolio runs — the confirm pass reads existing runs only.'
+POSS_TC='- TC-4: given J-04'"'"'s stored golden script, when replayed, then the cited run is shown and the replay does not launch J-04'"'"'s run.'
+for pol in allowed none -; do
+  spec "$SPECS/l8b-$pol.md" "$pol" "J-04" "J-02" "$POSS_OOS" "$POSS_TC"
+  lint "$SPECS/l8b-$pol.md" --side-effects "$LED_DECL"
+  _n16="$(printf '%s' "$LINT_OUT" | grep -cE '^\[spec-lint\] ERROR E16 ' || true)"
+  _ok=n
+  [[ "$LINT_RC" == "1" && "${_n16:-0}" -ge 2 ]] \
+    && printf '%s' "$LINT_OUT" | grep -E '^\[spec-lint\] ERROR E16 ' | grep -q "user's portfolio runs" \
+    && printf '%s' "$LINT_OUT" | grep -E '^\[spec-lint\] ERROR E16 ' | grep -q "launch J-04's run" && _ok=y
+  [[ "$pol" == "none" ]] && { has_rule E13 || _ok=n; }
+  [[ "$_ok" == y ]] \
+    && assert "L8b[$pol]: a possessive run object (OOS \"Launching the user's portfolio runs\", TC \"does not launch J-04's run\") is E16 exactly like its plain form (policy '$pol')" "pass" \
+    || assert "L8b[$pol]: possessive run object (rc=$LINT_RC n16=${_n16:-0}; $LINT_OUT)" "fail"
+done
+spec "$SPECS/l8c.md" allowed "J-04" "J-02" \
+  '- Launching the user'"'"'s portfolio runs beyond J-04'"'"'s own step 1' \
+  '- TC-4: the replay does not launch the suite'"'"'s run, and the user'"'"'s run list shows J-04'"'"'s run'
+lint "$SPECS/l8c.md" --side-effects "$LED_DECL"
+[[ "$LINT_RC" == "0" ]] && ! has_rule E16 \
+  && assert "L8c: a possessive carved out for J-04's own step, a tooling run's possessive and a positive possessive are still not E16" "pass" \
+  || assert "L8c: possessive carve-out / tooling / positive (rc=$LINT_RC; $LINT_OUT)" "fail"
 spec "$SPECS/l9.md" allowed "J-01" "J-05" "- Any code change to the engine" "$TCROW"
 lint "$SPECS/l9.md" --side-effects "$LED_UNK"
 [[ "$LINT_RC" == "0" ]] && has_rule W10 && ! has_rule E16 \
@@ -2082,6 +2224,35 @@ CASES = [
     ('I', 'tc', '- TC-4: a dry run of the backfill writes nothing and does not start a CI run'),
     ('P', 'tc', '- TC-4: the replay never launches the latest run again'),
     ('P', 'oos', '- Re-running the wide-universe run from scratch'),
+    # --- HARD-3 revision 9, blocker B1: a POSSESSIVE run object ---------------
+    # A possessive is a determiner, so these name the same object as "a run".
+    ('P', 'tc', "- TC-4: the replay does not launch J-04's run"),
+    ('P', 'oos', "- Launching the user's portfolio runs"),
+    ('P', 'tc', "- TC-4: the replay does not launch the user's portfolio run"),
+    ('P', 'tc', "- TC-4: the replay does not start the playbook's backtest"),
+    ('P', 'tc', "- TC-4: replaying J-04 never triggers the strategy's run"),
+    ('P', 'tc', '- TC-4: the replay does not launch J-04’s run'),
+    ('P', 'tc', "- TC-4: the replay does not launch the users' runs"),
+    ('P', 'dod', "- [ ] J-04's replay launches no user's run"),
+    ('P', 'tc', "- TC-4: the replay never launched J-04's run"),
+    ('P', 'tc', "- TC-4: the replay does not re-run J-04's run"),
+    ('P', 'tc', "- TC-4: the replay must not re-run J-04's portfolio run"),
+    ('P', 'oos', "- Any new launches of the operator's runs"),
+    ('P', 'tc', "- TC-4: the replay does not run the operator's backtest"),
+    # ... and what a possessive must NOT turn into:
+    ('I', 'tc', "- TC-4: the user's run list shows the new run"),
+    ('I', 'tc', "- TC-4: J-04's run completes and the ledger row appears"),
+    ('I', 'tc', "- TC-4: clicking Run launches the user's portfolio run and the row appears"),
+    ('I', 'dod', "- [ ] J-04's new run is visible on the operator's dashboard"),
+    ('I', 'tc', "- TC-4: the replay does not open the user's run list page"),
+    ('I', 'tc', '- TC-4: the replay does not re-run J-04'),
+    ('I', 'oos', "- Launching the user's portfolio runs beyond J-04's own step 1"),
+    ('I', 'tc', "- TC-4: the replay does not launch the suite's run"),
+    ('I', 'tc', "- TC-4: the replay does not start the test's run"),
+    ('I', 'tc', "- TC-4: the replay does not trigger the replay's run"),
+    ('I', 'tc', "- TC-4: the replay does not launch the tests' runs"),
+    ('I', 'tc', "- TC-4: the replay does not launch the e2e's run"),
+    ('I', 'oos', "- Launching the smoke suite's runs"),
 ]
 bad = []
 for exp, where, line in CASES:

@@ -500,6 +500,15 @@ _SIDE_EFFECT_STATUSES = ("none", "mutating", "unknown")
 # words, singular or plural.
 _POLICY_LABEL = r"side[\s\-_\u2010-\u2015\u2212\u00ad]*effects?[\s\-_\u2010-\u2015\u2212\u00ad]*polic(?:y|ies)"
 
+# A POSSESSIVE is a determiner, so "launch J-04's run", "the user's portfolio
+# run" and "the users' runs" name the same object as "launch a run": the words
+# BETWEEN a verb and its object may carry one. `_scan_form` has already folded
+# every apostrophe look-alike to "'", so one form covers ’s and 's alike.
+# _GAP_WORD is the word token every bounded gap below repeats ({0,n}) — a
+# possessive widens the WORD, never the number of words a gap may cross.
+_POSS = r"(?:'s|s')"
+_GAP_WORD = r"[\w-]+" + _POSS + r"?"
+
 # Explicit no-mutation prohibitions (plan WP3, matched case-insensitively, one
 # finding per line) — scanned ONLY in `## OUT OF SCOPE` and `## DEFINITION OF
 # DONE` (heading suffixes such as "(this iteration)" or "(DoD)" allowed) and on
@@ -525,7 +534,8 @@ _PROHIBITION_RES: tuple = (
                 r"(?:rows|records|entries)\b", re.I),
      "any", True),
     ("no-new-row-run-record",
-     re.compile(r"\bno\s+new\s+(?:[\w-]+\s+){0,2}?(?:rows?|runs?|records?|ledger\s+(?:rows?|entry|entries))\b", re.I),
+     re.compile(r"\bno\s+new\s+(?:" + _GAP_WORD + r"\s+){0,2}?(?:rows?|runs?|records?"
+                r"|ledger\s+(?:rows?|entry|entries))\b", re.I),
      "any", False),
     ("ledger-unchanged",
      re.compile(r"\bledger(?:[\s.-]+(?:rows?|entries|records?|file|table|store|db|database|jsonl?|csv|sqlite"
@@ -535,12 +545,13 @@ _PROHIBITION_RES: tuple = (
      "any", False),
     ("must-not-mutate",
      re.compile(r"\bmust\s+not\s+(?:create|launch|append|write)\b"
-                r"|\bmust\s+not\s+(?:start|trigger)\s+(?:a\s+|any\s+)?(?:new\s+)?(?:[\w-]+\s+)?runs?\b", re.I),
+                r"|\bmust\s+not\s+(?:start|trigger)\s+(?:a\s+|any\s+)?(?:new\s+)?(?:" + _GAP_WORD
+                + r"\s+)?runs?\b", re.I),
      "any", False),
     ("no-write-mutation-launch",
      re.compile(r"\bno\s+(?:writes?|mutations?|launch(?:es)?)\b(?![-\w])", re.I), "any", False),
     ("any-new-run-launch",
-     re.compile(r"\bany\s+new\s+(?:[\w-]+\s+){0,3}?run\s+launch(?:es)?\b", re.I), "any", False),
+     re.compile(r"\bany\s+new\s+(?:" + _GAP_WORD + r"\s+){0,3}?run\s+launch(?:es)?\b", re.I), "any", False),
 )
 _PRE_EXISTING_ROWS_RE = re.compile(r"\bpre-?existing\s+(?:ledger\s+)?$", re.I)
 
@@ -622,7 +633,11 @@ _LEDGER_NOUN = (r"(?:creation|insertion|deletion|removal|addition|append|edit|ch
 # A test / tooling run ("the pytest run", "a browser-QA run", "a dry run") is not the product's run.
 _TOOL_RUN = ("test", "tests", "pytest", "jest", "vitest", "cypress", "playwright", "lint", "build", "smoke", "e2e",
              "unit", "eval", "evals", "suite", "qa", "replay", "dry", "ci", "check")
-_RUN_NOUN = ("".join(rf"(?<!\b{w} )(?<!\b{w}-)" for w in _TOOL_RUN)
+# The same word one apostrophe further left still names a tooling run ("the
+# suite's run", "the tests' runs"), so the guard covers the possessive too —
+# expanding possessive matching must not turn a test run into a product run.
+_RUN_NOUN = ("".join(rf"(?<!\b{w} )(?<!\b{w}-)(?<!\b{w}'s )" + (rf"(?<!\b{w}' )" if w.endswith("s") else "")
+                     for w in _TOOL_RUN)
              + r"(?:runs?|backtests?)\b(?![\s-]+(?:" + _UI_NOUN + r"|rows?|table)\b)(?!/\w)(?!-\w)")
 _ASIDE = (r"(?:\([^()]{0,80}\)|,[^,.;!?]{0,60},|[\u2013\u2014][^\u2013\u2014.;!?]{0,60}[\u2013\u2014]"
           r"|--\s[^.;!?]{0,60}?\s--)")
@@ -647,29 +662,34 @@ _ACTIVITY_PARTS: tuple = (
     ("ledger-row-edit", "subject", _LEDGER_OBJ + r"\s+(?:[\w'-]+\s+){0,3}?" + _PASSIVE_AUX + r"(?:left\s+)?(?:re-?)?"
                                    + _LEDGER_VERB + r"\b"),
     ("ledger-row-edit", "subject", _LEDGER_OBJ + r"\s+(?:re-?)?" + _LEDGER_PARTICIPLE + r"(?=" + _COUNT_SEP + r")"),
-    ("ledger-row-edit", "verb", r"\bno\s+(?P<gap>(?:[\w-]+\s+){0,2}?)" + _LEDGER_OBJ + r"\s+(?:re-?)?"
+    ("ledger-row-edit", "verb", r"\bno\s+(?P<gap>(?:" + _GAP_WORD + r"\s+){0,2}?)" + _LEDGER_OBJ + r"\s+(?:re-?)?"
                                 + _LEDGER_PARTICIPLE),
     ("ledger-row-edit", "subject", _LEDGER_WORD + r"[\s-]+(?:" + _ROW_WORD + r"[\s-]+)?" + _LEDGER_NOUN
                                    + r"\b(?![\s-]+" + _UI_NOUN + r"\b)"),
     ("ledger-row-edit", "verb", _LEDGER_NOUN + r"\s+(?:of|to|in)\s+(?P<gap>(?:(?:new|the|any|existing|pre-?existing)"
-                                r"\s+)?(?:[\w-]+\s+)?)" + _LEDGER_OBJ),
+                                r"\s+)?(?:" + _GAP_WORD + r"\s+)?)" + _LEDGER_OBJ),
     ("any-new-run-launch", "verb", r"(?<!-)" + _RE_PREFIX + r"(?P<verb>" + _RUN_VERB + r")(?:\s*" + _ASIDE
-                                   + r")?\s+(?P<gap>(?:[\w-]+[\s-]+){0,4}?)" + _RUN_NOUN),
+                                   + r")?\s+(?P<gap>(?:" + _GAP_WORD + r"[\s-]+){0,4}?)" + _RUN_NOUN),
     ("any-new-run-launch", "subject", r"\b" + _RUN_NOUN + r"\s+(?:re-?)?" + _RUN_PARTICIPLE + r"(?=" + _COUNT_SEP
                                       + r")"),
-    ("any-new-run-launch", "verb", r"\bno\s+(?P<gap>(?:[\w-]+\s+){0,2}?)" + _RUN_NOUN + r"\s+(?:re-?)?"
+    ("any-new-run-launch", "verb", r"\bno\s+(?P<gap>(?:" + _GAP_WORD + r"\s+){0,2}?)" + _RUN_NOUN + r"\s+(?:re-?)?"
                                    + _RUN_PARTICIPLE),
     ("any-new-run-launch", "subject", r"\b" + _RUN_NOUN + r"\s+(?:[\w'-]+\s+){0,3}?" + _PASSIVE_AUX
                                       + r"(?:re-?)?(?:launched|started|triggered|created|executed|submitted|spawned"
                                       r"|kicked\s+off)\b"),
-    ("any-new-run-launch", "verb", r"\b(?:is|are|was|were)\s+(?P<gap>(?:an?\s+|any\s+|the\s+)?(?:[\w-]+\s+){0,2}?)"
-                                   r"runs?\s+(?:ever\s+)?(?:re-?)?(?:launched|started|triggered|created)\b"),
+    ("any-new-run-launch", "verb", r"\b(?:is|are|was|were)\s+(?P<gap>(?:an?\s+|any\s+|the\s+)?(?:" + _GAP_WORD
+                                   + r"\s+){0,2}?)runs?\s+(?:ever\s+)?(?:re-?)?(?:launched|started|triggered"
+                                   r"|created)\b"),
     ("any-new-run-launch", "subject", r"\bruns?[\s-]+launch(?:es)?\b(?![\s-]+" + _UI_NOUN + r"\b)"),
-    ("any-new-run-launch", "verb", r"\blaunch(?:es)?\s+of\s+(?P<gap>(?:an?\s+|any\s+)?(?:new\s+)?(?:[\w-]+\s+)?)"
-                                   r"runs?\b"),
-    ("any-new-run-launch", "verb", r"\bre-?run(?:s|ning)?\s+(?P<gap>(?:the\s+)?(?:[\w-]+\s+)?)" + _RUN_NOUN),
+    ("any-new-run-launch", "verb", r"\blaunch(?:es)?\s+of\s+(?P<gap>(?:an?\s+|any\s+)?(?:new\s+)?(?:" + _GAP_WORD
+                                   + r"\s+)?)runs?\b"),
+    # "re-run J-04" replays a journey; only a run NOUN close behind the verb makes
+    # it a launch — so the gap stays a determiner ("the", or a possessive: "J-04's
+    # portfolio run") plus at most one modifier.
+    ("any-new-run-launch", "verb", r"\bre-?run(?:s|ning)?\s+(?P<gap>(?:(?:the|[\w-]+" + _POSS + r")\s+)?(?:"
+                                   + _GAP_WORD + r"\s+)?)" + _RUN_NOUN),
     ("any-new-run-launch", "verb", r"\brun(?:s|ning)?\s+(?P<gap>(?:an?|any|another|the|new|more|extra)\s+"
-                                   r"(?:[\w-]+\s+){0,2}?)backtests?\b"),
+                                   r"(?:" + _GAP_WORD + r"\s+){0,2}?)backtests?\b"),
 )
 _ACTIVITY_RES: tuple = tuple((name, form, re.compile(rx, re.I)) for name, form, rx in _ACTIVITY_PARTS)
 _MENTION_INFO: dict = {rx: (name, form) for name, form, rx in _ACTIVITY_RES}
@@ -689,17 +709,17 @@ _VERB_RUN_GAP_RE = re.compile(r"(?:^|\s)(?:and|or|nor|to|then|not|also|can|will|
 # "The launched run", "the triggered backfill runs": a participle before its noun is an adjective; the
 # past tense takes a determiner ("never launched a new run").
 _PARTICIPLE_RE = re.compile(r"(?:ed|off)$", re.I)
-_DETERMINER_START_RE = re.compile(r"(?:an?|any|another|the|new|more|extra|fresh|additional|further|second|one|two"
+_DETERMINER_START_RE = re.compile(r"(?:(?:an?|any|another|the|new|more|extra|fresh|additional|further|second|one|two"
                                   r"|three|its|their|his|her|our|this|that|these|those|no|several|some|each|every"
-                                  r"|multiple|many|all|\d+)\b", re.I)
+                                  r"|multiple|many|all|\d+)\b|[\w-]+" + _POSS + r")", re.I)
 # OUT OF SCOPE also lists bare nouns as an item or list element: "Any new run", "New portfolio runs",
 # "Excluded: the new ledger rows" (not "Styling of new ledger rows", not "any prior runs").
 _OOS_NOUN_RE = re.compile(
     r"(?:^[ \t]*(?:>[ \t]*)?(?:(?:[-*+]|\d+[.)]|[a-z][.)])[ \t]+)?(?:\[[ xX]\][ \t]+)?(?:[A-Za-z][\w -]{0,30}:\s*)?"
     r"|[,;/|(:]\s*|\s-\s+|\b(?:or|and|nor|plus|no)\s+)(?:(?:the|a|an)\s+)?"
     r"(?:(?:any|new|more|extra|additional)\s+(?!(?:existing|prior|previous|old|older|earlier|completed|finished|past"
-    r"|archived|stored|pre-?existing|historical|recorded|cited)\b)(?:[\w-]+\s+){0,2}?" + _RUN_NOUN
-    + r"|new\s+(?:[\w-]+\s+)?ledger\s+(?:rows?|entries|records)\b)", re.I)
+    r"|archived|stored|pre-?existing|historical|recorded|cited)\b)(?:" + _GAP_WORD + r"\s+){0,2}?" + _RUN_NOUN
+    + r"|new\s+(?:" + _GAP_WORD + r"\s+)?ledger\s+(?:rows?|entries|records)\b)", re.I)
 _NEG_CUE_RE = re.compile(
     r"\b(?:no[\s-]one|no|not|never|nor|neither|none|nothing|nobody|without|cannot|cant|[a-z]+n't|dont|doesnt|didnt"
     r"|wont|isnt|arent|wasnt|werent|mustnt|shouldnt|shant|hasnt|havent|hadnt|couldnt|wouldnt"
@@ -1519,7 +1539,7 @@ def _observation_text(rec: dict) -> str:
 
 def _mutating_desc(jid: str, rec: dict, roles: set) -> str:
     src = []
-    uncertain = rec.get("ambiguous") or rec.get("unattributed")
+    uncertain = rec.get("ambiguous") or rec.get("unattributed") or rec.get("orphaned")
     if rec.get("declared") == "mutating" and not uncertain:
         src.append("declared mutating" + (f": '{rec['note']}'" if rec.get("note") else ""))
     elif rec.get("declared") == "mutating" or "mutating" in (rec.get("stated_values") or []):
@@ -1536,13 +1556,19 @@ def _mutating_desc(jid: str, rec: dict, roles: set) -> str:
 
 
 def _attribution(rec: dict) -> str:
+    # An ORPHANED line is reported alongside the reason its journey is unreadable
+    # (a fenced header is the root cause; the stray line is what it cost).
+    orphan = (" and a 'Side effects:' line in its certified block sits inside no journey definition"
+              if rec.get("orphaned") else "")
+    if rec.get("attribution_reason") == "orphaned-declaration":
+        return "orphaned: a 'Side effects:' line in its certified block sits inside no journey definition"
     if rec.get("ambiguous") and rec.get("attribution_reason") == "fenced-declaration":
-        return "ambiguous: a 'Side effects: mutating' line in it sits inside a code fence"
+        return "ambiguous: a 'Side effects: mutating' line in it sits inside a code fence" + orphan
     if rec.get("ambiguous"):
-        return "ambiguous: a header with this id also sits inside a code fence"
+        return "ambiguous: a header with this id also sits inside a code fence" + orphan
     if rec.get("attribution_reason") == "fenced-header":
-        return "unattributed: its only header sits inside a code fence"
-    return "unattributed: it has no definition of its own"
+        return "unattributed: its only header sits inside a code fence" + orphan
+    return "unattributed: it has no definition of its own" + orphan
 
 
 def _conflict_fix(jids: list[str], roles: dict[str, set], baseline: bool = False) -> str:
@@ -1724,14 +1750,17 @@ def _status_list(jids: list[str], recs: dict, with_source: bool) -> str:
             out.append(j)
             continue
         src = []
-        uncertain = rec.get("ambiguous") or rec.get("unattributed")
+        uncertain = rec.get("ambiguous") or rec.get("unattributed") or rec.get("orphaned")
         if rec.get("declared") == "mutating" or "mutating" in (rec.get("stated_values") or []):
-            src.append(("ambiguous declaration" if rec.get("ambiguous") else "unattributed declaration")
+            src.append(("ambiguous declaration" if rec.get("ambiguous")
+                        else "unattributed declaration" if rec.get("unattributed")
+                        else "orphaned declaration")
                        if uncertain else "declared")
         if rec.get("observed_mutating"):
             conflict = ""
             if rec.get("declaration_conflict"):
                 conflict = ("AMBIGUOUS, one block says none, but " if rec.get("ambiguous")
+                            else "ORPHANED, an unattached line says none, but " if rec.get("orphaned")
                             else "UNATTRIBUTED, a block says none, but " if uncertain else "DECLARED NONE, but ")
             src.append(conflict + _observation_text(rec))
         out.append(f"{j} ({'; '.join(src)})" if src else j)
@@ -1750,12 +1779,13 @@ _CONFLICT_EVAL = ("DECLARATION CONFLICT: {jids} {is_are} declared 'none' in docs
                   "regression or a wrong declaration); it is never excused as the journey's own step.")
 _CONFLICT_LANE = ("DECLARATION CONFLICT: {jids} {is_are} declared 'none' in docs/goal.md, yet a replay observed a "
                   "mutation — name the step that changes data in {its} row's Actual cell.")
-# The same when the `none` comes from an AMBIGUOUS or UNATTRIBUTED id (a header
-# with the id sits inside a code fence, or no definition covers it): which block,
-# if any, is the journey is uncertain.
+# The same when the `none` comes from an AMBIGUOUS, UNATTRIBUTED or ORPHANED id
+# (a header with the id sits inside a code fence, no definition covers it, or the
+# line itself sits inside none): which block, if any, is the journey is uncertain.
 _CONFLICT_AMBIG_EVAL = ("POSSIBLE DECLARATION CONFLICT: a docs/goal.md block for {jids} says 'none', but which block "
                         "(if any) defines the journey is uncertain (a header with the id sits inside what the parser "
-                        "reads as a code fence, or only other journeys mention it) — and the deterministic replay "
+                        "reads as a code fence, only other journeys mention it, or the line itself sits inside no "
+                        "journey definition) — and the deterministic replay "
                         "observed a mutation: report it in Summary and assumptions.md as a finding to check (a "
                         "product regression or a wrong or misplaced declaration).")
 _CONFLICT_AMBIG_LANE = ("POSSIBLE DECLARATION CONFLICT: a docs/goal.md block for {jids} says 'none' (the id's "
@@ -1804,7 +1834,8 @@ def render_side_effect_context(mode: str, ledger_path: str | None, spec_text: st
              f"NONE: {_status_list([j for j in relevant if status[j] == 'none'], recs, False)}; "
              f"Unknown: {_status_list([j for j in relevant if status[j] == 'unknown'], recs, False)}")
     policy_txt = policy or "not declared"
-    uncertain = {j for j in mut if (recs.get(j) or {}).get("ambiguous") or (recs.get(j) or {}).get("unattributed")}
+    uncertain = {j for j in mut if (recs.get(j) or {}).get("ambiguous") or (recs.get(j) or {}).get("unattributed")
+                 or (recs.get(j) or {}).get("orphaned")}
     conflicts = [j for j in mut if (recs.get(j) or {}).get("declaration_conflict") and j not in uncertain]
     ambiguous = [j for j in mut if (recs.get(j) or {}).get("declaration_conflict") and j in uncertain]
     incomplete = info["availability"] == "incomplete"

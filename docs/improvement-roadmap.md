@@ -5520,7 +5520,9 @@ Four root causes: governors read proxies instead of facts (HARD-1..3); ownership
 - **Priority:** P0 · **Effort:** M-L · **Risk:** MED · **Status:** IN-PROGRESS (branch
   `hard-3-side-effect-preflight`, started 2026-09-16; schema owner-approved 2026-09-07:
   `Side effects: none | mutating — <note>`, absent = unknown). Independent of CAND-PERM-1 Task 10
-  (DEFERRED). G8 fresh-session certification and the G9-gated real-session acceptance are both
+  (DEFERRED). The first independent G8 of `65e6351` returned **FAIL** on two reproduced blockers
+  (2026-09-17); revision 9 fixes both and records the third finding as an owner decision, so a
+  FRESH, TARGETED G8 of the revision-9 commit and the G9-gated real-session acceptance are both
   still owed — the implementing session does not mark this DONE.
 - **Problem:** a confirm-only spec forbade "new run / ledger write" while target J-04's own
   step 1 launches a run (TenSteps iter-9); nothing structural represents mutations.
@@ -5632,7 +5634,10 @@ Four root causes: governors read proxies instead of facts (HARD-1..3); ownership
       never when the remainder names a resource id; an override naming `/` or an API root is
       rejected (`ignore_paths_rejected`); every applied auth exclusion is reported (row suffix
       `auth request(s) not counted: …`, ledger `auth_ignored`, `side_effect_exception_applied`
-      `kind:"auth"`). Residual by design: `POST /auth/register`, `POST /api/auth/users`.
+      `kind:"auth"`). ~~Residual by design: `POST /auth/register`, `POST /api/auth/users`.~~
+      **Superseded by the revision-8 cleanup below:** both are mutations now (the rule matches an
+      ENDPOINT, not a subtree). The I7 decision itself is still open — see the remaining auth
+      sub-items there.
     - **Minor:** innermost-journey declaration attribution (a nested same-id owner note is not a
       second definition — the trendora J-10 shape); ledger writes before the digest is recorded
       (`--record-digest` needs `--out`); a preflight build id the lint checks (a ledger left from a
@@ -5974,12 +5979,194 @@ Four root causes: governors read proxies instead of facts (HARD-1..3); ownership
     - **Docs corrected:** the AS BUILT summary's warn-mode E15 sentence and its `_normalize_block`
       sentence (both described `cd3472d`, not the current code); the classifier knob comment, the
       telemetry `kind:"auth"` row and SCHEMA's run-record note describe the endpoint rule.
-  - *Owed:* G8 fresh-session certification; the G9-gated real session (a replay-observed mutation in
+  - *Revision 9 (2026-09-17, after the first INDEPENDENT G8 certification of `65e6351` returned
+    **FAIL** — `~/.cache/iad/cert-hard3-g8-20260917/G8-REPORT.md`. All 21 of that review's test steps
+    were green and matched the implementer's numbers; two reproduced blockers stood, and one further
+    finding was raised for investigation. RED: the probes and the new D31 / L8b / L8c / L18o cases
+    against `65e6351`; GREEN below. Evidence: `~/.cache/iad/cert-hard3-b1b2-20260917/`. This is
+    implementing-session verification, NOT a certification — a fresh targeted G8 of the new commit
+    is still owed.)*
+    - **B1 (blocker — FIXED): a POSSESSIVE run object defeated E16.** "the replay does not launch
+      J-04's run" and OUT OF SCOPE "Launching the user's portfolio runs" produced no finding at all.
+      *Root cause:* the run-activity patterns put a gap of plain word tokens between the verb and the
+      run noun (`(?:[\w-]+[\s-]+){0,4}?`), and `[\w-]` cannot cross an apostrophe, so the match failed
+      before it reached `_RUN_NOUN`. The ledger patterns use a NEGATED character class for their gap,
+      which admits apostrophes — hence the asymmetry the reviewer saw (ledger possessives were found,
+      run possessives were not). The stated rule covers these forms and no document listed them as a
+      limitation.
+      *Fix (one token, used everywhere a bounded gap repeats):* `_POSS = (?:'s|s')` and
+      `_GAP_WORD = [\w-]+_POSS?` — `_scan_form` has already folded every apostrophe look-alike to `'`,
+      so one form covers `’s` too. It replaces the plain word token in every run and ledger gap, in
+      `_OOS_NOUN_RE` and in the plan-literal patterns `no-new-row-run-record`, `must-not-mutate` and
+      `any-new-run-launch`; a possessive counts as a determiner in `_DETERMINER_START_RE` (so "never
+      launched J-04's run" is not read as an adjective) and as the determiner slot of the `re-run`
+      gap. A possessive widens the WORD, never the number of words a gap may cross.
+      *Countermeasure:* `_RUN_NOUN`'s tooling-run guard now covers the possessive of the same word
+      (`(?<!\btest's )`, and `(?<!\btests' )` for the plurals), so "the suite's run", "the replay's
+      run" and "the tests' runs" stay tooling runs — expanding possessive matching must not turn a
+      test run into a product run.
+      *Engine-level RED/GREEN* (`probes/e16_engine_repro.sh`, the reviewer's harness with the tree as
+      an argument, real `run-goal.sh`, stub `claude`, no API, no browser): on `65e6351` both
+      possessive specs linted clean and reached **developer dispatch** (`decomposer=1 developer=1
+      status=AWAITING_PUMP`); on this revision both give E16, exactly **one** re-plan and
+      `GATE_BLOCKED_SPEC_LINT` with **zero** developer dispatch — byte-identical to the
+      non-possessive control (`logs/b1-engine-RED-65e6351.out`, `logs/b1-engine-GREEN-worktree.out`).
+      The 39-case policy matrix (`probes/b1_possessive.py`, every case linted under `allowed` / `none`
+      / no policy line) goes 13 mismatches → 0.
+    - **B2 (blocker — FIXED): an orphaned declaration vanished from BOTH the certified hash and the
+      declaration digest.** J-01 forgets a fence closer, flat-style J-02's own fence closes it, and
+      J-02's `- Side effects: mutating` follows at column 0. `_normalize_block` dropped it from J-02's
+      `spec_hash` (it is well-formed and unfenced) while no side-effect view covered it, so J-02 read
+      `unknown`, the digest never saw it, and flipping `mutating`→`none` changed neither hash nor
+      digest. The nested-style variant (revision 8) was correct; the flat-style one was not.
+      *Root cause:* two different journey-boundary rules. `_normalize_block` judged a line on its own
+      (well-formed + unfenced ⇒ drop), while attribution comes from `side_effect_journey_views_all`,
+      whose fail-closed view of an unreadable header stops at the end of that header's own list ITEM
+      (`_item_end_any`, indentation-based). In a flat-style document the item is the header line
+      alone, so every line under it is attributed to nothing while the certified block still holds it.
+      *Fix (narrowest that makes attribution explicit):* new `goal_gate.declaration_attribution(text)`
+      returns, for every declaration-shaped line, the view that reads it or an ORPHAN record naming the
+      certified block that holds it (or `None`). `_journey_hashes` passes that set to
+      `_normalize_block`, which now drops `well-formed ∩ attributed` only — **a line is hash-neutral
+      only where the side-effect model accounts for it**; with no set (a block whose lines cannot be
+      aligned with the document's) nothing is dropped, the safe direction. An orphan inside a certified
+      block joins that journey's `stated_values` (provenance only: a `mutating` still makes the
+      journey mutating, a `none` is never trusted), marks it `orphaned`, invalidates its declaration
+      and is carried by `stated_hash`/`declaration_hash` in `declaration_digest` — so the line is now
+      visible in BOTH the hash and the digest. An orphan inside NO journey block cannot be attributed
+      or protected by any `spec_hash`, so `build_side_effect_ledger` records an error: the ledger is
+      incomplete and `Side-effect policy: none` fails closed on it (E15).
+      *goal-lint wording:* the `side-effects-unattributed` WARN said "a stated 'none' is not trusted,
+      a stated 'mutating' is" even when nothing had been stated. It now reports what was actually
+      found — an owner declaration, a value recovered from a line the parser cannot attribute, or no
+      attributable line at all — and a new ERROR `side-effects-orphaned` names the stray line, the
+      journey whose block holds it, what the preflight reads, and that editing it reads as goal drift.
+      `_attribution` / `_status_list` / the E13-E16 conflict text name the orphan next to the root
+      cause (the fenced header) instead of "it has no definition of its own".
+    - **B3 (investigated — NOT a proven contract violation; owner decision, outside the fixed set).**
+      Reproduced deterministically at both levels. Lint (`logs/b3-control-makeup.out`): attempt 1
+      with J-04 in Required-still-passing and an explicit prohibition gives E13+E16; a re-plan that
+      drops J-04 from Targets AND Required-still-passing, prohibition unchanged, lints **completely
+      clean — no error and no warning** when the survivors are declared `none` (W10 only if a survivor
+      is `unknown`). Engine (`logs/b3-engine.out`): the same drop turns `GATE_BLOCKED_SPEC_LINT` /
+      zero dispatch into `decomposer=2 developer=1 status=AWAITING_PUMP`; the journey is not in the
+      spec, so neither lane replays it (`goal-iter-lean.sh:257`, `browser-qa-phase.sh:305` read the
+      set verbatim from the spec). No prohibited mutation happens — the journey is not executed; the
+      cost is that iteration's regression coverage.
+      *Which kind of set is it?* **Planner-authored with stated invariants.** The engine never derives
+      or pins it: the lint's checked set is the spec's `Target journeys` ∪ the spec's
+      `Required-still-passing journeys` ∪ the **engine-supplied** `CHAIN_BQA_MAKEUP_JOURNEYS`
+      (`run-goal.sh:2863`), and the decomposer contract tells the planner to CHOOSE the set by
+      relevance each iteration ("you need NOT re-list journeys unrelated to this iteration's surface
+      every time", `agents/goal-decomposer/body.md` §"Choosing Required-still-passing journeys").
+      *Control — an authorized mechanism exists and holds:* with J-04 absent from the spec but passed
+      as a make-up journey, E13+E16 fire again and the checked set still contains it. Engine-scheduled
+      make-up journeys (journey-history `pending_infra`, REL-14) are the one obligation a re-plan
+      cannot drop, because the ENGINE adds them. Baseline (iteration 0) specs are pinned by their own
+      rule ("change the policy and the wording, never the journey set").
+      *Contract reading.* The approved plan states the invariant in WP3 §5 ("re-plan or `GATE_BLOCKED`,
+      never a silently dropped required journey") but implements it in §6 as MESSAGE text — E13's fix
+      line is specified as "drop the journey from targets — never from Required-still-passing", and
+      that is what the code emits (`_conflict_fix` also says a Required-still-passing or make-up
+      journey "may NOT be dropped to dodge the conflict"; the decomposer contract repeats it). The
+      plan describes no engine-side retention gate and no test for one, and it authorizes the planner
+      to vary the set between iterations — so the rule that would have to be enforced (retain the
+      whole set between the two attempts of ONE iteration? only the mutating journeys the rejected
+      finding named? does a target→required move count?) is not written anywhere. **Ambiguous on
+      mechanism, so no gate was added and B3 is NOT claimed fixed.**
+      *What IS recorded today:* attempt 1's `spec_lint` telemetry carries `mutating:["J-04"]` with
+      `prohibitions:1` and attempt 2 carries `mutating:[]` with the same `prohibitions:1`;
+      `spec_replan` is recorded; and journey-history keeps J-04's `last_verified_iter` at the older
+      iteration with its status carried over (the evaluator's `unknown` = "not tested this iteration").
+      Nothing emits a signal named "a required journey was dropped between attempts", and nothing
+      blocks it. → **owner decision** (below).
+    - **Measured (revision 9 vs `65e6351`).**
+      - **E16 classifications: nothing moved that was not meant to.** The reviewer's 26 labelled
+        residual cases: **0 moved** (the 7 false positives and 6 false negatives are unchanged). The
+        28 neighbour variants: **2 moved**, both intended — "does not re-run J-04's run" and "…'s
+        portfolio run" are now prohibitions; "re-run J-04" (a journey replay) is NOT, as the contract
+        requires. The pinned L18o table: **0 of its 532 pre-existing rows moved**; it grows to 560 rows
+        with 13 possessive prohibitions and 13 possessives that must NOT become one (two pre-existing
+        rows are exact duplicates, so 558 distinct wordings). *Every wording whose classification
+        changed, individually:* "does not launch J-04's run" (and its `’s` form), "…the user's
+        portfolio run", "…the users' runs", "…start the playbook's backtest", "…never triggers the
+        strategy's run", "…never launched J-04's run", "…does not run the operator's backtest",
+        "…does not re-run J-04's run", "…must not re-run J-04's portfolio run", DoD "J-04's replay
+        launches no user's run", OOS "Launching the user's portfolio runs" and OOS "Any new launches
+        of the operator's runs" — I → P. Nothing changed P → I. **618 historical iteration specs** (every
+        `docs/phases/*.md` blob reachable from all refs of the five repos): **0 classification
+        changes**.
+      - **Certification path: nothing moved at all.** Over **706 goal-shaped documents** (every blob
+        in the five repos containing `## Must-have user journeys`, plus each repo's working-tree
+        `docs/goal.md` and `templates/project-goal.md`), `65e6351` → revision 9 differs in **0** certified journey
+        hashes, **0** declaration digests, **0** declaration records and **0** ledgers
+        (`probes/cert_path_compare.py`, `logs/cert-path-compare.out`). The historical baseline is
+        unchanged too: main → `65e6351` moves 16 of the 706, every one of them a document that holds
+        well-formed declaration lines — 14 with a valid declaration (hash-neutral by the approved D.3
+        design) and 2 versions of `tests/automation/test-side-effects.sh`, whose embedded fixture the
+        corpus filter also reads as a goal document and whose journeys pick up several
+        declaration-shaped lines each. No document needs migrating, and the independent G8's own
+        157-document comparison against main stands unchanged. On the five products' live
+        `docs/goal.md` and `templates/project-goal.md`: **0 orphans, 0 new goal-lint errors, every
+        ledger still complete** — the new rules are inert on real documents.
+      - **Performance:** the E16 scan's worst case over L18q's inputs goes 1.25 s → 1.44 s (limits
+        20 s and 10 s); 800 repetitions of a possessive clause lint in 0.11 s, and of a
+        stray-apostrophe clause in 0.09 s — the possessive token adds no backtracking. The 618-spec
+        corpus scan goes 7.45 s → 8.71 s. `_journey_hashes` now runs the attribution pass as well:
+        on the largest real goal.md in the five repos (trendora, 275 KB, 17 journeys) it goes
+        16 ms → 72 ms per call, and the engine calls it once an iteration (`run-goal.sh:3686`);
+        `build_side_effect_ledger` on the same document goes 89 ms → 202 ms (it now runs the
+        attribution pass twice — once inside `parse_side_effect_declarations`, once for the
+        unowned-orphan errors). Deliberately NOT memoised: a cache on the certification path buys
+        ~100 ms an iteration and costs a reviewer's confidence in a pure function.
+      - **Suites:** `test-side-effects.sh` 303/0 → 321/0 (18 new assertions: D31–D31n, L8b×3, L8c);
+        `test-spec-lint.sh` 170/0 unchanged. **RED first:** the revision-9 suite run against the
+        `65e6351` export gives **261 passed / 10 failed** — D31, D31b, D31i, D31j, D31k, L8b under
+        all three policies, L18o, and the D-block aborting on the missing `orphaned` flag
+        (`logs/suite-side-effects-RED-on-65e6351.log`). The control cases (D31c–D31h, D31l) pass on
+        both trees, which is what makes them controls. Everything else this session ran green:
+        replay-lane 76/0, replay-lane-full 91/0, goal-checkpoints 11/0 (bytecode writing ON),
+        intent-checkpoint 23/0, browser-evidence-lifecycle 80/0, service-ownership 100/0,
+        engine-lock 44/0, the five module self-tests, and `run-evals.sh` **187 pass / 0 fail**.
+    - **Docs corrected.** `.claude/architecture/goal-mode.md`'s hash sentence now states the
+      attribution condition and the orphan rules. The I7 bullet's "Residual by design: `POST
+      /auth/register`, `POST /api/auth/users`" is struck through and marked superseded by the
+      revision-8 cleanup that made both mutations (the G8 report's minor #4). The *Owed* bullet names
+      `demo_runner.py` in the vendored-sync set, because `goal_gate.py` imports it lazily (minor #5).
+    - *Not changed (reported).*
+      - The six residual false negatives and seven false positives of revision 8 stand as classified;
+        only the possessive class moved.
+      - The `("orphaned", "orphaned-declaration")` attribution REASON is a fail-safe: with today's two
+        splitters every orphan's journey is already `unattributed` (its header is fenced), so the
+        reason that actually renders is the fenced header, with the orphaned line named beside it. The
+        `orphaned` flag itself is set and tested (D31n).
+      - `goal_lint.py` is advisory — the new ERROR raises its exit code to 2 but blocks nothing by
+        itself; the enforced consequence for an unattributable line is the incomplete ledger (E15).
+  - *Owed:* a FRESH, TARGETED G8 re-certification of the revision-9 commit (the first independent G8
+    of `65e6351` returned FAIL; the implementing session's own verification is not a certification);
+    the G9-gated real session (a replay-observed mutation in
     the sidecar, no TC failed on a journey's own mutation); vendored per-file sync — products must
-    sync this `goal_gate.py` together with `iter_spec.py` BEFORE adding `- Side effects:` lines (older code hashes those lines as
+    sync this `goal_gate.py` together with `iter_spec.py` and `demo_runner.py` (goal_gate imports it
+    lazily) BEFORE adding `- Side effects:` lines (older code hashes those lines as
     journey text, which would read as goal-edit drift); owner confirmation of the I3 and I7
     decisions above, of observation stickiness and of the stated E16 prohibition rule (revision 8); M6 (the GOAL_ACHIEVED two-key confirm prompt
     carries no side-effect context).
+  - *Owner decisions open after revision 9 (none of them blocks the G8 re-check; each changes
+    behaviour if answered "yes"):*
+    1. **B3 — Required-still-passing retention between the two attempts of one iteration.** Today only
+       the E13/E16 message forbids the drop; the engine does not. Enforce it deterministically (the
+       `--makeup-journeys` union is the working precedent), record a named signal without blocking,
+       or leave it to the message? If enforced, the rule must be written: retain the whole set, or
+       only the journeys the rejected finding named?
+    2. **Is a FLAT-STYLE journey item supported?** Revision 9 makes the flat-style B2 document safe
+       (the line stays in the hash, its `mutating` still counts, goal-lint errors on it) rather than
+       correct. No goal.md in the corpus uses flat style. If the owner rules it unsupported, the
+       goal-lint ERROR can say so outright.
+    3. **Should goal-lint's `side-effects-orphaned` ERROR block a session?** It is advisory today; the
+       enforced consequence exists only for the line no journey block holds (incomplete ledger ⇒ E15
+       under `Side-effect policy: none`).
+    4. I7 and its auth sub-items, I3, observation stickiness and the stated E16 rule with its
+       false-positive classes (all carried over from revisions 8 and the G8 report).
 
 ### HARD-4A · Engine identity token + lock-before-mutation ordering + owner-guarded `engine.pid`
 - **Priority:** P1 · **Effort:** M · **Risk:** MED · **Status:** PARTIAL — sub-commit **A0 landed with HARD-5** (`lib/engine-identity.sh`: `engine_token_mint`/`engine_token_alive`/`engine_token_self`/`engine_proc_env`). **A1 remains TODO** (prologue reorder, lock-before-mutation ordering, owner-guarded `engine.pid`, signal-time takeover revalidation, `.engine.lock/token`).

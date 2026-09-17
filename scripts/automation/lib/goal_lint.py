@@ -54,7 +54,20 @@ are quality signals:
                              or a stray fence shifted the reading), or it is
                              only mentioned inside other journeys. The
                              preflight honours only a stated `mutating` for it
-                             (`none` never counts).
+                             (`none` never counts). The message reports what
+                             was actually found for that journey — an owner
+                             declaration, a value recovered from text the
+                             parser cannot attribute, or nothing at all.
+    ERROR side-effects-orphaned  (HARD-3 rev 9) a `Side effects:` line that no
+                             journey DEFINITION covers — a stray fence or a
+                             flat-style item put it outside the journey's own
+                             list item. Inside a journey's certified block it
+                             counts only as a stated value (a `mutating` does,
+                             a `none` never does) and stays in that journey's
+                             spec_hash, so editing it reads as goal drift;
+                             outside every journey block it belongs to no
+                             journey and the side-effect ledger fails closed
+                             on it (E15 under `Side-effect policy: none`).
 
 Exit codes: 0 clean, 1 warnings only, 2 structural errors (including
 unreadable file). Output: one line per finding + a summary; silent when
@@ -71,8 +84,8 @@ import sys
 from collections import namedtuple
 from pathlib import Path
 
-from goal_gate import (_journey_blocks, attribution_problem, journey_step_hints, parse_side_effect_declarations,
-                       side_effect_journey_views)
+from goal_gate import (_journey_blocks, attribution_problem, declaration_attribution, journey_step_hints,
+                       parse_side_effect_declarations, side_effect_journey_views)
 
 Finding = namedtuple("Finding", "severity rule line message")  # line: int|None
 
@@ -174,11 +187,28 @@ def _acceptance_bigrams(block: str) -> set[str]:
 
 def _engine_reading(d: dict) -> str:
     """How the side-effect ledger reads a declaration (observations aside)."""
-    if d["declared"] == "mutating" or "mutating" in (d.get("stated_values") or []):
+    if d.get("declared") == "mutating" or "mutating" in (d.get("stated_values") or []):
         return "mutating"
-    if d["declared"] == "none" and d["valid"] and not d.get("ambiguous"):
+    if d.get("declared") == "none" and d.get("valid") and not d.get("ambiguous") and not d.get("orphaned"):
         return "none"
     return "unknown"
+
+
+def _reading_basis(d: dict) -> str:
+    """WHY the preflight reads a journey that way — an owner declaration, a
+    value recovered from text the parser cannot attribute, or nothing at all.
+    Observations live in the ledger, not in goal.md, so this text never claims
+    one; it says only what this document states."""
+    stated = d.get("stated_values") or []
+    unread = d.get("unattributed") or d.get("ambiguous") or d.get("orphaned")
+    if d.get("declared") and not unread:
+        return f"its own '- Side effects: {d['declared']}' line"
+    if "mutating" in stated:
+        return "a 'mutating' value recovered from a line the parser cannot attribute to it"
+    if stated:
+        return (f"no declaration it can attribute — the only stated value ({', '.join(stated)}) sits in a line it "
+                "cannot attribute, and a stated 'none' never counts")
+    return "no 'Side effects:' line it can attribute to this journey"
 
 
 def lint_text(text: str) -> list[Finding]:
@@ -311,12 +341,35 @@ def lint_text(text: str) -> list[Finding]:
             continue
         reported.add(jid)
         ln = next((_line_of(s) for j, s, _e in blocks if j == jid), None)
-        reads = "mutating" if "mutating" in (d.get("stated_values") or []) else "unknown"
         findings.append(Finding(
             "WARN", "side-effects-unattributed", ln,
-            f"journey {jid}: {attribution_problem(d)} — the side-effect preflight reads it as {reads} "
-            "(a stated 'none' is not trusted, a stated 'mutating' is)",
+            f"journey {jid}: {attribution_problem(d)} — the side-effect preflight reads it as "
+            f"{_engine_reading(d)}, from {_reading_basis(d)}",
         ))
+
+    # side-effects-orphaned (ERROR) — HARD-3 rev 9 (B2): a declaration-shaped
+    # line no journey DEFINITION covers. It is never silently dropped: inside a
+    # certified block it stays in that journey's spec_hash and counts as a
+    # stated value; outside every block the side-effect ledger fails closed.
+    for o in declaration_attribution(text)["orphans"]:
+        line_text = " ".join(o["text"].split())
+        if o["jid"]:
+            d = decls.get(o["jid"]) or {}
+            findings.append(Finding(
+                "ERROR", "side-effects-orphaned", o["index"] + 1,
+                f"'{line_text}' sits in journey {o['jid']}'s block but inside no journey definition the "
+                f"side-effect parser can read, so it is not {o['jid']}'s declaration: it counts only as a stated "
+                f"value (the preflight reads {o['jid']} as {_engine_reading(d)}) and it stays in {o['jid']}'s "
+                "spec_hash, so editing it reads as goal drift — write it as a list item inside the journey's own "
+                "'- **J-NN: …**' item, and close any stray ``` / ~~~ line above it",
+            ))
+        else:
+            findings.append(Finding(
+                "ERROR", "side-effects-orphaned", o["index"] + 1,
+                f"'{line_text}' states a side effect outside every journey block, so it belongs to no journey and "
+                "no spec_hash covers it — the side-effect ledger reports it as an error and fails closed under "
+                "'Side-effect policy: none'; move it into the journey's '- **J-NN: …**' item, or delete it",
+            ))
 
     # product-shape-empty (WARN): >=2 journeys naming the same value/metric is
     # exactly the "same number differs across pages" risk the Product Shape
