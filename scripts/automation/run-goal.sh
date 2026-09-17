@@ -146,12 +146,15 @@
 #   side_effect_declaration_conflict) and exports CHAIN_SIDE_EFFECTS_FILE for
 #   both browser lanes. The spec lint then checks the spec's `Side-effect
 #   policy` and its explicit no-mutation prohibitions against targets ∪ required
-#   ∪ make-up journeys: E13/E16 buy HARD-2's one re-plan; E15 (policy none but
-#   the ledger unavailable, incomplete or not this build's) halts at once —
-#   in CHAIN_SPEC_LINT=warn too (GATE_BLOCKED, reason
+#   ∪ make-up journeys: E13/E16 buy HARD-2's one re-plan; E15 (policy none —
+#   in any readable form — but the ledger unavailable, incomplete or not this
+#   build's) halts at once — in CHAIN_SPEC_LINT=warn too, and when the lint
+#   crashed the engine decides it itself (GATE_BLOCKED, reason
 #   GATE_BLOCKED_SIDE_EFFECT_LEDGER — never re-planned); only
 #   CHAIN_SPEC_LINT=off or the rollback below skip it, and both say so. The
-#   ledger is refreshed before the goal-evaluator, whose prompt names it.
+#   iteration's first complete preflight ledger is frozen, so a resume is
+#   re-linted against the same evidence. The ledger is refreshed before the
+#   goal-evaluator, whose prompt names it.
 #   CHAIN_SIDE_EFFECT_PREFLIGHT=true   (default) — false skips E13-E16/W09-W11
 #                      (the rollback; the policy field's own E06/W02 still run).
 #   CHAIN_SIDE_EFFECT_STRICT=false     (default) — true turns W09/W10 (unknown
@@ -925,7 +928,10 @@ _side_effect_ledger_build() {
     # id, so the spec lint still reads it as UNAVAILABLE (never as evidence).
     rm -f "$_sl_out" 2>/dev/null || true
     SIDE_EFFECTS_BUILD_ID="$(date -u +%Y%m%dT%H%M%S%N)-$$-${RANDOM}"
-    _sl_args+=(--record-digest --build-id "$SIDE_EFFECTS_BUILD_ID")
+    # --freeze: the iteration's first complete preflight view is kept and reused
+    # while its inputs are unchanged, so a resumed iteration is re-linted against
+    # the evidence it was planned against — never against its own replay's.
+    _sl_args+=(--record-digest --build-id "$SIDE_EFFECTS_BUILD_ID" --freeze "$ITER_DIR/side-effects.preflight.json")
   fi
   _sl_events="$(python3 "$SCRIPT_DIR/lib/goal_gate.py" "${_sl_args[@]}")" || _sl_rc=$?
   while IFS=$'\t' read -r _sl_name _sl_payload; do
@@ -2834,6 +2840,9 @@ Do NOT write code or implement anything. The iteration spec and any blueprint ed
       [[ "$_SE_STRICT" == "on" ]] && _lint_args+=(--strict-side-effects)
     fi
     _lint_rc=0
+    # A JSON left by an earlier attempt must never stand in for this one (the
+    # E15 check below reads it to know whether the side-effect pass finished).
+    rm -f "$_lint_json" 2>/dev/null || true
     python3 "$SCRIPT_DIR/lib/iter_spec.py" lint "$ITER_SPEC_PATH" "${_lint_args[@]}" \
       > "$_lint_txt" 2>"$ITER_DIR/spec-lint.stderr" || _lint_rc=$?
     # `grep -c` PRINTS 0 and EXITS 1 when nothing matches, so a `|| echo 0`
@@ -2886,6 +2895,47 @@ PYSELINT
     fi
     [[ -s "$_lint_txt" ]] && sed 's/^/[run-goal]   /' "$_lint_txt"
 
+    # ── HARD-3 E15: a restrictive side-effect policy without its ledger ───────
+    # Decided BEFORE the crash and re-plan branches, whatever the lint's exit
+    # code: E15 is not re-plannable (the planner cannot repair the evidence
+    # source) and halts at once — in `warn` mode too: warn softens the planner's
+    # contradictions, never a restrictive policy whose evidence is missing. When
+    # the lint did not finish its side-effect pass (a crash, a traceback, an
+    # unreadable input), the engine decides E15 itself and fails closed: a
+    # policy that reads as `none` (or cannot be read at all) with a ledger that
+    # is not usable halts. Only the explicit switches CHAIN_SPEC_LINT=off and
+    # CHAIN_SIDE_EFFECT_PREFLIGHT=false (both announced above) skip this.
+    # Nothing has been dispatched past the decomposer at this point.
+    _se_e15=""
+    if [[ "$_SE_PREFLIGHT" == "on" ]]; then
+      if grep -qE '^\[spec-lint\] ERROR E15 ' "$_lint_txt" 2>/dev/null; then
+        _se_e15="E15 in $_lint_txt"
+      elif [[ "$_lint_rc" -ne 0 ]] && ! python3 -c 'import json, sys
+se = json.load(open(sys.argv[1])).get("side_effects")
+sys.exit(0 if isinstance(se, dict) and se.get("availability") in ("ok", "incomplete", "unavailable") else 1)' \
+            "$_lint_json" 2>/dev/null; then
+        _se_intent="$(python3 "$SCRIPT_DIR/lib/iter_spec.py" policy-intent "$ITER_SPEC_PATH" 2>/dev/null)" \
+          || _se_intent="unreadable"
+        if [[ "$_se_intent" == "none" || "$_se_intent" == "unreadable" ]] \
+           && ! python3 "$SCRIPT_DIR/lib/iter_spec.py" ledger-ok "$SIDE_EFFECTS_FILE" \
+                  --build-id "${SIDE_EFFECTS_BUILD_ID:-}" 2>/dev/null; then
+          _se_e15="the spec lint did not finish (exit $_lint_rc), the spec's side-effect policy is '$_se_intent' and the ledger is not usable"
+        fi
+      fi
+    fi
+    if [[ -n "$_se_e15" ]]; then
+      echo "[run-goal] The spec declares a restrictive 'Side-effect policy: none' but the deterministic side-effect ledger is unavailable, incomplete or stale (E15: $_se_e15) — halting BEFORE any dispatch (CHAIN_SPEC_LINT=$_SPEC_LINT_MODE does not relax this). This is not re-planned: the planner cannot repair the evidence source." >&2
+      echo "[run-goal]   Ledger:  ${SIDE_EFFECTS_FILE#"$REPO_ROOT"/}   Sidecar: ${SIDE_EFFECT_SIDECAR#"$REPO_ROOT"/}" >&2
+      echo "[run-goal]   Reproduce:  python3 scripts/automation/lib/goal_gate.py side-effects docs/goal.md --sidecar ${SIDE_EFFECT_SIDECAR#"$REPO_ROOT"/}" >&2
+      echo "[run-goal]   Fix the input — make read-only-endpoints.txt readable; repair a corrupt per-run record iter-*/replay-side-effects*.json; move a corrupt sidecar aside (every observation is rebuilt from the per-run records) — then:  /goal-resume $SESSION_ID  (the ledger is rebuilt and the spec re-linted)" >&2
+      record_telemetry_event "halt" "$(jq -cn --arg m "$_SPEC_LINT_MODE" --arg rc "$_lint_rc" \
+        '{reason:"GATE_BLOCKED_SIDE_EFFECT_LEDGER", detected_at_step:"side-effect-ledger", lint_mode:$m, lint_rc:($rc|tonumber)}' 2>/dev/null \
+        || printf '%s' '{"reason":"GATE_BLOCKED_SIDE_EFFECT_LEDGER","detected_at_step":"side-effect-ledger"}')"
+      write_session_summary "GATE_BLOCKED" "$CURRENT_ITER"
+      explain_goal_status "GATE_BLOCKED" "$SESSION_ID" "$REPO_ROOT" >&2
+      exit 0
+    fi
+
     if [[ "$_lint_rc" -eq 2 ]]; then
       # Linter crash / unreadable spec. Never re-planned: the planner is not the
       # thing that is broken, and a re-plan would hide the breakage.
@@ -2906,26 +2956,6 @@ PYSELINT
       fi
       echo "[run-goal] WARNING: spec lint exited 2 (crash/unreadable) — CHAIN_SPEC_LINT=$_SPEC_LINT_MODE, continuing UNVERIFIED." >&2
       break
-    fi
-
-    # ── HARD-3 E15: a restrictive side-effect policy without its ledger ───────
-    # Not re-plannable (the planner cannot repair the evidence source), so it is
-    # checked BEFORE the re-plan branch and halts at once — in `warn` mode too:
-    # warn softens the planner's contradictions, never a restrictive policy
-    # whose evidence is missing. Only the explicit switches CHAIN_SPEC_LINT=off
-    # and CHAIN_SIDE_EFFECT_PREFLIGHT=false (both announced above) skip it.
-    # Nothing has been dispatched past the decomposer at this point.
-    if [[ "$_lint_rc" -eq 1 ]] && grep -qE '^\[spec-lint\] ERROR E15 ' "$_lint_txt" 2>/dev/null; then
-      echo "[run-goal] The spec declares 'Side-effect policy: none' but the deterministic side-effect ledger is unavailable, incomplete or stale (E15) — halting BEFORE any dispatch (CHAIN_SPEC_LINT=$_SPEC_LINT_MODE does not relax this). This is not re-planned: the planner cannot repair the evidence source." >&2
-      echo "[run-goal]   Ledger:  ${SIDE_EFFECTS_FILE#"$REPO_ROOT"/}   Sidecar: ${SIDE_EFFECT_SIDECAR#"$REPO_ROOT"/}" >&2
-      echo "[run-goal]   Reproduce:  python3 scripts/automation/lib/goal_gate.py side-effects docs/goal.md --sidecar ${SIDE_EFFECT_SIDECAR#"$REPO_ROOT"/}" >&2
-      echo "[run-goal]   Fix the input — make read-only-endpoints.txt readable; repair a corrupt per-run record iter-*/replay-side-effects*.json; move a corrupt sidecar aside (every observation is rebuilt from the per-run records) — then:  /goal-resume $SESSION_ID  (the ledger is rebuilt and the spec re-linted)" >&2
-      record_telemetry_event "halt" "$(jq -cn --arg m "$_SPEC_LINT_MODE" \
-        '{reason:"GATE_BLOCKED_SIDE_EFFECT_LEDGER", detected_at_step:"side-effect-ledger", lint_mode:$m}' 2>/dev/null \
-        || printf '%s' '{"reason":"GATE_BLOCKED_SIDE_EFFECT_LEDGER","detected_at_step":"side-effect-ledger"}')"
-      write_session_summary "GATE_BLOCKED" "$CURRENT_ITER"
-      explain_goal_status "GATE_BLOCKED" "$SESSION_ID" "$REPO_ROOT" >&2
-      exit 0
     fi
 
     if [[ "$_lint_rc" -ne 0 && "$_SPEC_LINT_MODE" == "block" ]]; then

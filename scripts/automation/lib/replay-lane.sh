@@ -185,18 +185,24 @@ replay_side_effects_retire() {
 # literally the same command. $1 = iter/phase name, $2 = journey csv.
 # HARD-3: the side-effect observer rides every verify call unless
 # CHAIN_SIDE_EFFECT_OBSERVER is off (rollback knob, default on); each call starts
-# from a retired (archived) run record.
+# from a retired (archived) run record and emits its own telemetry, from a
+# record no older than the call itself.
 _replay_lane_verify_once() {
-  local _se=()
+  local _se=() _vo_rc=0 _vo_since=""
   if side_effect_knob_on CHAIN_SIDE_EFFECT_OBSERVER on; then
     replay_side_effects_retire "$REPLAY_SIDE_EFFECTS_RUN"
+    _vo_since="$(date -u +%Y-%m-%dT%H:%M:%S)"
     _se=(--side-effects-out "$REPLAY_SIDE_EFFECTS_SIDECAR" --side-effects-run-out "$REPLAY_SIDE_EFFECTS_RUN")
   fi
   python3 "$DEMO_RUNNER" --mode verify \
     --scripts-dir "$JOURNEY_SCRIPTS_DIR" --journeys "$2" \
     --results "$REGRESSION_RESULTS" --evidence-dir "$EVIDENCE_DIR" \
     --base-url "$FRONTEND_URL" --phase-id "$1" --repo-root "$REPO_ROOT" \
-    ${_se[@]+"${_se[@]}"}
+    ${_se[@]+"${_se[@]}"} || _vo_rc=$?
+  if [[ -n "$_vo_since" ]]; then
+    _replay_lane_side_effect_events "$1" "$_vo_since"
+  fi
+  return "$_vo_rc"
 }
 
 # HARD-3: emit side_effect_observed (one per replayed journey — zero counts
@@ -205,9 +211,11 @@ _replay_lane_verify_once() {
 # `kind` says which), side_effect_clear_refused (a complete clean replay that
 # could not clear an earlier mutation recorded under another golden) and
 # side_effect_sidecar_update_failed from THIS run's record, plus log lines.
-# Never fails the lane. $1 = iter/phase name.
+# Never fails the lane. $1 = iter/phase name, $2 = UTC second the run started
+# (a record observed before it — one a failed archive left behind — is never
+# reported as this run's).
 _replay_lane_side_effect_events() {
-  local _se_iter="$1" _se_name _se_payload
+  local _se_iter="$1" _se_since="${2:-}" _se_name _se_payload
   [[ -f "${REPLAY_SIDE_EFFECTS_RUN:-}" ]] || return 0
   while IFS=$'\t' read -r _se_name _se_payload; do
     [[ -n "$_se_name" && -n "$_se_payload" ]] || continue
@@ -218,13 +226,16 @@ _replay_lane_side_effect_events() {
     elif declare -F record_telemetry_event >/dev/null 2>&1; then
       record_telemetry_event "$_se_name" "$_se_payload" || true
     fi
-  done < <(python3 - "$REPLAY_SIDE_EFFECTS_RUN" "$_se_iter" 2>/dev/null <<'PYEVENTS' || true
+  done < <(python3 - "$REPLAY_SIDE_EFFECTS_RUN" "$_se_iter" "$_se_since" 2>/dev/null <<'PYEVENTS' || true
 import json, sys
 try:
     rec = json.load(open(sys.argv[1]))
 except Exception:
     sys.exit(0)
 if not isinstance(rec, dict):
+    sys.exit(0)
+since = sys.argv[3] if len(sys.argv) > 3 else ""
+if since and str(rec.get("observed_at") or "") < since:
     sys.exit(0)
 name = sys.argv[2]
 def num(v):
@@ -547,7 +558,6 @@ replay_lane_partition_and_verify() {
       _replay_rc=0
       _replay_lane_verify_once "$_rl_iter" "$_replay_csv" || _replay_rc=$?
     fi
-    _replay_lane_side_effect_events "$_rl_iter"
     if [[ "$_replay_rc" -eq 5 ]]; then
       REPLAY_FAILED="$(grep -E '^\| UT-J-[0-9]+ ' "$REGRESSION_RESULTS" 2>/dev/null | grep -F '| FAIL |' | grep -oE 'J-[0-9]+' | sort -u | tr '\n' ' ')"
       _replay_lane_log "Replay flagged possible regression(s) — re-confirming via LLM: $REPLAY_FAILED"

@@ -198,7 +198,8 @@ _LOCAL_HOST_SUFFIXES = (".localhost", ".local", ".internal", ".lan", ".home.arpa
 READONLY_ENDPOINTS_RELPATH = "project-extensions/side-effects/read-only-endpoints.txt"
 SIDE_EFFECT_SAMPLE_CAP = 20
 SIDE_EFFECT_HISTORY_CAP = 5
-SIDE_EFFECT_GOLDEN_CAP = 20
+SIDE_EFFECT_GOLDEN_CAP = 50
+SIDE_EFFECT_CLEARED_INDEX_CAP = 500
 MERGED_RUNS_CAP = 2000
 # Bumped whenever classify_candidate's rules change: a recorded observation
 # classified under another version is always re-classified by the ledger.
@@ -575,17 +576,26 @@ def _union_pairs(a, b, keys, cap=SIDE_EFFECT_SAMPLE_CAP) -> "tuple[list, bool]":
 _CONTEXT_KEYS = ("readonly_endpoints_sha256", "readonly_endpoints_error", "ignore_paths", "classifier_version")
 
 
-def _merge_mutating(entry: dict, obs: dict) -> None:
+def _cleared(mutation_time: float, clean_time: "float | None") -> bool:
+    """A mutation is cleared only by a STRICTLY newer clean replay; one whose own
+    time is unknown is never cleared (fail closed, like an unreadable count)."""
+    return clean_time is not None and mutation_time != float("-inf") and clean_time > mutation_time
+
+
+def _merge_mutating(entry: dict, obs: dict, cleared_at: "float | None" = None) -> None:
     """Record a mutating observation under its golden. Ignored when a strictly
-    newer complete clean replay of the same golden already cleared it; two
-    uncleared observations of one golden are unioned (newest metadata wins)."""
+    newer complete clean replay of the same golden already cleared it (the
+    entry's clean record, or `cleared_at` for a golden whose entry was capped
+    away); two uncleared observations of one golden are unioned (newest
+    metadata wins)."""
     t = observation_time(obs)
     clean = entry.get("clean") if isinstance(entry.get("clean"), dict) else None
-    clean_t = observation_time(clean) if clean else None
-    if clean_t is not None and clean_t > t:
+    times = [x for x in (observation_time(clean) if clean else None, cleared_at) if x is not None]
+    clean_t = max(times) if times else None
+    if _cleared(t, clean_t):
         return
     cur = entry.get("mutating") if isinstance(entry.get("mutating"), dict) else None
-    if cur is None or (clean_t is not None and clean_t > observation_time(cur)):
+    if cur is None or _cleared(observation_time(cur), clean_t):
         entry["mutating"] = dict(obs)
         return
     newer, older = (dict(obs), cur) if t >= observation_time(cur) else (dict(cur), obs)
@@ -619,7 +629,7 @@ def _entry_uncleared(key: str, entry) -> "dict | None":
         return None
     m = entry["mutating"]
     c = entry.get("clean")
-    if key != UNIDENTIFIED_GOLDEN and isinstance(c, dict) and observation_time(c) > observation_time(m):
+    if key != UNIDENTIFIED_GOLDEN and isinstance(c, dict) and _cleared(observation_time(m), observation_time(c)):
         return None
     return m
 
@@ -627,8 +637,8 @@ def _entry_uncleared(key: str, entry) -> "dict | None":
 def uncleared_mutations(rec) -> list:
     """A journey record's mutating evidence that no strictly newer COMPLETE clean
     replay of the SAME golden has cleared, newest first. A mutation recorded
-    under an unidentified golden is never cleared. A legacy record (no
-    `goldens`) falls back to a mutating `latest`."""
+    under an unidentified golden, or with an unreadable time, is never cleared.
+    A legacy record (no `goldens`) falls back to a mutating `latest`."""
     if not isinstance(rec, dict):
         return []
     goldens = rec.get("goldens")
@@ -646,7 +656,12 @@ def uncleared_mutations(rec) -> list:
     return out
 
 
-def _cap_goldens(goldens: dict) -> dict:
+def _cap_goldens(goldens: dict, cleared_index: dict) -> dict:
+    """Bound the per-golden entries. Only entries with nothing left to prove may
+    go (oldest first) — never uncleared mutating evidence, never a clean
+    replay whose sample holds a request an exclusion let through (it must stay
+    re-checkable). A dropped entry's clean time moves to `cleared_index`, so a
+    late-merged old mutation of that golden is still recognised as cleared."""
     if len(goldens) <= SIDE_EFFECT_GOLDEN_CAP:
         return goldens
 
@@ -654,19 +669,31 @@ def _cap_goldens(goldens: dict) -> dict:
         e = item[1] if isinstance(item[1], dict) else {}
         return max(observation_time(e.get("mutating")), observation_time(e.get("clean")))
 
-    # Only entries with nothing left to prove may go, oldest first; uncleared
-    # mutating evidence is never dropped to make room.
-    droppable = sorted((it for it in goldens.items() if _entry_uncleared(*it) is None), key=_activity)
+    def _droppable(key, entry) -> bool:
+        if _entry_uncleared(key, entry) is not None or not isinstance(entry, dict):
+            return False
+        clean = entry.get("clean") if isinstance(entry.get("clean"), dict) else {}
+        try:
+            excluded = int(clean.get("readonly_count") or 0) or int(clean.get("auth_count") or 0)
+        except (TypeError, ValueError):
+            return False
+        return not (clean.get("exceptions_applied") or clean.get("auth_ignored") or excluded)
+
     out = dict(goldens)
-    for key, _ in droppable:
+    for key, entry in sorted((it for it in goldens.items() if _droppable(*it)), key=_activity):
         if len(out) <= SIDE_EFFECT_GOLDEN_CAP:
             break
+        clean = entry.get("clean") if isinstance(entry, dict) else None
+        if isinstance(clean, dict) and clean.get("observed_at"):
+            cleared_index[key] = clean["observed_at"]
         out.pop(key, None)
+    while len(cleared_index) > SIDE_EFFECT_CLEARED_INDEX_CAP:
+        cleared_index.pop(min(cleared_index, key=lambda k: observation_time({"observed_at": cleared_index[k]})))
     return out
 
 
 def merge_side_effect_observations(sidecar, observations: dict, now: "str | None" = None,
-                                   notes: "dict | None" = None) -> dict:
+                                   notes: "dict | None" = None, run_id: "str | None" = None) -> dict:
     """Pure merge of per-journey observations into the sidecar dict.
 
     Only the `journeys` records of the observed journeys change; every other key
@@ -675,10 +702,13 @@ def merge_side_effect_observations(sidecar, observations: dict, now: "str | None
     complete-or-mutating one (display), and `goldens` the status evidence keyed
     by golden identity — a mutation stays until a strictly newer COMPLETE clean
     replay of the SAME golden clears it (a partial, blind or other-golden replay
-    never does). The result does not depend on the order observations arrive
-    in, so a late merge of an older run record is safe. `notes` (optional) is
-    filled with the journeys whose complete clean replay could NOT clear an
-    earlier mutation."""
+    never does). Whether a journey has uncleared evidence does not depend on the
+    order observations arrive in, so a late merge of an older run record is
+    safe; only the request SAMPLE of a union can differ by order, and only by
+    holding more requests (never fewer). `notes` (optional) is filled with the
+    journeys whose complete clean replay could NOT clear an earlier mutation;
+    `run_id` (optional) is recorded as merged even when the run observed no
+    journey."""
     data = sidecar if isinstance(sidecar, dict) else {}
     data.setdefault("schema_version", 1)
     journeys = data.get("journeys")
@@ -705,8 +735,10 @@ def merge_side_effect_observations(sidecar, observations: dict, now: "str | None
         key = golden_key(obs)
         goldens = rec.get("goldens") if isinstance(rec.get("goldens"), dict) else {}
         entry = goldens.get(key) if isinstance(goldens.get(key), dict) else {}
+        index = rec.get("cleared_goldens") if isinstance(rec.get("cleared_goldens"), dict) else {}
         if mut:
-            _merge_mutating(entry, obs)
+            idx_t = index.get(key) if key != UNIDENTIFIED_GOLDEN else None
+            _merge_mutating(entry, obs, observation_time({"observed_at": idx_t}) if idx_t else None)
             prior = rec.get("mutating_history")
             hist = [h for h in prior if isinstance(h, dict)] if isinstance(prior, list) else []
             item = {
@@ -724,7 +756,9 @@ def merge_side_effect_observations(sidecar, observations: dict, now: "str | None
         if entry:
             goldens[key] = entry
         if goldens:
-            rec["goldens"] = _cap_goldens(goldens)
+            rec["goldens"] = _cap_goldens(goldens, index)
+        if index:
+            rec["cleared_goldens"] = index
         if complete_clean and notes is not None:
             left = uncleared_mutations(rec)
             if left:
@@ -736,9 +770,11 @@ def merge_side_effect_observations(sidecar, observations: dict, now: "str | None
                                if isinstance(r, dict) and r.get("class") == "mutating"][:3],
                 }
         journeys[jid] = rec
-        run_id = obs.get("run_id")
-        if isinstance(run_id, str) and run_id and run_id not in runs:
-            runs.append(run_id)
+        obs_run = obs.get("run_id")
+        if isinstance(obs_run, str) and obs_run and obs_run not in runs:
+            runs.append(obs_run)
+    if isinstance(run_id, str) and run_id and run_id not in runs:
+        runs.append(run_id)
     data["merged_runs"] = runs[-MERGED_RUNS_CAP:]
     data["observations_updated_at"] = now or _utc_now()
     return data
@@ -792,6 +828,9 @@ def sidecar_shape_error(current) -> "str | None":
         return "'journeys' is not an object"
     if "merged_runs" in current and not isinstance(current["merged_runs"], list):
         return "'merged_runs' is not a list"
+    for key in ("declarations", "declaration_conflicts"):
+        if key in current and not isinstance(current[key], dict):
+            return f"'{key}' is not an object"
     for jid, rec in journeys.items():
         if not isinstance(rec, dict):
             return f"record {jid} is not an object"
@@ -800,6 +839,8 @@ def sidecar_shape_error(current) -> "str | None":
                 return f"record {jid}.{key} is not an object"
         if "mutating_history" in rec and not isinstance(rec["mutating_history"], list):
             return f"record {jid}.mutating_history is not a list"
+        if "cleared_goldens" in rec and not isinstance(rec["cleared_goldens"], dict):
+            return f"record {jid}.cleared_goldens is not an object"
         if "goldens" in rec:
             if not isinstance(rec["goldens"], dict):
                 return f"record {jid}.goldens is not an object"
@@ -827,7 +868,7 @@ def side_effect_lock_timeout(env=None) -> float:
 
 
 def update_side_effects_sidecar(path, observations: dict, lock_timeout: float = 10.0,
-                                notes: "dict | None" = None) -> "tuple[bool, str]":
+                                notes: "dict | None" = None, run_id: "str | None" = None) -> "tuple[bool, str]":
     """Read-modify-write the engine-owned sidecar. A corrupt or wrongly-shaped
     existing file is NEVER overwritten: losing recorded mutations would silently
     downgrade journeys to their declarations (the ledger reports it instead, and
@@ -847,7 +888,7 @@ def update_side_effects_sidecar(path, observations: dict, lock_timeout: float = 
                 if shape_error:
                     return False, f"{p} has the wrong shape ({shape_error}) — not overwritten"
             try:
-                merged = merge_side_effect_observations(current, observations, notes=notes)
+                merged = merge_side_effect_observations(current, observations, notes=notes, run_id=run_id)
             except Exception as exc:  # noqa: BLE001 — never overwrite what cannot be merged
                 return False, f"{p} could not be merged ({exc}) — not overwritten"
             _atomic_write_json(p, merged)
@@ -1372,6 +1413,19 @@ def _t_side_effect_merge_golden_semantics() -> None:
     assert ref == ["2026-09-17T00:00:01.000000Z"], ref
     for perm in itertools.permutations(seq):
         assert status(list(perm))[0] == ref, perm
+    # a mutation whose time cannot be read is never cleared
+    bad_t = dict(ob(1, 1, g1), observed_at="not-a-time")
+    assert status([bad_t, ob(0, 9, g1)])[0] == ["not-a-time"]
+    # a golden whose entry was capped away still clears a late-merged old mutation
+    d = {}
+    for i in range(SIDE_EFFECT_GOLDEN_CAP + 3):
+        d = merge_side_effect_observations(d, {"J-01": ob(0, 10 + i % 40, f"{i:064x}")})
+    first = f"{0:064x}"
+    assert first not in d["journeys"]["J-01"]["goldens"] and first in d["journeys"]["J-01"]["cleared_goldens"]
+    d = merge_side_effect_observations(d, {"J-01": ob(1, 5, first)})
+    assert uncleared_mutations(d["journeys"]["J-01"]) == []
+    # a run that observed no journey is still recorded as merged
+    assert merge_side_effect_observations({}, {}, run_id="r-empty")["merged_runs"] == ["r-empty"]
     # merging the same run twice changes nothing but the timestamp
     a = status([mut, ob(0, 3, g2)])[1]
     b = merge_side_effect_observations(json.loads(json.dumps(a)), {"J-01": ob(0, 3, g2)}, now=a["observations_updated_at"])
@@ -2062,36 +2116,45 @@ class _SideEffectRun:
             print(f"[demo_runner] side-effect bookkeeping failed ({exc}); the replay verdict is unaffected",
                   file=sys.stderr)
 
+    def _write_record(self, state: dict) -> None:
+        if not self.run_out:
+            return
+        record = dict(self.meta)
+        record.update({
+            "schema_version": 1,
+            "base_url": self.base_url,
+            "readonly_endpoints": {k: self.ro[k] for k in ("path", "present", "sha256", "invalid", "error")},
+            "journeys": self.observations,
+            "sidecar": state,
+        })
+        try:
+            Path(self.run_out).parent.mkdir(parents=True, exist_ok=True)
+            _atomic_write_json(self.run_out, record)
+        except OSError as exc:
+            print(f"[demo_runner] side-effect run record not written ({exc})", file=sys.stderr)
+
     def _flush(self) -> None:
-        state = {"path": self.sidecar, "updated": False,
-                 "message": "not requested" if not self.sidecar else "no journey was replayed"}
-        if self.sidecar and self.observations:
-            notes: dict = {}
-            ok, msg = update_side_effects_sidecar(self.sidecar, self.observations, notes=notes,
-                                                  lock_timeout=side_effect_lock_timeout())
-            state = {"path": self.sidecar, "updated": ok, "message": msg}
-            if ok and notes:
-                # A complete clean replay that could NOT clear an earlier mutation
-                # (recorded under another golden): the journey stays mutating.
-                state["clear_refused"] = notes
-            if not ok:
-                print(f"[demo_runner] side-effect sidecar NOT updated ({msg}); the replay verdict is unaffected. "
-                      "This run's record keeps the observations and the next preflight merges them.",
-                      file=sys.stderr)
-        if self.run_out:
-            record = dict(self.meta)
-            record.update({
-                "schema_version": 1,
-                "base_url": self.base_url,
-                "readonly_endpoints": {k: self.ro[k] for k in ("path", "present", "sha256", "invalid", "error")},
-                "journeys": self.observations,
-                "sidecar": state,
-            })
-            try:
-                Path(self.run_out).parent.mkdir(parents=True, exist_ok=True)
-                _atomic_write_json(self.run_out, record)
-            except OSError as exc:
-                print(f"[demo_runner] side-effect run record not written ({exc})", file=sys.stderr)
+        if not (self.sidecar and self.observations):
+            self._write_record({"path": self.sidecar, "updated": False,
+                                "message": "not requested" if not self.sidecar else "no journey was replayed"})
+            return
+        # The durable per-run record is written FIRST, so an interruption before
+        # the sidecar update can never leave an observation only in the sidecar.
+        self._write_record({"path": self.sidecar, "updated": False, "message": "pending"})
+        notes: dict = {}
+        ok, msg = update_side_effects_sidecar(self.sidecar, self.observations, notes=notes,
+                                              lock_timeout=side_effect_lock_timeout(),
+                                              run_id=self.meta.get("run_id"))
+        state = {"path": self.sidecar, "updated": ok, "message": msg}
+        if ok and notes:
+            # A complete clean replay that could NOT clear an earlier mutation
+            # (recorded under another golden): the journey stays mutating.
+            state["clear_refused"] = notes
+        if not ok:
+            print(f"[demo_runner] side-effect sidecar NOT updated ({msg}); the replay verdict is unaffected. "
+                  "This run's record keeps the observations and the next preflight merges them.",
+                  file=sys.stderr)
+        self._write_record(state)
 
 
 def run_verify(opts, base_url: str) -> int:

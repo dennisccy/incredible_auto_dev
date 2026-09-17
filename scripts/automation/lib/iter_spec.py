@@ -59,6 +59,14 @@ consolidation are HARD-2 concerns):
         byte-identical): a lane/evaluator block needs a readable ledger AND a
         declared policy or a MUTATING journey in the spec's journey set.
 
+    iter_spec.py policy-intent <spec>
+        prints `none` when the spec states a restrictive side-effect policy in
+        any readable-to-a-human form, else the canonical value; exit 2 when the
+        spec is unreadable.
+
+    iter_spec.py ledger-ok <ledger> [--build-id ID]
+        exit 0 only for an available, complete ledger of that build.
+
     iter_spec.py self-test
 
 A "concrete bullet" is a `-` / `- [ ]` line whose text does not start with `<`
@@ -79,6 +87,7 @@ from __future__ import annotations
 import json
 import re
 import sys
+import unicodedata
 
 _IN_SCOPE_RE = re.compile(r"^##\s+IN SCOPE\s*$(.*?)(?=^##\s|\Z)", re.S | re.M | re.I)
 _H3_RE = re.compile(r"^###\s+(.*?)\s*$")
@@ -484,9 +493,14 @@ def _passing_targets(history_path: str, targets: list[str]) -> list[str]:
 # observed mutation always outranking a `none` declaration. The policy line can
 # only ADD a contradiction (E13/E15) — it can never excuse one (E16 ignores it).
 _SIDE_EFFECT_STATUSES = ("none", "mutating", "unknown")
+# Any label a reader would take for the policy field — spaces, ASCII or Unicode
+# hyphens/dashes (U+2010–U+2015, U+2212, soft hyphen) or underscores between the
+# words, singular or plural.
+_POLICY_LABEL = r"side[\s\-_\u2010-\u2015\u2212\u00ad]*effects?[\s\-_\u2010-\u2015\u2212\u00ad]*polic(?:y|ies)"
 _POLICY_NEAR_MISS_RE = re.compile(
-    r"^[ \t]*(?:[-*+][ \t]+)?(?:\*\*|__)?[ \t]*side[ \t]*[-_]?[ \t]*effects?[ \t]*[-_]?[ \t]*polic(?:y|ies)\b",
-    re.I)
+    rf"^[ \t]*(?:[-*+][ \t]+)?(?:\*\*|__)?[ \t]*{_POLICY_LABEL}\b", re.I)
+_POLICY_ANY_RE = re.compile(
+    rf"^[ \t]*(?:[-*+][ \t]+)?(?:\*\*|__)?[ \t]*{_POLICY_LABEL}\b(?P<rest>.*)$", re.I)
 # Explicit no-mutation prohibitions (plan WP3, matched case-insensitively, one
 # finding per line) — scanned ONLY in `## OUT OF SCOPE` and `## DEFINITION OF
 # DONE` (heading suffixes such as "(this iteration)" or "(DoD)" allowed) and on
@@ -494,32 +508,45 @@ _POLICY_NEAR_MISS_RE = re.compile(
 # included) outside the prose sections. GOAL / BACKGROUND / NOTES prose — where
 # a re-planned spec naturally explains what an earlier TC said — is never a
 # machine constraint, and neither is the metadata section.
+# (name, pattern, where, qualified): `where` "oos" = only on an OUT OF SCOPE line,
+# where listing an activity excludes it — on a TC / DoD line the same words can
+# be an affirmative invariant ("launching a new run is expected"), so there the
+# pattern needs its negated form. `qualified` = a match preceded by
+# "pre-existing" / "existing" / "prior" is an invariant, not a prohibition.
+_NEG = r"\b(?:no|not|never|nor|without)\b[^.;:]{0,25}?"
+_EDIT_LEDGER = r"\b(?:creating|editing|deleting|writing|appending|adding)\b[^.;:]{0,40}?\bledger\s+(?:rows?|entries|records)\b"
+_LAUNCH_NEW_RUN = r"\b(?:launching|starting|triggering)\s+(?:a\s+|any\s+)?new\s+(?:[\w-]+\s+){0,2}?runs?\b"
 _PROHIBITION_RES: tuple = (
     ("row-count-unchanged",
      re.compile(r"\b(?:row|record|ledger)s?\s+count\s+(?:(?:must|should|will|shall)\s+)?"
                 r"(?:(?:is|be|stays?|remains?|was)\s+)?(?:unchanged|the\s+same)\b"
                 r"|\b(?:row|record|ledger)s?\s+count\s+(?:does\s+not|doesn't|must\s+not|should\s+not)\s+change\b"
                 r"|\bnumber\s+of\s+(?:ledger\s+)?(?:rows|records|runs|entries)\s+"
-                r"(?:(?:is|stays|remains|must\s+(?:stay|remain|be))\s+)?(?:unchanged|the\s+same)\b", re.I)),
+                r"(?:(?:is|stays|remains|must\s+(?:stay|remain|be))\s+)?(?:unchanged|the\s+same)\b", re.I),
+     "any", True),
     ("no-new-row-run-record",
-     re.compile(r"\bno\s+new\s+(?:[\w-]+\s+){0,2}?(?:rows?|runs?|records?|ledger\s+(?:rows?|entry|entries))\b", re.I)),
+     re.compile(r"\bno\s+new\s+(?:[\w-]+\s+){0,2}?(?:rows?|runs?|records?|ledger\s+(?:rows?|entry|entries))\b", re.I),
+     "any", False),
     ("ledger-unchanged",
-     re.compile(r"\bledger\s+(?:(?:is|stays|remains)\s+)?(?:left\s+)?(?:unchanged|frozen|untouched)\b", re.I)),
-    ("ledger-row-edit",
-     re.compile(r"\b(?:creating|editing|deleting|writing|appending|adding)\b[^.;:]{0,40}?\bledger\s+"
-                r"(?:rows?|entries|records)\b", re.I)),
+     re.compile(r"\bledger\s+(?:(?:is|stays|remains)\s+)?(?:left\s+)?(?:unchanged|frozen|untouched)\b", re.I),
+     "any", True),
+    ("ledger-row-edit", re.compile(_EDIT_LEDGER, re.I), "oos", False),
+    ("ledger-row-edit", re.compile(_NEG + _EDIT_LEDGER, re.I), "any", False),
     ("must-not-mutate",
      re.compile(r"\bmust\s+not\s+(?:create|launch|append|write)\b"
-                r"|\bmust\s+not\s+(?:start|trigger)\s+(?:a\s+|any\s+)?(?:new\s+)?(?:[\w-]+\s+)?runs?\b", re.I)),
+                r"|\bmust\s+not\s+(?:start|trigger)\s+(?:a\s+|any\s+)?(?:new\s+)?(?:[\w-]+\s+)?runs?\b", re.I),
+     "any", False),
     ("no-write-mutation-launch",
-     re.compile(r"\bno\s+(?:writes?|mutations?|launch(?:es)?)\b(?![-\w])", re.I)),
+     re.compile(r"\bno\s+(?:writes?|mutations?|launch(?:es)?)\b(?![-\w])", re.I), "any", False),
     ("any-new-run-launch",
-     re.compile(r"\bany\s+new\s+(?:[\w-]+\s+){0,3}?run\s+launch(?:es)?\b"
-                r"|\b(?:launching|starting|triggering)\s+(?:a\s+|any\s+)?new\s+(?:[\w-]+\s+){0,2}?runs?\b", re.I)),
+     re.compile(r"\bany\s+new\s+(?:[\w-]+\s+){0,3}?run\s+launch(?:es)?\b", re.I), "any", False),
+    ("any-new-run-launch", re.compile(_LAUNCH_NEW_RUN, re.I), "oos", False),
+    ("any-new-run-launch", re.compile(_NEG + _LAUNCH_NEW_RUN, re.I), "any", False),
 )
+_INVARIANT_QUALIFIER_RE = re.compile(r"\b(?:pre-?existing|existing|prior|previous|earlier|older)\b", re.I)
 _TC_LINE_RE = re.compile(
-    r"^(?P<indent>[ \t]*)(?:(?:[-*+]|\d+[.)])[ \t]+)?(?:\[[ xX]\][ \t]+)?(?:\|[ \t]*)?(?:\*\*|__)?"
-    r"(?P<tc>TC-\d+)\b", re.I)
+    r"^(?P<indent>[ \t]*)(?:#{1,6}[ \t]+)?(?:(?:[-*+]|\d+[.)])[ \t]+)?(?:\[[ xX]\][ \t]+)?(?:\|[ \t]*)?"
+    r"(?:\*\*|__)?[`(\[]?(?P<tc>TC-\d+[a-z]?)\b", re.I)
 _FENCE_LINE_RE = re.compile(r"^\s*(```|~~~)")
 _PROSE_SECTIONS = ("GOAL", "BACKGROUND", "NOTES", "NOTE", "CONTEXT", "RATIONALE", "HISTORY")
 
@@ -529,7 +556,7 @@ def _section_kind(title: str) -> str:
     joined = " ".join(words)
     if joined.startswith(_METADATA_H2.upper()):
         return "metadata"
-    if joined.startswith("OUT OF SCOPE"):
+    if joined.startswith(("OUT OF SCOPE", "NOT IN SCOPE", "NON GOALS", "NONGOALS")):
         return "OUT OF SCOPE"
     if joined.startswith("DEFINITION OF DONE") or (words and words[0] == "DOD"):
         return "DEFINITION OF DONE"
@@ -577,14 +604,49 @@ def find_mutation_prohibitions(spec_text: str) -> list[dict]:
                 label = kind
             else:
                 continue
-        for name, rx in _PROHIBITION_RES:
-            m = rx.search(line)
-            if m:
-                text = line.strip()
-                found.append({"section": label, "line": i, "pattern": name, "match": m.group(0),
-                              "text": text if len(text) <= 240 else text[:239] + "…"})
+        hit = None
+        for name, rx, where, qualified in _PROHIBITION_RES:
+            if where == "oos" and label != "OUT OF SCOPE":
+                continue
+            for m in rx.finditer(line):
+                if qualified and _INVARIANT_QUALIFIER_RE.search(line[max(0, m.start() - 40):m.start()]):
+                    continue
+                hit = (name, m)
                 break
+            if hit:
+                break
+        if hit:
+            text = line.strip()
+            found.append({"section": label, "line": i, "pattern": hit[0], "match": hit[1].group(0),
+                          "text": text if len(text) <= 240 else text[:239] + "…"})
     return found
+
+
+def policy_intent(spec_text: str) -> str:
+    """'none' when the spec states a RESTRICTIVE side-effect policy in any form a
+    reader would take for one — the canonical line, a near-miss label (Unicode
+    dashes included), decoration around the value (`none`, "none — reason") or
+    a policy line outside the metadata section; otherwise the canonical value
+    ('allowed', an invalid value, or ''). A policy the parser cannot read is
+    reported (E02/E06/E01) AND still treated as restrictive (E13/E15)."""
+    canonical = read_metadata(spec_text).get("side_effect_policy") or ""
+    if canonical == "none":
+        return "none"
+    in_fence = False
+    for ln in spec_text.splitlines():
+        if _FENCE_LINE_RE.match(ln):
+            in_fence = not in_fence
+            continue
+        if in_fence:
+            continue
+        m = _POLICY_ANY_RE.match(unicodedata.normalize("NFKC", ln))
+        if not m:
+            continue
+        rest = re.sub(r"^[\s*_:=\-\u2010-\u2015]*", "", m.group("rest"))
+        tok = re.match(r"[`*_\"'\u2018\u2019\u201c\u201d(\[]*([A-Za-z]+)", rest)
+        if tok and tok.group(1).lower() == "none":
+            return "none"
+    return canonical
 
 
 def load_side_effect_ledger(path: str | None, build_id: str | None = None) -> dict:
@@ -690,6 +752,11 @@ def side_effect_findings(spec_text: str, md: dict, ledger_path: str | None, stri
     """Append the HARD-3 findings through err()/warn(); return the report block."""
     policy_raw = md.get("side_effect_policy")
     policy = policy_raw if policy_raw in _VALID_POLICY else None
+    intent = policy_intent(spec_text)
+    restrictive = policy == "none" or intent == "none"
+    stated = ("Side-effect policy: none" if policy == "none" else
+              "Side-effect policy reads as 'none' (in a form the parser cannot use — see E02/E06/E01 — so it is "
+              "treated as restrictive)")
     roles = _journey_roles(md, makeup)
     checked = list(roles)
     info = load_side_effect_ledger(ledger_path, build_id)
@@ -709,8 +776,8 @@ def side_effect_findings(spec_text: str, md: dict, ledger_path: str | None, stri
 
     if avail != "ok":
         what = "could not be built or read" if avail == "unavailable" else "is INCOMPLETE"
-        if policy == "none":
-            err("E15", f"'Side-effect policy: none' is declared, but the deterministic side-effect ledger "
+        if restrictive:
+            err("E15", f"'{stated}', but the deterministic side-effect ledger "
                        f"{ledger_ref} {what} ({info['reason']}). A restrictive policy is never trusted "
                        f"without its evidence source, so the session stops here (not re-planned) — fix the "
                        f"ledger input, then resume. {reproduce}")
@@ -719,16 +786,16 @@ def side_effect_findings(spec_text: str, md: dict, ledger_path: str | None, stri
                         f"policy is '{policy_raw or 'not declared'}', so dispatch continues, but journeys whose "
                         f"status could not be established are not checked against this spec. {reproduce}")
 
-    if policy == "none":
+    if restrictive:
         for j in mutating:
-            err("E13", "Side-effect policy: none, but " + _mutating_desc(j, recs[j], roles[j])
+            err("E13", f"{stated}, but " + _mutating_desc(j, recs[j], roles[j])
                 + " — a browser lane executing it WILL change persisted data. " + _conflict_fix([j], roles, baseline))
 
     if avail != "unavailable":
         undeclared_hint = ("declare their '- Side effects:' lines in docs/goal.md "
                            "(python3 scripts/automation/lib/goal_gate.py side-effects docs/goal.md --suggest)")
-        if policy == "none" and unknown:
-            msg = (f"Side-effect policy: none, but {', '.join(unknown)} "
+        if restrictive and unknown:
+            msg = (f"{stated}, but {', '.join(unknown)} "
                    f"{'has' if len(unknown) == 1 else 'have'} no known side-effect status (no valid declaration "
                    f"and no replay observation), so the policy cannot be verified for "
                    f"{'it' if len(unknown) == 1 else 'them'} — {undeclared_hint}")
@@ -759,6 +826,8 @@ def side_effect_findings(spec_text: str, md: dict, ledger_path: str | None, stri
         "reason": info["reason"],
         "policy": policy,
         "policy_raw": policy_raw,
+        "policy_intent": intent,
+        "restrictive": restrictive,
         "strict": bool(strict),
         "journeys_checked": checked,
         "roles": {j: sorted(r) for j, r in roles.items()},
@@ -1487,9 +1556,37 @@ def cmd_side_effect_context(argv: list[str]) -> int:
     return 0
 
 
+def cmd_policy_intent(argv: list[str]) -> int:
+    """Print the spec's side-effect policy intent (see policy_intent); exit 2
+    when the spec cannot be read. The engine's fail-closed fallback when the
+    lint itself did not complete."""
+    try:
+        text = _read_spec(argv[0])
+    except (OSError, IndexError) as exc:
+        print(f"iter_spec: unreadable: {exc}", file=sys.stderr)
+        return 2
+    print(policy_intent(text))
+    return 0
+
+
+def cmd_ledger_ok(argv: list[str]) -> int:
+    """exit 0 only when the ledger is available, complete and (with
+    --build-id) this build's; otherwise 1 with the reason on stderr."""
+    opts = _parse_opts(argv[1:], ("--build-id",), ())
+    info = load_side_effect_ledger(argv[0] if argv else None, opts.get("--build-id"))
+    if info["availability"] == "ok":
+        return 0
+    print(f"iter_spec: side-effect ledger {info['availability']}: {info['reason']}", file=sys.stderr)
+    return 1
+
+
 def main(argv: list[str]) -> int:
     if argv and argv[0] == "side-effect-context":
         return cmd_side_effect_context(argv[1:])
+    if len(argv) >= 2 and argv[0] == "policy-intent":
+        return cmd_policy_intent(argv[1:])
+    if argv and argv[0] == "ledger-ok":
+        return cmd_ledger_ok(argv[1:])
     if len(argv) >= 2 and argv[0] == "has-implementation-work":
         return cmd_has_implementation_work(argv[1])
     if len(argv) >= 2 and argv[0] == "metadata":

@@ -177,10 +177,10 @@ Some journeys change persisted data as part of their own steps (J-04 "click Run"
 
 You never edit `docs/goal.md` to change these; you plan around them. Write exactly one of:
 
-Use exactly that canonical form: a near-miss label (`Side effect policy`, `**Side-effect policy**:`, a `*` bullet) is E02, because the engine cannot read it and would treat the policy as absent.
-
 - `- **Side-effect policy:** none` — ONLY when no target, required or make-up journey is MUTATING. An Unknown journey under `none` is a warning (W09), an error under the owner's strict mode (E14).
 - `- **Side-effect policy:** allowed` — whenever a journey this iteration executes changes data. Then every TC and DEFINITION OF DONE line must be an **invariant on PRE-EXISTING rows** ("no pre-existing ledger row is edited or deleted; J-04's own Run step may add its new row"), never "nothing changes".
+
+Use exactly that canonical form, with the bare value. A near-miss label (`Side effect policy`, `**Side-effect policy**:`, a `*` bullet) is E02 and a decorated value (`` `none` ``, `none — reason`) is E06 — and a line that still reads as `none` is treated as restrictive anyway, so it gets E13/E15 in the same pass.
 
 Whatever the policy line says, the engine also scans OUT OF SCOPE, DEFINITION OF DONE and every `TC-` line outside GOAL / BACKGROUND / NOTES for explicit no-mutation prohibitions — "row/record/ledger count unchanged", "no new row/run/record", "ledger unchanged/frozen", "must not create/launch/append/write", "no write/mutation/launch", "Any new … run launch", and close variants ("no new portfolio runs", "number of ledger rows unchanged", "creating or editing ledger rows", "launching a new run"). Use those phrases only when you truly mean "the browser run must not change data", and never while a MUTATING journey is in the iteration. Scope exclusions about CODE ("no change to versions.py") are fine, and so is explaining a rejected TC's old wording in BACKGROUND or NOTES — prose there is never scanned.
 

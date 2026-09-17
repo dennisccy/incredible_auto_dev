@@ -155,8 +155,8 @@ Also included as a section inside `reports/qa/<phase>-qa.md` when `Frontend Pres
 | Coherence audit per iter (goal mode) | `runs/goal-session-<sid>/iter-<N>/coherence.md` |
 | Goal-edit drift note (goal mode) | `runs/goal-session-<sid>/iter-<N>/journeys-changed.md` |
 | Canonical spec-field halt marker (goal mode, HARD-2) | `runs/goal-session-<sid>/iter-<N>/spec-field-unavailable` — written when the executor exited 78 because a `## Goal Mode Metadata` machine field could not be read at runtime (`reason=`, `rc=`, `spec=`, `iter=`, `detected_at_step=`). The iteration is neither evaluated nor advanced |
-| Spec-lint report (goal mode, HARD-2) | `runs/goal-session-<sid>/iter-<N>/spec-lint.txt` and `.json` — the deterministic iteration-spec lint's findings (`[spec-lint] ERROR\|WARN <rule> <name>: <msg>` lines; the JSON adds the parsed metadata and `work_kind_derived`, and — HARD-3, when the side-effect preflight ran — a `side_effects` block: `policy`, `availability` of the ledger, `journeys_checked` with their `roles` and `statuses`, `mutating`/`unknown`/`none`, the declared-none / observed-mutating `conflicts`, the `sticky` journeys, the explicit `prohibitions` found (`section`, `line`, `text`, `pattern`), the `declaration_digest` and `build_id` it was checked against; this is the preflight view even after the ledger file is refreshed for the evaluator). Written on every linted iteration, clean or not. `spec-lint.stderr` holds the linter's own stderr and is what `spec_lint_crash` samples |
-| Side-effect ledger per iteration (goal mode, HARD-3) | `runs/goal-session-<sid>/iter-<N>/side-effects.json` — see "Journey side-effect ledger" below |
+| Spec-lint report (goal mode, HARD-2) | `runs/goal-session-<sid>/iter-<N>/spec-lint.txt` and `.json` — the deterministic iteration-spec lint's findings (`[spec-lint] ERROR\|WARN <rule> <name>: <msg>` lines; the JSON adds the parsed metadata and `work_kind_derived`, and — HARD-3, when the side-effect preflight ran — a `side_effects` block: `policy`, `availability` of the ledger, `journeys_checked` with their `roles` and `statuses`, `mutating`/`unknown`/`none`, the declared-none / observed-mutating `conflicts`, the `sticky` journeys, `policy_intent` / `restrictive` (a policy line that reads as `none` in any form counts as restrictive), the explicit `prohibitions` found (`section`, `line`, `text`, `pattern`), the `declaration_digest` and `build_id` it was checked against; this is the preflight view even after the ledger file is refreshed for the evaluator). Written on every linted iteration, clean or not. `spec-lint.stderr` holds the linter's own stderr and is what `spec_lint_crash` samples |
+| Side-effect ledger per iteration (goal mode, HARD-3) | `runs/goal-session-<sid>/iter-<N>/side-effects.json` — see "Journey side-effect ledger" below; `side-effects.preflight.json` beside it is the iteration's frozen preflight view |
 | Side-effect sidecar (goal mode, HARD-3, engine-owned) | `runs/goal-session-<sid>/state/journey-side-effects.json` |
 | Replay side-effect run records (goal mode, HARD-3) | `runs/goal-session-<sid>/iter-<N>/replay-side-effects.json` (current) and `replay-side-effects.<stamp>-<pid>-<n>.json` (archived, never deleted) |
 | Read-only endpoint exceptions (owner-authored, optional, HARD-3) | `project-extensions/side-effects/read-only-endpoints.txt` |
@@ -410,12 +410,20 @@ Written by `run-goal.sh` via `lib/goal_gate.py side-effects` (atomically): once 
 goal-decomposer (`built_at_step: "preflight"`, stamped with a fresh `build_id` that the spec
 lint must see — an existing file is removed first, and a file that survives a failed build
 carries another build id, so the lint reads it as unavailable) and refreshed before the
-goal-evaluator (`"pre-evaluator"`, keeping the preflight file if the refresh fails). Readers:
+goal-evaluator (`"pre-evaluator"`, keeping the preflight file if the refresh fails). The
+iteration's first COMPLETE preflight build is also kept as `side-effects.preflight.json`
+(`--freeze`); every later preflight of the same iteration (a resume) reuses it — `frozen:
+true`, `frozen_at`, a new `build_id` — while its `input_fingerprint` (declaration digest,
+auth list, exception file, classifier version, journey set) is unchanged and the fresh build
+is complete, so a resumed iteration is re-linted against the evidence it was planned against,
+never against its own replay's observations. Changed inputs are rebuilt, and that view is
+frozen instead. Readers:
 the spec lint (`iter_spec.py lint --side-effects … --side-effects-build-id …`), both browser
 lanes (`CHAIN_SIDE_EFFECTS_FILE`), the decomposer and evaluator prompts. Shape:
 
 ```json
-{"schema_version": 1, "build_id": "<id|null>", "built_at": "...", "built_at_step": "preflight",
+{"schema_version": 1, "build_id": "<id|null>", "input_fingerprint": "<sha256>", "frozen": false,
+ "built_at": "...", "built_at_step": "preflight", "declarations_seeded_from": null,
  "iter": 9, "iter_name": "goal-<sid>-iter-9", "complete": true, "errors": [],
  "declaration_digest": "<sha256>", "declaration_digest_prev": "<sha256|null>",
  "declaration_digest_changed_iter": 7, "declaration_digest_changed_this_iter": false,
@@ -448,7 +456,10 @@ edits and ANY edit of a malformed line do. `observation_basis`: `recorded`, `rec
 the stored `{method, path}` sample was re-classified with the current rules) or
 `reclassification-unverifiable` (a truncated sample — kept mutating, fail closed).
 `observation_sticky` marks a mutation a newer complete clean replay could not clear because it
-replayed a different golden script (`sticky_detail` names that replay). `declaration_conflict`
+replayed a different golden script (`sticky_detail` names that replay). When the sidecar holds
+no declaration record (a new session, or a sidecar moved aside), the newest earlier
+`iter-<K>/side-effects.json` is the provenance baseline (`declarations_seeded_from`), so a
+declaration flip made at the same time is still reported. `declaration_conflict`
 (and the top-level `conflicts` list) marks a journey declared `none` that was observed
 mutating. `run_records_pending` lists per-run records the sidecar has not merged yet (they are
 applied in memory; the preflight's record step merges them).
@@ -460,7 +471,7 @@ The engine-owned sidecar. Two writers, both read-modify-write under an exclusive
 with atomic replace: the replay lane (`demo_runner.py --side-effects-out`) and the preflight
 record step (`goal_gate.py side-effects --record-digest`), which first merges every per-run
 record whose `run_id` is not in `merged_runs` yet (repair — telemetry
-`side_effect_observations_repaired`) and then writes `declarations`, `declaration_digest`,
+`side_effect_observations_repaired`, only for records that observed a journey) and then writes `declarations`, `declaration_digest`,
 `declaration_digest_prev`, `declaration_digest_changed_iter`, `readonly_endpoints_sha256`,
 `ignore_paths` (the auth/session exclusion list in force — a change emits
 `side_effect_declaration_changed` with `source:"auth-ignore-paths"`) and
@@ -469,10 +480,15 @@ Per journey (`journeys.<J>`): `last_attempt` (the newest observation), `latest` 
 complete-or-mutating observation — display), `mutating_history` (last 5) and the status
 evidence `goldens.<golden_sha256|"unidentified">: {mutating, clean}` — the newest mutating
 observation (request samples unioned across uncleared observations) and the newest COMPLETE
-clean replay of that golden. A mutation counts until a strictly newer complete clean replay of
-the SAME golden exists: a partial, blind or other-golden replay never clears it, a mutation
-without a golden identity is never cleared, and the result does not depend on the order the
-observations were merged in. `merged_runs` lists every merged run id. A corrupt or
+clean replay of that golden (with its request sample, so a request an exclusion let through
+is re-checked if the exclusion is withdrawn). A mutation counts until a strictly newer
+complete clean replay of the SAME golden exists: a partial, blind or other-golden replay never
+clears it, and a mutation without a golden identity or with an unreadable `observed_at` is
+never cleared. Whether a journey has uncleared evidence does not depend on the order the
+observations were merged in (a union's request sample can, and only by holding more
+requests). At most 50 goldens are kept per journey: only entries with nothing left to prove
+are dropped, and a dropped entry's clean time stays in `cleared_goldens`. `merged_runs` lists
+the merged run ids (the newest 2000), including runs that observed no journey. A corrupt or
 wrongly-shaped sidecar is never overwritten by either writer; moving it aside loses nothing,
 because the next ledger is rebuilt from the per-run records.
 
@@ -486,8 +502,12 @@ content) and `sidecar: {path, updated, message, clear_refused?}`. Written even w
 update fails. Before every verify call, at replay-lane entry and when a forked lane is reaped,
 an existing record is ARCHIVED beside it as `replay-side-effects.<stamp>-<pid>-<n>.json` —
 never deleted: all of them together are the session's durable observation history, which the
-ledger reads. `lib/replay-lane.sh` emits `side_effect_observed` / `side_effect_exception_applied`
-/ `side_effect_clear_refused` / `side_effect_sidecar_update_failed` from the current one.
+ledger reads. The record is written BEFORE the sidecar update (then rewritten with the
+update's outcome), so an interruption can never leave an observation only in the sidecar.
+After each verify call `lib/replay-lane.sh` emits `side_effect_observed` /
+`side_effect_exception_applied` / `side_effect_clear_refused` /
+`side_effect_sidecar_update_failed` from the current record — never from one observed before
+that call started.
 Observation records keep only `{method, path, class, count}` per distinct request (at most 20;
 `truncated` says when more existed) — never a query string, header or body.
 

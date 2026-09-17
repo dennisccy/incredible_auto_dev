@@ -62,7 +62,7 @@ from collections import namedtuple
 from pathlib import Path
 
 from goal_gate import (_journey_blocks, journey_step_hints, parse_side_effect_declarations,
-                       side_effect_journey_own_blocks)
+                       side_effect_journey_views)
 
 Finding = namedtuple("Finding", "severity rule line message")  # line: int|None
 
@@ -259,7 +259,8 @@ def lint_text(text: str) -> list[Finding]:
     # The declaration parser and the step heuristic are goal_gate's (one source).
     decls = parse_side_effect_declarations(text)
     reported: set[str] = set()
-    for jid, start, _end, own, _dup in side_effect_journey_own_blocks(text):
+    for view in side_effect_journey_views(text):
+        jid, start = view["jid"], view["start"]
         d = decls.get(jid)
         if d is None or jid in reported:
             continue
@@ -274,7 +275,7 @@ def lint_text(text: str) -> list[Finding]:
                 "'- Side effects: mutating — <what it creates or changes>')",
             ))
         elif not d["lines"]:
-            hints = journey_step_hints(own, cap=1)
+            hints = journey_step_hints(view["own"], cap=1, fenced=view["fenced"])
             if hints:
                 h = hints[0]
                 reported.add(jid)

@@ -5574,7 +5574,7 @@ Four root causes: governors read proxies instead of facts (HARD-1..3); ownership
     malformed format still counts as mutating (a malformed line never makes a journey less
     restrictive). (5) Declarations are parsed with a correctly-bounded block splitter — see
     CAND-JOURNEY-BLOCKS in §16 for the pre-existing `_journey_blocks` quirk it avoids.
-  - *Verify:* `bash tests/automation/test-side-effects.sh` (236 checks after revision 2, incl. the
+  - *Verify:* `bash tests/automation/test-side-effects.sh` (252 checks after revision 3, incl. the
     exact TenSteps iteration-9 contradiction, the none→allowed tripwire, E15 fail-closed with zero
     dispatch in block AND warn mode, the real lean executor with a fake Playwright) · self-tests of
     `demo_runner.py`, `goal_gate.py`, `goal_lint.py`, `iter_spec.py`, `artifact_schemas.py` ·
@@ -5637,11 +5637,51 @@ Four root causes: governors read proxies instead of facts (HARD-1..3); ownership
       journey is mutating; the decomposer contract tells it to avoid those phrases.
     - *Pre-existing, out of scope:* `goal_lint.py`'s `duplicate-id` rule already reports trendora's
       nested `- **J-10 CLOSED — …**` owner note as an ERROR (advisory lint).
+  - *Revision 3 (2026-09-17, after a second adversarial review of `a078282`; RED: the new checks
+    fail against `a078282`, GREEN 252/0):*
+    - **E15 is decided whatever the lint's exit code** (second review, Critical): it is checked
+      before the crash and re-plan branches; when the lint did not finish its side-effect pass (a
+      crash, a traceback, an unreadable history under `Depth: evidence`), the engine reads the
+      policy (`iter_spec.py policy-intent`) and the ledger (`iter_spec.py ledger-ok`) itself and
+      halts when the policy reads as `none` — or cannot be read — and the ledger is not usable. A
+      JSON from an earlier attempt is removed before each lint run. (a078282 dispatched such a
+      spec under `warn`.)
+    - **Resume stability:** the iteration's first complete preflight ledger is frozen
+      (`iter-<N>/side-effects.preflight.json`, `goal_gate.py --freeze`) and reused while its input
+      fingerprint is unchanged, so a resumed iteration is never re-planned or blocked because its
+      own replay observed a write.
+    - **Restrictive intent:** a policy line that reads as `none` in any form (decorated value,
+      near-miss label incl. Unicode hyphens, misplaced line) gets E13/E15 in the same pass as its
+      E02/E06/E01 — it can no longer switch those rules off.
+    - **Negation-aware patterns:** "creating/editing … ledger rows" and "launching/starting … a
+      new run" count only on an OUT OF SCOPE line or after a negation; a match qualified by
+      "pre-existing"/"existing"/"prior" is an invariant, not a prohibition — the affirmative
+      wording the fix text asks for never re-blocks a corrected spec. TC ids in heading, backtick
+      and suffixed form and `NOT IN SCOPE` / `Non-goals` headings are scanned.
+    - **Attribution:** a nested bold-id REFERENCE to another journey no longer takes over the rest
+      of its parent (a nested header ends with its list item and is a definition only when it
+      carries its own declaration or step); journey headers inside code fences are ignored, and the
+      certified hash judges a block that starts inside a fence with the document's fence state.
+      `none-destructive` (a hyphen glued to the value) is invalid; a glued `mutating-…` still counts
+      as mutating.
+    - **Store:** a run that observed no journey is merged once, silently; a mutation with an
+      unreadable time is never cleared; up to 50 goldens per journey, with a `cleared_goldens`
+      index so a capped-away clear still holds; the per-run record is written before the sidecar;
+      a sidecar moved aside keeps its declaration history (baseline: the newest earlier ledger);
+      a bookkeeping exception never unwrites a valid ledger nor claims an unrecorded digest change;
+      replay telemetry is emitted per verify attempt and never from a record older than the call;
+      `_normalize_text` is split out of `_normalize_block` for HARD-9.
+    - *Not changed (reported):* E16 stays W11-only when the ledger is wholly unavailable under
+      `allowed`/absent (plan text); `CHAIN_SIDE_EFFECT_IGNORE_PATHS` accepts `/graphql`-style
+      prefixes (reported, owner's choice); an observation stays sticky for the session once its
+      golden is re-derived — the only tracked owner remedy is the exception file (owner decision);
+      rare TC shapes (blank-line continuations, OUT OF SCOPE as an H3) are not scanned.
   - *Owed:* G8 fresh-session certification; the G9-gated real session (a replay-observed mutation in
     the sidecar, no TC failed on a journey's own mutation); vendored per-file sync — products must
     sync this `goal_gate.py` BEFORE adding `- Side effects:` lines (older code hashes those lines as
     journey text, which would read as goal-edit drift); owner confirmation of the I3 and I7
-    decisions above; M6 (the GOAL_ACHIEVED two-key confirm prompt carries no side-effect context).
+    decisions above and of observation stickiness; M6 (the GOAL_ACHIEVED two-key confirm prompt
+    carries no side-effect context).
 
 ### HARD-4A · Engine identity token + lock-before-mutation ordering + owner-guarded `engine.pid`
 - **Priority:** P1 · **Effort:** M · **Risk:** MED · **Status:** PARTIAL — sub-commit **A0 landed with HARD-5** (`lib/engine-identity.sh`: `engine_token_mint`/`engine_token_alive`/`engine_token_self`/`engine_proc_env`). **A1 remains TODO** (prologue reorder, lock-before-mutation ordering, owner-guarded `engine.pid`, signal-time takeover revalidation, `.engine.lock/token`).
