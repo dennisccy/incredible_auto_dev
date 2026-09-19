@@ -6380,7 +6380,58 @@ Four root causes: governors read proxies instead of facts (HARD-1..3); ownership
     journey text, which would read as goal-edit drift); owner confirmation of the I3 and I7
     decisions above, of observation stickiness and of the stated E16 prohibition rule (revision 8); M6 (the GOAL_ACHIEVED two-key confirm prompt
     carries no side-effect context).
-  - *G9 — NOT AUTHORISED; offline rehearsal done and PASSING (2026-09-19).* G9 is the spend gate
+  - *G9 — AUTHORISED and ATTEMPTED 2026-09-19; result **FAIL (no acceptance evidence; budget
+    exhausted)**. NOT a HARD-3 regression.* Owner authorised a real run on tensteps J-04 in a
+    combined checkout, ceiling **US$20** incl. retries, `--max-iter 3`. Evidence:
+    `~/.cache/iad/hard3-g9/` (run log, telemetry, budget trace); session
+    `hard3-g9` in the combined checkout at `~/.cache/iad/hard3-g9/tensteps-g9b`.
+    - *Setup.* tensteps cloned (tracked files, 7.4M of 11G) + the COMPLETE certified framework at
+      `d56b366`, with the three protocol-§3.4 localizable scripts preserved. `iter_spec.py`,
+      `goal_gate.py`, `demo_runner.py` and `run-goal.sh` verified byte-identical to `a9d91b1`;
+      engine wiring 29 side-effect / 13 E16 / 2 `retain-journeys` refs vs the product's 0/0/0.
+      Own services on 8164/3164. Host-guard: `engines=1/3`, 6G+4G ≤ 24G budget, doctor 18/3/0.
+    - **Port-offset collision caught before it did harm.** The first checkout path hashed to
+      offset 703 — already held by the LIVE workstation session's backend. Under HARD-5's
+      "healthy unowned occupant ⇒ reuse", the run would have driven the WRONG application and
+      attached to a live session's service. Relocated to a collision-free offset; nothing
+      overridden, live service verified unharmed.
+    - **What HARD-3 actually did, all correct:** the preflight ledger was built before the
+      decomposer in a live session (`iter-0/side-effects.json`, J-01…J-05 `unknown`, digest
+      `adda9f34c1b6`); the frozen `side-effects.preflight.json` was written; declaration
+      provenance landed in the engine-owned sidecar (`declaration_digest`, `declarations`,
+      `declaration_conflicts`, `declarations_recorded_iter: 0`); goal-lint flagged the real
+      undeclared mutations (`J-04 step 2 names a state-changing action (POST
+      /api/provider/assess) but the journey has no 'Side effects:' line`, same for J-03's
+      `POST /api/provider/transition`); spec-lint ran CLEAN on the generated spec — no gate
+      misfired and nothing was spuriously blocked.
+    - **Why it still fails the acceptance criteria.** The side-effect observer lives ONLY in the
+      replay lane, and the replay lane replays GOLDEN scripts recorded by a PRIOR iteration. A
+      fresh session has none, so `Consumed forked replay-lane results (frontend: yes,
+      **replay: no**)` — no observation, no per-run record, empty `journeys` in the sidecar.
+      Criteria 1 (replay-observed mutation), 2 (durable record) and 4 (no false TC failure) are
+      structurally unreachable before iteration 1; criterion 5 (valid Goal Mode result) was lost
+      when the budget stop aborted the run before the evaluator returned a verdict.
+    - **Cost is the binding constraint, and the estimate was wrong.** Iteration 0 ALONE consumed
+      **$19.53 of the $20 ceiling**: goal-decomposer $6.2321, browser-qa-agent $8.0978,
+      developer $3.6030, reviewer $1.5992 (all claude-sonnet-5, 4 calls). The packet's
+      "low single-digit dollars per iteration" was off by roughly an order of magnitude. A run
+      that reaches a replay-observed mutation needs ≥2 iterations, i.e. **≥$40** on this evidence.
+    - **Budget-guard defect, found in flight.** The guard read `total_cost_usd`; the analyzer
+      reports `gen_ai.usage.total_cost_usd`, so it showed $0 against a real $6.23 for ~35 min and
+      would never have fired. Fixed mid-run. Even fixed, it is structurally blind between
+      dispatches — cost lands in one lump at completion, so spend jumped $11.43 → $19.53 in a
+      single 20s poll, overshooting the $16 soft stop and landing $0.47 under the ceiling. **A
+      future spend gate must bound the NUMBER and TIER of dispatches, not poll a post-hoc total.**
+    - *Recorded spend $19.5321.* The evaluator dispatch had already started when the guard fired
+      and was terminated ~1 min in; its usage sidecar is written only on completion, so that
+      portion is UNMEASURED. True total is somewhat above $19.53 and may have reached the $20 cap.
+    - *Setup gap affecting evidence quality:* the clone omitted the untracked 3.5G `data/`, so the
+      developer reported "all 58 failing or erroring test cases trace to the empty bars store,
+      none to code". A real acceptance run must carry the data store.
+    - *Consequence:* the owner's merge authorisation was conditional on G9 PASSING, so it is **not
+      triggered** — PR #14 stays open and unmerged, the product sync (which follows the merge)
+      stays blocked, and HARD-3 stays IN-PROGRESS.
+  - *G9 offline rehearsal (2026-09-19) — PASSING, retained as the classification-half evidence.* G9 is the spend gate
     ("anything that spends real API tokens beyond your own session → confirm with the user first,
     with a cost estimate"). **No HARD-3 G9 approval exists on record** — the roadmap's approvals are
     always dated explicitly (e.g. "G9-approved 2026-07-13") and there is no such entry for HARD-3,
