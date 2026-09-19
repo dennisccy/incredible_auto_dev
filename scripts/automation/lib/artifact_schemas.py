@@ -351,6 +351,16 @@ _FIXTURES = {
         "## Goal Mode Metadata\n\n- **Session ID:** s\n- **Iteration:** 3\n- **Mode:** next\n- **Depth:** lean\n- **Target journeys:** J-01\n- **Required-still-passing journeys:** J-02\n- **Work kind:** implementation\n\n## IN SCOPE\n### Backend\n- [ ] add it\n\n## OUT OF SCOPE\n- x\n\n## DEFINITION OF DONE\n- [ ] done\n\n## TESTING REQUIREMENTS\n- TC-1: given x, when y, then z\n".replace("**Depth:** lean", "**Depth:** evidence"),
         False,  # HARD-2 E07 surfaces through the schema as an issue
     ),
+    "iteration_spec_side_effect_policy_ok": (
+        "docs/phases/goal-demo-iter-3.md",
+        "## Goal Mode Metadata\n\n- **Session ID:** s\n- **Iteration:** 3\n- **Mode:** next\n- **Depth:** lean\n- **Target journeys:** J-01\n- **Required-still-passing journeys:** J-02\n- **Work kind:** implementation\n- **Side-effect policy:** allowed\n\n## IN SCOPE\n### Backend\n- [ ] add it\n\n## OUT OF SCOPE\n- x\n\n## DEFINITION OF DONE\n- [ ] done\n\n## TESTING REQUIREMENTS\n- TC-1: given x, when y, then z\n",
+        True,  # HARD-3: a valid policy line is part of a valid spec
+    ),
+    "iteration_spec_invalid_side_effect_policy": (
+        "docs/phases/goal-demo-iter-3.md",
+        "## Goal Mode Metadata\n\n- **Session ID:** s\n- **Iteration:** 3\n- **Mode:** next\n- **Depth:** lean\n- **Target journeys:** J-01\n- **Required-still-passing journeys:** J-02\n- **Work kind:** implementation\n- **Side-effect policy:** read-only\n\n## IN SCOPE\n### Backend\n- [ ] add it\n\n## OUT OF SCOPE\n- x\n\n## DEFINITION OF DONE\n- [ ] done\n\n## TESTING REQUIREMENTS\n- TC-1: given x, when y, then z\n",
+        False,  # HARD-3 E06 surfaces through the schema as an issue
+    ),
     "phase_spec_is_not_an_iteration_spec": (
         "docs/phases/phase-7.md",
         "# Phase 7\n\nHuman-authored phase spec, no Goal Mode Metadata.\n",

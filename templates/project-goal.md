@@ -67,6 +67,17 @@ Write each journey with:
   - A short name
   - A numbered list of click/type/assert steps the browser-qa-agent can execute
   - An "Acceptance" line describing the observable end state
+  - Optional: one "Side effects" line saying whether the journey's own steps change
+    persisted data, exactly "- Side effects: none" or
+    "- Side effects: mutating — <what it creates or changes>". A missing line means
+    "unknown". Goal mode checks each iteration spec against these lines (and against what
+    its replays actually observe — an observed write always wins) before any browser run.
+    There is no "read-only" value: if a journey POSTs to an endpoint that only computes and
+    stores nothing, list that endpoint in
+    project-extensions/side-effects/read-only-endpoints.txt (one "POST /api/path" per line)
+    and declare the journey "none". Editing a well-formed line never invalidates a
+    journey's recorded pass (a malformed one is ordinary journey text). `python3 scripts/automation/lib/goal_gate.py side-effects docs/goal.md
+    --suggest` prints suggested lines.
 -->
 
 - **J-01: Sign up and log in**
@@ -77,6 +88,7 @@ Write each journey with:
     4. Click "Log out"
     5. Visit `/login`, enter same credentials, submit, expect `/dashboard` again
   - Acceptance: dashboard greeting shows the user's email address
+  - Side effects: mutating — creates the user account and a login session
 
 - **J-02: <next journey>**
   - Steps:

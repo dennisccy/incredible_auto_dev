@@ -251,6 +251,15 @@ _prepare_goal_evaluator() {
      && goal_product_diff_empty "$(cat "$ITER_DIR/snapshot-sha" 2>/dev/null || echo "")" "$SANDBOX"; then
     _pdiff_status="EMPTY"
   fi
+  # HARD-3 side-effect ledger line, derived as run-goal.sh step 3c derives it.
+  # The builder never BUILDS a ledger: the frozen fixtures carry none, so the
+  # line renders empty and every judgment prompt stays exactly as it was.
+  _SE_EVAL_LINE_NL=""
+  if [[ -f "$ITER_DIR/side-effects.json" ]]; then
+    _SE_EVAL_LINE="$(python3 "$LIB/iter_spec.py" side-effect-context --mode evaluator \
+      --side-effects "$ITER_DIR/side-effects.json" --spec "$ITER_SPEC_PATH" 2>/dev/null || true)"
+    [[ -n "$_SE_EVAL_LINE" ]] && _SE_EVAL_LINE_NL=$'\n'"$_SE_EVAL_LINE"
+  fi
 
   # The engine's goal-evaluator dispatch prompt (run-goal.sh Step 3), verbatim.
   # Unquoted heredoc: $VARs expand; \` keeps literal backticks like the engine's
@@ -280,7 +289,7 @@ Iteration artifacts (read what exists):
   Evidence: reports/qa/${ITER_NAME}-evidence/
   Browser-infra token: $ITER_DIR/browser-infra.json  <-- if present: its listed journeys hit a browser INFRA failure (services/Chrome), not a product defect. With no fresh screenshot, score them partial with gap 'pending-infra' and set pending_infra: true in journey-history (methodology A.3); attempts >= 2 in the token = treat the browser infrastructure as a human-owned blocker (STALLED-class)
   Coherence audit: $COHERENCE_OUTPUT  <-- COHERENCE-FAIL vetoes GOAL_ACHIEVED and drives a consolidation CONTINUE
-  Goal-edit drift note: $ITER_DIR/journeys-changed.md  <-- if present, each listed journey's prior pass is VOID until re-verified against the CURRENT goal text (your step 3)
+  Goal-edit drift note: $ITER_DIR/journeys-changed.md  <-- if present, each listed journey's prior pass is VOID until re-verified against the CURRENT goal text (your step 3)${_SE_EVAL_LINE_NL}
   Prior walkthrough recording (methodology A.6 evidence durability — stays valid for journeys whose product code is unchanged since it was recorded): $_prior_demo_line
   Product diff this iteration (deterministic; bookkeeping excluded): $_pdiff_status
 

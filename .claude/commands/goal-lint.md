@@ -16,6 +16,19 @@ paste-ready. Do not launch the engine, dispatch agents, or edit any other file.
    structural errors). If it reports the file unreadable or missing, stop and tell
    the user to author one with `/goal-init` — there is nothing to lint.
 
+1b. **Side-effect pass (HARD-3, deterministic).** Run
+   `python3 scripts/automation/lib/goal_gate.py side-effects docs/goal.md --suggest`
+   (when a goal session already exists, add
+   `--sidecar runs/goal-session-<sid>/state/journey-side-effects.json` so its replay
+   observations are considered — without it no line can say "contradicted by a replay").
+   It prints, per journey, whether its optional `- Side effects: none | mutating — <note>`
+   line is missing, invalid (for example `read-only`, which is not a value) or contradicted
+   by a replay observation, with paste-ready replacement lines. A journey without a valid
+   line stays `unknown` to the iteration-spec preflight. Read-only POST endpoints are listed
+   by the owner in `project-extensions/side-effects/read-only-endpoints.txt`
+   (`POST /api/path`, one per line), never as a declaration value. Report-only: you never
+   add these lines to `docs/goal.md` yourself.
+
 2. **Semantic pass.** Read `docs/goal.md` in full, plus the quality bars in
    `.claude/skills/goal-authoring.md` (interview script items 3, 9, 10 and the
    structural checklist). Judge MEANING, not keywords — you are looking for exactly
@@ -57,6 +70,10 @@ paste-ready. Do not launch the engine, dispatch agents, or edit any other file.
 
    ## Deterministic lint (goal_lint.py)
    <verbatim tool output, or "clean (exit 0, no output)">
+
+   ## Side effects
+   <verbatim `goal_gate.py side-effects --suggest` output, or "every journey carries a
+   valid declaration">
 
    ## Semantic findings
    ### <check name> — line <N>
