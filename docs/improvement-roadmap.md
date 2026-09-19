@@ -5523,9 +5523,11 @@ Four root causes: governors read proxies instead of facts (HARD-1..3); ownership
   (DEFERRED). The first independent G8 of `65e6351` returned **FAIL** on two reproduced blockers
   (2026-09-17); revision 9 fixed both and filed the third as an owner decision. The owner ruled on
   that decision on 2026-09-18 and revision 10 ENFORCES it (B3 / E17), and disposes of the two
-  findings the post-revision-9 re-examination raised (F1 documentation-only, F2 no fail-open). A
-  FRESH, TARGETED, genuinely INDEPENDENT G8 of the revision-10 commit and the G9-gated real-session
-  acceptance are both still owed — the implementing session does not mark this DONE.
+  findings the post-revision-9 re-examination raised (F1 documentation-only, F2 no fail-open).
+  **The independent G8 of the revision-10b commit `a9d91b1` returned PASS on 2026-09-19** (see the
+  certification block below). HARD-3 stays IN-PROGRESS: G8 is one of four acceptance gates, and the
+  G9-gated real session, the vendored product sync and a green GitHub CI on the merge revision are
+  all still open. **G8 PASS alone does not make this DONE.**
 - **Problem:** a confirm-only spec forbade "new run / ledger write" while target J-04's own
   step 1 launches a run (TenSteps iter-9); nothing structural represents mutations.
 - **Change spec:** goal.md optional per-journey line (journey-hash-neutral; separate
@@ -6314,15 +6316,81 @@ Four root causes: governors read proxies instead of facts (HARD-1..3); ownership
         a resumed run whose spec still violates E17 gets that run's single re-plan before halting,
         exactly as it already does for E16. E17 adds no budget and no dispatch. `CHAIN_SPEC_LINT=warn`
         and `=off` relax E17 exactly as they relax E13/E16 — it is a lint rule, not a separate gate.
-  - *Owed:* a FRESH, TARGETED G8 re-certification of the revision-9 commit (the first independent G8
-    of `65e6351` returned FAIL; the implementing session's own verification is not a certification);
-    the G9-gated real session (a replay-observed mutation in
+  - *Independent G8 (final) — **PASS**, 2026-09-19, certified SHA
+    `a9d91b181019c928b3828f6cbc37e3bf471bf0ee`.* Reviewer: a fresh session that authored none of
+    revisions 9 / 10 / 10b, working READ-ONLY (tree clean and HEAD unchanged before and after; no
+    earlier evidence directory overwritten; no paid API call, no G9, no browser, no product sync).
+    Report `~/.cache/iad/cert-hard3-g8final-20260919/G8-REPORT.md`; evidence index and probes
+    `~/.cache/iad/cert-hard3-g8final-20260919/EVIDENCE-INDEX.md`. **This entry records the
+    reviewer's findings; it does not restate them as the implementing session's own work.**
+    - **B1 CLOSED.** 26-sentence battery, both directions, RED `65e6351` (16/26 as expected) vs
+      GREEN `a9d91b1` (25/26): all nine possessive forms the first G8 reported as missed now match
+      (including `’s` and the plural `users'`), and all eleven legitimate-usage controls are
+      unchanged on BOTH trees — the `_RUN_NOUN` tooling guard was widened in step, so `the suite's
+      run` and `the pytest run` stay non-prohibitions. Engine level 8/8: E16 under `allowed`,
+      `none` and absent policy, exactly one re-plan, `GATE_BLOCKED_SPEC_LINT`, developer 0,
+      browser 0; legitimate replay and tooling wording still dispatch.
+    - **B2 CLOSED.** On `65e6351` the flat-style reproduction freezes BOTH provenance channels
+      (journey hash and `declaration_digest` byte-identical between `mutating` and `none`); on
+      `a9d91b1` both move, and the goal-edit drift note is absent on RED and written on GREEN. An
+      orphaned `mutating` stays restrictive, an orphaned `none` reads `unknown`, an orphan outside
+      every journey block makes the ledger incomplete so `Side-effect policy: none` fails closed,
+      and a normal attributed declaration stays journey-hash-neutral while moving the digest.
+      **Historical compatibility: 192 unique real goal documents across all six repositories —
+      zero certified journey-hash moves and zero ledger status/completeness changes.**
+    - **B3 ENFORCED.** Engine matrix A–H green, plus iteration isolation, resume with AND without
+      `CHAIN_STEP_CHECKPOINTS`, eight read-failure injections and the `warn`/`off` bypasses. The
+      named-set derivation agrees with the emitted E13/E16 text across 10 shapes (both roles,
+      target-only not pinned, make-up-that-is-also-Required, the baseline iteration-0 path, and a
+      journey `mutating` only via `stated_values`).
+    - **The revision-10b regression independently reproduced.** With a directory planted at
+      `spec-obligations.json.tmp`: `cba6b2f` gives `AWAITING_PUMP`, decomposer 2 (the re-plan ran),
+      developer 1 and no telemetry; `a9d91b1` gives `GATE_BLOCKED`, decomposer 1, developer 0,
+      browser 0 and `spec_obligation_unrecorded {journeys:["J-04"], rc:9, error:"IsADirectoryError…"}`.
+      Three further ordinary write failures (read-only `.tmp`, symlink loop, symlink-to-directory)
+      take the same halt branch.
+    - **F1 / F2 dispositions upheld.** F1 documentation-only: a lone-CR fixture behaves identically
+      on both trees through every supported entrypoint, and `_journey_hashes` has no caller outside
+      `goal_gate.py`. F2 no fail-open: 14/14 engine cases — every KNOWN mutation survives malformed
+      attribution; the one dispatching row is a journey never known mutating, which `Side-effect
+      policy: none` (E15) and `CHAIN_SIDE_EFFECT_STRICT=true` (E14) both block.
+    - **Reviewer's own test pass** (sequential, no paid API): side-effects **348/0**, spec-lint
+      170/0, goal-checkpoints 11/0 (bytecode ON), intent-checkpoint 23/0, replay-lane 76/0,
+      replay-lane-full 91/0, browser-evidence 80/0, service-ownership 100/0, engine-lock 44/0,
+      `iter_spec` self-test 61/61, `goal_gate` / `goal_lint` / `demo_runner` / `checkpoint` pass,
+      mirror sync OK, `git diff --check` clean, **offline evals 187/0**. Discriminator check: the
+      target suite scores 332/16 on the `5efb557` export (every engine case failing with `dev=1`)
+      and 344/4 on `cba6b2f`, the four being exactly `E14l`, `E14m` and the two wiring/doc pins for
+      `spec_obligation_unrecorded`.
+  - *Non-blocking follow-ups raised by the final G8 (F-1 … F-6).* None is a merge blocker; none is
+    reachable by the planner or by the engine's own code paths. **Do not open an implementation
+    cycle for these as part of HARD-3** — see the named backlog entry `HARD-3-FU` below.
+  - *Owed:* the G9-gated real session (a replay-observed mutation in
     the sidecar, no TC failed on a journey's own mutation); vendored per-file sync — products must
     sync this `goal_gate.py` together with `iter_spec.py` and `demo_runner.py` (goal_gate imports it
     lazily) BEFORE adding `- Side effects:` lines (older code hashes those lines as
     journey text, which would read as goal-edit drift); owner confirmation of the I3 and I7
     decisions above, of observation stickiness and of the stated E16 prohibition rule (revision 8); M6 (the GOAL_ACHIEVED two-key confirm prompt
     carries no side-effect context).
+  - *Vendored product sync — BLOCKED on the merge prerequisite, measured 2026-09-19.* All five
+    products (`taketwo`, `tapeology`, `tensteps`, `trading_workstation`, `trendora`) vendor the
+    framework as a plain tracked `incredible_auto_dev/` directory with `scripts ->
+    incredible_auto_dev/scripts`, and each carries an `auto_dev` remote beside its own `origin`.
+    **Their `run-goal.sh` contains ZERO side-effect references** — not merely no B3 wiring, but no
+    HARD-3 at all, because HARD-3 has never been merged to `main`. Their vendored trio sits 22–27
+    commits behind `main` (`iter_spec.py` at `2542b1a` in all five; `demo_runner.py` as far back as
+    `4a1ce4f`, 98 behind), with `goal_gate.py`/`demo_runner.py` already diverged in `trendora` and
+    `tensteps`. Copying the trio alone would install B2/B3 library code into an engine that never
+    calls it — E17 would exist in the linter and never receive `--retain-journeys`, and the ledger
+    would never be built — i.e. a partial sync that reads as a completed one, plus writer/reader
+    drift against 22–27 commits of HARD-1/HARD-2/HARD-5 engine contract. **The hazard this sync
+    requirement exists to prevent is not live:** no product declares a single `- Side effects:`
+    line (all five checked, plus the live `tw-product-dev/workstation-product` checkout), and the
+    final G8's 192-document corpus proved the B2 change moves zero hashes for every product's
+    `docs/goal.md`. Correct order therefore stands: **merge HARD-3 to `main`, then sync products
+    from `main`** — not from an unmerged branch. Additional block: `taketwo` has a LIVE goal engine
+    running out of its own checkout with 72 dirty files, so its framework libraries must not be
+    swapped underneath it in any case.
   - *Owner decisions after revision 10 (none of them blocks the G8 re-check; each changes
     behaviour if answered "yes"):*
     1. ~~**B3 — Required-still-passing retention between the two attempts of one iteration.**~~
@@ -6346,6 +6414,62 @@ Four root causes: governors read proxies instead of facts (HARD-1..3); ownership
        not a defect.
     4. I7 and its auth sub-items, I3, observation stickiness and the stated E16 rule with its
        false-positive classes (all carried over from revisions 8 and the G8 report).
+
+  - *Disposition of the open owner-decision list (2026-09-19, post-G8).* Each item below was
+    checked against five questions: what is implemented today; is there an explicit prior owner
+    approval; did the independent G8 accept it as a documented limitation; is it required by
+    HARD-3's definition of done; and would changing it now invalidate the certification of
+    `a9d91b1`. **No owner approval is manufactured here.** Every item resolves the same way —
+    *retain the independently certified behaviour; any change is an optional future policy
+    decision, not a HARD-3 blocker* — because changing any of them alters a safety-classification
+    path inside `iter_spec.py`/`goal_gate.py` and would therefore require a fresh scoped
+    certification of a new SHA, trading a certified release candidate for an uncertified one at
+    the finish line.
+
+    | Item | Implemented today | Prior approval | G8 treatment | Needed for DoD? | Disposition |
+    |---|---|---|---|---|---|
+    | **I3** — E15 under `CHAIN_SPEC_LINT=warn` | E15 halts under `warn`; only the announced `CHAIN_SPEC_LINT=off` / `CHAIN_SIDE_EFFECT_PREFLIGHT=false` skip it | Derived from the owner's standing rule "never turn an unreadable restrictive-policy ledger into permission to proceed"; not separately confirmed | Verified fail-closed under block AND warn; accepted | No — it is strictly more conservative than the plan text | **Retain.** Loosening it is the only direction a change could go, and that direction is a fail-open |
+    | **I7** — auth exclusions | Endpoint-scoped, POST/DELETE only, never over a resource id; malformed overrides rejected; every applied exclusion reported three ways | Rule shape approved 2026-09-07; the residual `/auth/register` + `/api/auth/users` carve-outs were removed in revision 8 | Section E verified in the first G8 and **inherited unchanged** at `a9d91b1` (zero changed lines in `classify_request`, the exclusion lists or the classifier version) | No | **Retain pending optional future policy change.** The remaining exemptions are reported, never silent |
+    | **Observation stickiness** | A mutation clears only on a strictly newer complete clean replay of the SAME golden; per-run records archived, never deleted | Implicit in the approved WP3 durability requirement | Inherited unchanged at `a9d91b1` (`demo_runner.py` byte-identical, observation store untouched) | No | **Retain** |
+    | **Stated E16 rule + its FP/FN classes** | Negation-reaches-activity rule, stated word-for-word in the decomposer contract; 7 documented FP and 6 documented FN classes | Rule text approved at revision 7/8 | Re-measured at `a9d91b1`; the possessive FN class is now CLOSED (B1); the rest re-confirmed as documented limits | No | **Retain.** Widening the rule adds false positives, each of which costs a re-plan |
+    | **M6** — two-key confirm prompt carries no side-effect context | The `GOAL_ACHIEVED` confirm prompt shows no side-effect block | None | Out of the G8's scope (not a side-effect safety path); not raised as a finding | No | **Backlog** as an optional UX improvement — see `HARD-3-FU` |
+    | **Flat-style journey items** | Revision 9 makes the flat-style document *safe* (line stays in the hash, its `mutating` still counts, goal-lint ERRORs on it) rather than *correct* | None | B2 closure verified precisely on this shape; accepted as safe-not-correct | No | **Retain.** Zero documents in the 192-document corpus use flat style |
+    | **`side-effects-orphaned` advisory vs blocking** | Advisory (goal-lint ERROR, exit 2); the enforced consequence exists only for a line no journey block holds (incomplete ledger ⇒ E15 under `none`) | None | Accepted; the enforced path was verified fail-closed | No | **Retain pending optional future policy change** |
+    | **3b — unattributable declaration under `allowed`** | W10 + W11 warning-only; blocked by `Side-effect policy: none` (E15) and by `CHAIN_SIDE_EFFECT_STRICT=true` (E14) | None | F2 proved no KNOWN mutation is lost this way — explicitly a policy question, not a defect | No | **Retain.** The G8 report states plainly that no new strict-policy requirement was introduced during certification |
+
+    **Net: no owner decision in this list blocks HARD-3.** The only decisions that remain genuinely
+    blocking are the two authorisations that cannot be self-granted — the paid G9 run and the merge
+    — which are consolidated into the single decision packet at the end of this entry.
+
+  - *Named backlog: `HARD-3-FU` — non-blocking follow-ups from the final independent G8.*
+    **Priority:** P3 · **Effort:** S · **Risk:** LOW · **Status:** TODO (optional; deliberately NOT
+    part of HARD-3's definition of done). Opening these inside HARD-3 would replace a certified
+    release candidate with an uncertified one, which is exactly the loop this work is trying to end.
+    1. **F-1 `spec_replan` ordering (observability).** The event is recorded before the obligation
+       write, so a failed persist leaves telemetry claiming a re-plan that never ran — reproduced
+       (`spec_lint → spec_replan → spec_obligation_unrecorded → halt`, canary shows a single
+       `goal-decomposer`). The reviewer checked for a machine consumer and found none: its only
+       readers are `docs/goal-mode-telemetry.md`'s manual tripwire and three test assertions.
+       Fix when convenient: move the event below the obligation block, or add `dispatched:false`.
+    2. **F-2 obligation-id validation.** The engine's read guard accepts any non-empty list of
+       non-empty strings while `iter_spec.py` parses `--retain-journeys` with `J-\d+`, so a
+       hand-written record whose ids ALL miss that pattern (`["J04"]`, `["nonsense"]`, `["j-04"]`)
+       passes the guard and silently disables E17. Not engine-reachable — `retain_required` can
+       only ever hold `J-\d+` ids — and a list containing one valid id still enforces that one.
+    3. **F-3 dangling-symlink obligation path.** The guard is `[[ -e "$SPEC_OBLIGATIONS" ]]`, which
+       is false for a dangling symlink, so such a path reads as "no obligation". A symlink to a
+       real record works correctly. The engine only ever creates the record via tmp + `os.replace`.
+    4. **F-4 `OUT OF SCOPE: "Any new … ledger rows"`** is not detected as a prohibition — on BOTH
+       trees. Pre-existing `_OOS_NOUN_RE` limitation (its ledger branch needs a literal `new` at
+       the item start), unrelated to the possessive class and not a regression.
+    5. **F-5** the `CHAIN_SPEC_LINT=off` banner enumerates "E13-E16" and omits E17. Cosmetic.
+    6. **F-6** a read-only *iteration directory* kills the engine at `run-goal.sh:2582`
+       (`iter-0/snapshot-sha`) leaving the session `in_progress`. Pre-existing, untouched by this
+       branch, identical on `cba6b2f`, and it fails safe (zero dispatch).
+    F-2 and F-3 share one root cause — the obligation record's existence/validity test is weaker
+    than the linter's — and one hardening closes both (`[[ -e || -L ]]` plus an id pattern check).
+    Neither is reachable by the planner: the record is engine-owned, iteration-scoped, and the
+    decomposer marker registers only the spec path.
 
 ### HARD-4A · Engine identity token + lock-before-mutation ordering + owner-guarded `engine.pid`
 - **Priority:** P1 · **Effort:** M · **Risk:** MED · **Status:** PARTIAL — sub-commit **A0 landed with HARD-5** (`lib/engine-identity.sh`: `engine_token_mint`/`engine_token_alive`/`engine_token_self`/`engine_proc_env`). **A1 remains TODO** (prologue reorder, lock-before-mutation ordering, owner-guarded `engine.pid`, signal-time takeover revalidation, `.engine.lock/token`).
