@@ -6431,6 +6431,46 @@ Four root causes: governors read proxies instead of facts (HARD-1..3); ownership
     - *Consequence:* the owner's merge authorisation was conditional on G9 PASSING, so it is **not
       triggered** — PR #14 stays open and unmerged, the product sync (which follows the merge)
       stays blocked, and HARD-3 stays IN-PROGRESS.
+  - *G9 RECOVERY (2026-09-20) — offline preparation complete; the blocker is now precisely known.*
+    Evidence `~/.cache/iad/g9-recovery-20260920/`. No paid dispatch, no code change.
+    - **The 2026-09-19 run EXCEEDED its $20 authorization: best-evidence total $22.91.** Recorded
+      telemetry was $19.5321 (4 `claude_usage` events); an `agent_invocation_start` with no `_end`
+      identified an unrecorded 5th dispatch — the partial `goal-evaluator`, which is **claude-opus-5**
+      (strong tier), not sonnet. Its CLI transcript (28 assistant msgs, 21:19:36→21:20:23Z) carries
+      56 in / 9,006 out / 2,046,394 cache-read / 213,044 cache-write = **$3.3791** at Opus-5 rates.
+      The rate model was validated by solving the four recorded sonnet dispatches, which reconstructs
+      each to the cent ($2/$10 in/out, cache read 0.1x, cache write 2.0x = the 1h TTL).
+    - **A NATIVE per-dispatch hard cap already exists and was unset everywhere:**
+      `agents/<name>/agent.yaml: max_budget_usd` → `agent_permissions.py budget` →
+      `claude --max-budget-usd`. Every agent also runs at `--effort max`. Polling a post-hoc total
+      cannot bound an in-flight dispatch — spend jumped $11.43→$19.53 in one 20s interval because a
+      dispatch's cost only materialises at completion. **Use the native cap as the primary control.**
+    - **Strategy A (reuse an existing golden) is INVALID.** The only chapter-3 J-04 golden
+      (`goal-session-provider-seams-v1/journey-scripts/J-04.json`, 2026-09-09) lints clean and is
+      framework-compatible, but is **product-stale**: replaying its own recorded bodies against the
+      current backend returns `400 invalid_book_document` — `risk_at_entry.amount` must now be a
+      nested Money object, changed by product commits `58505c0` and `ec7e3b4` AFTER the golden was
+      recorded. Its expectations (`ALL_ADMISSIBLE`, specific `output_hash`, `position_cap`) can never
+      render from a 400, so the replay would FAIL and any observation it produced would be false.
+    - **The observer lifecycle is PROVEN OFFLINE (5/5)** with that real golden and the certified
+      `demo_runner`/`goal_gate`/`iter_spec` under a fake Playwright: replay → both POSTs classified
+      `mutating` → per-run record (`mutating_count: 2`) → engine-owned sidecar → ledger
+      `mutating|observed` → preflight **E16**; the control without the observation raises only W10,
+      and read-only GETs are correctly excluded. The wiring is sound; only a CURRENT golden is missing.
+    - **`data/` is NOT required for J-04.** `POST /api/provider/assess` with a current-shaped body
+      returns `200 ALL_ADMISSIBLE` with full `provider_facts` and an `output_hash` on a checkout with
+      no data store. The first run's 58 failures split into product contract-drift (`400
+      malformed_request … missing risk_inputs.per_trade_risk_pct` — the product's own tests are stale
+      too) and genuinely data-dependent (`UNEVALUABLE`); **neither class blocks J-04's G9 path**.
+    - **Minimum valid scenario is 2 goal-mode iterations**, not 1: goldens are written by the
+      browser-qa LLM dispatch, and the SPEED-23 nudge that makes one MANDATORY only fires when the
+      journey is in the Required-still-passing LLM set AND listed in `state/golden-gaps` (written by
+      `replay_lane_golden_coverage` from the PREVIOUS run's PASS rows). Iteration 0 records the
+      golden; iteration 1 replays it. SPEED-21 auto-derivation cannot shortcut this — it derives from
+      an already-recorded demo script, and every existing demo script is as stale as the golden.
+    - An isolation preflight now exists (`probes/g9_isolation_preflight.sh`) gating ports,
+      **application identity** (the exact wrong-app failure that nearly bit the first run), engine
+      capacity read live, and byte-equality of the four certified files. Verified discriminating.
   - *G9 offline rehearsal (2026-09-19) — PASSING, retained as the classification-half evidence.* G9 is the spend gate
     ("anything that spends real API tokens beyond your own session → confirm with the user first,
     with a cost estimate"). **No HARD-3 G9 approval exists on record** — the roadmap's approvals are
