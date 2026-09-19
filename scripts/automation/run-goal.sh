@@ -177,6 +177,25 @@
 #   side_effect_declaration_conflict, side_effect_observations_repaired,
 #   side_effect_unknown, side_effect_ledger_unavailable; spec_lint gains
 #   side_effect_policy / side_effect_rules / prohibitions / mutating.
+#   B3 retention (owner rule, 2026-09-18): when an E13/E16 finding REJECTS this
+#   iteration's first spec, every Required-still-passing journey the finding
+#   NAMED stays a binding verification obligation for the rest of THIS
+#   iteration. The engine records the set in iter-<N>/spec-obligations.json
+#   (engine-owned, iteration-scoped — the path is the scope, so no other
+#   iteration can read it and nothing is pinned across iterations) and passes it
+#   to every later lint of the same iteration as `--retain-journeys`, including
+#   on a resume. E17 rejects a spec that names such a journey in NEITHER
+#   `Target journeys:` nor `Required-still-passing journeys:` nor the engine's
+#   make-up set — i.e. one that answered the contradiction by deleting the id
+#   instead of resolving it. Moving the journey between the two fields is fine.
+#   E17 is an ordinary lint ERROR: it grants no extra re-plan, adds no dispatch
+#   and never schedules a journey; CHAIN_SPEC_LINT=warn/off relax it exactly as
+#   they relax E13/E16. The record is written atomically and read fail-closed:
+#   a spec-obligations.json that exists but carries no readable journey list
+#   halts GATE_BLOCKED (detected_at_step spec-obligations) rather than dropping
+#   the obligation silently — deleting the file is the deliberate retirement.
+#   Telemetry: spec_obligation_pinned, spec_obligation_dropped,
+#   spec_obligation_unreadable.
 #
 # Quota waiting is owned below the engine: claude_with_quota_retry sleeps until
 # the quota resets and resumes the same agent (within CHAIN_CLAUDE_MAX_QUOTA_RETRIES),
@@ -2638,6 +2657,14 @@ except Exception: print(0)" 2>/dev/null || echo 0)"
   # both browser lanes. Re-built on every resume, so a repaired input is seen.
   SIDE_EFFECTS_FILE="$ITER_DIR/side-effects.json"
   export CHAIN_SIDE_EFFECTS_FILE="$SIDE_EFFECTS_FILE"
+  # ── HARD-3 B3 obligation set (engine-owned, ITERATION-scoped) ─────────────
+  # Written only when THIS iteration's first spec is rejected under E13/E16 and
+  # a Required-still-passing journey was named by the finding; read by every
+  # later lint of this same iteration (the re-plan AND any resume), never by
+  # another iteration — the path itself is the scope, so a stale obligation
+  # cannot leak. Removed with the iteration directory; nothing else cleans it.
+  # Schema: {"iter_name","recorded_at","attempt","rule_ids":[...],"journeys":[J-NN,...]}.
+  SPEC_OBLIGATIONS="$ITER_DIR/spec-obligations.json"
   # The same resume-skip test the decomposer step uses below: only a spec that
   # will be re-linted WITHOUT re-planning keeps its frozen planning evidence.
   _se_view="fresh"
@@ -2853,6 +2880,40 @@ Do NOT write code or implement anything. The iteration spec and any blueprint ed
     mkdir -p "$ITER_DIR"
     _lint_txt="$ITER_DIR/spec-lint.txt"; _lint_json="$ITER_DIR/spec-lint.json"
     _lint_args=(--json-out "$_lint_json")
+    # HARD-3 B3: a Required-still-passing journey this iteration's REJECTED first
+    # spec was told to keep. Re-read from disk on every attempt (and on resume,
+    # where the shell variables of the run that recorded it are long gone).
+    _retain_journeys=""
+    if [[ -e "$SPEC_OBLIGATIONS" ]]; then
+      # A file that EXISTS but yields no journey list is not "no obligation": it
+      # is an obligation whose content we cannot read. Same doctrine as E15 — a
+      # safety layer must not vanish because its own input broke — so the probe
+      # reports UNREADABLE and the engine halts instead of dispatching. An
+      # operator who genuinely wants to retire the obligation DELETES the file.
+      _retain_journeys="$(python3 -c '
+import json, sys
+try:
+    d = json.load(open(sys.argv[1]))
+    js = d["journeys"] if isinstance(d, dict) else None
+    if not isinstance(js, list) or not js or not all(isinstance(j, str) and j for j in js):
+        raise ValueError("no usable journey list")
+except Exception:
+    print("__UNREADABLE__"); sys.exit(0)
+print(",".join(js))' "$SPEC_OBLIGATIONS" 2>/dev/null || echo __UNREADABLE__)"
+      if [[ "$_retain_journeys" == "__UNREADABLE__" || -z "$_retain_journeys" ]]; then
+        echo "[run-goal] HARD-3 B3: ${SPEC_OBLIGATIONS#"$REPO_ROOT"/} exists but carries no readable journey list, so this iteration's verification obligation cannot be checked — halting BEFORE any dispatch rather than silently dropping it (same rule as E15)." >&2
+        echo "[run-goal]   Repair the file (its schema is {\"iter_name\",\"attempt\",\"recorded_at\",\"rule_ids\",\"journeys\":[\"J-NN\"]}), or DELETE it if the obligation is genuinely retired, then:  /goal-resume $SESSION_ID" >&2
+        record_telemetry_event "spec_obligation_unreadable" "$(jq -cn --arg n "$ITER_NAME" --arg a "$_spec_attempt" \
+          --arg f "${SPEC_OBLIGATIONS#"$REPO_ROOT"/}" '{iter_name:$n, attempt:($a|tonumber), path:$f}' \
+          2>/dev/null || printf '{"iter_name":"%s"}' "$ITER_NAME")" || true
+        record_telemetry_event "halt" '{"reason":"GATE_BLOCKED_SPEC_LINT","detected_at_step":"spec-obligations"}'
+        write_session_summary "GATE_BLOCKED" "$CURRENT_ITER"
+        explain_goal_status "GATE_BLOCKED" "$SESSION_ID" "$REPO_ROOT" >&2
+        exit 0
+      fi
+      echo "[run-goal] HARD-3 B3: this iteration's rejected spec pinned $_retain_journeys as a verification obligation — the spec being linted must still name ${_retain_journeys} in Target journeys or Required-still-passing."
+      _lint_args+=(--retain-journeys "$_retain_journeys")
+    fi
     [[ -n "${PRIOR_VERDICT:-}" ]] && _lint_args+=(--prior-verdict "$PRIOR_VERDICT")
     [[ -n "${DECOMPOSER_MODE:-}" ]] && _lint_args+=(--mode-expected "$DECOMPOSER_MODE")
     [[ -f "$JOURNEY_HISTORY" ]] && _lint_args+=(--journey-history "$JOURNEY_HISTORY")
@@ -2892,7 +2953,7 @@ Do NOT write code or implement anything. The iteration spec and any blueprint ed
       IFS=$'\x1f' read -r _se_pol _se_rules _se_proh _se_unknown _se_mut _se_restr < <(python3 - "$_lint_json" 2>/dev/null <<'PYSELINT' || true
 import json, sys
 d = json.load(open(sys.argv[1]))
-ids = ("E02", "E06", "E13", "E14", "E15", "E16", "W02", "W09", "W10", "W11")
+ids = ("E02", "E06", "E13", "E14", "E15", "E16", "E17", "W02", "W09", "W10", "W11")
 rules = sorted({f["rule"] for f in (d.get("errors") or []) + (d.get("warnings") or []) if f.get("rule") in ids
                 and (f["rule"] != "E02" or "Side-effect policy" in (f.get("msg") or ""))})
 se = d.get("side_effects") or None
@@ -2913,6 +2974,29 @@ PYSELINT
       '{iter_name:$n, attempt:($a|tonumber), rc:($rc|tonumber), errors:($e|tonumber), warnings:($w|tonumber), mode:$m,
         side_effect_policy:$sp, side_effect_rules:$sr, prohibitions:$spr, mutating:$smu, restrictive:$sre}' \
       2>/dev/null || printf '{"iter_name":"%s","rc":%s}' "$ITER_NAME" "$_lint_rc")"
+    # ── HARD-3 B3: the re-plan dropped a pinned verification obligation ──────
+    # Emitted whenever E17 fires, BEFORE the halt paths below, so the record of
+    # WHICH journey was dropped exists whatever the lint mode does next.
+    if [[ -s "$_lint_json" ]]; then
+      _obl_dropped="$(python3 -c '
+import json, sys
+try:
+    o = (json.load(open(sys.argv[1])) or {}).get("obligations") or {}
+except Exception:
+    sys.exit(0)
+d = o.get("dropped") if isinstance(o, dict) else None
+print(" ".join(j for j in d if isinstance(j, str)) if isinstance(d, list) else "")' \
+        "$_lint_json" 2>/dev/null || true)"
+      if [[ -n "$_obl_dropped" ]]; then
+        echo "[run-goal] HARD-3 B3: this spec (attempt $_spec_attempt) drops $_obl_dropped from BOTH 'Target journeys:' and 'Required-still-passing journeys:' — that journey was named by this iteration's rejected E13/E16 finding and may not be removed to make the contradiction disappear (E17)." >&2
+        echo "[run-goal]   Fix the spec by hand (name it in either journey field and resolve the contradiction with '- **Side-effect policy:** allowed' + PRE-EXISTING-row wording), then:  /goal-resume $SESSION_ID" >&2
+        echo "[run-goal]   The obligation is scoped to THIS iteration and is recorded in ${SPEC_OBLIGATIONS#"$REPO_ROOT"/}. If the journey genuinely no longer exists (you edited docs/goal.md), remove that file — or dispatch without the gate with CHAIN_SPEC_LINT=warn (NOT recommended)." >&2
+        record_telemetry_event "spec_obligation_dropped" "$(jq -cn --arg n "$ITER_NAME" --arg a "$_spec_attempt" \
+          --arg j "$_obl_dropped" --arg p "$_retain_journeys" \
+          '{iter_name:$n, attempt:($a|tonumber), dropped:($j|split(" ")), pinned:($p|split(",")), rule:"E17"}' \
+          2>/dev/null || printf '{"iter_name":"%s","dropped":"%s"}' "$ITER_NAME" "$_obl_dropped")" || true
+      fi
+    fi
     if [[ -n "$_se_unknown" ]]; then
       record_telemetry_event "side_effect_unknown" "$(jq -cn --arg n "$ITER_NAME" --arg a "$_spec_attempt" \
         --arg j "$_se_unknown" --arg sp "$_se_pol" --arg st "$_SE_STRICT" \
@@ -3011,6 +3095,58 @@ print("e15" if any(isinstance(e, dict) and e.get("rule") == "E15" for e in errs)
         echo "[run-goal] Spec lint REJECTED $ITER_SPEC_PATH ($_lint_errs error(s)) — re-planning once." >&2
         record_telemetry_event "spec_replan" "$(jq -cn --arg n "$ITER_NAME" --arg e "$_lint_errs" \
           '{iter_name:$n, errors:($e|tonumber)}' 2>/dev/null || printf '{"iter_name":"%s"}' "$ITER_NAME")"
+        # ── HARD-3 B3: freeze this iteration's verification obligations ───────
+        # The linter reports which Required-still-passing journeys its E13/E16
+        # findings NAMED (side_effects.retain_required — computed where the
+        # findings are emitted, never by parsing message text). They stay binding
+        # for the rest of THIS iteration: the re-planned spec must still name
+        # each of them in Target journeys or Required-still-passing, or E17
+        # rejects it. Union with whatever is already recorded, so a resumed
+        # iteration never narrows its own obligation. No journey is added to any
+        # dispatch by this: the set can only BLOCK a spec, never schedule a run.
+        _obl_new="$(python3 - "$_lint_json" "$SPEC_OBLIGATIONS" "$ITER_NAME" "$_spec_attempt" <<'PYOBL' 2>/dev/null || true
+import json, os, sys, time
+lint_json, out_path, iter_name, attempt = sys.argv[1:5]
+try:
+    res = json.load(open(lint_json)) or {}
+except Exception:
+    sys.exit(0)
+se = res.get("side_effects") or {}
+named = [j for j in (se.get("retain_required") or []) if isinstance(j, str)]
+rules = sorted({f.get("rule") for f in (res.get("errors") or [])
+                if isinstance(f, dict) and f.get("rule") in ("E13", "E16")})
+prev, prev_rules = [], []
+try:
+    old = json.load(open(out_path)) or {}
+    prev = [j for j in (old.get("journeys") or []) if isinstance(j, str)]
+    prev_rules = [r for r in (old.get("rule_ids") or []) if isinstance(r, str)]
+except Exception:
+    pass
+journeys = sorted(set(prev) | set(named))
+# Nothing newly named (a resumed run whose own findings pinned nothing): keep the
+# recorded obligation exactly as it is and stay silent — it is still enforced.
+if not named or journeys == sorted(set(prev)):
+    sys.exit(0)
+# Atomic: a signal between the open and the flush must not leave a truncated
+# obligation behind (the reader fails CLOSED on one, which would halt a session).
+tmp = out_path + ".tmp"
+with open(tmp, "w", encoding="utf-8") as fh:
+    json.dump({"iter_name": iter_name, "attempt": int(attempt),
+               "recorded_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+               "rule_ids": sorted(set(prev_rules) | set(rules)),
+               "journeys": journeys}, fh, sort_keys=True, indent=2)
+    fh.flush()
+    os.fsync(fh.fileno())
+os.replace(tmp, out_path)
+print(",".join(journeys))
+PYOBL
+)"
+        if [[ -n "$_obl_new" ]]; then
+          echo "[run-goal] HARD-3 B3: $_obl_new named by the rejected finding as Required-still-passing — the obligation is carried into the re-plan (recorded in ${SPEC_OBLIGATIONS#"$REPO_ROOT"/}); a spec that names it in neither journey field is rejected (E17)." >&2
+          record_telemetry_event "spec_obligation_pinned" "$(jq -cn --arg n "$ITER_NAME" --arg a "$_spec_attempt" \
+            --arg j "$_obl_new" '{iter_name:$n, attempt:($a|tonumber), journeys:($j|split(",")), scope:"iteration"}' \
+            2>/dev/null || printf '{"iter_name":"%s","journeys":"%s"}' "$ITER_NAME" "$_obl_new")" || true
+        fi
         _SPEC_LINT_FEEDBACK="
 SPEC LINT ERRORS — your previous spec for THIS iteration was REJECTED by the deterministic spec lint.
 Fix EVERY line below and rewrite the same file. This is the ONE automatic re-plan; a second failure

@@ -5521,9 +5521,11 @@ Four root causes: governors read proxies instead of facts (HARD-1..3); ownership
   `hard-3-side-effect-preflight`, started 2026-09-16; schema owner-approved 2026-09-07:
   `Side effects: none | mutating — <note>`, absent = unknown). Independent of CAND-PERM-1 Task 10
   (DEFERRED). The first independent G8 of `65e6351` returned **FAIL** on two reproduced blockers
-  (2026-09-17); revision 9 fixes both and records the third finding as an owner decision, so a
-  FRESH, TARGETED G8 of the revision-9 commit and the G9-gated real-session acceptance are both
-  still owed — the implementing session does not mark this DONE.
+  (2026-09-17); revision 9 fixed both and filed the third as an owner decision. The owner ruled on
+  that decision on 2026-09-18 and revision 10 ENFORCES it (B3 / E17), and disposes of the two
+  findings the post-revision-9 re-examination raised (F1 documentation-only, F2 no fail-open). A
+  FRESH, TARGETED, genuinely INDEPENDENT G8 of the revision-10 commit and the G9-gated real-session
+  acceptance are both still owed — the implementing session does not mark this DONE.
 - **Problem:** a confirm-only spec forbade "new run / ledger write" while target J-04's own
   step 1 launches a run (TenSteps iter-9); nothing structural represents mutations.
 - **Change spec:** goal.md optional per-journey line (journey-hash-neutral; separate
@@ -6142,6 +6144,160 @@ Four root causes: governors read proxies instead of facts (HARD-1..3); ownership
         `orphaned` flag itself is set and tested (D31n).
       - `goal_lint.py` is advisory — the new ERROR raises its exit code to 2 but blocks nothing by
         itself; the enforced consequence for an unattributable line is the incomplete ledger (E15).
+    - *Revision 10 (2026-09-18/19, one bounded convergence session after the post-revision-9
+      adversarial re-examination `~/.cache/iad/cert-hard3-g8b-20260918/REVIEW-REPORT.md` — which was
+      explicitly NOT a certification, its author being the revision-9 implementer. Evidence:
+      `~/.cache/iad/cert-hard3-b3-20260918/`. This is implementing-session verification, NOT a
+      certification: the independent G8 of the revision-10 commit is still owed.)*
+      - **B3 (owner rule ADOPTED 2026-09-18, now ENFORCED — E17 `required-journey-obligation-dropped`).**
+        *The rule, verbatim:* "Within a single iteration, when the first spec-lint attempt rejects a
+        spec under E13 or E16, every Required-still-passing journey explicitly named in the rejected
+        conflict must remain a binding verification obligation through that iteration's automatic
+        re-plan. The planner may not remove the obligation merely to make the contradictory spec
+        pass." Scope, as the owner set it: same iteration only; only the Required-still-passing
+        journeys the rejected E13/E16 finding NAMED; the initial selection of Required-still-passing
+        journeys, normal relevance-based re-selection between iterations and the engine-supplied
+        make-up mechanism are all unchanged; a journey may move between Targets and
+        Required-still-passing as long as the obligation is preserved; no additional automatic
+        re-plan is authorised.
+        *Enforcement (deterministic, engine-side — not a prompt).* Three pieces:
+        (a) `iter_spec.side_effect_findings` now records, WHERE THE FINDINGS ARE EMITTED, which
+        journeys each E13/E16 named — `side_effects.conflict_journeys` — and the
+        Required-still-passing subset `side_effects.retain_required`; nothing downstream parses
+        message text. (b) On the attempt-1 rejection `run-goal.sh` writes that subset (unioned with
+        anything already recorded, so a resumed iteration never narrows itself) to the engine-owned
+        **`iter-<N>/spec-obligations.json`** — `{iter_name, attempt, recorded_at, rule_ids, journeys}`.
+        The PATH is the scope: only that iteration's lints read it, nothing carries it forward,
+        nothing else cleans it up (it dies with the iteration directory; an operator retiring an
+        obligation deletes the file or uses `CHAIN_SPEC_LINT=warn`). Telemetry
+        `spec_obligation_pinned`. (c) Every later lint of the SAME iteration — the re-plan **and any
+        resume**, which is why the set is on disk rather than in a shell variable — gets
+        `iter_spec.py lint --retain-journeys`, and **E17** fires when a pinned journey appears in
+        neither `Target journeys:` nor `Required-still-passing journeys:` nor the engine's make-up
+        set. E17 is an ordinary lint ERROR, so attempt 2 takes the existing
+        `GATE_BLOCKED` / `GATE_BLOCKED_SPEC_LINT` path: **no new session-status literal, no new halt
+        reason, no extra re-plan, no extra dispatch, and the rule can only ever BLOCK a spec — it
+        never schedules a journey.** Telemetry `spec_obligation_dropped {dropped, pinned, rule}` is
+        emitted before the halt branches, so the record of WHICH journey was dropped exists whatever
+        the lint mode does next; the lint JSON carries a structured `obligations {retain, kept,
+        dropped}` block. **The record is written atomically (tmp + `os.replace` + `fsync`) and read
+        FAIL-CLOSED:** a `spec-obligations.json` that exists but carries no readable journey list is an
+        obligation whose content is unknown, not an absent one, so the engine halts `GATE_BLOCKED`
+        (`detected_at_step:"spec-obligations"`, telemetry `spec_obligation_unreadable`) before any
+        dispatch — the same doctrine E15 applies to the ledger. Deleting the file is the deliberate
+        retirement path (for a journey the owner removed from `docs/goal.md`); `CHAIN_SPEC_LINT=warn`
+        is the blunt one. The rejected finding's own fix text now says the retention is enforced
+        ("the engine carries them into the re-plan and REJECTS (E17) a spec that names them in
+        neither journey field") — a target-only journey's E13 text is unchanged and still offers the
+        target drop.
+        *Engine-level RED/GREEN* (`probes/b3_engine.sh`, real `run-goal.sh`, stub `claude`, no API,
+        no browser; `logs/b3-RED-5efb557.out` vs `logs/b3-GREEN-worktree.out`). Attempt 1: J-04
+        declared mutating, in Required-still-passing, explicit prohibition ⇒ E16. Attempt 2 deletes
+        J-04 from Targets AND Required-still-passing, prohibition unchanged:
+
+        | case | `5efb557` (RED) | revision 10 (GREEN) |
+        |---|---|---|
+        | drop-required, policy `allowed` | lint CLEAN, **developer=1**, `AWAITING_PUMP` | **E17**, developer 0, browser 0, `GATE_BLOCKED_SPEC_LINT` |
+        | drop-required, policy absent | lint W02 only, **developer=1** | **E17** + W02, developer 0, `GATE_BLOCKED` |
+        | resume of the blocked iteration | attempt-1 lint clean, **developer=1** | **E17** again, developer 0 — the obligation is re-read from disk |
+        | keep-and-fix / move→Targets / move→Required / drop-an-unrelated-required | dispatches | dispatches, byte-identical (no E17) |
+        | keep the contradiction | E16, one re-plan, `GATE_BLOCKED` | identical |
+        | drop from TARGETS only (the sanctioned fix) | E16 (J-04 still Required) | identical |
+
+        Exactly one automatic re-plan in every cell (`decomposer=2`), and `spec_obligation_pinned`
+        fires at most once per iteration. The obligation file exists under `iter-0/` only.
+        *Suite coverage (durable):* `test-side-effects.sh` gains L26–L26l (lint level: the named-set
+        report, a target-only journey NOT pinned, the fix text, the dodge clean without the set and
+        rejected with it, the `obligations` block, both permitted moves, the unrelated journey, the
+        make-up interaction, E17 without a ledger) and E14–E14k (engine level: the dodge blocked with
+        zero dispatch, the artifact + both telemetry events, the two legitimate shapes dispatching,
+        resume, a planted obligation enforced by a run that re-planned nothing, a planted obligation
+        belonging to **another iteration** ignored, no obligation recorded when the finding named
+        no Required journey, an UNREADABLE and an EMPTY obligation file each failing CLOSED, and an
+        absent one dispatching normally). Six `iter_spec` self-test fixtures pin E17 itself.
+        *Cross-iteration scoping is proven two ways* — E14g plants an obligation under `iter-1` of a
+        fresh session and iteration 0 dispatches untouched, while E14f plants one under `iter-0` and
+        it blocks. A two-iteration engine run was NOT performed (the stub cannot complete an
+        iteration), so the "a later iteration re-selects freely" claim rests on those two tests plus
+        the path being iteration-scoped by construction.
+      - **F1 (lone-CR certification path) — DOCUMENTATION-ONLY, verified per ENTRYPOINT.** The
+        re-examination found that `_journey_hashes` takes its `aligned=False` branch for a document
+        containing a LONE `\r`, so a valid declaration stops being hash-neutral (over-strict; never
+        fail-open). Measured on the same fixture across both trees
+        (`probes/f1_lone_cr.py`, `logs/f1-old-65e6351.json` vs `logs/f1-new-5efb557.json`):
+
+        | path | `65e6351` | `5efb557` |
+        |---|---|---|
+        | `_journey_hashes(raw)` — the private function fed NON-normalized text | edit is hash-neutral | **edit moves the hash** |
+        | `_journey_hashes(Path.read_text())` — what `cmd_hash_journeys` actually passes | identical | identical |
+        | `goal_gate.py hash-journeys` (CLI) | identical | identical |
+        | the engine's goal-edit drift path (`--history --out-changed`) | no drift note | no drift note |
+        | `goal_gate.py side-effects` — status, declared, valid, complete, errors, `declaration_digest` | identical | identical |
+
+        *Root cause of the non-exposure:* every supported reader is
+        `Path(...).read_text(encoding="utf-8")` / `open(path, encoding=...)`, i.e. Python's
+        universal-newline text mode, which folds a lone `\r` to `\n` **before** the hasher sees it
+        (`read_text` on the fixture contains no `\r` at all). There is no `newline=""` read, no
+        binary read and no byte-level caller of `_journey_hashes` anywhere in `scripts/`; the only
+        difference `5efb557` introduces on any supported entrypoint is the new `orphaned: false`
+        field in the ledger record. **Disposition: no parser change** (the brief's rule — a private
+        function receiving non-normalized text, every supported entrypoint normalising correctly).
+        A focused regression test, **D32/D32b**, pins the property at the entrypoint: a lone-CR
+        document keeps a valid declaration hash-neutral through `hash-journeys`, produces no
+        goal-edit drift note, and still yields `mutating`/`none` with a moving declaration digest —
+        so a future change of read mode fails there first. Exposure remains 0 of 706 historical
+        goal-shaped documents and 0 of 618 iteration specs (measured in the re-examination).
+      - **F2 (malformed attribution vs a KNOWN mutation) — NO fail-open; approved policy, recorded.**
+        The narrow question was whether malformed attribution can HIDE a known mutation so an
+        explicit prohibition escapes E16 and reaches dispatch. Engine-level matrix, real
+        `run-goal.sh`, every spec carrying a prohibition (`probes/f2_safety_matrix.sh`,
+        `logs/f2-new-5efb557.out`):
+
+        | goal.md shape | J-04/J-02 ledger read | policy | outcome |
+        |---|---|---|---|
+        | TRUE orphan (B2's flat-style shape) | `status=mutating orphaned=true unattributed=true stated=[mutating]` | allowed | **E16**, `GATE_BLOCKED`, dev 0, browser 0 |
+        | journey header inside a code fence | `status=mutating unattributed=true stated=[mutating]` | allowed | **E16**, `GATE_BLOCKED`, dev 0 |
+        | no declaration at all, replay-OBSERVED mutation in the sidecar | `status=mutating source=observed` | allowed | **E16**, `GATE_BLOCKED`, dev 0 |
+        | observed mutation + an unowned orphan (ledger INCOMPLETE) | `status=mutating`, `complete=false` | allowed | **E16** + W11, `GATE_BLOCKED`, dev 0 |
+        | unowned orphan only, journey never declared and never observed | `status=unknown source=undeclared` | allowed / absent | W10 + W11, **dispatches** |
+        | the same document | `status=unknown` | `none` | E15, `GATE_BLOCKED_SIDE_EFFECT_LEDGER`, dev 0 |
+        | the same document, `CHAIN_SIDE_EFFECT_STRICT=true` | `status=unknown` | allowed | **E14**, `GATE_BLOCKED`, dev 0 |
+        | well-formed declaration (control) | `status=mutating source=declared` | allowed | **E16**, `GATE_BLOCKED`, dev 0 |
+
+        Every KNOWN mutation survives malformed attribution — the ledger's status rule is
+        `observed OR declared=="mutating" OR "mutating" in stated_values`, so an orphaned,
+        unattributed or ambiguous `mutating` still reads mutating, and an INCOMPLETE ledger does not
+        wipe the statuses it did establish (only a wholly UNAVAILABLE one does, which is W11's
+        documented case). The one non-blocking row is a journey that was **never known mutating**:
+        an unowned orphan attaches to no journey, so nothing was lost — that is category "genuinely
+        unknown", which the approved design keeps warning-only (W10/W11) unless
+        `CHAIN_SIDE_EFFECT_STRICT=true`, the existing lever, which blocks it (E14). **Disposition:
+        no code change**; `allowed` is NOT tightened without authorisation, and the open owner
+        question "should an unattributable declaration block under `allowed` too?" stands.
+      - **B1/B2 re-verified, untouched.** Their reproductions and controls still pass inside the
+        341→343-assertion suite, and the `65e6351` engine matrix rows are unchanged: possessive
+        prohibitions give E16 under all three policies with zero dispatch, one re-plan and a blocking
+        second failure; legitimate tooling runs and the `re-run J-04` carve-out stay non-prohibitions;
+        an orphaned declaration line cannot leave both the hash and the digest; a stated `mutating`
+        stays restrictive and an ambiguous `none` is never trusted. No B1/B2 code was edited in
+        revision 10.
+      - **Verification (this session, sequential, no paid API, no real browser, no G9).**
+        `test-side-effects.sh` **346/0** (321 → 346: +25 assertions — L26×12, E14×11, D32×2); the same
+        suite run against the `5efb557` export gives **332 passed / 14 failed**, and the fourteen are
+        exactly the new B3/doc-pin assertions (L26, L26b, L26d, L26f, L26g, L26l, E14, E14b, E14e,
+        E14f, E14i, E14j, W1, W10) while every control (L26c/e/h/i/j/k, E14c/d/g/h/k, D32, D32b)
+        passes on BOTH trees — `logs/suite-side-effects-RED-on-5efb557.log`. `test-spec-lint.sh` 170/0;
+        `test-goal-checkpoints.sh` 11/0 with **bytecode writing ENABLED**; replay-lane 76/0,
+        replay-lane-full 91/0, intent-checkpoint 23/0, browser-evidence-lifecycle 80/0,
+        service-ownership 100/0, engine-lock 44/0; module self-tests `iter_spec` 61/61,
+        `goal_gate`, `goal_lint`, `demo_runner` 29/0; `sync-cli-assets.py --cli claude --check` OK
+        (no neutral-source or mirror file was touched — no agent contract was edited, so no version
+        bump was due); `bash -n` over every `scripts/automation` and `tests/automation` script clean;
+        `git diff --check` clean; `run-evals.sh` green.
+      - *Not changed (reported).* The one-re-plan budget stays per ENGINE RUN, as HARD-2 designed it:
+        a resumed run whose spec still violates E17 gets that run's single re-plan before halting,
+        exactly as it already does for E16. E17 adds no budget and no dispatch. `CHAIN_SPEC_LINT=warn`
+        and `=off` relax E17 exactly as they relax E13/E16 — it is a lint rule, not a separate gate.
   - *Owed:* a FRESH, TARGETED G8 re-certification of the revision-9 commit (the first independent G8
     of `65e6351` returned FAIL; the implementing session's own verification is not a certification);
     the G9-gated real session (a replay-observed mutation in
@@ -6151,13 +6307,14 @@ Four root causes: governors read proxies instead of facts (HARD-1..3); ownership
     journey text, which would read as goal-edit drift); owner confirmation of the I3 and I7
     decisions above, of observation stickiness and of the stated E16 prohibition rule (revision 8); M6 (the GOAL_ACHIEVED two-key confirm prompt
     carries no side-effect context).
-  - *Owner decisions open after revision 9 (none of them blocks the G8 re-check; each changes
+  - *Owner decisions after revision 10 (none of them blocks the G8 re-check; each changes
     behaviour if answered "yes"):*
-    1. **B3 — Required-still-passing retention between the two attempts of one iteration.** Today only
-       the E13/E16 message forbids the drop; the engine does not. Enforce it deterministically (the
-       `--makeup-journeys` union is the working precedent), record a named signal without blocking,
-       or leave it to the message? If enforced, the rule must be written: retain the whole set, or
-       only the journeys the rejected finding named?
+    1. ~~**B3 — Required-still-passing retention between the two attempts of one iteration.**~~
+       **RESOLVED 2026-09-18 and ENFORCED in revision 10** (E17 + `iter-<N>/spec-obligations.json`).
+       The owner adopted the narrow rule: only the Required-still-passing journeys the rejected
+       E13/E16 finding NAMED, only within that iteration's one automatic re-plan, movement between
+       Targets and Required-still-passing allowed, no new re-plan and no new dispatch. The rule and
+       its engine-level RED/GREEN are in the revision-10 entry above.
     2. **Is a FLAT-STYLE journey item supported?** Revision 9 makes the flat-style B2 document safe
        (the line stays in the hash, its `mutating` still counts, goal-lint errors on it) rather than
        correct. No goal.md in the corpus uses flat style. If the owner rules it unsupported, the
@@ -6165,6 +6322,12 @@ Four root causes: governors read proxies instead of facts (HARD-1..3); ownership
     3. **Should goal-lint's `side-effects-orphaned` ERROR block a session?** It is advisory today; the
        enforced consequence exists only for the line no journey block holds (incomplete ledger ⇒ E15
        under `Side-effect policy: none`).
+    3b. **Should an UNATTRIBUTABLE declaration block under `Side-effect policy: allowed` too?**
+       (raised by F2, re-measured in revision 10.) Today an unowned orphan is E15/fail-closed under a
+       restrictive policy and W10 + W11 warning-only under `allowed`/absent, where the journey it was
+       probably meant for reads `unknown`. Revision 10 proved no KNOWN mutation is lost this way and
+       that `CHAIN_SIDE_EFFECT_STRICT=true` already blocks it (E14), so this is a policy question,
+       not a defect.
     4. I7 and its auth sub-items, I3, observation stickiness and the stated E16 rule with its
        false-positive classes (all carried over from revisions 8 and the G8 report).
 

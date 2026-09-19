@@ -1134,6 +1134,48 @@ case("D23: goal_gate self-test passes (pins hash invariance + digest sensitivity
                     capture_output=True).returncode == 0)
 PY
 
+# ── D32 — the certification path reads its input through ONE door ────────────
+# _journey_hashes' block/document line alignment is computed with "\n" splits,
+# so a LONE "\r" inside a journey block would make the two disagree and the
+# declaration would stop being hash-neutral. Every supported entrypoint reads
+# the goal file in Python's universal-newline text mode, which folds a lone
+# "\r" to "\n" before the hasher ever sees it — this test pins THAT (a future
+# `newline=""` read, or a caller handing it raw bytes, changes certified hashes
+# for such a document and must fail here first).
+D32="$WORK/lonecr"; mkdir -p "$D32"
+printf '# Goal\n\n## Must-have user journeys\n\n\r\n- **J-01: X**\r  1. a\r\n  - Side effects: mutating - step 1 writes\n\n## Anti-goals\n\n- none\n' > "$D32/goal-mut.md"
+printf '# Goal\n\n## Must-have user journeys\n\n\r\n- **J-01: X**\r  1. a\r\n  - Side effects: none - nothing is written\n\n## Anti-goals\n\n- none\n' > "$D32/goal-none.md"
+D32_A="$(python3 "$GG" hash-journeys "$D32/goal-mut.md" 2>/dev/null)"
+D32_B="$(python3 "$GG" hash-journeys "$D32/goal-none.md" 2>/dev/null)"
+python3 -c "import sys; sys.exit(0 if b'\r' in open(sys.argv[1],'rb').read() and '\r' not in open(sys.argv[1],encoding='utf-8').read() else 1)" "$D32/goal-mut.md" \
+  && [[ -n "$D32_A" && "$D32_A" == "$D32_B" ]] \
+  && assert "D32: a lone-CR document keeps a valid declaration hash-neutral through the hash-journeys entrypoint (the file read normalises it)" "pass" \
+  || assert "D32: lone-CR entrypoint (mut=$D32_A none=$D32_B)" "fail"
+python3 - "$GG" "$D32" <<'PYD32' && assert "D32b: the goal-edit drift path reports NO drift for the same edit, and the ledger still reads mutating/none with a moving declaration digest" "pass" || assert "D32b: lone-CR drift + ledger" "fail"
+import json, os, subprocess, sys
+gg, d = sys.argv[1], sys.argv[2]
+def cli(*a):
+    p = subprocess.run([sys.executable, gg, *a], capture_output=True, text=True)
+    return p.returncode, p.stdout.strip(), p.stderr.strip()
+h = json.loads(cli("hash-journeys", os.path.join(d, "goal-mut.md"))[1])
+json.dump({"journeys": {"J-01": {"status": "passing", "name": "X", "spec_hash": h["J-01"]}}},
+          open(os.path.join(d, "hist.json"), "w"))
+chg = os.path.join(d, "changed.md")
+cli("hash-journeys", os.path.join(d, "goal-none.md"), "--history", os.path.join(d, "hist.json"),
+    "--out-changed", chg)
+assert not os.path.exists(chg), "a valid declaration edit must not read as goal-edit drift"
+led = {}
+for name in ("mut", "none"):
+    out = os.path.join(d, "led-%s.json" % name)
+    cli("side-effects", os.path.join(d, "goal-%s.md" % name), "--sidecar",
+        os.path.join(d, "sc-%s.json" % name), "--out", out)
+    led[name] = json.load(open(out))
+assert led["mut"]["journeys"]["J-01"]["status"] == "mutating", led["mut"]
+assert led["none"]["journeys"]["J-01"]["status"] == "none", led["none"]
+assert led["mut"]["complete"] and led["none"]["complete"], led
+assert led["mut"]["declaration_digest"] != led["none"]["declaration_digest"], "the digest must carry the edit"
+PYD32
+
 # ── Part G: goal_lint.py ─────────────────────────────────────────────────────
 echo "== G. goal_lint.py rules"
 GL_OUT="$(python3 "$GL" "$WORK/repo/docs/goal.md" 2>&1)"; GL_RC=$?
@@ -2496,6 +2538,78 @@ lint "$SPECS/l18e.md" --side-effects "$LED_DECL"
   && rule_line E16 | grep -q 'OUT OF SCOPE' && printf '%s' "$LINT_OUT" | grep -qE 'ERROR E16 .*DEFINITION OF DONE' \
   && assert "L18e: suffixed OUT OF SCOPE / Definition of Done headings are still scanned" "pass" \
   || assert "L18e: heading variants (rc=$LINT_RC; $LINT_OUT)" "fail"
+# -- HARD-3 B3: the engine's retention obligation (E17) ----------------------
+# Owner rule (2026-09-18): within ONE iteration, a Required-still-passing journey
+# NAMED by the E13/E16 finding that rejected the first spec stays a binding
+# verification obligation through that iteration's automatic re-plan. The engine
+# supplies the set; the planner may move the journey between the two journey
+# fields but may not delete it from both to make the contradiction disappear.
+spec "$SPECS/l26-att1.md" allowed "J-01, J-02" "J-01, J-02, J-04" "$OOS9" "$TC9"
+lint "$SPECS/l26-att1.md" --side-effects "$LED_DECL" --json-out "$WORK/l26-att1.json"
+python3 - "$WORK/l26-att1.json" <<'PYL25' && assert "L26: the rejected first spec reports WHICH journeys its E13/E16 findings named, and which of those are Required-still-passing" "pass" || assert "L26: conflict_journeys/retain_required" "fail"
+import json, sys
+se = json.load(open(sys.argv[1]))["side_effects"]
+assert se["conflict_journeys"] == ["J-04"], se["conflict_journeys"]
+assert se["retain_required"] == ["J-04"], se["retain_required"]
+assert se["roles"]["J-04"] == ["required"], se["roles"]
+PYL25
+# a TARGET-only mutating journey is never pinned: dropping it from targets is the
+# fix the E13 message itself offers.
+spec "$SPECS/l26-target.md" none "J-04" "J-02" "$OOS9" "$TC9"
+lint "$SPECS/l26-target.md" --side-effects "$LED_DECL" --json-out "$WORK/l26-target.json"
+python3 - "$WORK/l26-target.json" <<'PYL25B' && assert "L26b: a TARGET-only mutating journey is named by the finding but is NOT a retention obligation" "pass" || assert "L26b: target-only not pinned" "fail"
+import json, sys
+se = json.load(open(sys.argv[1]))["side_effects"]
+assert "J-04" in se["conflict_journeys"], se["conflict_journeys"]
+assert se["retain_required"] == [], se["retain_required"]
+PYL25B
+rule_line E13 | grep -qi 'drop it from Target journeys' && ! rule_line E13 | grep -q 'E17' \
+  && assert "L26c: a target-only journey's E13 fix still offers the target drop and never threatens E17" "pass" \
+  || assert "L26c: target-only fix text ($LINT_OUT)" "fail"
+lint "$SPECS/l26-att1.md" --side-effects "$LED_DECL"
+rule_line E16 | grep -q 'E17' && rule_line E16 | grep -qi 'may NOT be dropped' \
+  && assert "L26d: the rejected finding TELLS the planner the retention is enforced (E17), not merely stated" "pass" \
+  || assert "L26d: E16 fix text names E17 ($LINT_OUT)" "fail"
+# attempt 2, the dodge: J-04 deleted from BOTH journey fields, prohibition intact.
+spec "$SPECS/l26-drop.md" allowed "J-01, J-02" "J-01, J-02" "$OOS9" "$TC9"
+lint "$SPECS/l26-drop.md" --side-effects "$LED_DECL"
+[[ "$LINT_RC" == "0" ]] && ! has_rule E16 && ! has_rule E17 \
+  && assert "L26e: WITHOUT the engine's obligation set the dodge lints clean (the reproduced defect; E17 never fires unprompted)" "pass" \
+  || assert "L26e: dodge clean without --retain-journeys (rc=$LINT_RC; $LINT_OUT)" "fail"
+lint "$SPECS/l26-drop.md" --side-effects "$LED_DECL" --retain-journeys "J-04" --json-out "$WORK/l26-drop.json"
+[[ "$LINT_RC" == "1" ]] && has_rule E17 && rule_line E17 | grep -q 'J-04' \
+  && rule_line E17 | grep -qi 'neither' \
+  && assert "L26f: WITH the obligation set the same spec is REJECTED by E17 naming J-04" "pass" \
+  || assert "L26f: E17 blocks the dodge (rc=$LINT_RC; $LINT_OUT)" "fail"
+python3 - "$WORK/l26-drop.json" <<'PYL25G' && assert "L26g: the lint JSON carries a structured obligations block (retain/kept/dropped) so no reader parses message text" "pass" || assert "L26g: obligations block" "fail"
+import json, sys
+o = json.load(open(sys.argv[1]))["obligations"]
+assert o == {"retain": ["J-04"], "kept": [], "dropped": ["J-04"]}, o
+PYL25G
+# the permitted attempt-2 shapes
+spec "$SPECS/l26-move.md" allowed "J-01, J-02, J-04" "J-01, J-02" "$OOSFIX" "$TCFIX"
+lint "$SPECS/l26-move.md" --side-effects "$LED_DECL" --retain-journeys "J-04"
+[[ "$LINT_RC" == "0" ]] && ! has_rule E17 \
+  && assert "L26h: moving the pinned journey Required-still-passing -> Target journeys preserves the obligation" "pass" \
+  || assert "L26h: required->target move (rc=$LINT_RC; $LINT_OUT)" "fail"
+spec "$SPECS/l26-keep.md" allowed "J-01, J-02" "J-01, J-02, J-04" "$OOSFIX" "$TCFIX"
+lint "$SPECS/l26-keep.md" --side-effects "$LED_DECL" --retain-journeys "J-04"
+[[ "$LINT_RC" == "0" ]] && ! has_rule E17 && ! has_rule E16 \
+  && assert "L26i: keeping the pinned journey and resolving the contradiction (allowed + PRE-EXISTING wording) passes" "pass" \
+  || assert "L26i: corrected spec passes (rc=$LINT_RC; $LINT_OUT)" "fail"
+spec "$SPECS/l26-unrelated.md" allowed "J-01, J-04" "J-01, J-04" "$OOSFIX" "$TCFIX"
+lint "$SPECS/l26-unrelated.md" --side-effects "$LED_DECL" --retain-journeys "J-04"
+[[ "$LINT_RC" == "0" ]] && ! has_rule E17 \
+  && assert "L26j: an UNRELATED journey the finding never named is not pinned - the planner still re-selects freely" "pass" \
+  || assert "L26j: unrelated journey not pinned (rc=$LINT_RC; $LINT_OUT)" "fail"
+lint "$SPECS/l26-drop.md" --side-effects "$LED_DECL" --retain-journeys "J-04" --makeup-journeys "J-04"
+[[ "$LINT_RC" == "1" ]] && ! has_rule E17 && has_rule E16 \
+  && assert "L26k: an engine-scheduled make-up journey satisfies the obligation (existing protection re-adds it, and E16 fires on it again)" "pass" \
+  || assert "L26k: make-up satisfies obligation (rc=$LINT_RC; $LINT_OUT)" "fail"
+lint "$SPECS/l26-drop.md" --retain-journeys "J-04"
+[[ "$LINT_RC" == "1" ]] && has_rule E17 && ! has_rule E13 && ! has_rule E16 \
+  && assert "L26l: E17 needs no side-effect ledger - the obligation is engine state, not a ledger read" "pass" \
+  || assert "L26l: E17 without a ledger (rc=$LINT_RC; $LINT_OUT)" "fail"
 python3 "$PROBE" self-test >/dev/null 2>&1 \
   && assert "L19: iter_spec.py self-test passes (HARD-1 + HARD-2 + HARD-3 fixtures)" "pass" \
   || assert "L19: iter_spec.py self-test" "fail"
@@ -3278,6 +3392,10 @@ case "$kind" in
   iter9-allowed) pol="allowed"; oos="$OOS9"; tc="$TC9" ;;
   iter9-absent)  pol="";        oos="$OOS9"; tc="$TC9" ;;
   fixed)         pol="allowed"; oos="$OOSFIX"; tc="$TCFIX" ;;
+  b3att1)        pol="allowed"; tj="J-01, J-02"; rq="J-01, J-02, J-04"; oos="$OOS9"; tc="$TC9" ;;
+  b3drop)        pol="allowed"; tj="J-01, J-02"; rq="J-01, J-02";       oos="$OOS9"; tc="$TC9" ;;
+  b3move)        pol="allowed"; tj="J-01, J-02, J-04"; rq="J-01, J-02"; oos="$OOSFIX"; tc="$TCFIX" ;;
+  b3unrelated)   pol="allowed"; tj="J-01, J-04"; rq="J-01, J-04";       oos="$OOSFIX"; tc="$TCFIX" ;;
   nonenone)      pol="none";    tj="J-02"; rq="none" ;;
   noneunknown)   pol="none";    tj="J-01"; rq="none" ;;
   allowedplain)  pol="allowed" ;;
@@ -3327,6 +3445,13 @@ e_run() {  # e_run <kind> [env=val ...]  (fresh session; E_PRESEED_SIDECAR seeds
   # A directory where the ledger file belongs: the build can neither remove it
   # nor write the ledger (goal_gate.py exits 2) — a wholly unavailable ledger.
   [[ -n "${E_PRESEED_LEDGER_DIR:-}" ]] && mkdir -p "$ESBX/runs/goal-session-$E_SID/iter-0/side-effects.json/x"
+  # HARD-3 B3: plant an obligation record under iter-$E_PRESEED_OBL_ITER, which
+  # is how a resumed run (and ONLY the same iteration) sees one.
+  if [[ -n "${E_PRESEED_OBL:-}" ]]; then
+    mkdir -p "$ESBX/runs/goal-session-$E_SID/iter-${E_PRESEED_OBL_ITER:-0}"
+    printf '%s' "$E_PRESEED_OBL" \
+      > "$ESBX/runs/goal-session-$E_SID/iter-${E_PRESEED_OBL_ITER:-0}/spec-obligations.json"
+  fi
   local kind="$1"; shift
   e_invoke "$E_SID" "$kind" "" "$@"
 }
@@ -3620,6 +3745,101 @@ grep -q 'ERROR E16' "$CANARY.prompt-2" 2>/dev/null && grep -q 'WARN W02' "$CANAR
   && assert "E11: with NO policy line the iter-9 prohibitions still hit E16 (and W02), then the fix dispatches" "pass" \
   || assert "E11: absent-policy E16 (dev=$(e_count developer))" "fail"
 
+# ── E14 — HARD-3 B3: the retention obligation, end to end through run-goal.sh ─
+# Attempt 1 rejects under E16 with J-04 in Required-still-passing; attempt 2
+# deletes J-04 from BOTH journey fields with the prohibition unchanged. Before
+# this gate that spec linted clean and the developer was dispatched.
+e_run b3att1 STUB_SPEC_KIND_2=b3drop
+[[ "$(e_status)" == "GATE_BLOCKED" && "$(e_count developer)" == "0" && "$(e_count browser-qa-agent)" == "0" \
+   && "$(e_count goal-decomposer)" == "2" ]] \
+  && grep -q '^\[spec-lint\] ERROR E17 ' "$E_SESSION/iter-0/spec-lint.txt" \
+  && e_halt GATE_BLOCKED_SPEC_LINT spec-lint \
+  && assert "E14: a re-plan that drops a NAMED Required-still-passing journey from both fields is REJECTED (E17) — GATE_BLOCKED, zero dispatch, exactly one re-plan" "pass" \
+  || assert "E14: B3 dodge blocked (status=$(e_status) dev=$(e_count developer) decomp=$(e_count goal-decomposer))" "fail"
+python3 - "$E_SESSION/iter-0/spec-obligations.json" "$E_SESSION/telemetry.jsonl" <<'PYE14B' && assert "E14b: the engine records the obligation (iteration-scoped artifact) and both telemetry events name J-04" "pass" || assert "E14b: obligation artifact + telemetry" "fail"
+import json, sys
+o = json.load(open(sys.argv[1]))
+assert o["journeys"] == ["J-04"], o
+assert o["rule_ids"] == ["E16"], o
+assert o["attempt"] == 1 and o["iter_name"] and o["recorded_at"], o
+ev = {}
+for ln in open(sys.argv[2]):
+    try:
+        e = json.loads(ln)
+    except Exception:
+        continue
+    if e.get("event", "").startswith("spec_obligation"):
+        ev.setdefault(e["event"], []).append(e.get("payload") or e)
+assert ev["spec_obligation_pinned"][0]["journeys"] == ["J-04"], ev
+assert ev["spec_obligation_pinned"][0]["attempt"] == 1, ev
+assert ev["spec_obligation_dropped"][0]["dropped"] == ["J-04"], ev
+assert ev["spec_obligation_dropped"][0]["attempt"] == 2, ev
+assert ev["spec_obligation_dropped"][0]["rule"] == "E17", ev
+assert len(ev["spec_obligation_pinned"]) == 1, ev
+PYE14B
+# the sanctioned attempt-2 shapes still dispatch — the gate blocks the dodge, not the fix.
+e_run b3att1 STUB_SPEC_KIND_2=b3move
+[[ "$(e_status)" != "GATE_BLOCKED" && "$(e_count developer)" -ge 1 ]] \
+  && ! grep -q 'E17' "$E_SESSION/iter-0/spec-lint.txt" \
+  && assert "E14c: moving the pinned journey into Target journeys and fixing the contradiction dispatches normally" "pass" \
+  || assert "E14c: legitimate move dispatches (status=$(e_status) dev=$(e_count developer))" "fail"
+e_run b3att1 STUB_SPEC_KIND_2=b3unrelated
+[[ "$(e_status)" != "GATE_BLOCKED" && "$(e_count developer)" -ge 1 ]] \
+  && ! grep -q 'E17' "$E_SESSION/iter-0/spec-lint.txt" \
+  && assert "E14d: dropping an UNRELATED required journey the finding never named is still allowed (no permanent pin)" "pass" \
+  || assert "E14d: unrelated drop allowed (status=$(e_status) dev=$(e_count developer))" "fail"
+# the obligation survives a RESUME of the same iteration: the spec on disk is
+# re-linted (decomposer checkpoint valid), and E17 still refuses it.
+e_run b3att1 STUB_SPEC_KIND_2=b3drop
+_e14e_first="$(e_status)"
+e_invoke "$E_SID" b3drop "--resume"
+[[ "$_e14e_first" == "GATE_BLOCKED" && "$(e_status)" == "GATE_BLOCKED" && "$(e_count developer)" == "0" \
+   && "$(e_count browser-qa-agent)" == "0" ]] \
+  && grep -q '^\[spec-lint\] ERROR E17 ' "$E_SESSION/iter-0/spec-lint.txt" \
+  && assert "E14e: resuming the blocked iteration re-reads the recorded obligation — still E17, still zero dispatch" "pass" \
+  || assert "E14e: resume keeps the obligation (first=$_e14e_first status=$(e_status) dev=$(e_count developer))" "fail"
+# a recorded obligation is read by a run that never re-planned at all (the pure
+# resume reader), and it is scoped to ITS OWN iteration directory.
+E_PRESEED_OBL='{"iter_name":"goal-x-iter-0","attempt":1,"recorded_at":"2026-09-18T00:00:00Z","rule_ids":["E13"],"journeys":["J-99"]}' \
+  e_run fixed
+[[ "$(e_status)" == "GATE_BLOCKED" && "$(e_count developer)" == "0" && "$(e_count goal-decomposer)" == "2" ]] \
+  && grep -q '^\[spec-lint\] ERROR E17 ' "$E_SESSION/iter-0/spec-lint.txt" \
+  && grep -q 'J-99' "$E_SESSION/iter-0/spec-lint.txt" \
+  && assert "E14f: an obligation recorded under iter-0 is enforced by a later run of iter-0 that re-planned nothing itself" "pass" \
+  || assert "E14f: obligation read on resume (status=$(e_status) dev=$(e_count developer))" "fail"
+E_PRESEED_OBL='{"iter_name":"goal-x-iter-1","attempt":1,"recorded_at":"2026-09-18T00:00:00Z","rule_ids":["E13"],"journeys":["J-99"]}' \
+  E_PRESEED_OBL_ITER=1 e_run fixed
+[[ "$(e_status)" != "GATE_BLOCKED" && "$(e_count developer)" -ge 1 ]] \
+  && ! grep -q 'E17' "$E_SESSION/iter-0/spec-lint.txt" \
+  && ! grep -q 'spec_obligation_dropped' "$E_SESSION/telemetry.jsonl" \
+  && assert "E14g: an obligation belonging to ANOTHER iteration is never read — iteration 0 dispatches untouched" "pass" \
+  || assert "E14g: obligations are iteration-scoped (status=$(e_status) dev=$(e_count developer))" "fail"
+# an obligation file that exists but cannot be read is NOT "no obligation": the
+# engine halts rather than silently dropping it (same doctrine as E15).
+E_PRESEED_OBL='{ truncated' e_run fixed
+[[ "$(e_status)" == "GATE_BLOCKED" && "$(e_count developer)" == "0" && "$(e_count browser-qa-agent)" == "0" ]] \
+  && e_halt GATE_BLOCKED_SPEC_LINT spec-obligations \
+  && e_event spec_obligation_unreadable \
+  && grep -q 'carries no readable journey list' "$E_LOG" \
+  && assert "E14i: an UNREADABLE spec-obligations.json fails CLOSED (GATE_BLOCKED, zero dispatch) instead of dropping the obligation" "pass" \
+  || assert "E14i: unreadable obligation fails closed (status=$(e_status) dev=$(e_count developer))" "fail"
+E_PRESEED_OBL='{"iter_name":"goal-x-iter-0","attempt":1,"recorded_at":"2026-09-18T00:00:00Z","rule_ids":["E13"],"journeys":[]}' \
+  e_run fixed
+[[ "$(e_status)" == "GATE_BLOCKED" && "$(e_count developer)" == "0" ]] && e_event spec_obligation_unreadable \
+  && assert "E14j: a well-formed obligation file with an EMPTY journey list fails closed too (the engine never writes one)" "pass" \
+  || assert "E14j: empty obligation list fails closed (status=$(e_status) dev=$(e_count developer))" "fail"
+# deleting the file is the deliberate retirement, and it restores normal dispatch.
+e_run fixed
+[[ "$(e_status)" != "GATE_BLOCKED" && "$(e_count developer)" -ge 1 && ! -e "$E_SESSION/iter-0/spec-obligations.json" ]] \
+  && assert "E14k: with no obligation file at all the iteration dispatches normally (deleting it is the retirement path)" "pass" \
+  || assert "E14k: absent obligation file dispatches (status=$(e_status) dev=$(e_count developer))" "fail"
+# no obligation is recorded when the rejected finding named no Required journey.
+e_run iter9-allowed STUB_SPEC_KIND_2=fixed
+[[ ! -e "$E_SESSION/iter-0/spec-obligations.json" ]] \
+  && ! grep -q 'spec_obligation' "$E_SESSION/telemetry.jsonl" \
+  && assert "E14h: a rejected spec whose Required-still-passing list names no mutating journey records NO obligation" "pass" \
+  || assert "E14h: no obligation without a named required journey" "fail"
+
 # ── Part P: prompts + observer through the REAL lean executor ────────────────
 echo "== P. lean end-to-end: replay observation -> next-iteration E13 -> prompts"
 # Free ports per run: two suites running at once must never share (or kill) each other's servers.
@@ -3885,7 +4105,9 @@ _w1_missing=""
 for pat in 'journey-side-effects.json' 'CHAIN_SIDE_EFFECT_PREFLIGHT' 'CHAIN_SIDE_EFFECT_STRICT' 'Side-effect ledger' \
            'GATE_BLOCKED_SIDE_EFFECT_LEDGER' 'side_effect_ledger_unavailable' 'side_effect_unknown' \
            'CHAIN_SIDE_EFFECTS_FILE' '--strict-side-effects' '--makeup-journeys' '--side-effects-build-id' \
-           'side_effect_declaration_conflict' '--freeze' 'side-effects.preflight.json' 'policy-intent' 'ledger-ok'; do
+           'side_effect_declaration_conflict' '--freeze' 'side-effects.preflight.json' 'policy-intent' 'ledger-ok' \
+           '--retain-journeys' 'spec-obligations.json' 'spec_obligation_pinned' 'spec_obligation_dropped' \
+           'spec_obligation_unreadable'; do
   grep -qF -- "$pat" "$RG" || _w1_missing+="$pat "
 done
 [[ -z "$_w1_missing" ]] \
@@ -3940,11 +4162,13 @@ _miss=""
 for ev in side_effect_observed side_effect_declaration_changed side_effect_exception_applied side_effect_unknown \
           side_effect_ledger_unavailable GATE_BLOCKED_SIDE_EFFECT_LEDGER side_effect_rules \
           side_effect_clear_refused side_effect_sidecar_update_failed side_effect_declaration_conflict \
-          side_effect_observations_repaired CHAIN_SIDE_EFFECT_LOCK_TIMEOUT; do
+          side_effect_observations_repaired CHAIN_SIDE_EFFECT_LOCK_TIMEOUT \
+          spec_obligation_pinned spec_obligation_dropped spec_obligation_unreadable E17; do
   grep -q "$ev" "$_tdoc" || _miss+="$ev "
 done
 [[ -z "$_miss" ]] && grep -q 'journey-side-effects.json' "$ENGINE_ROOT/runs/SCHEMA.md" \
   && grep -q 'replay-side-effects.json' "$ENGINE_ROOT/runs/SCHEMA.md" && grep -q 'read-only-endpoints.txt' "$ENGINE_ROOT/runs/SCHEMA.md" \
+  && grep -q 'spec-obligations.json' "$ENGINE_ROOT/runs/SCHEMA.md" \
   && assert "W10: telemetry doc lists every new event/field; runs/SCHEMA.md lists every new artifact" "pass" \
   || assert "W10: docs (missing: $_miss)" "fail"
 grep -q 'tests/automation/test-side-effects.sh' "$ENGINE_ROOT/scripts/automation/run-evals.sh" \

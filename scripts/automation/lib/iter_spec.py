@@ -31,6 +31,7 @@ consolidation are HARD-2 concerns):
                              [--journey-history P] [--json-out P]
                              [--side-effects LEDGER] [--side-effects-build-id ID]
                              [--strict-side-effects] [--makeup-journeys J-01,J-02]
+                             [--retain-journeys J-04,J-07]
         exit 0  clean, or warnings only
         exit 1  at least one deterministic ERROR — the spec must not dispatch
         exit 2  unreadable spec (the caller fails closed; see run-goal.sh's
@@ -50,6 +51,12 @@ consolidation are HARD-2 concerns):
         journeys under policy none / under a prohibition; E14 with
         --strict-side-effects), W11 (ledger unavailable under an allowed or
         absent policy).
+        --retain-journeys carries the engine's HARD-3 B3 obligation set (the
+        Required-still-passing journeys an E13/E16 finding named when THIS
+        iteration's first spec was rejected): E17 fires when such a journey
+        appears in neither 'Target journeys:' nor 'Required-still-passing
+        journeys:' nor the make-up set, i.e. the re-plan dodged the conflict by
+        deleting the id. It needs no ledger and never fires without the flag.
 
     iter_spec.py side-effect-context --mode lane|evaluator|decomposer
                              --side-effects LEDGER [--spec P] [--makeup-journeys CSV]
@@ -356,6 +363,7 @@ _RULE_TEXT = {
     "E14": "unknown-journey-under-strict-side-effects",
     "E15": "policy-none-ledger-unavailable",
     "E16": "explicit-prohibition-vs-mutating-journey",
+    "E17": "required-journey-obligation-dropped",     # HARD-3 B3 (engine-supplied set)
     "W01": "workkind-missing",
     "W02": "policy-missing",                                  # HARD-3
     "W03": "targets-line-absent",
@@ -1581,8 +1589,14 @@ def _conflict_fix(jids: list[str], roles: dict[str, set], baseline: bool = False
                 "policy and the wording, never the journey set.")
     if pinned:
         kinds = "Required-still-passing or engine-scheduled make-up"
+        # HARD-3 B3: say that the prohibition is ENFORCED, not merely stated —
+        # the engine carries these ids into the one automatic re-plan and E17
+        # rejects a spec that removes them from both journey fields.
         return (f"{base}. {', '.join(pinned)} {'is a' if len(pinned) == 1 else 'are'} {kinds} "
-                f"journey{'' if len(pinned) == 1 else 's'} and may NOT be dropped to dodge the conflict.")
+                f"journey{'' if len(pinned) == 1 else 's'} and may NOT be dropped to dodge the conflict — "
+                f"the engine carries {'it' if len(pinned) == 1 else 'them'} into the re-plan and REJECTS "
+                f"(E17) a spec that names {'it' if len(pinned) == 1 else 'them'} in neither journey field. "
+                f"Moving between the two fields is fine; both are verified.")
     return f"{base}, or drop it from Target journeys (never from Required-still-passing)."
 
 
@@ -1617,6 +1631,11 @@ def side_effect_findings(spec_text: str, md: dict, ledger_path: str | None, stri
         statuses = {j: (recs.get(j) or {}).get("status", "unknown") for j in checked}
     mutating = [j for j in checked if statuses[j] == "mutating"]
     unknown = [j for j in checked if statuses[j] == "unknown"]
+    # HARD-3 B3: the journeys an E13/E16 finding NAMES. The engine pins the
+    # Required-still-passing ones for this iteration's one re-plan (E17), so the
+    # set is computed exactly where the findings are emitted — never re-derived
+    # by parsing message text.
+    conflict_named: set[str] = set()
     prohibitions = find_mutation_prohibitions(spec_text)
     ledger_ref = ledger_path or "(none)"
     reproduce = ("Reproduce: python3 scripts/automation/lib/goal_gate.py side-effects docs/goal.md "
@@ -1636,6 +1655,7 @@ def side_effect_findings(spec_text: str, md: dict, ledger_path: str | None, stri
 
     if restrictive:
         for j in mutating:
+            conflict_named.add(j)
             err("E13", f"{stated}, but " + _mutating_desc(j, recs[j], roles[j])
                 + " — a browser lane executing it WILL change persisted data. " + _conflict_fix([j], roles, baseline))
 
@@ -1652,6 +1672,7 @@ def side_effect_findings(spec_text: str, md: dict, ledger_path: str | None, stri
             else:
                 warn("W09", msg + ". CHAIN_SIDE_EFFECT_STRICT=true makes this an error")
         if prohibitions and mutating:
+            conflict_named.update(mutating)
             descs = "; ".join(_mutating_desc(j, recs[j], roles[j]) for j in mutating)
             for p in prohibitions:
                 blind = (" (found with code fences ignored: a stray fence can make a live line read as fenced, so "
@@ -1698,6 +1719,10 @@ def side_effect_findings(spec_text: str, md: dict, ledger_path: str | None, stri
         "conflicts": [j for j in checked if (recs.get(j) or {}).get("declaration_conflict")],
         "sticky": [j for j in checked if (recs.get(j) or {}).get("observation_sticky")],
         "prohibitions": prohibitions,
+        # HARD-3 B3: journeys named in an EMITTED E13/E16 finding, and the
+        # Required-still-passing subset the engine must carry into attempt 2.
+        "conflict_journeys": sorted(conflict_named),
+        "retain_required": sorted(j for j in conflict_named if "required" in roles[j]),
         "declaration_digest": ledger.get("declaration_digest"),
         "build_id": ledger.get("build_id"),
     }
@@ -1878,10 +1903,12 @@ def lint_spec(
     strict_side_effects: bool = False,
     makeup_journeys: list[str] | None = None,
     side_effects_build_id: str | None = None,
+    retain_journeys: list[str] | None = None,
 ) -> dict:
     """Pure lint. Returns {errors:[{rule,name,msg}], warnings:[...], metadata:{...},
     side_effects: {...} | None}. The HARD-3 ledger rules run only when
-    `side_effects` (the ledger path) is given."""
+    `side_effects` (the ledger path) is given; `retain_journeys` is the engine's
+    B3 obligation set (E17) and is independent of the ledger."""
     md = read_metadata(spec_text)
     scope = md["in_scope"]
     errors: list[dict] = []
@@ -2015,6 +2042,37 @@ def lint_spec(
     if md["depth"] == "full" and not md["present"].get("full_trigger"):
         warn("W08", "Depth: full without a 'Full trigger:' line naming which numbered trigger applies")
 
+    # ── HARD-3 B3: the engine's retention obligation (E17) ───────────────────
+    # The ENGINE, not the planner, owns `retain_journeys`: the
+    # Required-still-passing journeys an E13/E16 finding NAMED when this
+    # iteration's first spec was rejected. They must still be verified by the
+    # spec that replaces it, so the planner may resolve the contradiction (policy
+    # + wording) or move a journey between Target and Required-still-passing, but
+    # may not make the conflict disappear by deleting the id from both fields.
+    # Membership of the CHECKED UNION is the test — targets ∪ required ∪ the
+    # engine's make-up set — because that union is exactly what both lanes
+    # schedule (goal-iter-lean.sh, browser-qa-phase.sh). Empty list ⇒ this rule
+    # does not exist for the run, so attempt 1 and every non-re-planned lint are
+    # untouched.
+    retain = [j for j in dict.fromkeys(retain_journeys or [])]
+    obligations = None
+    if retain:
+        covered = set(md["target_journeys"]) | set(md["required_journeys"]) | set(makeup_journeys or [])
+        dropped = [j for j in retain if j not in covered]
+        obligations = {"retain": retain, "kept": [j for j in retain if j in covered], "dropped": dropped}
+        if dropped:
+            ids = ", ".join(dropped)
+            err("E17", f"{ids} {'was' if len(dropped) == 1 else 'were'} named by this iteration's "
+                       f"REJECTED first spec as Required-still-passing journey"
+                       f"{'' if len(dropped) == 1 else 's'} in an E13/E16 side-effect contradiction, and "
+                       f"{'is' if len(dropped) == 1 else 'are'} in neither 'Target journeys:' nor "
+                       f"'Required-still-passing journeys:' of this spec. Dropping the journey is not one of "
+                       f"the permitted resolutions: the verification obligation survives the re-plan, so the "
+                       f"contradiction must be resolved by declaring '- **Side-effect policy:** allowed' and "
+                       f"phrasing every TC / DEFINITION OF DONE line that assumes nothing changes as an "
+                       f"invariant on PRE-EXISTING rows. Keeping {ids} under 'Target journeys:' instead of "
+                       f"'Required-still-passing journeys:' (or the reverse) is fine — both are verified.")
+
     side_effects_report = None
     if side_effects is not None:
         side_effects_report = side_effect_findings(
@@ -2024,7 +2082,7 @@ def lint_spec(
 
     return {"errors": errors, "warnings": warnings, "metadata": md,
             "work_kind_derived": md["work_kind_derived"], "input_error": input_error,
-            "side_effects": side_effects_report}
+            "side_effects": side_effects_report, "obligations": obligations}
 
 
 def _read_spec(path: str) -> str:
@@ -2092,7 +2150,8 @@ def cmd_field(argv: list[str]) -> int:
 
 
 _LINT_VALUED = ("--prior-verdict", "--mode-expected", "--journey-history", "--json-out",
-                "--side-effects", "--makeup-journeys", "--side-effects-build-id")
+                "--side-effects", "--makeup-journeys", "--side-effects-build-id",
+                "--retain-journeys")
 _LINT_FLAGS = ("--strict-side-effects",)
 
 
@@ -2128,6 +2187,7 @@ def cmd_lint(argv: list[str]) -> int:
         strict_side_effects=bool(opts.get("--strict-side-effects")),
         makeup_journeys=_JOURNEY_ID_RE.findall(opts.get("--makeup-journeys") or ""),
         side_effects_build_id=opts.get("--side-effects-build-id"),
+        retain_journeys=_JOURNEY_ID_RE.findall(opts.get("--retain-journeys") or ""),
     )
     for f in res["errors"]:
         print(f"[spec-lint] ERROR {f['rule']} {f['name']}: {f['msg']}")
@@ -2344,6 +2404,25 @@ _LINT_FIXTURES: dict[str, tuple[str, dict, int, tuple[str, ...], tuple[str, ...]
         ("W11",), ("E15",)),
     "no ledger flag -> no ledger rules": (
         _md("lean", "verify-only", policy="none") + _NOWORK + _PROHIBIT, {}, 0, (), ("E13", "E15", "E16")),
+    # HARD-3 B3: the engine's retention obligation (E17). _md's fixture lists
+    # J-01, J-02 as targets and J-03 as Required-still-passing.
+    "E17 a pinned journey in neither journey field": (
+        _md("lean", "verify-only", policy="allowed") + _NOWORK,
+        {"retain_journeys": ["J-04"]}, 1, ("E17",), ()),
+    "E17 clean when the pinned journey stays Required-still-passing": (
+        _md("lean", "verify-only", policy="allowed") + _NOWORK,
+        {"retain_journeys": ["J-03"]}, 0, (), ("E17",)),
+    "E17 clean when the pinned journey moved to Target journeys": (
+        _md("lean", "verify-only", policy="allowed") + _NOWORK,
+        {"retain_journeys": ["J-02"]}, 0, (), ("E17",)),
+    "E17 clean when the engine's make-up set carries the pinned journey": (
+        _md("lean", "verify-only", policy="allowed") + _NOWORK,
+        {"retain_journeys": ["J-04"], "makeup_journeys": ["J-04"]}, 0, (), ("E17",)),
+    "E17 does not exist without the engine's obligation set": (
+        _md("lean", "verify-only", policy="allowed") + _NOWORK, {}, 0, (), ("E17",)),
+    "E17 is independent of the side-effect ledger": (
+        _md("lean", "verify-only", policy="allowed") + _NOWORK,
+        {"retain_journeys": ["J-04"], "side_effects": "@LED_MUT@"}, 1, ("E17",), ()),
 }
 
 
@@ -2393,7 +2472,7 @@ def _lint_self_test() -> int:
         print(f"  {'PASS' if ok else 'FAIL'}  lint: {name} (rc={rc}, want {want_rc}; rules={sorted(got)})")
         fails += 0 if ok else 1
     # HARD-3 owns the ids HARD-2 reserved for it; the block must be complete.
-    for rule in ("E06", "E13", "E14", "E15", "E16", "W02", "W09", "W10", "W11"):
+    for rule in ("E06", "E13", "E14", "E15", "E16", "E17", "W02", "W09", "W10", "W11"):
         if rule not in _RULE_TEXT:
             print(f"  FAIL  lint: HARD-3 rule {rule} is not implemented")
             fails += 1
