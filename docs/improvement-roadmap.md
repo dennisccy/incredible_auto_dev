@@ -6380,6 +6380,59 @@ Four root causes: governors read proxies instead of facts (HARD-1..3); ownership
     journey text, which would read as goal-edit drift); owner confirmation of the I3 and I7
     decisions above, of observation stickiness and of the stated E16 prohibition rule (revision 8); M6 (the GOAL_ACHIEVED two-key confirm prompt
     carries no side-effect context).
+  - *G9 — NOT AUTHORISED; offline rehearsal done and PASSING (2026-09-19).* G9 is the spend gate
+    ("anything that spends real API tokens beyond your own session → confirm with the user first,
+    with a cost estimate"). **No HARD-3 G9 approval exists on record** — the roadmap's approvals are
+    always dated explicitly (e.g. "G9-approved 2026-07-13") and there is no such entry for HARD-3,
+    so none is assumed. Evidence:
+    `~/.cache/iad/cert-hard3-g8final-20260919/g9-rehearsal/REHEARSAL.md`.
+    - *Scenario, taken from the plan rather than invented:* the TenSteps iteration-9 incident that
+      motivated HARD-3 — product `/home/dennis-chan/Git/tensteps`, its real unmodified
+      `docs/goal.md` and real `docs/phases/goal-policy-state-core-v1-iter-9.md`, whose J-04 really
+      does `POST /api/provider/assess` and `POST /api/provider/admit`.
+    - *Baseline (today's real state):* ledger complete, J-01…J-05 all `unknown`/`undeclared`; the
+      iter-9 spec's three prohibitions produce **W10 only and nothing blocks** — reproducing the
+      first independent G8's finding exactly.
+    - *With the replay observation a real run would record:* J-04 becomes `mutating`/`observed`, and
+      the spec's own real OUT OF SCOPE line ("Any new portfolio run launch, sweep, or ledger write
+      — the confirm pass reads existing runs and golden scripts only.") raises **E16** under its own
+      policy and **E13 + E16** under `none`. The original incident, caught by the certified code on
+      unmodified real artifacts.
+    - *What the rehearsal does NOT establish,* and why a real session is still required: the replay
+      lane OBSERVING the mutation itself (here it was seeded), the observation landing durably in
+      the sidecar plus an archived per-run record, no TC failing on the journey's own intended
+      mutation, and a valid end-to-end Goal Mode result.
+    - **Hard prerequisite found:** a G9 run inside `/home/dennis-chan/Git/tensteps` would not
+      exercise the certified code at all — its vendored `run-goal.sh` has zero side-effect
+      references. G9 needs either (a) merge → sync tensteps from `main` → run there, or (b) a
+      dedicated combined checkout (the pattern already used by
+      `~/.cache/iad/tw-product-dev/workstation-product`) carrying the merge revision, leaving
+      `~/Git/tensteps` untouched. **(b) is lower risk and needs no merge first.**
+  - *GitHub CI — at baseline parity; HARD-3 introduces NO new failure (2026-09-19).* PR
+    [#14](https://github.com/dennisccy/incredible_auto_dev/pull/14) opened for the branch; the
+    `harness-evals` workflow was also dispatched directly against the certified SHA
+    ([run 35439435874](https://github.com/dennisccy/incredible_auto_dev/actions/runs/35439435874),
+    `headSha a9d91b1`). Result vs the `main` baseline
+    ([run 35145456476](https://github.com/dennisccy/incredible_auto_dev/actions/runs/35145456476),
+    `80fe48f`):
+
+    | revision | Summary | failing check |
+    |---|---|---|
+    | `main` `80fe48f` | 185 pass, **1 fail** | `tests/automation/test-goal-inline-tail.sh` |
+    | HARD-3 `a9d91b1` | 186 pass, **1 fail** | `tests/automation/test-goal-inline-tail.sh` |
+
+    **The same single failure, and the branch adds one passing check.** That test is untouched by
+    this branch (`git log main..HEAD -- tests/automation/test-goal-inline-tail.sh` is empty), passes
+    locally 6/6 (rc 0), and `main` has been red on it for **every** run back to at least 2026-09-02
+    — two weeks before this branch started. It is therefore a pre-existing, environment-specific
+    (ubuntu-latest / Python 3.12 vs this host's 3.14) repository-wide CI gap, **not a HARD-3
+    integration defect**, and per G6/scope discipline it is NOT fixed here: repairing it would mean
+    changing code on an independently certified branch for a reason unrelated to HARD-3.
+    → **Separate backlog item `CI-1`: `test-goal-inline-tail.sh` fails only under GitHub Actions.**
+    The eval runner prints PASS/FAIL without the test's own output, so the first step is to make
+    `run-evals.sh` surface a failing unit test's stderr, then reproduce under Python 3.12.
+    *Consequence for HARD-3:* the CI gate can be reported honestly only as "no HARD-3-introduced
+    failure / baseline parity" — it cannot go green until `CI-1` is fixed, independently of this work.
   - *Vendored product sync — BLOCKED on the merge prerequisite, measured 2026-09-19.* All five
     products (`taketwo`, `tapeology`, `tensteps`, `trading_workstation`, `trendora`) vendor the
     framework as a plain tracked `incredible_auto_dev/` directory with `scripts ->
