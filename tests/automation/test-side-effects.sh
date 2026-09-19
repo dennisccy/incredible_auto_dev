@@ -3445,6 +3445,11 @@ e_run() {  # e_run <kind> [env=val ...]  (fresh session; E_PRESEED_SIDECAR seeds
   # A directory where the ledger file belongs: the build can neither remove it
   # nor write the ledger (goal_gate.py exits 2) — a wholly unavailable ledger.
   [[ -n "${E_PRESEED_LEDGER_DIR:-}" ]] && mkdir -p "$ESBX/runs/goal-session-$E_SID/iter-0/side-effects.json/x"
+  # HARD-3 B3: break the obligation's ATOMIC WRITE by putting a DIRECTORY where
+  # its temp file belongs — the engine decides to pin a journey and cannot
+  # persist it. Surgical: nothing else in the iteration dir is disturbed.
+  [[ -n "${E_BREAK_OBL_WRITE:-}" ]] \
+    && mkdir -p "$ESBX/runs/goal-session-$E_SID/iter-0/spec-obligations.json.tmp/x"
   # HARD-3 B3: plant an obligation record under iter-$E_PRESEED_OBL_ITER, which
   # is how a resumed run (and ONLY the same iteration) sees one.
   if [[ -n "${E_PRESEED_OBL:-}" ]]; then
@@ -3828,6 +3833,33 @@ E_PRESEED_OBL='{"iter_name":"goal-x-iter-0","attempt":1,"recorded_at":"2026-09-1
 [[ "$(e_status)" == "GATE_BLOCKED" && "$(e_count developer)" == "0" ]] && e_event spec_obligation_unreadable \
   && assert "E14j: a well-formed obligation file with an EMPTY journey list fails closed too (the engine never writes one)" "pass" \
   || assert "E14j: empty obligation list fails closed (status=$(e_status) dev=$(e_count developer))" "fail"
+# an obligation the engine DECIDED on but could not persist must halt BEFORE the
+# re-plan: re-planning with no recorded retention is the B3 dodge all over again.
+E_BREAK_OBL_WRITE=1 e_run b3att1 STUB_SPEC_KIND_2=b3drop
+[[ "$(e_status)" == "GATE_BLOCKED" && "$(e_count developer)" == "0" && "$(e_count browser-qa-agent)" == "0" \
+   && "$(e_count goal-decomposer)" == "1" ]] \
+  && e_halt GATE_BLOCKED_SPEC_LINT spec-obligations \
+  && e_event spec_obligation_unrecorded \
+  && ! [[ -e "$E_SESSION/iter-0/spec-obligations.json" ]] \
+  && grep -q 'could NOT be recorded' "$E_LOG" && grep -q 'J-04' "$E_LOG" \
+  && assert "E14l: an obligation that cannot be WRITTEN halts before the re-plan (decomposer=1, zero dispatch) instead of re-planning with no retention" "pass" \
+  || assert "E14l: failed obligation write fails closed (status=$(e_status) decomp=$(e_count goal-decomposer) dev=$(e_count developer))" "fail"
+python3 - "$E_SESSION/telemetry.jsonl" <<'PYE14M' && assert "E14m: spec_obligation_unrecorded names the journey it could not pin and the underlying error" "pass" || assert "E14m: unrecorded telemetry payload" "fail"
+import json, sys
+ev = None
+for ln in open(sys.argv[1]):
+    try:
+        e = json.loads(ln)
+    except Exception:
+        continue
+    if e.get("event") == "spec_obligation_unrecorded":
+        ev = e.get("payload") or e
+assert ev, "no spec_obligation_unrecorded event"
+assert ev["journeys"] == ["J-04"], ev
+assert ev["attempt"] == 1, ev
+assert "IsADirectoryError" in ev["error"], ev
+assert ev["rc"] == 9, ev
+PYE14M
 # deleting the file is the deliberate retirement, and it restores normal dispatch.
 e_run fixed
 [[ "$(e_status)" != "GATE_BLOCKED" && "$(e_count developer)" -ge 1 && ! -e "$E_SESSION/iter-0/spec-obligations.json" ]] \
@@ -4107,7 +4139,7 @@ for pat in 'journey-side-effects.json' 'CHAIN_SIDE_EFFECT_PREFLIGHT' 'CHAIN_SIDE
            'CHAIN_SIDE_EFFECTS_FILE' '--strict-side-effects' '--makeup-journeys' '--side-effects-build-id' \
            'side_effect_declaration_conflict' '--freeze' 'side-effects.preflight.json' 'policy-intent' 'ledger-ok' \
            '--retain-journeys' 'spec-obligations.json' 'spec_obligation_pinned' 'spec_obligation_dropped' \
-           'spec_obligation_unreadable'; do
+           'spec_obligation_unreadable' 'spec_obligation_unrecorded'; do
   grep -qF -- "$pat" "$RG" || _w1_missing+="$pat "
 done
 [[ -z "$_w1_missing" ]] \
@@ -4163,7 +4195,8 @@ for ev in side_effect_observed side_effect_declaration_changed side_effect_excep
           side_effect_ledger_unavailable GATE_BLOCKED_SIDE_EFFECT_LEDGER side_effect_rules \
           side_effect_clear_refused side_effect_sidecar_update_failed side_effect_declaration_conflict \
           side_effect_observations_repaired CHAIN_SIDE_EFFECT_LOCK_TIMEOUT \
-          spec_obligation_pinned spec_obligation_dropped spec_obligation_unreadable E17; do
+          spec_obligation_pinned spec_obligation_dropped spec_obligation_unreadable \
+          spec_obligation_unrecorded E17; do
   grep -q "$ev" "$_tdoc" || _miss+="$ev "
 done
 [[ -z "$_miss" ]] && grep -q 'journey-side-effects.json' "$ENGINE_ROOT/runs/SCHEMA.md" \

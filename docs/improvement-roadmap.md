@@ -6180,13 +6180,15 @@ Four root causes: governors read proxies instead of facts (HARD-1..3); ownership
         never schedules a journey.** Telemetry `spec_obligation_dropped {dropped, pinned, rule}` is
         emitted before the halt branches, so the record of WHICH journey was dropped exists whatever
         the lint mode does next; the lint JSON carries a structured `obligations {retain, kept,
-        dropped}` block. **The record is written atomically (tmp + `os.replace` + `fsync`) and read
-        FAIL-CLOSED:** a `spec-obligations.json` that exists but carries no readable journey list is an
-        obligation whose content is unknown, not an absent one, so the engine halts `GATE_BLOCKED`
-        (`detected_at_step:"spec-obligations"`, telemetry `spec_obligation_unreadable`) before any
-        dispatch — the same doctrine E15 applies to the ledger. Deleting the file is the deliberate
-        retirement path (for a journey the owner removed from `docs/goal.md`); `CHAIN_SPEC_LINT=warn`
-        is the blunt one. The rejected finding's own fix text now says the retention is enforced
+        dropped}` block. **The record is written atomically (tmp + `fsync` + `os.replace`) and BOTH
+        ends of it fail CLOSED**, on the shared `detected_at_step:"spec-obligations"`:
+        a write that cannot land halts **before the re-plan runs** (telemetry
+        `spec_obligation_unrecorded`, naming the journey and the OS error), and a
+        `spec-obligations.json` that exists but carries no readable journey list is an obligation whose
+        content is unknown, not an absent one, so it halts too (`spec_obligation_unreadable`). Both are
+        the doctrine E15 already applies to the ledger: a safety layer must not vanish because its own
+        input broke. Deleting the file is the deliberate retirement path (for a journey the owner
+        removed from `docs/goal.md`); `CHAIN_SPEC_LINT=warn` is the blunt one. The rejected finding's own fix text now says the retention is enforced
         ("the engine carries them into the re-plan and REJECTS (E17) a spec that names them in
         neither journey field") — a target-only journey's E13 text is unchanged and still offers the
         target drop.
@@ -6206,6 +6208,19 @@ Four root causes: governors read proxies instead of facts (HARD-1..3); ownership
 
         Exactly one automatic re-plan in every cell (`decomposer=2`), and `spec_obligation_pinned`
         fires at most once per iteration. The obligation file exists under `iter-0/` only.
+        *Second RED/GREEN — a FAILED obligation write (`probes/b3_write_fail.sh`, owner-directed
+        probe, `logs/b3-writefail-RED-cba6b2f.out` vs `logs/b3-writefail-GREEN.out`).* The first
+        revision-10 commit `cba6b2f` hardened the READ of `spec-obligations.json` but left the WRITE
+        wrapped in `2>/dev/null || true`, so a failed persist was byte-for-byte indistinguishable from
+        "nothing to pin". Injecting a directory at `spec-obligations.json.tmp` (so `open(tmp,"w")`
+        raises) reproduced a **fail-open**: the engine decided to pin J-04, could not record it, said
+        nothing, re-planned anyway, and `developer=1 / AWAITING_PUMP` — the B3 dodge restored by a
+        disk error, with attempt 2 linting completely clean and no `spec_obligation_*` telemetry at
+        all. Fixed by making the recorder report a failed persist (exit 9, ids + exception on stdout)
+        and the engine fail closed on ANY non-zero exit: `GATE_BLOCKED`, `decomposer=1` (**the re-plan
+        never runs**), developer 0, browser 0, `spec_obligation_unrecorded`, and an operator line
+        naming the journey, the path and the exact OS error. The control (write succeeds) is
+        unchanged. Regression: E14l/E14m.
         *Suite coverage (durable):* `test-side-effects.sh` gains L26–L26l (lint level: the named-set
         report, a target-only journey NOT pinned, the fix text, the dodge clean without the set and
         rejected with it, the `obligations` block, both permitted moves, the unrelated journey, the
@@ -6213,8 +6228,9 @@ Four root causes: governors read proxies instead of facts (HARD-1..3); ownership
         zero dispatch, the artifact + both telemetry events, the two legitimate shapes dispatching,
         resume, a planted obligation enforced by a run that re-planned nothing, a planted obligation
         belonging to **another iteration** ignored, no obligation recorded when the finding named
-        no Required journey, an UNREADABLE and an EMPTY obligation file each failing CLOSED, and an
-        absent one dispatching normally). Six `iter_spec` self-test fixtures pin E17 itself.
+        no Required journey, an UNREADABLE and an EMPTY obligation file each failing CLOSED, an
+        absent one dispatching normally, and a FAILED WRITE halting before the re-plan). Six
+        `iter_spec` self-test fixtures pin E17 itself.
         *Cross-iteration scoping is proven two ways* — E14g plants an obligation under `iter-1` of a
         fresh session and iteration 0 dispatches untouched, while E14f plants one under `iter-0` and
         it blocks. A two-iteration engine run was NOT performed (the stub cannot complete an
@@ -6282,11 +6298,11 @@ Four root causes: governors read proxies instead of facts (HARD-1..3); ownership
         stays restrictive and an ambiguous `none` is never trusted. No B1/B2 code was edited in
         revision 10.
       - **Verification (this session, sequential, no paid API, no real browser, no G9).**
-        `test-side-effects.sh` **346/0** (321 → 346: +25 assertions — L26×12, E14×11, D32×2); the same
-        suite run against the `5efb557` export gives **332 passed / 14 failed**, and the fourteen are
+        `test-side-effects.sh` **348/0** (321 → 348: +27 assertions — L26×12, E14×13, D32×2); the same
+        suite run against the `5efb557` export gives **332 passed / 16 failed**, and the sixteen are
         exactly the new B3/doc-pin assertions (L26, L26b, L26d, L26f, L26g, L26l, E14, E14b, E14e,
-        E14f, E14i, E14j, W1, W10) while every control (L26c/e/h/i/j/k, E14c/d/g/h/k, D32, D32b)
-        passes on BOTH trees — `logs/suite-side-effects-RED-on-5efb557.log`. `test-spec-lint.sh` 170/0;
+        E14f, E14i, E14j, E14l, E14m, W1, W10) while every control (L26c/e/h/i/j/k, E14c/d/g/h/k,
+        D32, D32b) passes on BOTH trees — `logs/suite-side-effects-RED-on-5efb557.log`. `test-spec-lint.sh` 170/0;
         `test-goal-checkpoints.sh` 11/0 with **bytecode writing ENABLED**; replay-lane 76/0,
         replay-lane-full 91/0, intent-checkpoint 23/0, browser-evidence-lifecycle 80/0,
         service-ownership 100/0, engine-lock 44/0; module self-tests `iter_spec` 61/61,

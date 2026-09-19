@@ -194,8 +194,11 @@
 #   a spec-obligations.json that exists but carries no readable journey list
 #   halts GATE_BLOCKED (detected_at_step spec-obligations) rather than dropping
 #   the obligation silently — deleting the file is the deliberate retirement.
-#   Telemetry: spec_obligation_pinned, spec_obligation_dropped,
-#   spec_obligation_unreadable.
+#   A record that cannot be WRITTEN halts the same way (the re-plan never runs):
+#   an obligation the engine decided on but could not persist would leave
+#   attempt 2 with no retention to enforce. Telemetry: spec_obligation_pinned,
+#   spec_obligation_dropped, spec_obligation_unreadable,
+#   spec_obligation_unrecorded.
 #
 # Quota waiting is owned below the engine: claude_with_quota_retry sleeps until
 # the quota resets and resumes the same agent (within CHAIN_CLAUDE_MAX_QUOTA_RETRIES),
@@ -3104,7 +3107,8 @@ print("e15" if any(isinstance(e, dict) and e.get("rule") == "E15" for e in errs)
         # rejects it. Union with whatever is already recorded, so a resumed
         # iteration never narrows its own obligation. No journey is added to any
         # dispatch by this: the set can only BLOCK a spec, never schedule a run.
-        _obl_new="$(python3 - "$_lint_json" "$SPEC_OBLIGATIONS" "$ITER_NAME" "$_spec_attempt" <<'PYOBL' 2>/dev/null || true
+        _obl_rc=0
+        _obl_new="$(python3 - "$_lint_json" "$SPEC_OBLIGATIONS" "$ITER_NAME" "$_spec_attempt" <<'PYOBL' 2>/dev/null
 import json, os, sys, time
 lint_json, out_path, iter_name, attempt = sys.argv[1:5]
 try:
@@ -3129,18 +3133,44 @@ if not named or journeys == sorted(set(prev)):
     sys.exit(0)
 # Atomic: a signal between the open and the flush must not leave a truncated
 # obligation behind (the reader fails CLOSED on one, which would halt a session).
+# A FAILED persist is reported (exit 9), never silent: an obligation that exists
+# but was not recorded would let the re-plan drop the journey with no E17 to stop
+# it — the exact dodge this rule forbids.
 tmp = out_path + ".tmp"
-with open(tmp, "w", encoding="utf-8") as fh:
-    json.dump({"iter_name": iter_name, "attempt": int(attempt),
-               "recorded_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-               "rule_ids": sorted(set(prev_rules) | set(rules)),
-               "journeys": journeys}, fh, sort_keys=True, indent=2)
-    fh.flush()
-    os.fsync(fh.fileno())
-os.replace(tmp, out_path)
+try:
+    with open(tmp, "w", encoding="utf-8") as fh:
+        json.dump({"iter_name": iter_name, "attempt": int(attempt),
+                   "recorded_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                   "rule_ids": sorted(set(prev_rules) | set(rules)),
+                   "journeys": journeys}, fh, sort_keys=True, indent=2)
+        fh.flush()
+        os.fsync(fh.fileno())
+    os.replace(tmp, out_path)
+except Exception as exc:
+    print("%s\t%s: %s" % (",".join(journeys), type(exc).__name__, exc))
+    sys.exit(9)
 print(",".join(journeys))
 PYOBL
-)"
+)" || _obl_rc=$?
+        # Fail closed on ANY non-zero exit: either the record could not be
+        # persisted (exit 9, the ids and the cause are on stdout) or the recorder
+        # itself broke, and then we cannot know whether an obligation exists.
+        # Nothing has been re-planned or dispatched at this point.
+        if [[ "$_obl_rc" -ne 0 ]]; then
+          _obl_ids="${_obl_new%%$'\t'*}"
+          _obl_why="${_obl_new#*$'\t'}"
+          [[ "$_obl_why" == "$_obl_new" ]] && _obl_why="the obligation recorder exited $_obl_rc"
+          echo "[run-goal] HARD-3 B3: this iteration's rejected spec pins ${_obl_ids:-a Required-still-passing journey} as a verification obligation, but it could NOT be recorded in ${SPEC_OBLIGATIONS#"$REPO_ROOT"/} ($_obl_why) — halting BEFORE the re-plan rather than re-planning with no retention to enforce (an unrecorded obligation is exactly the dodge E17 exists to stop)." >&2
+          echo "[run-goal]   Make that path writable (a stale '${SPEC_OBLIGATIONS##*/}.tmp' of the wrong type, a full or read-only filesystem), then:  /goal-resume $SESSION_ID" >&2
+          record_telemetry_event "spec_obligation_unrecorded" "$(jq -cn --arg n "$ITER_NAME" --arg a "$_spec_attempt" \
+            --arg j "$_obl_ids" --arg e "$_obl_why" --arg rc "$_obl_rc" \
+            '{iter_name:$n, attempt:($a|tonumber), journeys:($j|split(",")), error:$e, rc:($rc|tonumber)}' \
+            2>/dev/null || printf '{"iter_name":"%s","journeys":"%s"}' "$ITER_NAME" "$_obl_ids")" || true
+          record_telemetry_event "halt" '{"reason":"GATE_BLOCKED_SPEC_LINT","detected_at_step":"spec-obligations"}'
+          write_session_summary "GATE_BLOCKED" "$CURRENT_ITER"
+          explain_goal_status "GATE_BLOCKED" "$SESSION_ID" "$REPO_ROOT" >&2
+          exit 0
+        fi
         if [[ -n "$_obl_new" ]]; then
           echo "[run-goal] HARD-3 B3: $_obl_new named by the rejected finding as Required-still-passing — the obligation is carried into the re-plan (recorded in ${SPEC_OBLIGATIONS#"$REPO_ROOT"/}); a spec that names it in neither journey field is rejected (E17)." >&2
           record_telemetry_event "spec_obligation_pinned" "$(jq -cn --arg n "$ITER_NAME" --arg a "$_spec_attempt" \
