@@ -5543,7 +5543,15 @@ Four root causes: governors read proxies instead of facts (HARD-1..3); ownership
   `CHAIN_SIDE_EFFECT_PREFLIGHT=false`, `CHAIN_SIDE_EFFECT_OBSERVER=false`.
 - **Stop-and-ask:** the `_normalize_block` hash exclusion (certification path) needs reviewer
   sign-off; an E13 re-plan that flips `none`→`allowed` without E16 blocking is a framework bug.
-- **AS BUILT 2026-09-16 (branch `hard-3-side-effect-preflight`; NOT merged; G8 + G9 owed).**
+  - **Reviewer sign-off on the certification path: GIVEN at `a9d91b1` (2026-09-19).** The first
+    independent G8 withheld it over B2 ("it becomes a PASS once B2 is fixed"); the final
+    independent G8 verified the fix — an orphaned declaration can no longer leave both the hash and
+    the digest, editing one is drift, a normal attributed declaration stays journey-hash-neutral
+    while moving the digest, and 192 real goal documents across six repositories show zero hash
+    movement. The second clause was re-verified too: E16 is policy-independent, so a `none`→`allowed`
+    flip never bypasses it (8/8 engine cases, all three policies).
+- **AS BUILT 2026-09-16 (branch `hard-3-side-effect-preflight`; NOT merged; independent G8 PASS
+  2026-09-19 at `a9d91b1`; G9, vendored product sync and a green CI on the merge revision owed).**
   - *Model:* `lib/goal_gate.py side-effects` builds `iter-<N>/side-effects.json` before every
     decomposer dispatch (status `mutating` = declared OR observed; `none` = declared none and never
     observed; else `unknown`), records `declaration_digest`/`declaration_digest_prev` in the
