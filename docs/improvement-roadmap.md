@@ -6387,7 +6387,7 @@ Four root causes: governors read proxies instead of facts (HARD-1..3); ownership
     so none is assumed. Evidence:
     `~/.cache/iad/cert-hard3-g8final-20260919/g9-rehearsal/REHEARSAL.md`.
     - *Scenario, taken from the plan rather than invented:* the TenSteps iteration-9 incident that
-      motivated HARD-3 — product `/home/dennis-chan/Git/tensteps`, its real unmodified
+      motivated HARD-3 — product `~/Git/tensteps`, its real unmodified
       `docs/goal.md` and real `docs/phases/goal-policy-state-core-v1-iter-9.md`, whose J-04 really
       does `POST /api/provider/assess` and `POST /api/provider/admit`.
     - *Baseline (today's real state):* ledger complete, J-01…J-05 all `unknown`/`undeclared`; the
@@ -6402,7 +6402,7 @@ Four root causes: governors read proxies instead of facts (HARD-1..3); ownership
       lane OBSERVING the mutation itself (here it was seeded), the observation landing durably in
       the sidecar plus an archived per-run record, no TC failing on the journey's own intended
       mutation, and a valid end-to-end Goal Mode result.
-    - **Hard prerequisite found:** a G9 run inside `/home/dennis-chan/Git/tensteps` would not
+    - **Hard prerequisite found:** a G9 run inside `~/Git/tensteps` would not
       exercise the certified code at all — its vendored `run-goal.sh` has zero side-effect
       references. G9 needs either (a) merge → sync tensteps from `main` → run there, or (b) a
       dedicated combined checkout (the pattern already used by
