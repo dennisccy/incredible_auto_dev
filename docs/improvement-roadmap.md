@@ -6415,7 +6415,10 @@ Four root causes: governors read proxies instead of facts (HARD-1..3); ownership
       **$19.53 of the $20 ceiling**: goal-decomposer $6.2321, browser-qa-agent $8.0978,
       developer $3.6030, reviewer $1.5992 (all claude-sonnet-5, 4 calls). The packet's
       "low single-digit dollars per iteration" was off by roughly an order of magnitude. A run
-      that reaches a replay-observed mutation needs ≥2 iterations, i.e. **≥$40** on this evidence.
+      that reaches a replay-observed mutation needs more than one iteration. *(The "≥$40"
+      figure first recorded here is SUPERSEDED — see "G9 sequencing + budget resolution
+      (2026-09-20)" below: the iteration count is not a fixed number, and $40 was never an
+      enforceable ceiling.)*
     - **Budget-guard defect, found in flight.** The guard read `total_cost_usd`; the analyzer
       reports `gen_ai.usage.total_cost_usd`, so it showed $0 against a real $6.23 for ~35 min and
       would never have fired. Fixed mid-run. Even fixed, it is structurally blind between
@@ -6427,7 +6430,11 @@ Four root causes: governors read proxies instead of facts (HARD-1..3); ownership
       portion is UNMEASURED. True total is somewhat above $19.53 and may have reached the $20 cap.
     - *Setup gap affecting evidence quality:* the clone omitted the untracked 3.5G `data/`, so the
       developer reported "all 58 failing or erroring test cases trace to the empty bars store,
-      none to code". A real acceptance run must carry the data store.
+      none to code". **CORRECTED 2026-09-20: a real acceptance run does NOT need the data store for
+      J-04.** The store matters only for the product's own broader test suite. J-04's full golden
+      replay — both POSTs, every assertion — passes real Chromium against a staging backend built
+      with **no `data/` at all** (`~/.cache/iad/cert-hard3-g9golden-20260920/`), which also confirms
+      the independent finding recorded below.
     - *Consequence:* the owner's merge authorisation was conditional on G9 PASSING, so it is **not
       triggered** — PR #14 stays open and unmerged, the product sync (which follows the merge)
       stays blocked, and HARD-3 stays IN-PROGRESS.
@@ -6445,7 +6452,9 @@ Four root causes: governors read proxies instead of facts (HARD-1..3); ownership
       `claude --max-budget-usd`. Every agent also runs at `--effort max`. Polling a post-hoc total
       cannot bound an in-flight dispatch — spend jumped $11.43→$19.53 in one 20s interval because a
       dispatch's cost only materialises at completion. **Use the native cap as the primary control.**
-    - **Strategy A (reuse an existing golden) is INVALID.** The only chapter-3 J-04 golden
+    - **Strategy A (reuse an existing golden) — the 2026-09-19 golden was INVALID; a CORRECTED
+      golden now exists and passes real verification (2026-09-20). Owner admissibility approval is
+      still outstanding — see "J-04 golden" below.** The only chapter-3 J-04 golden
       (`goal-session-provider-seams-v1/journey-scripts/J-04.json`, 2026-09-09) lints clean and is
       framework-compatible, but is **product-stale**: replaying its own recorded bodies against the
       current backend returns `400 invalid_book_document` — `risk_at_entry.amount` must now be a
@@ -6457,17 +6466,107 @@ Four root causes: governors read proxies instead of facts (HARD-1..3); ownership
       `mutating` → per-run record (`mutating_count: 2`) → engine-owned sidecar → ledger
       `mutating|observed` → preflight **E16**; the control without the observation raises only W10,
       and read-only GETs are correctly excluded. The wiring is sound; only a CURRENT golden is missing.
+      *(SUPERSEDED 2026-09-20 in the stronger direction: the same lifecycle is now proven 13/13 with a
+      CURRENT golden and REAL Chromium against a live backend, not a fake Playwright — see below.)*
     - **`data/` is NOT required for J-04.** `POST /api/provider/assess` with a current-shaped body
       returns `200 ALL_ADMISSIBLE` with full `provider_facts` and an `output_hash` on a checkout with
       no data store. The first run's 58 failures split into product contract-drift (`400
       malformed_request … missing risk_inputs.per_trade_risk_pct` — the product's own tests are stale
       too) and genuinely data-dependent (`UNEVALUABLE`); **neither class blocks J-04's G9 path**.
-    - **Minimum valid scenario is 2 goal-mode iterations**, not 1: goldens are written by the
-      browser-qa LLM dispatch, and the SPEED-23 nudge that makes one MANDATORY only fires when the
-      journey is in the Required-still-passing LLM set AND listed in `state/golden-gaps` (written by
-      `replay_lane_golden_coverage` from the PREVIOUS run's PASS rows). Iteration 0 records the
-      golden; iteration 1 replays it. SPEED-21 auto-derivation cannot shortcut this — it derives from
-      an already-recorded demo script, and every existing demo script is as stale as the golden.
+    - **The iteration count is NOT a fixed number — it depends on when a valid golden reaches disk.**
+      *(This entry replaces the earlier "minimum valid scenario is 2 goal-mode iterations" claim,
+      which was disproven on 2026-09-20; no other fixed count is substituted for it.)* What IS
+      verified, by source inspection plus offline probes at `bf29bd0`
+      (`~/.cache/iad/cert-hard3-g9seq-20260920/`, probe 13/13 + `test-golden-autoderive.sh` 22/22):
+      - `state/golden-gaps` has exactly ONE writer, `replay_lane_golden_coverage`
+        (`replay-lane.sh:869`), which runs at the END of a browser-qa dispatch. The real
+        `goal-session-hard3-g9` artifacts confirm it: `golden-gaps` **absent**, `journey-scripts/`
+        **empty**, sidecar `journeys` **{}**.
+      - Within ONE dispatch the order is `partition_and_verify` → `golden_nudge_pick` →
+        `golden_coverage` (`browser-qa-phase.sh` 306/334/517; `goal-iter-lean.sh` 400/879/989), so a
+        golden authored during dispatch N is replayed in **N+1**, never N.
+      - A baseline iteration writes `Required-still-passing journeys: none` (the real iter-0 spec
+        did), and with `_use_replay=no` the nudge's LLM set IS `REQUIRED_JOURNEYS`
+        (`replay-lane.sh:671`) — empty. So the SPEED-23 nudge **cannot fire at baseline** for two
+        independent reasons, and it is prompt text only: no engine gate gates on it, and
+        `replay_lane_golden_coverage` is explicitly "loud but non-gating".
+      - The nudge rotation is `min(count, id)` — lowest ID first — so with gaps {J-01…J-05} J-04 is
+        the FOURTH journey nudged.
+      - SPEED-21 auto-derivation cannot shortcut it (it derives from an already-recorded demo script)
+        **and cannot produce an observation either**: its verify pass carries no `--side-effects-*`
+        flags. The observer rides ONLY `_replay_lane_verify_once` (`replay-lane.sh:195`).
+      - **E16 reads only the pre-decomposer `preflight` ledger.** The `pre-evaluator` refresh
+        (`run-goal.sh:3864`) feeds the evaluator prompt and re-runs NO lint — "the preflight view
+        stays in spec-lint.json". An observation recorded in iteration K therefore reaches K's
+        evaluator but fires E16 only at **K+1's preflight**.
+    - **J-04 golden — corrected, REAL-Chromium verified, admissibility PENDING OWNER APPROVAL
+      (2026-09-20).** Evidence `~/.cache/iad/cert-hard3-g9golden-20260920/` (`REPORT.md`,
+      `golden/J-04.json`, `provenance/PROVENANCE.txt`, probes, logs, screenshots). Offline, no paid
+      agent, no engine run, no code change; the four certified files were byte-identical to
+      `a9d91b1` throughout.
+      - *Provenance.* Source is the genuine browser-QA artifact
+        `goal-session-provider-seams-v1/journey-scripts/J-04.json` (sha256 `101677538a12278d…`),
+        whose `name` matches the current `docs/goal.md` J-04. J-04 has **no product UI**, so its only
+        browser surface is FastAPI's Swagger `/docs` — which is what browser-QA itself used.
+      - *The only change is the one the product's own 400 dictated:* `positions[].risk_at_entry`
+        flattened `{amount,currency,pct}` → frozen-schema `{amount:{amount,currency},pct}` (product
+        commits `58505c0`/`ec7e3b4`). **3 fields, 2 of 13 steps, `action.text` only, ZERO expects
+        changed** (new sha256 `0c23463d3a6512b4…`).
+      - *The assertions were never stale.* All four original expectations hold unchanged against the
+        current product, including assess `output_hash 56582f5d…67228` byte-identical to the stale
+        golden's, and `provider_facts` matching `goal.md` J-04 step 2 field for field. Nothing was
+        re-fitted.
+      - *Discriminating RED/GREEN, real Chromium, isolated staging backend (port 8928, no `data/`):*
+
+        | run | rc | verdict |
+        |---|---|---|
+        | verify, corrected golden | **0** | **PASS** — all expects held |
+        | verify, stale golden (control) | **5** | **FAIL** — `step 05 expected "status": "ALL_ADMISSIBLE" did not appear` |
+        | lint, BOTH goldens | 0 | both `ok` — lint is structural and **cannot** detect staleness |
+
+      - *Lifecycle through the real `replay-lane.sh`: 13/13.* Partitioner routed J-04 to the replay
+        lane (`R_REPLAY='J-04'`, `_use_replay=yes`, `R_LLM=''`); both POSTs classified `mutating`,
+        `mutating_count: 2`, `complete: true`; per-run record + durable sidecar; a second replay
+        ARCHIVED the prior record rather than deleting it. Downstream from that REAL sidecar: ledger
+        J-04 `mutating` / `observation_basis: recorded` / **`declared: null`**; spec lint of the
+        unmodified real iter-9 spec → **rc 1, ERROR E16 ×3**.
+      - *Session prerequisites to consume it:* golden in `runs/goal-session-<sid>/journey-scripts/`;
+        **J-04 listed in the spec's `Required-still-passing journeys:` line** (the partitioner
+        iterates only that list); **`base_url` must serve `/docs`** — the Next.js frontend has no
+        `/docs` route or rewrite and `normalize_url` rebases local absolute URLs, so the session must
+        set `CHAIN_FRONTEND_URL=http://localhost:<backend-port>` (`browser-qa-phase.sh:198`);
+        `FRONTEND_AVAILABLE=yes`; `CHAIN_REGRESSION_REPLAY` and `CHAIN_SIDE_EFFECT_OBSERVER` not off.
+    - **A pre-installed golden is an INPUT; it is NOT a seeded observation. The two are different and
+      only one is forbidden.**
+      - *Seeded observation — FORBIDDEN.* This is what criterion 1's "(here it was seeded)" names:
+        the 2026-09-19 rehearsal hand-wrote `g9-rehearsal/sidecar.json` asserting J-04's two POSTs
+        ("**Seeded sidecar**" in `REHEARSAL.md`'s own words). **No pre-seeded sidecar, ledger or
+        per-run record is acceptable in G9, under any circumstances.**
+      - *Golden script — an input.* Structurally it CANNOT fabricate a request: `_do_action`
+        (`demo_runner.py:1644`) accepts only `goto | wait_for | click | fill | expect`; there is no
+        request primitive. Every mutating request observed during a replay is emitted by the
+        **application** reacting to UI input.
+      - *Therefore the observer must still record real requests during the G9 session itself.* A
+        pre-installed golden shortens the path to a replay; it does not and cannot supply the
+        observation, which criterion 1 still requires the replay lane to make for itself.
+      - **Status: technically verified, NOT yet admissible.** Whether a pre-installed golden is an
+        acceptable G9 input is an OWNER decision that has **not** been given. Two points a ruling
+        must settle: (i) the "Strategy A … is INVALID" sentence above is unqualified, though its
+        stated reason — staleness producing a false observation — is the defect now repaired; and
+        (ii) in production the golden is authored by browser-QA inside the session, so pre-installing
+        leaves criterion 5's "end-to-end" covering the observer→ledger→preflight loop but not golden
+        authorship. No approval is assumed or implied by this entry.
+    - **G9 remains NOT READY — the binding blocker is budget control, not the golden.** Verified at
+      `bf29bd0`: `max_budget_usd` is declared by **0 of 19** agents, so no per-dispatch cap is in
+      force; `agent_permissions.py budget` returns empty for every G9 agent. `--max-budget-usd`
+      "only works with `--print`" (the interactive `/goal` pump path is uncovered) and binds **per
+      `claude -p` invocation**, not per run — exposure is cap × dispatches × retries (spec-lint
+      `for _spec_attempt in 1 2`; `CHAIN_CLAUDE_MAX_QUOTA_RETRIES=3`; full-depth `MAX_RETRIES=3`
+      twice). There is **no run-level dollar cap anywhere**: `--max-iter` counts iterations,
+      `BUDGET_EXHAUSTED` means "max iterations reached", `iter_budget_*` is wall-clock. Overshoot is
+      **unverified** and cannot be verified offline — a cap is only checkable between API calls, so
+      the floor on overshoot is one in-flight turn. **A guaranteed $40 ceiling cannot be claimed, and
+      no spend authorisation should be requested, until an enforcement boundary is defensible.**
     - An isolation preflight now exists (`probes/g9_isolation_preflight.sh`) gating ports,
       **application identity** (the exact wrong-app failure that nearly bit the first run), engine
       capacity read live, and byte-equality of the four certified files. Verified discriminating.
