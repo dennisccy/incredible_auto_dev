@@ -5525,9 +5525,45 @@ Four root causes: governors read proxies instead of facts (HARD-1..3); ownership
   that decision on 2026-09-18 and revision 10 ENFORCES it (B3 / E17), and disposes of the two
   findings the post-revision-9 re-examination raised (F1 documentation-only, F2 no fail-open).
   **The independent G8 of the revision-10b commit `a9d91b1` returned PASS on 2026-09-19** (see the
-  certification block below). HARD-3 stays IN-PROGRESS: G8 is one of four acceptance gates, and the
-  G9-gated real session, the vendored product sync and a green GitHub CI on the merge revision are
-  all still open. **G8 PASS alone does not make this DONE.**
+  certification block below).
+- **OWNER DECISION 2026-09-21 — G9 is WAIVED for this release, NOT passed.** The owner, as owner,
+  superseded the earlier requirement that G9 must PASS before HARD-3 can merge. **G9 is no longer a
+  mandatory delivery gate.** What this does and does not mean:
+  - **Preserved:** the independent **G8 PASS at `a9d91b1`**; the corrected J-04 golden and its
+    **real-Chromium** verification; and the offline integration evidence
+    (`~/.cache/iad/cert-hard3-g9golden-20260920/`: scheduling proof 11/11, budget unit 46/46,
+    integration 16/16, CLI budget facts 24/24).
+  - **NOT achieved:** a full end-to-end G9 real session. Of its five acceptance criteria, **none was
+    obtained from a live Goal Mode run.** The 2026-09-21 attempt spent $2.9949 recorded (plus an
+    unreported, genuinely uncertain developer portion) and was stopped before any replay, because the
+    iteration-13 decomposer wrote `Required-still-passing: none` — correct under its contract on an
+    achieved session, but it makes a J-04 replay unreachable.
+  - **Residual integration risk, stated honestly.** The side-effect observer → sidecar → ledger →
+    preflight-E16 chain has been proven **offline** against real product artifacts, a real browser and
+    the certified code, but **never inside a live Goal Mode session**. So what remains unverified is
+    specifically the *engine integration*: that a real iteration schedules the replay, that the
+    observation survives the engine's own iteration lifecycle, and that a subsequent preflight
+    consumes it in-run. Classification accuracy, observer correctness and durability are evidenced;
+    in-engine scheduling and lifecycle are not. The blast radius is bounded by the fact that **no
+    product declares a `- Side effects:` line today**, so E13–E16 cannot fire in any product until one
+    does.
+  - **Follow-up:** tracked as the named non-blocking item **`HARD-3-G9`** (below), not as a blocker.
+  HARD-3's remaining mandatory delivery gates are the merge of PR #14 at CI baseline parity and the
+  complete vendored product sync.
+- **`HARD-3-G9` (named non-blocking follow-up, opened 2026-09-21 by owner waiver).** Run the
+  end-to-end G9 real session when a legitimate starting state exists. The blocker is *scheduling*,
+  not the feature: the replay partitioner reads only a spec's `Required-still-passing` line, and that
+  line is decomposer-authored per iteration. Established offline 2026-09-21
+  (`G9-SCHEDULING-DECISION.md`): every tensteps session is GOAL_ACHIEVED with all five journeys
+  passing; a baseline writes `none`; `CHAIN_BQA_MAKEUP_JOURNEYS` is derived strictly from
+  `journey-history[j].pending_infra` and is unset otherwise, so it cannot be driven from the
+  environment; spec-reuse-on-resume works but the only reusable spec says `none`; and rewinding to
+  the authentic iter-9/11/12 specs (which DO list J-04) would assert those iterations never happened.
+  So G9 needs genuine pending work on the provider seam. **Trap for whoever picks this up:** declaring
+  J-04 `- Side effects: mutating` in the product goal makes the ledger classify it `source=declared`,
+  so E16 fires with no observation at all — defeating the criteria whose point is an *observed*
+  mutation. Do not start G9 until the starting state is decided.
+
 - **Problem:** a confirm-only spec forbade "new run / ledger write" while target J-04's own
   step 1 launches a run (TenSteps iter-9); nothing structural represents mutations.
 - **Change spec:** goal.md optional per-journey line (journey-hash-neutral; separate
