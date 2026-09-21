@@ -1265,23 +1265,28 @@ grep -q '_review_not_dispatched' "$ENGINE_ROOT/scripts/automation/goal-iter-lean
 grep -q 'def has_bullet' "$ENGINE_ROOT/scripts/automation/lib/common.sh" \
   && assert "R4: goal_new_fullstack_journey's parser was NOT migrated (no gratuitous consolidation)" "pass" \
   || assert "R4: goal_new_fullstack_journey untouched" "fail"
-# Reserved-id bookkeeping comments naming HARD-3 are expected; an actual
-# implementation (a knob, a ledger path, a digest) is not.
-if grep -hE 'side_effect|side-effects\.json|CHAIN_SIDE_EFFECT|declaration_digest|Side-effect policy' \
-     "$PROBE" "$RG" "$ENGINE_ROOT/scripts/automation/lib/artifact_schemas.py" 2>/dev/null \
-   | grep -vqiE 'reserved|hard-3'; then
-  assert "R5: no HARD-3 side-effect implementation leaked into HARD-2" "fail"
-else
-  assert "R5: no HARD-3 side-effect implementation leaked into HARD-2" "pass"
-fi
+# HARD-3 has landed on top of this governor (its own suite is
+# tests/automation/test-side-effects.sh). What HARD-2 must still guarantee: the
+# ids it reserved were used as reserved (no renumbering of HARD-2's rules), and
+# a spec linted WITHOUT a side-effect ledger gets none of the ledger rules — the
+# standalone HARD-2 lint behaves exactly as before apart from the policy field.
+[[ -f "$ENGINE_ROOT/tests/automation/test-side-effects.sh" ]] \
+  && grep -q 'side_effect_findings' "$PROBE" \
+  && assert "R5: the side-effect preflight lives in HARD-3's module code, covered by test-side-effects.sh" "pass" \
+  || assert "R5: HARD-3 side-effect preflight present with its own suite" "fail"
 python3 -c "
 import sys; sys.path.insert(0,'$ENGINE_ROOT/scripts/automation/lib')
-import iter_spec
-assert 'E06' not in iter_spec._RULE_TEXT, 'E06 is reserved for HARD-3'
-assert 'W02' not in iter_spec._RULE_TEXT, 'W02 is reserved for HARD-3'
+import iter_spec as I
+R = I._RULE_TEXT
+assert R['E06'] == 'policy-invalid' and R['W02'] == 'policy-missing', 'HARD-3 took the reserved ids'
+assert R['E07'] == 'evidence-with-implementation' and R['E12'] == 'metadata-field-conflict', 'HARD-2 ids unchanged'
+res = I.lint_spec(open('$SPECS/lean.md').read())
+got = {f['rule'] for f in res['errors'] + res['warnings']}
+assert not got & {'E13', 'E14', 'E15', 'E16', 'W09', 'W10', 'W11'}, got
+assert res['side_effects'] is None
 " 2>/dev/null \
-  && assert "R6: rule ids E06/W02 stay RESERVED for HARD-3's side-effect policy" "pass" \
-  || assert "R6: E06/W02 reserved for HARD-3" "fail"
+  && assert "R6: E06/W02 were filled as reserved; without a ledger no side-effect contradiction rule runs" "pass" \
+  || assert "R6: reserved ids used as reserved / ledger rules gated on the ledger" "fail"
 
 echo ""
 echo "=== Results: $PASS passed, $FAIL failed ==="

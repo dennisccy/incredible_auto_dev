@@ -31,6 +31,43 @@ are quality signals:
                              word pair) but the Product Shape section is
                              absent or has no concrete content (an explicit
                              "none" counts as concrete)
+    ERROR side-effects-invalid  (HARD-3) a journey's optional
+                             `- Side effects: none | mutating — <note>` line
+                             is malformed: another value (there is no
+                             `read-only`), a wrong label, a missing dash
+                             before the note, or more than one line — or the
+                             id is ambiguous: a header with its id, or its
+                             `mutating` line, sits inside what the parser
+                             reads as a code fence. The engine reads it as
+                             `unknown` (a clearly stated `mutating` still
+                             counts as mutating).
+    WARN  side-effects-undeclared  (HARD-3) a journey with no `Side effects:`
+                             line whose numbered steps name a state-changing
+                             action (create/submit/save/delete/run/launch/
+                             upload/edit/update/post; code spans ignored) —
+                             it stays `unknown` to the spec preflight.
+                             `goal_gate.py side-effects docs/goal.md --suggest`
+                             prints paste-ready lines.
+    WARN  side-effects-unattributed  (HARD-3) a journey id the drift gate sees
+                             but the side-effect parser cannot attribute: its
+                             only header sits inside a code fence (an example,
+                             or a stray fence shifted the reading), or it is
+                             only mentioned inside other journeys. The
+                             preflight honours only a stated `mutating` for it
+                             (`none` never counts). The message reports what
+                             was actually found for that journey — an owner
+                             declaration, a value recovered from text the
+                             parser cannot attribute, or nothing at all.
+    ERROR side-effects-orphaned  (HARD-3 rev 9) a `Side effects:` line that no
+                             journey DEFINITION covers — a stray fence or a
+                             flat-style item put it outside the journey's own
+                             list item. Inside a journey's certified block it
+                             counts only as a stated value (a `mutating` does,
+                             a `none` never does) and stays in that journey's
+                             spec_hash, so editing it reads as goal drift;
+                             outside every journey block it belongs to no
+                             journey and the side-effect ledger fails closed
+                             on it (E15 under `Side-effect policy: none`).
 
 Exit codes: 0 clean, 1 warnings only, 2 structural errors (including
 unreadable file). Output: one line per finding + a summary; silent when
@@ -47,7 +84,8 @@ import sys
 from collections import namedtuple
 from pathlib import Path
 
-from goal_gate import _journey_blocks
+from goal_gate import (_journey_blocks, attribution_problem, declaration_attribution, journey_step_hints,
+                       parse_side_effect_declarations, side_effect_journey_views)
 
 Finding = namedtuple("Finding", "severity rule line message")  # line: int|None
 
@@ -147,6 +185,32 @@ def _acceptance_bigrams(block: str) -> set[str]:
     return grams
 
 
+def _engine_reading(d: dict) -> str:
+    """How the side-effect ledger reads a declaration (observations aside)."""
+    if d.get("declared") == "mutating" or "mutating" in (d.get("stated_values") or []):
+        return "mutating"
+    if d.get("declared") == "none" and d.get("valid") and not d.get("ambiguous") and not d.get("orphaned"):
+        return "none"
+    return "unknown"
+
+
+def _reading_basis(d: dict) -> str:
+    """WHY the preflight reads a journey that way — an owner declaration, a
+    value recovered from text the parser cannot attribute, or nothing at all.
+    Observations live in the ledger, not in goal.md, so this text never claims
+    one; it says only what this document states."""
+    stated = d.get("stated_values") or []
+    unread = d.get("unattributed") or d.get("ambiguous") or d.get("orphaned")
+    if d.get("declared") and not unread:
+        return f"its own '- Side effects: {d['declared']}' line"
+    if "mutating" in stated:
+        return "a 'mutating' value recovered from a line the parser cannot attribute to it"
+    if stated:
+        return (f"no declaration it can attribute — the only stated value ({', '.join(stated)}) sits in a line it "
+                "cannot attribute, and a stated 'none' never counts")
+    return "no 'Side effects:' line it can attribute to this journey"
+
+
 def lint_text(text: str) -> list[Finding]:
     findings: list[Finding] = []
     lines = _stripped_lines(text)
@@ -239,6 +303,73 @@ def lint_text(text: str) -> list[Finding]:
                     f'anti-goal "{body}" has no checkable condition — phrase it as a '
                     "veto rule (prohibition or measurable bound)",
                 ))
+
+    # side-effects-invalid (ERROR) / side-effects-undeclared (WARN) — HARD-3.
+    # The declaration parser and the step heuristic are goal_gate's (one source).
+    decls = parse_side_effect_declarations(text)
+    reported: set[str] = set()
+    for view in side_effect_journey_views(text):
+        jid, start = view["jid"], view["start"]
+        d = decls.get(jid)
+        if d is None or jid in reported:
+            continue
+        block_line0 = text.count("\n", 0, start) + 1
+        if not d["valid"]:
+            reported.add(jid)
+            first = d["lines"][0]["index"] if d["lines"] else 0
+            findings.append(Finding(
+                "ERROR", "side-effects-invalid", block_line0 + first,
+                f"journey {jid}: {'; '.join(d['errors'])} — the engine reads this journey as "
+                f"{_engine_reading(d)} (allowed: '- Side effects: none' or "
+                "'- Side effects: mutating — <what it creates or changes>')",
+            ))
+        elif not d["lines"]:
+            hints = journey_step_hints(view["own"], cap=1, fenced=view["fenced"])
+            if hints:
+                h = hints[0]
+                reported.add(jid)
+                findings.append(Finding(
+                    "WARN", "side-effects-undeclared", block_line0 + h["line"],
+                    f"journey {jid} step {h['n']} names a state-changing action "
+                    f"({', '.join(h['words'])}: '{h['text']}') but the journey has no 'Side effects:' "
+                    "line — add '- Side effects: mutating — <what it creates or changes>' (or "
+                    "'- Side effects: none — <why>'); until then the spec preflight treats it as unknown",
+                ))
+
+    for jid, d in decls.items():
+        if not d.get("unattributed") or jid in reported:
+            continue
+        reported.add(jid)
+        ln = next((_line_of(s) for j, s, _e in blocks if j == jid), None)
+        findings.append(Finding(
+            "WARN", "side-effects-unattributed", ln,
+            f"journey {jid}: {attribution_problem(d)} — the side-effect preflight reads it as "
+            f"{_engine_reading(d)}, from {_reading_basis(d)}",
+        ))
+
+    # side-effects-orphaned (ERROR) — HARD-3 rev 9 (B2): a declaration-shaped
+    # line no journey DEFINITION covers. It is never silently dropped: inside a
+    # certified block it stays in that journey's spec_hash and counts as a
+    # stated value; outside every block the side-effect ledger fails closed.
+    for o in declaration_attribution(text)["orphans"]:
+        line_text = " ".join(o["text"].split())
+        if o["jid"]:
+            d = decls.get(o["jid"]) or {}
+            findings.append(Finding(
+                "ERROR", "side-effects-orphaned", o["index"] + 1,
+                f"'{line_text}' sits in journey {o['jid']}'s block but inside no journey definition the "
+                f"side-effect parser can read, so it is not {o['jid']}'s declaration: it counts only as a stated "
+                f"value (the preflight reads {o['jid']} as {_engine_reading(d)}) and it stays in {o['jid']}'s "
+                "spec_hash, so editing it reads as goal drift — write it as a list item inside the journey's own "
+                "'- **J-NN: …**' item, and close any stray ``` / ~~~ line above it",
+            ))
+        else:
+            findings.append(Finding(
+                "ERROR", "side-effects-orphaned", o["index"] + 1,
+                f"'{line_text}' states a side effect outside every journey block, so it belongs to no journey and "
+                "no spec_hash covers it — the side-effect ledger reports it as an error and fails closed under "
+                "'Side-effect policy: none'; move it into the journey's '- **J-NN: …**' item, or delete it",
+            ))
 
     # product-shape-empty (WARN): >=2 journeys naming the same value/metric is
     # exactly the "same number differs across pages" risk the Product Shape
@@ -337,12 +468,14 @@ A local-first notes app for one user.
     1. Visit `/notes`
     2. Click "New note", type "Milk", press Enter
   - Acceptance: the notes list gains a row titled "Milk" and the unread count reads 1
+  - Side effects: mutating — adds a note row
 
 - **J-02: Archive a note**
   - Steps:
     1. Visit `/notes`
     2. Click the archive icon on the "Milk" row
   - Acceptance: the row moves to the Archive tab and the unread count reads 0
+  - Side effects: mutating — moves the row to the archive
 
 ## Anti-goals
 
@@ -492,6 +625,27 @@ def _self_test() -> int:
     assert _by_rule(lint_text(distinct), "product-shape-empty") == [], \
         "no shared value/metric phrase → empty shape is fine (section is optional)"
     # clean fixture already covers: shared phrase + concrete content → no warning
+
+    # 7b. HARD-3 side-effects rules
+    bad_decl = _CLEAN.replace("  - Side effects: mutating — adds a note row",
+                              "  - Side effects: read-only")
+    f = lint_text(bad_decl)
+    b = _by_rule(f, "side-effects-invalid")
+    assert len(b) == 1 and b[0].severity == "ERROR" and "J-01" in b[0].message, f
+    assert bad_decl.splitlines()[b[0].line - 1].strip() == "- Side effects: read-only", b[0].line
+    assert exit_code(f) == 2
+    undeclared = _CLEAN.replace("  - Side effects: mutating — adds a note row\n", "").replace(
+        '    2. Click "New note", type "Milk", press Enter', '    2. Click "New note", type "Milk", click Save')
+    f = lint_text(undeclared)
+    u = _by_rule(f, "side-effects-undeclared")
+    assert len(u) == 1 and u[0].severity == "WARN" and "J-01" in u[0].message and "step 2" in u[0].message, f
+    assert undeclared.splitlines()[u[0].line - 1].strip().startswith("2. Click"), u[0].line
+    quiet = _CLEAN.replace("  - Side effects: mutating — adds a note row\n", "")
+    assert _by_rule(lint_text(quiet), "side-effects-undeclared") == [], \
+        "steps that name no state-changing action are not flagged"
+    code_only = quiet.replace("    1. Visit `/notes`", "    1. Visit `/notes/run-log`")
+    assert _by_rule(lint_text(code_only), "side-effects-undeclared") == [], \
+        "words inside code spans are never scanned"
 
     # 8. file-level exit codes through run_lint
     with tempfile.TemporaryDirectory() as tmp:

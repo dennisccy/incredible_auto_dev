@@ -486,6 +486,7 @@ _bqa_fork_reap() {
   _bqa_kill_port_servers
   replay_lane_paths "$ITER_NAME"
   rm -f "$_BQA_STATE_FILE" "$_BQA_RC_FILE" "${REGRESSION_RESULTS:-}" "${CANARY_RESULTS:-}" 2>/dev/null || true
+  replay_side_effects_retire "${REPLAY_SIDE_EFFECTS_RUN:-}"   # HARD-3: archived, never deleted
   echo "[goal-iter-lean] Forked replay lane is dead and its lane files are discarded — safe to invalidate."
   return 0
 }
@@ -572,6 +573,7 @@ _bqa_full_fork_reap() {
   replay_lane_paths "$ITER_NAME"
   rm -f "$_BQA_FULL_RC_FILE" "$_BQA_FULL_PID_FILE" \
         "${REGRESSION_RESULTS:-}" "${LLM_RESULTS:-}" "${UI_TEST_RESULTS:-}" "${CANARY_RESULTS:-}" 2>/dev/null || true
+  replay_side_effects_retire "${REPLAY_SIDE_EFFECTS_RUN:-}"   # HARD-3: archived, never deleted
   record_telemetry_event "parallel_bqa_wasted_dispatch" "$(jq -cn --arg n "$ITER_NAME" \
       '{mode:"full", iter_name:$n,
         wasted:"one full browser-qa dispatch (LLM lane included) ran against the pre-fix tree and was discarded on the attempt-1 review FAIL",
@@ -733,6 +735,11 @@ fi
 run_browser_qa_llm() {
   local _journeys="$1" _out="$2" _exclude="$3"
   cd "$REPO_ROOT"
+  # HARD-3: the engine-built side-effect context (lib/replay-lane.sh). Empty
+  # when no context applies, and then the prompt below is byte-identical.
+  local _se_block _se_block_nl=""
+  _se_block="$(side_effects_prompt_block "${CHAIN_SIDE_EFFECTS_FILE:-}" "$SPEC")"
+  [[ -n "$_se_block" ]] && _se_block_nl=$'\n'"$_se_block"
   record_agent_invocation_start "browser-qa-agent"   # bare call: $(...) would lose the CHAIN_CURRENT_AGENT export to a subshell
   local _bqa_start=$CHAIN_AGENT_START_EPOCH
   local _rc=0
@@ -748,7 +755,7 @@ Skill: .claude/skills/browser-workflow-executor.md  <-- read for Chrome MCP tech
 GOAL-MODE LEAN MODE — test EXACTLY these journeys this run: ${_journeys:-(none)}
 $( [[ -n "${_exclude// /}" ]] && echo "Do NOT test these — a deterministic replay verifies them separately: $_exclude" )
   1. For each journey ID above, read its numbered steps + Acceptance line from the \"Must-have user journeys\" section of the goal file named above.
-  2. Execute the steps with Chrome MCP; use the journey ID as the test case ID (e.g. UT-J-01).
+  2. Execute the steps with Chrome MCP; use the journey ID as the test case ID (e.g. UT-J-01).${_se_block_nl}
 
 Frontend URL: $FRONTEND_URL
 Frontend available: $FRONTEND_AVAILABLE
