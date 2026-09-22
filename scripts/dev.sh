@@ -66,14 +66,30 @@ for PORT in $BACKEND_PORT $FRONTEND_PORT; do
     for p in $PIDS; do
       echo "    pid $p: $(tr '\0' ' ' < "/proc/$p/cmdline" 2>/dev/null | cut -c1-120)"
     done
+    # NO ownership stamp is required here: DEV_FORCE exists precisely to reclaim
+    # a port this stack does not own, and the operator has stated that intent
+    # for this invocation. So this cannot go through service_signal_tree — that
+    # helper demands the caller's verified ownership scope and refuses without
+    # one (by design, pinned by E2c), which silently turned this override into a
+    # no-op that always ended in "still held". The act is bound to what the
+    # operator authorised instead: capture the process identity, confirm that
+    # same pid still LISTENS on this port, then have proc_signal.py pin it
+    # (pidfd) and re-verify the identity before the first signal. A pid that
+    # exited and was recycled in between fails one of those checks and is not
+    # signalled.
+    _PS="$(dirname "$_SO_LIB")/proc_signal.py"
     for p in $PIDS; do
-      if command -v service_signal_tree >/dev/null 2>&1; then
-        # Identity is bound (a recycled pid cannot inherit this signal), but NO
-        # ownership stamp is required here: DEV_FORCE exists precisely to
-        # reclaim a port this stack does not own, and the operator has stated
-        # that intent for this invocation. Scope is overridden deliberately,
-        # not dropped by accident.
-        service_signal_tree "$p" 2 "$(service_pid_starttime "$p")" || true
+      if command -v service_pid_starttime >/dev/null 2>&1; then
+        _id="$(service_pid_starttime "$p")"
+        if [ -z "$_id" ] || ! service_listener_pids "$PORT" | grep -qx "$p"; then
+          echo "    pid $p is gone or no longer listens on :$PORT — not signalled"
+          continue
+        fi
+        if [ -f "$_PS" ] && command -v python3 >/dev/null 2>&1; then
+          python3 "$_PS" tree "$p" --grace 2 --identity "$_id" || true
+        elif [ "$(service_pid_starttime "$p")" = "$_id" ]; then
+          kill -TERM "$p" 2>/dev/null || true
+        fi
       else
         kill -TERM "$p" 2>/dev/null || true
       fi

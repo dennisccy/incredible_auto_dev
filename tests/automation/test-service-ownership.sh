@@ -621,7 +621,8 @@ DEVSBX="$WORK/devsbx"
 mkdir -p "$DEVSBX/scripts/automation/lib"
 cp "$ENGINE_ROOT/scripts/dev.sh" "$DEVSBX/scripts/"
 cp "$ENGINE_ROOT/scripts/automation/lib/service-owner.sh" \
-   "$ENGINE_ROOT/scripts/automation/lib/engine-identity.sh" "$DEVSBX/scripts/automation/lib/"
+   "$ENGINE_ROOT/scripts/automation/lib/engine-identity.sh" \
+   "$ENGINE_ROOT/scripts/automation/lib/proc_signal.py" "$DEVSBX/scripts/automation/lib/"
 B14_PORT="$(free_port)"
 B14_FREE="$(free_port)"
 start_listener "$B14_PORT"
@@ -857,6 +858,22 @@ if pid_alive "$C9_CLIENT"; then
   assert "C9 DEV_FORCE spared a process merely connected to the port" pass
 else
   assert "C9 DEV_FORCE killed an unrelated CONNECTED client" fail
+fi
+# The override must also WORK on the listener it names. The check above passed
+# while DEV_FORCE was a silent no-op: dev.sh called a signaller that refuses
+# without an ownership scope (E2c), so nothing was sent and every forced run
+# ended in "still held". A zombie counts as reclaimed: it no longer listens.
+c9_state="$(sed 's/.*) //' "/proc/$C9_SRV/stat" 2>/dev/null | awk '{print $1}')"
+if [[ -z "$c9_state" || "$c9_state" == "Z" ]] && ! port_answers "$C9_PORT"; then
+  assert "C9b DEV_FORCE reclaimed the unowned listener it named" pass
+else
+  assert "C9b DEV_FORCE left the listener it named running — the override is inert (see $WORK/c9.log)" fail
+fi
+if grep -q "pid $C9_SRV:" "$WORK/c9.log" 2>/dev/null \
+   && ! grep -q "still held after DEV_FORCE" "$WORK/c9.log" 2>/dev/null; then
+  assert "C9c the override named the listener and did not end in \"still held\"" pass
+else
+  assert "C9c the override log does not show a completed reclaim (see $WORK/c9.log)" fail
 fi
 kill -TERM "$C9_CLIENT" 2>/dev/null || true
 echo
