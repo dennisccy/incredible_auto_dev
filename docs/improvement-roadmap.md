@@ -5517,9 +5517,11 @@ Four root causes: governors read proxies instead of facts (HARD-1..3); ownership
   `goal_new_fullstack_journey`'s parser was NOT consolidated.
 
 ### HARD-3 · Journey side-effect model + contradiction preflight
-- **Priority:** P0 · **Effort:** M-L · **Risk:** MED · **Status:** IN-PROGRESS (branch
-  `hard-3-side-effect-preflight`, started 2026-09-16; schema owner-approved 2026-09-07:
-  `Side effects: none | mutating — <note>`, absent = unknown). Independent of CAND-PERM-1 Task 10
+- **Priority:** P0 · **Effort:** M-L · **Risk:** MED · **Status:** **DONE 2026-09-22** — PR #14
+  merged as `fc5e35e` (2026-09-21) and the vendored sync completed in all five products
+  (2026-09-22; closure record below). **G9 WAIVED, not passed** (owner, 2026-09-21). Built on
+  branch `hard-3-side-effect-preflight`, started 2026-09-16; schema owner-approved 2026-09-07:
+  `Side effects: none | mutating — <note>`, absent = unknown. Independent of CAND-PERM-1 Task 10
   (DEFERRED). The first independent G8 of `65e6351` returned **FAIL** on two reproduced blockers
   (2026-09-17); revision 9 fixed both and filed the third as an owner decision. The owner ruled on
   that decision on 2026-09-18 and revision 10 ENFORCES it (B3 / E17), and disposes of the two
@@ -5550,6 +5552,58 @@ Four root causes: governors read proxies instead of facts (HARD-1..3); ownership
   - **Follow-up:** tracked as the named non-blocking item **`HARD-3-G9`** (below), not as a blocker.
   HARD-3's remaining mandatory delivery gates are the merge of PR #14 at CI baseline parity and the
   complete vendored product sync.
+- **CLOSURE 2026-09-22 — both remaining gates met; HARD-3 DONE.** Evidence:
+  `~/.cache/iad/cert-hard3-sync-20260922/CLOSURE-RECORD-20260922.md` (every eval run against an exact
+  commit in an isolated clone, one suite at a time under a machine lock).
+  - *Merge:* PR #14 → `fc5e35e`; CI at baseline parity (the single pre-existing
+    `test-goal-inline-tail.sh` failure, `CI-1`, on branch and `main` alike). The independent G8 PASS
+    at `a9d91b1` stands (all certified files byte-identical on `main`); G9 stays WAIVED, not passed.
+  - *Vendored sync (base `bfc35ce`, verified per file; nothing pushed):* taketwo `d40dff9`,
+    trading_workstation `04634bb`, tensteps `88ce62e`, tapeology `2c94e414`, trendora `575d8dc1`.
+    Whole-inventory check against `fc5e35e`: 0 files missing, 0 merge markers; only product-owned
+    files behind (`scripts/dev.sh`, `.claude/project-template.md`); `.claude/` mirrors clean. The
+    2026-09-21 pass had walked only the script/agent/test directories — `.claude/workflow.md`,
+    anti-patterns 33-35, `.claude/architecture/`, docs/, README and runs/SCHEMA.md were completed on
+    2026-09-22 — and had left tapeology's `run-evals.sh` unsynced (its suite never ran
+    `test-side-effects.sh`). Trendora's five conflicts were resolved by hand (`demo_runner.py`,
+    `merge_ui_test_results.py`, `replay-lane.sh`, `goal_gate.py`, `run-evals.sh`); two integration
+    rules were decided there: observations are keyed by the AUTHORED golden (not its per-run
+    sentinel substitution), and the fresh-evidence contract never overrides trendora's BLOCKED
+    headline (exactly as it never overrides FAIL).
+  - *Tests (`run-evals.sh` from the vendored copy = upstream CI's invocation; upstream `fc5e35e`
+    187/0):* taketwo and trading_workstation 187/0 (pre-sync 186/0); tensteps 185/2 (pre 179/0);
+    tapeology 188/2 (pre 179/3 — all three pre-sync failures, the stale settings mirror, fixed);
+    trendora 182/6 (pre 178/2). Every remaining failure is exact baseline parity or an isolated
+    product-contract divergence; none is a sync defect:
+    - parity (identical assertions before and after): trendora `test-goal-parallel-bqa` 97/6 — it
+      does not hang, it outruns a 900 s bound (C/F/G fork-timing witnesses + L); trendora
+      `test-browser-infra-makeup` (its `|BLOCKED`-widened checkpoint greps);
+    - divergences, each re-run on a throwaway copy with only the product behaviour neutralised:
+      trendora `test-side-effects` 322/26 → 348/0 (its pre-replay `GET /api/health` gate and
+      visible-only expect vs hermetic fixtures); trendora `test-replay-lane-full` 85/6 → 91/0 and
+      `test-browser-evidence-closure` 57/4 → 61/0 (its journey gates headline BLOCKED where
+      upstream says SKIPPED); tensteps `test-replay-lane-full` 45/46 → 91/0 (its static-asset canary
+      vs the fake frontend); tapeology `test-side-effects` W7 (exact goal-evaluator version;
+      tapeology carries its own lineage, now 1.13.2); `test-service-ownership` in
+      tensteps/tapeology/trendora (HARD-5's launcher checks vs each product's preserved, pre-HARD-5
+      `scripts/dev.sh`).
+  - *Product-root invocation (how the 2026-09-21 runs were made):* running a product's
+    `scripts/automation/run-evals.sh` from the product root makes REPO_ROOT the product: 33-41
+    failures per product, identical before and after the sync except for tests absent pre-sync.
+    Cause: framework paths that exist only in the vendored tree (`agents/`, `skills/`, `adapters/`,
+    `hooks/lib/`, framework docs, `benchmarks/`) and test sandboxes built with
+    `cp -r "$REPO_ROOT/scripts"`, which copies the product's relative `scripts` symlink as a dangling
+    link. The missing root `hooks` link needs no layout correction: all five products share the same
+    six-link layout, none ever had `hooks`, every runtime hook resolves via `.claude/hooks/`, and a
+    `hooks` link would clear 3 of ~37 checks. Framework self-evals run from the vendored copy.
+  - *Owner items surfaced (non-blocking, outside HARD-3):* (1) adopt `fc5e35e`'s HARD-5
+    `scripts/dev.sh` hardening in tensteps / tapeology / trendora, or keep the local launchers
+    (tapeology's is an unmodified old template); (2) taketwo's five live-spend deny rules exist only
+    as an uncommitted edit of the GENERATED `.claude/settings.json` — the next re-render deletes them
+    again — declare them in the product's neutral `policy/` to make them durable; (3) the upstream
+    tests that cannot represent a product's own preconditions (above): keep as documented
+    divergences or make their fixtures deployment-aware.
+  - Follow-ups stay named and non-blocking: **`HARD-3-G9`** (below) and **`HARD-3-FU`**.
 - **`HARD-3-G9` (named non-blocking follow-up, opened 2026-09-21 by owner waiver).** Run the
   end-to-end G9 real session when a legitimate starting state exists. The blocker is *scheduling*,
   not the feature: the replay partitioner reads only a spec's `Required-still-passing` line, and that
