@@ -29,7 +29,7 @@ Maps each of the 19 agents to a model tier (12 phase-pipeline + 3 goal-mode + 4 
 
 ```yaml
 tiers:
-  strong:   claude-opus-5
+  strong:   claude-opus-5-5
   standard: claude-sonnet-5
   light:    claude-haiku-4-5
 

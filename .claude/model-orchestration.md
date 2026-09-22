@@ -12,7 +12,7 @@ Model names rot. The table below was true when written; **at session start, if y
 to dispatch by explicit model id, verify availability first**:
 
 ```bash
-claude -p --model claude-opus-5 'reply OK'     # each id you plan to use
+claude -p --model claude-opus-5-5 'reply OK'     # each id you plan to use
 ```
 
 If a listed model errors, STOP using this table's ids and re-derive from
@@ -21,7 +21,7 @@ from it). Update this table in the same commit that changes the tier map.
 
 | Tier | Claude model | Used for | Why |
 |------|--------------|----------|-----|
-| strong | `claude-opus-5` | goal-evaluator, auditor, two-key confirms, escalated retries | Judgment: verdicts, scoping, skeptical audit. Mistakes here mis-certify or mis-direct whole sessions |
+| strong | `claude-opus-5-5` | goal-evaluator, auditor, two-key confirms, escalated retries | Judgment: verdicts, scoping, skeptical audit. Mistakes here mis-certify or mis-direct whole sessions |
 | standard | `claude-sonnet-5` | goal-decomposer (TOKEN-2 experiment 2026-07-15; effort stays max, D4 guard still covers it), developer, orchestrator, product-manager, reviewer, browser-qa, coherence-auditor, iteration-summarizer | Building and structured review. High volume — this tier dominates token spend. The summarizer deliberately STAYS here: REP-4 raised its concreteness bar, and it is the human's primary reading surface |
 | light | `claude-haiku-4-5` | qa (procedural mode), release-manager, demo-narrator + readme-maintainer (TOKEN-9 experiment 2026-07-28: schema-constrained writers with deterministic safety nets — demo JSON is linted/executed by demo_runner.py, README edits are marker-scoped; revert per-agent on lint failures or AUTO-block corruption) | Fully proceduralized tasks with exact steps and output formats |
 

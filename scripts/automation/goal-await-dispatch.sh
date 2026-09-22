@@ -159,11 +159,11 @@ echo \$\$ > '$t6b/wrapper.pid'
   # Two finishes in one call, both completed; --print-json lists a pending request as JSON.
   ra="$t8/req.5-eeeeee.ready"; rb="$t8/req.5-ffffff.ready"; rc9="$t8/req.5-gggggg.ready"
   for x in eeeeee ffffff; do printf '{"agent":"qa","prompt":"p","cwd":"/x","res_path":"%s","out":"%s","usage_path":"%s"}\n' "$t8/req.5-$x.res" "$t8/req.5-$x.out" "$t8/req.5-$x.usage" > "$t8/req.5-$x.ready"; done
-  printf '{"agent":"auditor","prompt":"audit it","cwd":"/x","res_path":"%s","out":"%s","usage_path":"%s","model":"claude-opus-5"}\n' "$t8/req.5-gggggg.res" "$t8/req.5-gggggg.out" "$t8/req.5-gggggg.usage" > "$rc9"
+  printf '{"agent":"auditor","prompt":"audit it","cwd":"/x","res_path":"%s","out":"%s","usage_path":"%s","model":"claude-opus-5-5"}\n' "$t8/req.5-gggggg.res" "$t8/req.5-gggggg.out" "$t8/req.5-gggggg.usage" > "$rc9"
   out=$(HOME="$fh" CLAUDE_CODE_SESSION_ID="$sid" "$0" --dispatch-dir "$t8" --engine-pid "$$" --poll 1 --max-wait 1 --print-json --finish "$ra=qa=0" --finish "$rb=qa=1" 2>/dev/null || true)
   if [[ "$(cat "$t8/req.5-eeeeee.res" 2>/dev/null)" == "0" && "$(cat "$t8/req.5-ffffff.res" 2>/dev/null)" == "1" ]]; then echo "  PASS finish: two finishes in one call"; else echo "  FAIL finish: two finishes ($(cat "$t8/req.5-eeeeee.res" 2>/dev/null)/$(cat "$t8/req.5-ffffff.res" 2>/dev/null))"; fails=1; fi
   pj="$(python3 -c 'import json,sys; d=json.loads(sys.argv[1]); print(d["path"], d["agent"], d["prompt"], d.get("model"))' "$out" 2>/dev/null || true)"
-  if [[ "$pj" == "$rc9 auditor audit it claude-opus-5" ]]; then echo "  PASS await: --print-json emits the request JSON plus its path"; else echo "  FAIL await: --print-json (got '$out')"; fails=1; fi
+  if [[ "$pj" == "$rc9 auditor audit it claude-opus-5-5" ]]; then echo "  PASS await: --print-json emits the request JSON plus its path"; else echo "  FAIL await: --print-json (got '$out')"; fails=1; fi
   if [[ -f "${rc9%.ready}.started" ]]; then echo "  PASS await: --print-json still claims the request"; else echo "  FAIL await: --print-json did not claim"; fails=1; fi
   rm -rf "$t8"
 

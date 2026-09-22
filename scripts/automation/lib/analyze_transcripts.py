@@ -561,21 +561,21 @@ def _write_fixture(root):
     os.makedirs(sub)
     U = lambda o, cr, cc=0, i=0: {"input_tokens": i, "output_tokens": o, "cache_read_input_tokens": cr, "cache_creation_input_tokens": cc}
     rows = [
-        {"type": "assistant", "message": {"id": "m1", "model": "claude-opus-5", "usage": U(10, 1000),
+        {"type": "assistant", "message": {"id": "m1", "model": "claude-opus-5-5", "usage": U(10, 1000),
          "content": [{"type": "tool_use", "id": "t1", "name": "Bash", "input": {"command": "await"}}]}},
         {"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "t1", "content": "req.5-a.ready"}]}},
-        {"type": "assistant", "message": {"id": "m2", "model": "claude-opus-5", "usage": U(20, 2000),
+        {"type": "assistant", "message": {"id": "m2", "model": "claude-opus-5-5", "usage": U(20, 2000),
          "content": [{"type": "tool_use", "id": "t2", "name": "Agent", "input": {"prompt": "x" * 100, "subagent_type": "developer"}}]}},
         {"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "t2", "content": "done"}]},
          "toolUseResult": {"agentId": "a1", "agentType": "developer"}},
         # streaming snapshot of m3 repeated: the LAST row must win
-        {"type": "assistant", "message": {"id": "m3", "model": "claude-opus-5", "usage": U(5, 100),
+        {"type": "assistant", "message": {"id": "m3", "model": "claude-opus-5-5", "usage": U(5, 100),
          "content": [{"type": "tool_use", "id": "t3", "name": "Bash", "input": {"command": "finish"}}]}},
-        {"type": "assistant", "message": {"id": "m3", "model": "claude-opus-5", "usage": U(30, 3000),
+        {"type": "assistant", "message": {"id": "m3", "model": "claude-opus-5-5", "usage": U(30, 3000),
          "content": [{"type": "tool_use", "id": "t3", "name": "Bash", "input": {"command": "finish"}}]}},
         {"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "t3", "content": "ok"}]}},
         {"type": "summary", "summary": "compacted"},
-        {"type": "assistant", "message": {"id": "m4", "model": "claude-opus-5", "usage": U(40, 4000),
+        {"type": "assistant", "message": {"id": "m4", "model": "claude-opus-5-5", "usage": U(40, 4000),
          "content": [{"type": "tool_use", "id": "t4", "name": "Agent", "input": {"prompt": "y" * 50, "subagent_type": "reviewer"}}]}},
         {"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "t4", "content": "done2"}]},
          "toolUseResult": {"agentId": "a2", "agentType": "reviewer"}},
@@ -690,7 +690,7 @@ def _self_test():
         assert p["turns_per_dispatch"] == 2.0, p["turns_per_dispatch"]  # m2 → m4 spans 2 turns
         assert p["compactions"] == 1
         assert p["tool_calls"] == {"Bash": 2, "Agent": 2}, p["tool_calls"]
-        assert p["models"] == {"claude-opus-5": 4}
+        assert p["models"] == {"claude-opus-5-5": 4}
         assert p["tool_input_bytes"]["Agent"] > 150
         dev = rep["subagents"]["developer"]
         assert dev["invocations"] == 1 and dev["turns"] == 3

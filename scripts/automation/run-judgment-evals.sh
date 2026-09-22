@@ -92,10 +92,12 @@ done
 : "${CHAIN_JUDGE_EVAL_EST_OUT_TOK:=25000}"
 
 # $/MTok by model family (input output). Source: claude-api skill model table,
-# cached 2026-06-24. Unknown models fall back to Opus pricing (conservative).
+# cached 2026-06-24 (Opus 5.5 row added 2026-09-22). Unknown models fall back to
+# pre-5.5 Opus pricing (conservative).
 _price_for_model() {
   case "$1" in
     claude-fable-*)  echo "10 50" ;;
+    claude-opus-5-5*) echo "4 20" ;;
     claude-opus-*)   echo "5 25" ;;
     claude-sonnet-*) echo "3 15" ;;
     claude-haiku-*)  echo "1 5" ;;
