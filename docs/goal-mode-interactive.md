@@ -40,7 +40,14 @@ protocol lives in
   `ANTHROPIC_API_KEY` is set it takes precedence and bills the metered API;
   `unset` it to use the subscription.
 - **Run from the project root**, so `.claude/settings.json` (security/quality
-  hooks) and `.claude/commands/` (the slash commands) load.
+  hooks) and `.claude/commands/` (the slash commands) load. Claude Code reads the
+  shared `.claude/settings.json` only from the directory a session is started in,
+  so a session started in a subdirectory (say `apps/backend`) loads none of it —
+  not the hooks, not the allow list, not the deny list. If a product supports such
+  a launch, list the directory under `claude_launch_dirs` in
+  `policy/permissions.yaml`: the renderer then writes a generated, deny-only
+  `<dir>/.claude/settings.json` carrying the same deny list (hooks and allow rules
+  still load only from the root), and `sync-cli-assets.py --check` keeps it current.
 - **Commands materialized.** They are generated from the neutral `commands/`
   source into `.claude/commands/`. They are committed, so a normal checkout has
   them; if missing, run `./scripts/automation/sync-cli-assets.sh --cli claude`
