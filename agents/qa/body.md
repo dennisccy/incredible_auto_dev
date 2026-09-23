@@ -191,7 +191,16 @@ profile — on a capped host an unconfined browser can hard-reset the machine. N
 engine closes the tabs your step used as soon as your dispatch ends).
 
 **Do NOT mark FAIL just because browser checks were skipped (frontend not running).**
-Browser SKIPPED + tests passing = overall PASS is acceptable.
+Browser SKIPPED + tests passing = overall PASS is acceptable. That applies to YOUR spot-checks
+only, never to the phase's browser lane:
+
+**The browser lane outranks your spot-checks.** When `Frontend Present: yes`, the authoritative
+browser result is `reports/phase-<phase>-ui-test-results.md` (the browser-qa lane — it may
+still be running while you work). If it exists when you write your report, quote its
+`**Browser QA Verdict:**` line in `Browser checks`, and never write PASS or "all validations
+passed" beside a lane that reads FAIL or SKIPPED. After both finish, a deterministic gate
+(`scripts/automation/lib/qa_lane_gate.py`) rewrites any passing QA verdict to FAIL while that
+lane is not PASS — so a QA PASS next to a failing lane never survives, whoever wrote it.
 
 **Step 4b: UI Evolution Audit (if Frontend Present: yes)**
 

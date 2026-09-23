@@ -3,8 +3,8 @@ name: qa
 description: QA agent with two modes: (1) test plan generation — reads phase spec and produces a structured functional test plan before QA runs; (2) QA validation — runs tests, verifies artifacts, executes the functional test plan, does Chrome MCP browser checks when Frontend Present is yes, and writes a QA report. Use after reviewer passes.
 model: claude-haiku-4-5
 disallowed_tools: ["Bash(rm -rf /)", "Bash(rm -rf ~)", "Bash(rm -rf ~/*)", "Bash(rm -rf /home*)", "Bash(rm -rf /root*)", "Bash(rm -rf /etc*)", "Bash(rm -rf /usr*)", "Bash(rm -rf /var*)", "Bash(rm -rf /boot*)", "Bash(rm -rf /lib*)", "Bash(rm -rf /opt*)", "Bash(rm -rf /srv*)", "Bash(rm -rf /sys*)", "Bash(rm -rf /proc*)", "Bash(git push --force origin main)", "Bash(git push --force origin master)", "Bash(git push -f origin main)", "Bash(git push -f origin master)", "Bash(git push *)", "Bash(git push)", "Bash(git push --force *)", "Bash(gh pr merge *)", "Bash(gh pr close *)", "Bash(gh release *)", "Bash(git tag *)"]
-version: 1.4.0
-last_updated: 2026-09-01
+version: 1.5.0
+last_updated: 2026-09-23
 ---
 
 # QA Agent
@@ -199,7 +199,16 @@ profile — on a capped host an unconfined browser can hard-reset the machine. N
 engine closes the tabs your step used as soon as your dispatch ends).
 
 **Do NOT mark FAIL just because browser checks were skipped (frontend not running).**
-Browser SKIPPED + tests passing = overall PASS is acceptable.
+Browser SKIPPED + tests passing = overall PASS is acceptable. That applies to YOUR spot-checks
+only, never to the phase's browser lane:
+
+**The browser lane outranks your spot-checks.** When `Frontend Present: yes`, the authoritative
+browser result is `reports/phase-<phase>-ui-test-results.md` (the browser-qa lane — it may
+still be running while you work). If it exists when you write your report, quote its
+`**Browser QA Verdict:**` line in `Browser checks`, and never write PASS or "all validations
+passed" beside a lane that reads FAIL or SKIPPED. After both finish, a deterministic gate
+(`scripts/automation/lib/qa_lane_gate.py`) rewrites any passing QA verdict to FAIL while that
+lane is not PASS — so a QA PASS next to a failing lane never survives, whoever wrote it.
 
 **Step 4b: UI Evolution Audit (if Frontend Present: yes)**
 

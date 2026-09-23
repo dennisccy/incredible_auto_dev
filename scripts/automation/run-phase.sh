@@ -335,6 +335,20 @@ _run_post_dev_fanout() {
   return "$_rc"
 }
 
+# QA-lane gate (anti-pattern 36): a passing QA verdict must not stand beside a
+# required browser lane that is not PASS. The lane is required when this phase
+# runs it (frontend present) and maintenance isolation does not forbid it.
+# Returns lib/qa_lane_gate.py's code: 0 consistent, 3 QA rewritten to FAIL.
+_qa_lane_gate() {
+  local _required="no"
+  if [[ "$FRONTEND_PRESENT" == "yes" ]] && ! goal_maintenance_isolation_required "$SPEC"; then
+    _required="yes"
+  fi
+  python3 "$SCRIPT_DIR/lib/qa_lane_gate.py" apply "$QA_REPORT" "$UI_TEST_RESULTS" --lane-required "$_required" \
+    | sed 's/^/  /'
+  return "${PIPESTATUS[0]}"
+}
+
 fail() {
   local msg="$1"
   local step="${2:-failed}"
@@ -1072,6 +1086,22 @@ else
 fi
 echo ""
 
+# ── QA-lane gate (anti-pattern 36) ──────────────────────────────────────────
+# Runs after BOTH the QA verdict and the browser lane are final — whichever path
+# produced them (post-dev fanout, sequential Steps 6-7, or a resume). Here, not
+# in qa-phase.sh: inside the fanout the QA branch finishes while the browser
+# branch may still be running. rc 3 = the QA report was rewritten to FAIL
+# because the required browser lane is not PASS. The phase fails instead of
+# entering the Step 7 fix loop: that loop never re-runs the browser lane, so
+# no retry could change this verdict.
+qa_gate_rc=0
+_qa_lane_gate || qa_gate_rc=$?
+if [[ $qa_gate_rc -eq 3 ]]; then
+  fail "QA cannot pass while the required browser lane is not PASS. See: $QA_REPORT (section 'Browser lane gate') and $UI_TEST_RESULTS" "qa_failed"
+elif [[ $qa_gate_rc -ne 0 ]]; then
+  fail "QA-lane gate could not be evaluated (exit $qa_gate_rc) — refusing to proceed on an unchecked QA verdict. See: $QA_REPORT" "qa_failed"
+fi
+
 # Kill any servers left behind by QA
 kill_phase_servers
 
@@ -1202,6 +1232,7 @@ if [[ "$SKIP_AUDIT" == "false" ]]; then
       _run_step "$SCRIPT_DIR/qa-phase.sh" "$PHASE" || aq_rc=$?
       [[ $aq_rc -eq 75 ]] && { AUDIT_ATTEMPT=$((AUDIT_ATTEMPT - 1)); continue; }
       _guard_step_rc "$aq_rc" "Step 9 hardening (qa)"
+      _qa_lane_gate || true   # a gated rewrite reads as FAIL on the next line
       if ! verdict_passes "$QA_REPORT"; then
         fail "QA failed during audit hardening. See: $QA_REPORT" "audit_qa_failed"
       fi

@@ -198,7 +198,7 @@ port = srv.server_address[1]
 
 env = {k: v for k, v in os.environ.items() if not k.startswith(("ANTHROPIC_", "CLAUDE_", "CLAUDECODE"))}
 env.update({"ANTHROPIC_BASE_URL": "http://127.0.0.1:%d" % port,
-            "ANTHROPIC_API_KEY": "sk-ant-api03-mock-local-probe-not-a-real-key",
+            "ANTHROPIC_API_KEY": "TEST-KEY-NOT-A-SECRET",
             "CLAUDE_CONFIG_DIR": tempfile.mkdtemp(prefix="cfg-"),
             "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1", "DISABLE_AUTOUPDATER": "1",
             "DISABLE_TELEMETRY": "1", "DISABLE_ERROR_REPORTING": "1"})

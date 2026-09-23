@@ -3,7 +3,7 @@
 One file per numbered entry, split from the former monolith (CTX-12) so a reader loads
 only what matches the situation: scan this index, open the matching `<NN>-<slug>.md`,
 nothing else. Numbering is FROZEN forever — files keep their original `## <N>. <title>`
-headings; the next new entry takes the next free number (34) as `<NN>-<slug>.md` plus a
+headings; the next new entry takes the next free number (37) as `<NN>-<slug>.md` plus a
 row here (maintenance protocol §2).
 
 | # | Entry | Applies when | Rule (one line) |
@@ -43,3 +43,4 @@ row here (maintenance protocol §2).
 | 33 | [33-infra-classifier-over-merged-artifact.md](33-infra-classifier-over-merged-artifact.md) | classifying or headlining evidence after two sources were merged | Classify the RAW primary artifact per journey against the set that dispatch owed; a replay PASS never satisfies or masks a different journey's fresh-primary obligation |
 | 34 | [34-port-as-proof-of-process-ownership.md](34-port-as-proof-of-process-ownership.md) | any cleanup that terminates a process it did not spawn in the same shell | Kill by provenance (an environ stamp read from `/proc/<pid>/environ`), never by port, cwd or command line; "no record" is never "free to kill" |
 | 35 | [35-identity-checked-then-signalled-later.md](35-identity-checked-then-signalled-later.md) | any authorization exercised after a gap (TERM→sleep→KILL, check→retry, stat→open) | Bind the act to a stable identity (pidfd) or revalidate immediately before EVERY act; `kill -0` proves existence, not identity |
+| 36 | [36-aggregate-verdict-ignores-concurrent-lane.md](36-aggregate-verdict-ignores-concurrent-lane.md) | a verdict that gates later steps summarises lanes it does not own, some running concurrently | The engine checks the gating verdict against every lane it summarises once all are final; a QA PASS never survives beside a required browser lane that is not PASS |
