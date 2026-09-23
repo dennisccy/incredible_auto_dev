@@ -92,6 +92,9 @@ _run_self_test scripts/automation/lib/render_iteration_summary.py self-test
 _run_self_test scripts/automation/lib/demo_runner.py self-test
 _run_self_test scripts/automation/lib/merge_ui_test_results.py self-test
 _run_self_test scripts/automation/lib/qa_lane_gate.py self-test
+_run_self_test scripts/automation/lib/prompt_quote_lint.py self-test
+# Every agent prompt passed as -p "..." must reach the agent as ONE word (anti-pattern 37).
+_run_self_test scripts/automation/lib/prompt_quote_lint.py check-engine
 _run_self_test scripts/automation/lib/mcp_sync_selftest.py self-test
 _run_self_test scripts/automation/lib/closure_gate.py self-test
 # Agent-contract static linter (SAFE-2): fixture assertions, then lints the live
