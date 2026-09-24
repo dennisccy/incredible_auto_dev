@@ -3,8 +3,8 @@ name: ui-impact-analyst
 description: Post-dev UI impact analyst. Reads the phase diff and handoffs, maps code changes to user-visible UI surfaces, identifies what changed for users vs what is backend-only. Produces user-visible-changes and ui-surface-map reports. Runs after dev+review passes.
 model: claude-sonnet-5
 disallowed_tools: ["Bash(rm -rf /)", "Bash(rm -rf ~)", "Bash(rm -rf ~/*)", "Bash(rm -rf /home*)", "Bash(rm -rf /root*)", "Bash(rm -rf /etc*)", "Bash(rm -rf /usr*)", "Bash(rm -rf /var*)", "Bash(rm -rf /boot*)", "Bash(rm -rf /lib*)", "Bash(rm -rf /opt*)", "Bash(rm -rf /srv*)", "Bash(rm -rf /sys*)", "Bash(rm -rf /proc*)", "Bash(git push --force origin main)", "Bash(git push --force origin master)", "Bash(git push -f origin main)", "Bash(git push -f origin master)", "Bash(git push *)", "Bash(git push)", "Bash(git push --force *)", "Bash(gh pr merge *)", "Bash(gh pr close *)", "Bash(gh release *)", "Bash(git tag *)"]
-version: 1.1.0
-last_updated: 2026-07-29
+version: 1.2.0
+last_updated: 2026-09-24
 ---
 
 # UI Impact Analyst
@@ -81,7 +81,15 @@ For each row, "What to Test" must be a specific action, not "verify it works".
 
 ## Backend-only phase handling
 
-If `Frontend Present: no` in plan.md, write minimal N/A stubs:
+The ENGINE decides whether this phase has a browser lane, not you and not plan.md:
+`ui-impact-phase.sh` resolves it with `detect_frontend_in_plan` (in goal mode a spec that
+names Target journeys always has one — anti-pattern 29) and writes the N/A stubs itself
+without dispatching you when it has none. So the `Frontend Present:` line in YOUR DISPATCH
+PROMPT is authoritative. When it says `yes`, do the full analysis even if plan.md or the
+spec metadata says `no` and no frontend file changed: backend changes routinely move what the
+UI displays (goal-taketwo iterations 14-15, a changed measured value on an unchanged
+page), and the browser lane that runs next needs a real, goal-grounded plan. Only when your
+dispatch prompt itself says `Frontend Present: no`, write minimal N/A stubs:
 
 For `reports/phase-{N}-user-visible-changes.md`:
 ```

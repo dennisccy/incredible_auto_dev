@@ -73,7 +73,15 @@ For each row, "What to Test" must be a specific action, not "verify it works".
 
 ## Backend-only phase handling
 
-If `Frontend Present: no` in plan.md, write minimal N/A stubs:
+The ENGINE decides whether this phase has a browser lane, not you and not plan.md:
+`ui-impact-phase.sh` resolves it with `detect_frontend_in_plan` (in goal mode a spec that
+names Target journeys always has one — anti-pattern 29) and writes the N/A stubs itself
+without dispatching you when it has none. So the `Frontend Present:` line in YOUR DISPATCH
+PROMPT is authoritative. When it says `yes`, do the full analysis even if plan.md or the
+spec metadata says `no` and no frontend file changed: backend changes routinely move what the
+UI displays (goal-taketwo iterations 14-15, a changed measured value on an unchanged
+page), and the browser lane that runs next needs a real, goal-grounded plan. Only when your
+dispatch prompt itself says `Frontend Present: no`, write minimal N/A stubs:
 
 For `reports/phase-{N}-user-visible-changes.md`:
 ```

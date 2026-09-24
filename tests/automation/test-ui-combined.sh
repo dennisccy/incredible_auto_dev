@@ -231,6 +231,19 @@ grep -q 'manual-ui-test-plan-generator' "$ENGINE_ROOT/agents/ui-impact-analyst/b
   && assert "wiring: combined mode names the designer's exact skills" pass \
   || assert "wiring: combined mode names the designer's exact skills" fail
 
+# The stub decision belongs to the engine (anti-pattern 29): the agent must defer to its
+# dispatch prompt's engine-resolved `Frontend Present:` line, never re-derive it from plan.md
+# (goal-taketwo iters 14-15: the analyst stubbed a journey-bearing iteration from plan.md).
+if grep -q 'If `Frontend Present: no` in plan.md' "$ENGINE_ROOT/agents/ui-impact-analyst/body.md"; then
+  assert "ui-impact-analyst does not re-derive the stub decision from plan.md" "fail"
+else
+  assert "ui-impact-analyst does not re-derive the stub decision from plan.md" "pass"
+fi
+grep -q 'DISPATCH' "$ENGINE_ROOT/agents/ui-impact-analyst/body.md" \
+  && grep -q 'PROMPT is authoritative' "$ENGINE_ROOT/agents/ui-impact-analyst/body.md" \
+  && assert "ui-impact-analyst treats its dispatch prompt's Frontend Present line as authoritative" "pass" \
+  || assert "ui-impact-analyst treats its dispatch prompt's Frontend Present line as authoritative" "fail"
+
 echo ""
 echo "=== Results: $PASS passed, $FAIL failed ==="
 [[ $FAIL -gt 0 ]] && exit 1
