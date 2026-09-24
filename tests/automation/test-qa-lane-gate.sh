@@ -21,6 +21,10 @@
 #      completes; gate is a no-op.
 #   E. QA agent FAIL + lane FAIL  -> the ordinary Step 7 fix loop still owns an
 #      agent FAIL (dev fix-mode runs), unchanged semantics.
+#   F. QA agent PASS + the only failing row is a check the PRE-RUN test plan
+#      marks P2 (goal-taketwo iter 13's UT-06) -> completes; QA recorded as
+#      PASS_WITH_NOTES citing the row; audit runs.
+#   G. QA agent PASS + a failing row the pre-run plan marks P1 -> fails like A.
 #
 # No API calls; a few seconds per case.
 set -euo pipefail
@@ -60,7 +64,7 @@ write_stub() {
   } > "$out"
 }
 
-# make_sandbox <tag> <qa-verdict> <lane-headline|none> <frontend yes|no>
+# make_sandbox <tag> <qa-verdict> <lane-headline|none|P2FAIL|P1FAIL> <frontend yes|no>
 make_sandbox() {
   local tag="$1" qa_verdict="$2" lane="$3" frontend="$4"
   SBX="$WORK/proj-$tag"
@@ -80,7 +84,22 @@ make_sandbox() {
   write_stub phase-audit.sh         "PASS"                 "docs/handoffs/${PHASE}-audit.md"
   write_stub phase-closure-check.sh "CLOSURE-PASS"         "reports/phase-${PHASE}-closure-verdict.md"
 
-  if [[ "$lane" != "none" ]]; then
+  # The pre-run UI test plan (the gate's only priority source).
+  printf '# UI test plan\n\n| ID | Name | Type | Priority | Surface |\n|---|---|---|---|---|\n| UT-01 | smoke | smoke | P1 | / |\n| UT-06 | lifecycle | regression | P2 | / |\n' \
+    > "$SBX/reports/phase-${PHASE}-ui-test-plan.md"
+  if [[ "$lane" == "P2FAIL" || "$lane" == "P1FAIL" ]]; then
+    {
+      printf '# Phase %s — UI Test Results\n\n**Browser QA Verdict:** FAIL\n\n## Results Table\n' "$PHASE"
+      printf '| Test ID | Name | Type | Priority | Expected | Actual | Verdict | Evidence |\n|---|---|---|---|---|---|---|---|\n'
+      printf '| UT-J-01 | upload | journey | P1 | ok | ok | PASS | a.png |\n'
+      if [[ "$lane" == "P2FAIL" ]]; then
+        printf '| UT-01 | smoke | smoke | P1 | ok | ok | PASS | s.png |\n'
+        printf '| UT-06 | lifecycle | regression | P2 | excluded | still listed | FAIL | f.png |\n'
+      else
+        printf '| UT-01 | smoke | smoke | P1 | ok | error | FAIL | s.png |\n'
+      fi
+    } > "$SBX/reports/phase-${PHASE}-ui-test-results.md"
+  elif [[ "$lane" != "none" ]]; then
     {
       printf '# Phase %s — UI Test Results\n\n**Browser QA Verdict:** %s\n\n## Results Table\n' "$PHASE" "$lane"
       printf '| Test ID | Name | Type | Priority | Expected | Actual | Verdict | Evidence |\n|---|---|---|---|---|---|---|---|\n'
@@ -178,6 +197,28 @@ rc=0; run_phase e || rc=$?
   || assert "E: dev fix-mode ran for an agent-owned QA FAIL (dev=$(count dev-phase.sh))" "fail"
 grep -q 'Browser lane gate' "$SBX/reports/qa/${PHASE}-qa.md" \
   && assert "E: agent FAIL report not annotated by the gate" "fail" || assert "E: agent FAIL report not annotated by the gate" "pass"
+
+# ══ Case F: only a pre-run-P2 check fails — a finding, not a DoD failure ═════
+make_sandbox f PASS P2FAIL yes
+rc=0; run_phase f || rc=$?
+[[ $rc -eq 0 ]] && assert "F: phase completes (rc=0)" "pass" \
+  || { assert "F: phase completes (rc=$rc)" "fail"; sed -n '1,60p' "$WORK/run-f.log"; }
+qa_passes && grep -q '^\*\*Verdict:\*\* PASS_WITH_NOTES$' "$SBX/reports/qa/${PHASE}-qa.md" \
+  && assert "F: QA recorded as PASS_WITH_NOTES, never plain PASS" "pass" \
+  || assert "F: QA recorded as PASS_WITH_NOTES, never plain PASS" "fail"
+grep -q 'UT-06: FAIL (pre-run plan priority P2)' "$SBX/reports/qa/${PHASE}-qa.md" \
+  && assert "F: the P2 finding is cited in the QA report" "pass" \
+  || assert "F: the P2 finding is cited in the QA report" "fail"
+[[ "$(count phase-audit.sh)" == "1" ]] && assert "F: audit ran" "pass" || assert "F: audit ran (got $(count phase-audit.sh))" "fail"
+
+# ══ Case G: a pre-run-P1 check fails — DoD failure, blocks ═══════════════════
+make_sandbox g PASS P1FAIL yes
+rc=0; run_phase g || rc=$?
+[[ $rc -ne 0 ]] && step_is qa_failed && ! qa_passes \
+  && grep -q 'UT-01: FAIL (pre-run plan priority P1)' "$SBX/reports/qa/${PHASE}-qa.md" \
+  && assert "G: a failing pre-run-P1 check fails QA (qa_failed), row cited" "pass" \
+  || assert "G: a failing pre-run-P1 check fails QA (rc=$rc)" "fail"
+[[ "$(count phase-audit.sh)" == "0" ]] && assert "G: audit never ran" "pass" || assert "G: audit never ran" "fail"
 
 echo ""
 echo "=== Results: $PASS passed, $FAIL failed ==="

@@ -336,15 +336,18 @@ _run_post_dev_fanout() {
 }
 
 # QA-lane gate (anti-pattern 36): a passing QA verdict must not stand beside a
-# required browser lane that is not PASS. The lane is required when this phase
-# runs it (frontend present) and maintenance isolation does not forbid it.
-# Returns lib/qa_lane_gate.py's code: 0 consistent, 3 QA rewritten to FAIL.
+# required browser lane that fails the DoD (a missing/SKIPPED lane, a failing
+# journey row, or a failing check the PRE-RUN test plan marks P1 or does not
+# list; plan-P2/P3 failures are cited as PASS_WITH_NOTES). The lane is required
+# when this phase runs it (frontend present) and maintenance isolation does not
+# forbid it. Returns lib/qa_lane_gate.py's code: 0 consistent, 3 QA rewritten to FAIL.
 _qa_lane_gate() {
   local _required="no"
   if [[ "$FRONTEND_PRESENT" == "yes" ]] && ! goal_maintenance_isolation_required "$SPEC"; then
     _required="yes"
   fi
   python3 "$SCRIPT_DIR/lib/qa_lane_gate.py" apply "$QA_REPORT" "$UI_TEST_RESULTS" --lane-required "$_required" \
+      --test-plan "$UI_TEST_PLAN" \
     | sed 's/^/  /'
   return "${PIPESTATUS[0]}"
 }
@@ -1097,7 +1100,7 @@ echo ""
 qa_gate_rc=0
 _qa_lane_gate || qa_gate_rc=$?
 if [[ $qa_gate_rc -eq 3 ]]; then
-  fail "QA cannot pass while the required browser lane is not PASS. See: $QA_REPORT (section 'Browser lane gate') and $UI_TEST_RESULTS" "qa_failed"
+  fail "QA cannot pass while the required browser lane fails the phase DoD. See: $QA_REPORT (section 'Browser lane gate') and $UI_TEST_RESULTS" "qa_failed"
 elif [[ $qa_gate_rc -ne 0 ]]; then
   fail "QA-lane gate could not be evaluated (exit $qa_gate_rc) — refusing to proceed on an unchecked QA verdict. See: $QA_REPORT" "qa_failed"
 fi

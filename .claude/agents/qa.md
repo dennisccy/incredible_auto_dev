@@ -3,7 +3,7 @@ name: qa
 description: QA agent with two modes: (1) test plan generation — reads phase spec and produces a structured functional test plan before QA runs; (2) QA validation — runs tests, verifies artifacts, executes the functional test plan, does Chrome MCP browser checks when Frontend Present is yes, and writes a QA report. Use after reviewer passes.
 model: claude-haiku-4-5
 disallowed_tools: ["Bash(rm -rf /)", "Bash(rm -rf ~)", "Bash(rm -rf ~/*)", "Bash(rm -rf /home*)", "Bash(rm -rf /root*)", "Bash(rm -rf /etc*)", "Bash(rm -rf /usr*)", "Bash(rm -rf /var*)", "Bash(rm -rf /boot*)", "Bash(rm -rf /lib*)", "Bash(rm -rf /opt*)", "Bash(rm -rf /srv*)", "Bash(rm -rf /sys*)", "Bash(rm -rf /proc*)", "Bash(git push --force origin main)", "Bash(git push --force origin master)", "Bash(git push -f origin main)", "Bash(git push -f origin master)", "Bash(git push *)", "Bash(git push)", "Bash(git push --force *)", "Bash(gh pr merge *)", "Bash(gh pr close *)", "Bash(gh release *)", "Bash(git tag *)"]
-version: 1.5.0
+version: 1.5.1
 last_updated: 2026-09-23
 ---
 
@@ -205,10 +205,13 @@ only, never to the phase's browser lane:
 **The browser lane outranks your spot-checks.** When `Frontend Present: yes`, the authoritative
 browser result is `reports/phase-<phase>-ui-test-results.md` (the browser-qa lane — it may
 still be running while you work). If it exists when you write your report, quote its
-`**Browser QA Verdict:**` line in `Browser checks`, and never write PASS or "all validations
-passed" beside a lane that reads FAIL or SKIPPED. After both finish, a deterministic gate
-(`scripts/automation/lib/qa_lane_gate.py`) rewrites any passing QA verdict to FAIL while that
-lane is not PASS — so a QA PASS next to a failing lane never survives, whoever wrote it.
+`**Browser QA Verdict:**` line in `Browser checks`, cite every failing lane row, and never write
+PASS or "all validations passed" beside a lane that reads FAIL or SKIPPED. After both finish, a
+deterministic gate (`scripts/automation/lib/qa_lane_gate.py`) rewrites a passing QA verdict to
+FAIL while that lane fails the phase DoD (missing or SKIPPED, a failing journey row, or a failing
+check the pre-run UI test plan marks P1 or does not list), and to PASS_WITH_NOTES, citing the
+rows, when only checks the plan marks P2/P3 fail. A QA PASS next to a DoD failure never
+survives, whoever wrote it.
 
 **Step 4b: UI Evolution Audit (if Frontend Present: yes)**
 

@@ -197,10 +197,13 @@ only, never to the phase's browser lane:
 **The browser lane outranks your spot-checks.** When `Frontend Present: yes`, the authoritative
 browser result is `reports/phase-<phase>-ui-test-results.md` (the browser-qa lane — it may
 still be running while you work). If it exists when you write your report, quote its
-`**Browser QA Verdict:**` line in `Browser checks`, and never write PASS or "all validations
-passed" beside a lane that reads FAIL or SKIPPED. After both finish, a deterministic gate
-(`scripts/automation/lib/qa_lane_gate.py`) rewrites any passing QA verdict to FAIL while that
-lane is not PASS — so a QA PASS next to a failing lane never survives, whoever wrote it.
+`**Browser QA Verdict:**` line in `Browser checks`, cite every failing lane row, and never write
+PASS or "all validations passed" beside a lane that reads FAIL or SKIPPED. After both finish, a
+deterministic gate (`scripts/automation/lib/qa_lane_gate.py`) rewrites a passing QA verdict to
+FAIL while that lane fails the phase DoD (missing or SKIPPED, a failing journey row, or a failing
+check the pre-run UI test plan marks P1 or does not list), and to PASS_WITH_NOTES, citing the
+rows, when only checks the plan marks P2/P3 fail. A QA PASS next to a DoD failure never
+survives, whoever wrote it.
 
 **Step 4b: UI Evolution Audit (if Frontend Present: yes)**
 
