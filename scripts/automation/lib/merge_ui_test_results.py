@@ -91,7 +91,10 @@ from pathlib import Path
 # "no verdict".
 _VERDICT_RE = re.compile(r"\*\*Browser QA Verdict:\*\*\s*[*_`~\s]*([A-Z_]+)")
 # A results-table data row: | UT-xx | name | type | prio | expected | actual | VERDICT | evidence |
-_ROW_RE = re.compile(r"^\|\s*(UT-[^|]+?)\s*\|(.*)\|\s*$")
+# The Test ID cell may be wrapped in emphasis/backticks (`| **UT-J-01** |`) — anti-pattern 28
+# applies to the ID cell too: goal-taketwo iter 15's primary lane bolded its UT-J-NN rows, the
+# strict match skipped them, and the fresh-evidence contract read two PASSing targets as MISSING.
+_ROW_RE = re.compile(r"^\|\s*[*_`~]*(UT-[^|]*?)[*_`~]*\s*\|(.*)\|\s*$")
 # Cells split on UNESCAPED pipes only — the replay renderer escapes '|' inside
 # cells as '\|'; a bare split would shift every later cell.
 _CELL_SPLIT_RE = re.compile(r"(?<!\\)\|")
@@ -768,6 +771,12 @@ def _self_test() -> int:
 
     def t_styled_headline():
         assert file_top_verdict("**Browser QA Verdict:** **FAIL**\n") == "FAIL"
+        # Styled Test ID cells parse too (goal-taketwo iter 15: bold UT-J-NN rows read as MISSING).
+        styled = ("**Browser QA Verdict:** PASS\n\n## Results Table\n" + hdr +
+                  "| **UT-J-01** | J-01 | target | P1 | ok | ok | PASS | a.png |\n"
+                  "| `UT-J-07` | J-07 | target | P1 | ok | ok | PASS | b.png |\n")
+        assert [r["test_id"] for r in parse_rows(styled)] == ["UT-J-01", "UT-J-07"]
+        assert [c[:2] for c in classify_primary(styled, ["J-01", "J-07"])] == [("J-01", "PASS"), ("J-07", "PASS")]
         assert file_top_verdict("**Browser QA Verdict:** `SKIPPED`\n") == "SKIPPED"
 
     def t_escaped_pipe_cells():

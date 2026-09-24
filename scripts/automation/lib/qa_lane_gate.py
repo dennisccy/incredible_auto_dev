@@ -70,7 +70,7 @@ _PASSING = sorted((v.value for v in verdicts.PASSING_VERDICTS), key=len, reverse
 # pass is found here.
 _PASS_LINE_RE = re.compile(r"^\*\*Verdict:\*\*\s+(" + "|".join(map(re.escape, _PASSING)) + r")\s*$")
 _FAIL_LINE_RE = re.compile(r"^\*\*Verdict:\*\*\s+FAIL\s*$")
-_PLAN_ROW_RE = re.compile(r"^\|\s*(UT-[^|\s]+)\s*\|(.*)\|\s*$")
+_PLAN_ROW_RE = re.compile(r"^\|\s*[*_`~]*(UT-[^|\s*_`~]+)[*_`~]*\s*\|(.*)\|\s*$")
 _PRIORITY_RE = re.compile(r"^[*_`\s]*(P[0-3])\b")
 _PLAN_SECTION_RE = re.compile(r"^#{2,4}\s+(UT-[^\s:—–-]+(?:-[^\s:—–]+)*)")
 _PLAN_PRIORITY_LINE_RE = re.compile(r"^\*\*Priority:\*\*\s*(P[0-3])\b")
@@ -395,6 +395,8 @@ def _self_test() -> int:
         check(plan_priorities(plan) == {"UT-01": "P1", "UT-06": "P2", "UT-07": "P3"}, "S: plan priorities parsed")
         check(plan_priorities("| UT-05 | x | y | P1 | s |\n### UT-05 — x\n**Priority:** P2\n") == {"UT-05": "P1"},
               "S: conflicting plan priorities -> the stricter wins")
+        check(plan_priorities("| **UT-08** | x | y | **P2** | s |\n") == {"UT-08": "P2"},
+              "S: styled plan ID and priority cells parse")
 
     print(f"qa_lane_gate self-test: {'OK' if not failures else f'{len(failures)} FAILED'}")
     return 0 if not failures else 1
