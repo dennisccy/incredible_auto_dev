@@ -102,6 +102,22 @@ After invalid form submission, check for error text near the submitted field.
 ### Verify item appears in list
 Navigate to list page, check that item name appears in the page text.
 
+### Verify a transient state (lasts seconds)
+One browser-tool round trip can take 30 seconds to several minutes, so separate click → wait → look
+calls cannot land inside a state that lasts seconds (an in-flight status, a button that exists only
+while work runs). Do it in ONE `eval` action that runs inside the live page:
+1. trigger — a real `element.click()` on the page's own control, or a `fetch` the UI itself would send;
+2. poll the DOM every 100–250 ms for the state, with a timeout;
+3. assert, or click the transient control, while the state holds;
+4. return every observation with its timestamp.
+Quote the returned observations in the Actual cell. Take a screenshot afterwards only if the state is
+still visible. Never mock a response or bypass a handler to make the state last longer. If a
+setting-up step needs a separate call (setting a file input), make that call first; the script then
+starts at the click that begins the state.
+
+Each attempt also needs an input that genuinely enters the state. A cache hit skips processing, so a
+repeated fixture may never be in flight: note which input made the state and whether it was cold.
+
 ## Handling Common Issues
 
 ### Page not loaded yet

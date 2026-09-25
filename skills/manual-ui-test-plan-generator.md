@@ -61,6 +61,17 @@ This skill describes how to create a human-executable UI test plan with exact st
   "Reused from cache"). Pick a non-reserved fixture, and name it in Preconditions; if none fits, say so
   there instead of borrowing a reserved one.
 
+### Transient-state rules:
+- A state that lasts only seconds (an in-flight status, a button shown only while work runs) must be
+  written as ONE in-page script step: trigger, poll the DOM, then assert or click while the state
+  holds (see browser-workflow-executor "Verify a transient state"). Never write it as "wait 6-8
+  seconds, then look". Each browser-tool round trip takes 30 s to minutes, longer than the state
+  (goal-taketwo iter 20: two P1 audit checks missed ~5 s and ~21 s windows that the database proves
+  existed).
+- Give each attempt an input that really enters the state. Repeating a fixture whose result is cached
+  skips the work entirely. Name the cold input in Preconditions, and plan for the first attempt to be
+  the one that counts.
+
 ### Expected result writing rules:
 - Describe the visual outcome the operator should observe
 - Include specific text, elements, or states to look for
