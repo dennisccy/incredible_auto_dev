@@ -255,6 +255,14 @@ passing journey:
   replay re-checks them on the iterations that touch their area, and the periodic
   full pass below covers the rest.
 
+**Targets are never verified by replay alone.** A Target journey owes FRESH evidence: the LLM
+browser lane must drive it and write its `UT-J-NN` attribution row, and a replay PASS never stands
+in for that row (the merged headline becomes SKIPPED, `browser-qa-phase.sh`; the QA-lane gate
+then fails QA and the audit does not run). So never write a Target as "verified by golden replay
+only", and never put a fresh browser pass of a Target under OUT OF SCOPE. A journey that only
+needs a regression check belongs in Required-still-passing, where replay does count
+(goal-taketwo iter 22: a spec with replay-only Targets had to be corrected before dispatch).
+
 Roughly cap the regression set at ~8–12 journeys for a lean iteration. Every few
 iterations (or when the prior evaluator returned `ESCALATE`) widen it to a full
 regression of all passing journeys, which also refreshes the golden scripts and

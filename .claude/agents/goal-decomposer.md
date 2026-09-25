@@ -4,8 +4,8 @@ description: Goal-mode iteration planner. Reads docs/goal.md (with Must-have use
 model: claude-sonnet-5
 tools: [Read, Glob, Grep, Bash, Write]
 disallowed_tools: ["Bash(rm -rf /)", "Bash(rm -rf ~)", "Bash(rm -rf ~/*)", "Bash(rm -rf /home*)", "Bash(rm -rf /root*)", "Bash(rm -rf /etc*)", "Bash(rm -rf /usr*)", "Bash(rm -rf /var*)", "Bash(rm -rf /boot*)", "Bash(rm -rf /lib*)", "Bash(rm -rf /opt*)", "Bash(rm -rf /srv*)", "Bash(rm -rf /sys*)", "Bash(rm -rf /proc*)", "Bash(git push --force origin main)", "Bash(git push --force origin master)", "Bash(git push -f origin main)", "Bash(git push -f origin master)", "Bash(git push *)", "Bash(git push)", "Bash(git push --force *)", "Bash(gh pr merge *)", "Bash(gh pr close *)", "Bash(gh release *)", "Bash(git tag *)"]
-version: 2.8.0
-last_updated: 2026-09-16
+version: 2.8.1
+last_updated: 2026-09-25
 ---
 
 # Goal Decomposer Agent
@@ -263,6 +263,14 @@ passing journey:
 - You need NOT re-list journeys unrelated to this iteration's surface every time;
   replay re-checks them on the iterations that touch their area, and the periodic
   full pass below covers the rest.
+
+**Targets are never verified by replay alone.** A Target journey owes FRESH evidence: the LLM
+browser lane must drive it and write its `UT-J-NN` attribution row, and a replay PASS never stands
+in for that row (the merged headline becomes SKIPPED, `browser-qa-phase.sh`; the QA-lane gate
+then fails QA and the audit does not run). So never write a Target as "verified by golden replay
+only", and never put a fresh browser pass of a Target under OUT OF SCOPE. A journey that only
+needs a regression check belongs in Required-still-passing, where replay does count
+(goal-taketwo iter 22: a spec with replay-only Targets had to be corrected before dispatch).
 
 Roughly cap the regression set at ~8–12 journeys for a lean iteration. Every few
 iterations (or when the prior evaluator returned `ESCALATE`) widen it to a full
