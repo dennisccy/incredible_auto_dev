@@ -197,8 +197,12 @@ def gate_text(qa_text: str, lane_text: "str | None", lane_path: str,
                 lines[i] = f"{AGENT_VERDICT_LABEL} {m.group(1)}\n"
 
     described = {"MISSING": "no results file", "UNPARSEABLE": "no parseable, self-consistent headline",
-                 "FINDINGS": "`Browser QA Verdict: FAIL` on non-blocking rows only"}
-    lane_desc = described.get(status, f"`Browser QA Verdict: {status}`")
+                 "SKIPPED": "`Browser QA Verdict: SKIPPED`"}
+    file_headline = file_top_verdict(lane_text or "") or "none"
+    # The gate's own DoD assessment is never presented as the file's headline: a lane can read
+    # PASS while a pre-run-P1 check it skipped still blocks (goal-taketwo iter 18).
+    lane_desc = described.get(status) or (
+        f"file headline `Browser QA Verdict: {file_headline}`; gate DoD assessment **{status}**")
     plan_desc = f"`{_display(plan_path)}`" if plan_text else "none available (every non-journey failure blocks)"
     section = [
         "", "", SECTION_HEADING, "",
@@ -262,7 +266,7 @@ def cmd_apply(qa_path: str, lane_path: str, lane_required: str, plan_path: str =
         # Postcondition: the machine verdict reader must now see a failing report.
         print(f"qa_lane_gate: INTERNAL ERROR — {qa_path} still reads as passing after the rewrite", file=sys.stderr)
         return 1
-    print(f"qa_lane_gate: QA verdict overridden to FAIL — required browser lane is {status} ({_display(lane_path)})")
+    print(f"qa_lane_gate: QA verdict overridden to FAIL — required browser lane fails the DoD ({status}) ({_display(lane_path)})")
     return OVERRIDDEN_EXIT
 
 
@@ -388,6 +392,8 @@ def _self_test() -> int:
 
         rc, out = run(qa_pass, lane_p1_skip)
         check(rc == OVERRIDDEN_EXIT and "UT-01: SKIP" in out, "Q: a skipped pre-run-P1 check blocks (unverified DoD item)")
+        check("file headline `Browser QA Verdict: PASS`; gate DoD assessment **FAIL**" in out,
+              "Q: the gate's DoD assessment is never presented as the file's own headline")
 
         rc, out = run(qa_pass, lane_fail_no_rows)
         check(rc == OVERRIDDEN_EXIT, "R: FAIL headline with no FAIL row -> blocks (inconsistent lane)")
