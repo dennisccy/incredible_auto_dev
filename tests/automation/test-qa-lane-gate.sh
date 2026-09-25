@@ -25,6 +25,9 @@
 #      marks P2 (goal-taketwo iter 13's UT-06) -> completes; QA recorded as
 #      PASS_WITH_NOTES citing the row; audit runs.
 #   G. QA agent PASS + a failing row the pre-run plan marks P1 -> fails like A.
+#   H. QA agent PASS + lane headline PASS whose only journey row reads
+#      `PASS (with disclosed … caveat, not a product defect)` (goal-taketwo iter 19,
+#      anti-pattern 38) -> fails like A: a qualified journey PASS is not a pass.
 #
 # No API calls; a few seconds per case.
 set -euo pipefail
@@ -64,7 +67,7 @@ write_stub() {
   } > "$out"
 }
 
-# make_sandbox <tag> <qa-verdict> <lane-headline|none|P2FAIL|P1FAIL> <frontend yes|no>
+# make_sandbox <tag> <qa-verdict> <lane-headline|none|P2FAIL|P1FAIL|QUALIFIED> <frontend yes|no>
 make_sandbox() {
   local tag="$1" qa_verdict="$2" lane="$3" frontend="$4"
   SBX="$WORK/proj-$tag"
@@ -99,6 +102,14 @@ make_sandbox() {
         printf '| UT-01 | smoke | smoke | P1 | ok | error | FAIL | s.png |\n'
       fi
     } > "$SBX/reports/phase-${PHASE}-ui-test-results.md"
+  elif [[ "$lane" == "QUALIFIED" ]]; then
+    {
+      printf '# Phase %s — UI Test Results\n\n**Browser QA Verdict:** PASS\n\n## Results Table\n' "$PHASE"
+      printf '| Test ID | Name | Type | Priority | Expected | Actual | Verdict | Evidence |\n|---|---|---|---|---|---|---|---|\n'
+      printf '| UT-01 | smoke | smoke | P1 | ok | ok | PASS | s.png |\n'
+      printf '| **UT-J-01** | upload | journey | P1 | none Reused from cache | Reused from cache (setup warmed it) | PASS (with disclosed test-contamination caveat, not a product defect) | a.png |\n'
+    } > "$SBX/reports/phase-${PHASE}-ui-test-results.md"
+    cp "$SBX/reports/phase-${PHASE}-ui-test-results.md" "$WORK/lane-$tag.orig"
   elif [[ "$lane" != "none" ]]; then
     {
       printf '# Phase %s — UI Test Results\n\n**Browser QA Verdict:** %s\n\n## Results Table\n' "$PHASE" "$lane"
@@ -219,6 +230,17 @@ rc=0; run_phase g || rc=$?
   && assert "G: a failing pre-run-P1 check fails QA (qa_failed), row cited" "pass" \
   || assert "G: a failing pre-run-P1 check fails QA (rc=$rc)" "fail"
 [[ "$(count phase-audit.sh)" == "0" ]] && assert "G: audit never ran" "pass" || assert "G: audit never ran" "fail"
+
+# ══ Case H: a qualified journey PASS — the iter-19 caveated green ════════════
+make_sandbox h PASS QUALIFIED yes
+rc=0; run_phase h || rc=$?
+[[ $rc -ne 0 ]] && step_is qa_failed && ! qa_passes \
+  && grep -q 'UT-J-01: qualified PASS' "$SBX/reports/qa/${PHASE}-qa.md" \
+  && assert "H: a qualified journey PASS fails QA (qa_failed), row cited" "pass" \
+  || { assert "H: a qualified journey PASS fails QA (rc=$rc)" "fail"; sed -n '1,60p' "$WORK/run-h.log"; }
+cmp -s "$SBX/reports/phase-${PHASE}-ui-test-results.md" "$WORK/lane-h.orig" \
+  && assert "H: browser-lane results untouched" "pass" || assert "H: browser-lane results untouched" "fail"
+[[ "$(count phase-audit.sh)" == "0" ]] && assert "H: audit never ran" "pass" || assert "H: audit never ran" "fail"
 
 echo ""
 echo "=== Results: $PASS passed, $FAIL failed ==="

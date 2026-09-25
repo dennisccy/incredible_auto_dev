@@ -126,22 +126,25 @@ def cell_verdict(cell: str) -> str:
     return "SKIP" if v == "SKIPPED" else v
 
 
-def row_verdict(cells: "list[str]") -> str:
-    """The row's verdict. The template's Verdict column wins when it parses;
-    otherwise the cells are scanned in REVERSE order, because in every template
-    shape the verdict sits to the RIGHT of the free-prose Expected/Actual cells
-    (anti-pattern 28: the verdict column must outrank prose that happens to
-    start with a verdict word). "" when no cell parses as a verdict — an
-    unparseable row is UNKNOWN, never an implicit PASS."""
-    if len(cells) > _C_VERDICT:
-        v = cell_verdict(cells[_C_VERDICT])
-        if v:
-            return v
+def row_verdict_cell(cells: "list[str]") -> str:
+    """The cell the row's verdict is read from. The template's Verdict column wins
+    when it parses; otherwise the cells are scanned in REVERSE order, because in
+    every template shape the verdict sits to the RIGHT of the free-prose
+    Expected/Actual cells (anti-pattern 28: the verdict column must outrank prose
+    that happens to start with a verdict word). "" when no cell parses."""
+    if len(cells) > _C_VERDICT and cell_verdict(cells[_C_VERDICT]):
+        return cells[_C_VERDICT]
     for c in reversed(cells):
-        v = cell_verdict(c)
-        if v:
-            return v
+        if cell_verdict(c):
+            return c
     return ""
+
+
+def row_verdict(cells: "list[str]") -> str:
+    """The row's verdict (see row_verdict_cell). "" when no cell parses as a
+    verdict — an unparseable row is UNKNOWN, never an implicit PASS."""
+    cell = row_verdict_cell(cells)
+    return cell_verdict(cell) if cell else ""
 
 
 def parse_rows(text: str) -> "list[dict]":
@@ -158,6 +161,7 @@ def parse_rows(text: str) -> "list[dict]":
         if cells and all(set(c) <= {"-", ":"} for c in cells if c):
             continue
         rows.append({"test_id": test_id, "cells": cells, "verdict": row_verdict(cells),
+                     "verdict_cell": row_verdict_cell(cells),
                      "raw": "| " + test_id + " |" + m.group(2) + "|"})
     return rows
 

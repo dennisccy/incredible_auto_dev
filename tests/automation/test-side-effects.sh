@@ -4176,10 +4176,12 @@ grep -q '^## Side-effect policy' "$DB" && grep -q 'E16' "$DB" && grep -q 'E15' "
   && grep -q 'Side-effect context' "$QB" && grep -q 'side-effects.json' "$MS" && grep -q '^6\. \*\*Side effects' "$MS" \
   && assert "W6: decomposer / evaluator / browser-qa contracts and the evaluator methodology document HARD-3" "pass" \
   || assert "W6: agent contracts" "fail"
-[[ "$(sed -n 's/^version: //p' "$ENGINE_ROOT/agents/goal-decomposer/agent.yaml")" == "2.8.0" \
-   && "$(sed -n 's/^version: //p' "$ENGINE_ROOT/agents/goal-evaluator/agent.yaml")" == "1.13.0" \
-   && "$(sed -n 's/^version: //p' "$ENGINE_ROOT/agents/browser-qa-agent/agent.yaml")" == "1.4.0" ]] \
-  && assert "W7: agent versions bumped (decomposer 2.8.0, evaluator 1.13.0, browser-qa-agent 1.4.0)" "pass" \
+# At least the version this feature introduced: a later, unrelated bump must not fail W7.
+_ver_ge() { [[ "$(printf '%s\n%s\n' "$2" "$1" | sort -V | head -1)" == "$2" ]]; }
+_agent_ver() { sed -n 's/^version: //p' "$ENGINE_ROOT/agents/$1/agent.yaml"; }
+_ver_ge "$(_agent_ver goal-decomposer)" 2.8.0 && _ver_ge "$(_agent_ver goal-evaluator)" 1.13.0 \
+  && _ver_ge "$(_agent_ver browser-qa-agent)" 1.4.0 \
+  && assert "W7: agent versions bumped (decomposer >= 2.8.0, evaluator >= 1.13.0, browser-qa-agent >= 1.4.0)" "pass" \
   || assert "W7: agent version bumps" "fail"
 python3 "$ENGINE_ROOT/scripts/automation/sync-cli-assets.py" --cli claude --check >/dev/null 2>&1 \
   && assert "W8: sync-cli-assets --check is clean (mirrors match the neutral sources)" "pass" \

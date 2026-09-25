@@ -18,6 +18,11 @@ against the lane:
   - the lane is missing, has no parseable `Browser QA Verdict` headline, or reads SKIPPED
     (the lane's own finalizer writes SKIPPED when a target journey got no fresh evidence);
   - a FAIL row for a journey (`UT-J-NN`, or a row naming a J-NN) — journeys are the DoD;
+  - a QUALIFIED PASS on a journey row — a verdict cell with words after the token, such as
+    `PASS (with disclosed caveat, not a product defect)` (anti-pattern 38). A journey passes
+    only when every acceptance clause held, so its verdict cell is the bare token; caveats
+    belong in the Actual cell, and an observation that contradicts a clause is FAIL whatever
+    the cause (goal-taketwo iter 19: a contradicted J-01 clause was recorded as a PASS);
   - a FAIL row, or a non-journey SKIP row, that the PRE-RUN test plan (`--test-plan`,
     written by the UI test designer before the lane ran) marks P1 or does not list at all
     (unknown priority fails closed);
@@ -74,6 +79,18 @@ _PLAN_ROW_RE = re.compile(r"^\|\s*[*_`~]*(UT-[^|\s*_`~]+)[*_`~]*\s*\|(.*)\|\s*$"
 _PRIORITY_RE = re.compile(r"^[*_`\s]*(P[0-3])\b")
 _PLAN_SECTION_RE = re.compile(r"^#{2,4}\s+(UT-[^\s:—–-]+(?:-[^\s:—–]+)*)")
 _PLAN_PRIORITY_LINE_RE = re.compile(r"^\*\*Priority:\*\*\s*(P[0-3])\b")
+# The verdict token leading a cell (emphasis tolerated), and the qualifier words after it.
+_LEADING_TOKEN_RE = re.compile(r"^[\s*_`~]*(?:PASS|FAIL|SKIPPED|SKIP)[*_`~]*", re.IGNORECASE)
+_WORD_RE = re.compile(r"[^\W_]", re.UNICODE)
+
+
+def verdict_qualifier(cell: str) -> str:
+    """The words a verdict cell carries after its token ("" for a bare `PASS`,
+    `**PASS**` or `PASS ✓`). Only letters/digits count: emphasis, punctuation and
+    symbols alone never make a verdict qualified."""
+    m = _LEADING_TOKEN_RE.match(cell or "")
+    rest = cell[m.end():] if m else ""
+    return rest.strip() if _WORD_RE.search(rest) else ""
 
 
 def plan_priorities(text: "str | None") -> "dict[str, str]":
@@ -130,10 +147,15 @@ def assess_lane(text: "str | None", priorities: "dict[str, str]") -> "tuple[str,
     fail_rows = 0
     for r in parse_rows(text):
         v = r["verdict"] or "UNKNOWN"
-        if v == "PASS":
-            continue
         tid = r["test_id"]
         journeys = row_journeys(r)
+        if v == "PASS":
+            if journeys and verdict_qualifier(r.get("verdict_cell", "")):
+                # A journey verdict with conditions attached is not a pass (anti-pattern 38).
+                blocking.append(f"{tid}: qualified PASS `{r['verdict_cell']}` (journey "
+                                f"{', '.join(sorted(journeys))}) — a journey row passes only with a bare "
+                                "PASS; caveats belong in Actual and a contradicted acceptance clause is FAIL")
+            continue
         pri = priorities.get(tid, "")
         if v in ("FAIL", "UNKNOWN"):
             fail_rows += v == "FAIL"
@@ -207,8 +229,9 @@ def gate_text(qa_text: str, lane_text: "str | None", lane_path: str,
     section = [
         "", "", SECTION_HEADING, "",
         "- **Rule:** a QA verdict cannot pass while this phase's required browser lane fails its DoD: "
-        "a missing/SKIPPED lane, a failing journey row, or a failing (or skipped) check the pre-run "
-        "test plan marks P1 or does not list (`scripts/automation/lib/qa_lane_gate.py`, anti-pattern 36). "
+        "a missing/SKIPPED lane, a failing or qualified-PASS journey row, or a failing (or skipped) check "
+        "the pre-run test plan marks P1 or does not list (`scripts/automation/lib/qa_lane_gate.py`, "
+        "anti-patterns 36 and 38). "
         "The QA agent's own browser spot-checks never substitute for that lane.",
         f"- **Authoritative browser lane:** `{_display(lane_path)}` — {lane_desc}.",
         f"- **Pre-run test plan (priority source):** {plan_desc}.",
@@ -294,6 +317,10 @@ def _self_test() -> int:
     lane_pass_headline_journey_fail = lane("PASS", row("UT-J-02", "**FAIL**"))
     lane_p1_skip = lane("PASS", row("UT-J-01", "PASS"), row("UT-01", "SKIP", "P1"))
     lane_fail_no_rows = lane("FAIL", row("UT-J-01", "PASS"))
+    lane_journey_qualified = lane("PASS", row(
+        "UT-J-01", "PASS (with disclosed test-contamination caveat, not a product defect)"))
+    lane_journey_bare_styled = lane("PASS", row("UT-J-01", "**PASS**"), row("UT-J-07", "PASS ✓"))
+    lane_nonjourney_qualified = lane("PASS", row("UT-J-01", "PASS"), row("UT-01", "PASS (slow but correct)"))
     qa_pass = ("# p QA Validation Report\n\n**Verdict:** PASS\n\n## Browser Checks\n\nAll good.\n\n"
                "**Verdict:** PASS_WITH_NOTES\n")
 
@@ -397,6 +424,21 @@ def _self_test() -> int:
 
         rc, out = run(qa_pass, lane_fail_no_rows)
         check(rc == OVERRIDDEN_EXIT, "R: FAIL headline with no FAIL row -> blocks (inconsistent lane)")
+
+        rc, out = run(qa_pass, lane_journey_qualified)
+        check(rc == OVERRIDDEN_EXIT and "UT-J-01: qualified PASS" in out and not passes(),
+              "T: a qualified PASS on a journey row blocks (anti-pattern 38)")
+
+        rc, out = run(qa_pass, lane_journey_bare_styled)
+        check(rc == 0 and out == qa_pass, "U: emphasis or a symbol around a journey PASS is still bare")
+
+        rc, out = run(qa_pass, lane_nonjourney_qualified)
+        check(rc == 0 and out == qa_pass, "V: a qualified PASS on a non-journey row does not block")
+
+        check(all(verdict_qualifier(c) == "" for c in ("PASS", "**PASS**", "PASS ✓", "`PASS`.", "")),
+              "W: bare verdict cells carry no qualifier")
+        check(all(verdict_qualifier(c) for c in ("PASS (with caveat)", "**PASS** — step 3 partial", "PASS: see note")),
+              "W: worded annotations are qualifiers")
 
         check(plan_priorities(plan) == {"UT-01": "P1", "UT-06": "P2", "UT-07": "P3"}, "S: plan priorities parsed")
         check(plan_priorities("| UT-05 | x | y | P1 | s |\n### UT-05 — x\n**Priority:** P2\n") == {"UT-05": "P1"},

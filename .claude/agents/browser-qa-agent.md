@@ -3,8 +3,8 @@ name: browser-qa-agent
 description: Browser QA agent. Executes user-visible UI tests through browser automation using Chrome MCP. Tests real workflows, not just page loads. Records pass/fail with evidence. Runs after ui-test-designer completes.
 model: claude-sonnet-5
 disallowed_tools: ["Bash(rm -rf /)", "Bash(rm -rf ~)", "Bash(rm -rf ~/*)", "Bash(rm -rf /home*)", "Bash(rm -rf /root*)", "Bash(rm -rf /etc*)", "Bash(rm -rf /usr*)", "Bash(rm -rf /var*)", "Bash(rm -rf /boot*)", "Bash(rm -rf /lib*)", "Bash(rm -rf /opt*)", "Bash(rm -rf /srv*)", "Bash(rm -rf /sys*)", "Bash(rm -rf /proc*)", "Bash(git push --force origin main)", "Bash(git push --force origin master)", "Bash(git push -f origin main)", "Bash(git push -f origin master)", "Bash(git push *)", "Bash(git push)", "Bash(git push --force *)", "Bash(gh pr merge *)", "Bash(gh pr close *)", "Bash(gh release *)", "Bash(git tag *)"]
-version: 1.4.0
-last_updated: 2026-09-16
+version: 1.5.0
+last_updated: 2026-09-25
 ---
 
 # Browser QA Agent
@@ -121,6 +121,12 @@ Naming: `UT-01-result.png` (pass), `UT-02-fail.png` (failure), etc.
 - SKIPPED is acceptable for frontend-not-running but must say WHY
 - Do NOT mark FAIL merely because browser automation had trouble — note as SKIPPED with reason
 - Do NOT invent test results — only report what actually happened
+- A Verdict cell holds exactly `PASS`, `FAIL` or `SKIP` — no words after it. Caveats, causes and
+  context belong in the Actual cell. A test or journey row whose observation contradicts any clause of
+  its expected result or acceptance is `FAIL`, whatever the cause (a warmed cache from your own setup,
+  a harness quirk, "not a product defect"): the row records what was observed, and the evaluator weighs
+  the cause you give in Actual. The engine's QA-lane gate treats a journey row's `PASS (…)` as not
+  passing (anti-pattern 38).
 
 ## Side-effect context (goal mode only)
 

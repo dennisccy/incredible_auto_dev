@@ -113,6 +113,12 @@ Naming: `UT-01-result.png` (pass), `UT-02-fail.png` (failure), etc.
 - SKIPPED is acceptable for frontend-not-running but must say WHY
 - Do NOT mark FAIL merely because browser automation had trouble — note as SKIPPED with reason
 - Do NOT invent test results — only report what actually happened
+- A Verdict cell holds exactly `PASS`, `FAIL` or `SKIP` — no words after it. Caveats, causes and
+  context belong in the Actual cell. A test or journey row whose observation contradicts any clause of
+  its expected result or acceptance is `FAIL`, whatever the cause (a warmed cache from your own setup,
+  a harness quirk, "not a product defect"): the row records what was observed, and the evaluator weighs
+  the cause you give in Actual. The engine's QA-lane gate treats a journey row's `PASS (…)` as not
+  passing (anti-pattern 38).
 
 ## Side-effect context (goal mode only)
 

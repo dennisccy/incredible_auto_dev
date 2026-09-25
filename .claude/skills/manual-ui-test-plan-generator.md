@@ -52,6 +52,15 @@ This skill describes how to create a human-executable UI test plan with exact st
 - Include exact text: "type 'invalid@' in the Email field"
 - Include exact expected values: "expect the message 'Item created successfully' to appear"
 
+### Test data rules:
+- Never use a fixture or record that the goal or phase spec reserves for one journey (for example a
+  `docs/goal.md` fixture table entry "used only by J-NN") as setup input for any other test case. The
+  browser lane runs every test case against the same backend, so that setup contaminates the reserved
+  journey: a warmed cache, shifted labels or changed storage make its acceptance unprovable
+  (goal-taketwo iter 19: a setup that imported J-01's cold-ingest fixture made J-01 read
+  "Reused from cache"). Pick a non-reserved fixture, and name it in Preconditions; if none fits, say so
+  there instead of borrowing a reserved one.
+
 ### Expected result writing rules:
 - Describe the visual outcome the operator should observe
 - Include specific text, elements, or states to look for
