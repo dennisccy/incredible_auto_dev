@@ -131,14 +131,14 @@ echo \$\$ > '$t6b/wrapper.pid'
   t8=$(mktemp -d); fh="$t8/home"; sid="sess-v4"
   mkdir -p "$fh/.claude/projects/-slug/$sid/subagents"
   # Pump transcript: the Agent tool_result row carrying the subagent attribution.
-  printf '%s\n' '{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"tu1","content":"done"}]},"toolUseResult":{"agentId":"x1","agentType":"developer","resolvedModel":"claude-sonnet-5","totalDurationMs":1234,"prompt":"You are the developer agent for goal-mode lean iteration."}}' \
+  printf '%s\n' '{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"tu1","content":"done"}]},"toolUseResult":{"agentId":"x1","agentType":"developer","resolvedModel":"claude-sonnet-5-5","totalDurationMs":1234,"prompt":"You are the developer agent for goal-mode lean iteration."}}' \
     > "$fh/.claude/projects/-slug/$sid.jsonl"
   # Subagent transcript: two messages, the second repeated as a streaming
   # snapshot (LAST row wins: output 25, not 20+25).
   {
-    printf '%s\n' '{"type":"assistant","message":{"id":"d1","model":"claude-sonnet-5","usage":{"input_tokens":1,"output_tokens":10,"cache_read_input_tokens":100,"cache_creation_input_tokens":5},"content":[{"type":"text","text":"working"}]}}'
-    printf '%s\n' '{"type":"assistant","message":{"id":"d2","model":"claude-sonnet-5","usage":{"input_tokens":2,"output_tokens":20,"cache_read_input_tokens":200,"cache_creation_input_tokens":6},"content":[{"type":"text","text":"Handoff written to docs/handoffs/dev.md"}]}}'
-    printf '%s\n' '{"type":"assistant","message":{"id":"d2","model":"claude-sonnet-5","usage":{"input_tokens":2,"output_tokens":25,"cache_read_input_tokens":200,"cache_creation_input_tokens":6},"content":[{"type":"text","text":"Handoff written to docs/handoffs/dev.md (final)"}]}}'
+    printf '%s\n' '{"type":"assistant","message":{"id":"d1","model":"claude-sonnet-5-5","usage":{"input_tokens":1,"output_tokens":10,"cache_read_input_tokens":100,"cache_creation_input_tokens":5},"content":[{"type":"text","text":"working"}]}}'
+    printf '%s\n' '{"type":"assistant","message":{"id":"d2","model":"claude-sonnet-5-5","usage":{"input_tokens":2,"output_tokens":20,"cache_read_input_tokens":200,"cache_creation_input_tokens":6},"content":[{"type":"text","text":"Handoff written to docs/handoffs/dev.md"}]}}'
+    printf '%s\n' '{"type":"assistant","message":{"id":"d2","model":"claude-sonnet-5-5","usage":{"input_tokens":2,"output_tokens":25,"cache_read_input_tokens":200,"cache_creation_input_tokens":6},"content":[{"type":"text","text":"Handoff written to docs/handoffs/dev.md (final)"}]}}'
   } > "$fh/.claude/projects/-slug/$sid/subagents/agent-x1.jsonl"
   r8="$t8/req.5-cccccc.ready"
   printf '{"agent":"developer","prompt":"You are the developer agent for goal-mode lean iteration.","cwd":"/x","res_path":"%s","out":"%s","usage_path":"%s"}\n' \
@@ -148,7 +148,7 @@ echo \$\$ > '$t6b/wrapper.pid'
   if [[ "$(cat "$t8/req.5-cccccc.res" 2>/dev/null)" == "0" ]]; then echo "  PASS finish: .res written with the exit code"; else echo "  FAIL finish: .res missing/wrong ($(cat "$t8/req.5-cccccc.res" 2>/dev/null))"; fails=1; fi
   if [[ "$(cat "$t8/req.5-cccccc.out" 2>/dev/null)" == "Handoff written to docs/handoffs/dev.md (final)" ]]; then echo "  PASS finish: out = subagent's final message from its transcript"; else echo "  FAIL finish: out content ($(cat "$t8/req.5-cccccc.out" 2>/dev/null))"; fails=1; fi
   u8="$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); u=d["usage"]; print(d["model"], d["num_turns"], d["duration_ms"], u["input_tokens"], u["output_tokens"], u["cache_read_input_tokens"], u["cache_creation_input_tokens"])' "$t8/req.5-cccccc.usage" 2>/dev/null || true)"
-  if [[ "$u8" == "claude-sonnet-5 2 1234 3 35 300 11" ]]; then echo "  PASS finish: usage sidecar summed with snapshot dedupe (last row wins)"; else echo "  FAIL finish: usage sidecar (got '$u8')"; fails=1; fi
+  if [[ "$u8" == "claude-sonnet-5-5 2 1234 3 35 300 11" ]]; then echo "  PASS finish: usage sidecar summed with snapshot dedupe (last row wins)"; else echo "  FAIL finish: usage sidecar (got '$u8')"; fails=1; fi
   # Missing transcript → stub out, NO usage (honesty rule), .res still written (rc passthrough).
   r9="$t8/req.5-dddddd.ready"
   printf '{"agent":"reviewer","prompt":"p","cwd":"/x","res_path":"%s","out":"%s","usage_path":"%s"}\n' \

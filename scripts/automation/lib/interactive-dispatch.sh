@@ -850,7 +850,7 @@ _interactive_dispatch_self_test() {
   # Test 12 — analyze_telemetry.py aggregates the pump-emitted row (Test 9's
   # telemetry.jsonl) alongside a hand-built headless-shaped row with NO analyzer
   # changes: per-agent buckets and totals come out right.
-  printf '%s\n' '{"ts":"2026-07-16T00:00:00Z","session_id":"td-usage-test","iter":1,"event":"claude_usage","cli":"claude","agent":"reviewer","model":"claude-sonnet-5","num_turns":3,"duration_ms":1000,"total_cost_usd":0.01,"is_error":false,"usage":{"input_tokens":500,"output_tokens":100,"cache_read_input_tokens":4000,"cache_creation_input_tokens":0}}' >> "$td9/telemetry.jsonl"
+  printf '%s\n' '{"ts":"2026-07-16T00:00:00Z","session_id":"td-usage-test","iter":1,"event":"claude_usage","cli":"claude","agent":"reviewer","model":"claude-sonnet-5-5","num_turns":3,"duration_ms":1000,"total_cost_usd":0.01,"is_error":false,"usage":{"input_tokens":500,"output_tokens":100,"cache_read_input_tokens":4000,"cache_creation_input_tokens":0}}' >> "$td9/telemetry.jsonl"
   local _agg
   _agg="$(python3 "$(dirname "${BASH_SOURCE[0]}")/analyze_telemetry.py" --json "$td9/telemetry.jsonl" 2>/dev/null)"
   if [[ -n "$_agg" ]] \
