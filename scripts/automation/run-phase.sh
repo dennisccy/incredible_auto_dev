@@ -367,21 +367,31 @@ _qa_lane_gate_or_fail() {
   return "$_grc"
 }
 
-# The browser lane's DoD status as the gate sees it (qa_lane_gate.py lane-status):
-# PASS | FINDINGS | FAIL | SKIPPED | MISSING | UNPARSEABLE. An answer that cannot
-# be read counts as UNPARSEABLE (no usable evidence).
-_lane_dod_status() {
-  local _st
-  _st="$(python3 "$SCRIPT_DIR/lib/qa_lane_gate.py" lane-status "$UI_TEST_RESULTS" --test-plan "$UI_TEST_PLAN" 2>/dev/null || true)"
-  case "$_st" in
-    PASS|FINDINGS|FAIL|SKIPPED|MISSING|UNPARSEABLE) echo "$_st" ;;
-    *) echo "UNPARSEABLE" ;;
+# Read the browser lane's DoD status as the gate sees it (qa_lane_gate.py
+# lane-status) into LANE_DOD_STATUS: PASS | FINDINGS | FAIL | SKIPPED | MISSING |
+# UNPARSEABLE. Fails CLOSED like the gate: a status that cannot be read records
+# <checkpoint> and stops — no retry route is chosen on an unread lane. Call it
+# directly, never in $(...): fail() must end the phase, not a subshell.
+LANE_DOD_STATUS=""
+_read_lane_dod_status() {
+  local _checkpoint="$1" _rc=0
+  LANE_DOD_STATUS="$(python3 "$SCRIPT_DIR/lib/qa_lane_gate.py" lane-status "$UI_TEST_RESULTS" --test-plan "$UI_TEST_PLAN" 2>&1)" || _rc=$?
+  case "$_rc:$LANE_DOD_STATUS" in
+    0:PASS|0:FINDINGS|0:FAIL|0:SKIPPED|0:MISSING|0:UNPARSEABLE) ;;
+    *) fail "Browser-lane status could not be evaluated (exit $_rc: ${LANE_DOD_STATUS:0:200}) — refusing to choose a retry route on an unread lane. See: $UI_TEST_RESULTS" "$_checkpoint" ;;
   esac
+}
+
+# True when the lane gave no usable evidence at all (nothing was verified).
+_lane_evidence_missing() {
+  [[ "$LANE_DOD_STATUS" == "SKIPPED" || "$LANE_DOD_STATUS" == "MISSING" || "$LANE_DOD_STATUS" == "UNPARSEABLE" ]]
 }
 
 # Run the browser lane on the current code — Step 6, a qa_failed resume and the
 # Step 7 fix path share it. Stale results are cleared first so a crash before
-# the write cannot pass an old run off as this one's.
+# the write cannot pass an old run off as this one's. Quota that outlasts the
+# step's own waits stops the phase resumably (exit 75): the lane is required
+# evidence, so going on without it would only spend QA attempts on a MISSING lane.
 _run_browser_lane() {
   local _label="$1" _q=0 _rc
   rm -f "$UI_TEST_RESULTS"
@@ -390,7 +400,11 @@ _run_browser_lane() {
     _run_step "$SCRIPT_DIR/browser-qa-phase.sh" "$PHASE" || _rc=$?
     if [[ $_rc -eq 75 && $_q -lt 2 ]]; then _q=$((_q+1)); continue; fi
     _guard_step_rc "$_rc" "$_label"
-    [[ $_rc -ne 0 && $_rc -ne 75 ]] && log "  Warning: browser-qa-phase.sh exited with error -- continuing"
+    if [[ $_rc -eq 75 ]]; then
+      log "  $_label hit quota (exit 75) after its waits -- stopping resumably; the lane re-runs on resume."
+      exit 75
+    fi
+    [[ $_rc -ne 0 ]] && log "  Warning: browser-qa-phase.sh exited with error -- continuing"
     break
   done
   log "  Browser QA results: $UI_TEST_RESULTS"
@@ -748,14 +762,16 @@ if detect_frontend_in_plan "$PLAN_FILE"; then
 fi
 
 # Resume from qa_failed: QA is checked against the browser lane, so a lane that
-# fails the DoD is re-run BEFORE QA. Resuming against the same stale lane could
-# never pass — a SKIPPED lane left by a transient Chrome failure would fail every
-# resume. Only the lane re-runs; the showcase demo is not repeated.
+# gave NO usable evidence (SKIPPED / MISSING / UNPARSEABLE) is re-run BEFORE QA —
+# a SKIPPED lane left by a transient Chrome failure would otherwise fail every
+# resume. A lane with failing rows is not: it already ran on this code, so the
+# Step 7 loop fixes first and re-runs it then. Only the lane re-runs here; the
+# showcase demo is not repeated.
 LANE_RERUN_ONLY=false
 if [[ "$CURRENT_STEP" == "qa_failed" && "$SKIP_BROWSER_QA" == "true" ]] && _lane_required; then
-  _resume_lane_st="$(_lane_dod_status)"
-  if [[ "$_resume_lane_st" != "PASS" && "$_resume_lane_st" != "FINDINGS" ]]; then
-    log "  Resume: the required browser lane fails the DoD ($_resume_lane_st) -- re-running it before QA."
+  _read_lane_dod_status "qa_failed"
+  if _lane_evidence_missing; then
+    log "  Resume: the required browser lane gave no usable evidence ($LANE_DOD_STATUS) -- re-running it before QA."
     SKIP_BROWSER_QA=false
     LANE_RERUN_ONLY=true
   fi
@@ -1107,11 +1123,13 @@ fi
 # (the lane is final: Step 6 or the fanout ran first). A failure is then fixed
 # in the way that can change it — a QA retry against an unchanged lane never
 # could:
-#   - the required lane produced no usable evidence (SKIPPED / MISSING /
-#     UNPARSEABLE): re-run the lane only. Nothing in the code failed to verify,
-#     so a dev fix would be spent on nothing.
-#   - otherwise: dev fix + review, as always; when the lane fails the DoD, the
-#     lane then re-runs on the fixed code before QA retries.
+#   - the gate overturned the agent's PASS (the lane is the ONLY reason QA
+#     failed) and the lane produced no usable evidence (SKIPPED / MISSING /
+#     UNPARSEABLE): re-run the lane only — nothing failed in the code the agent
+#     checked, so a dev fix would be spent on nothing.
+#   - otherwise (the agent's own FAIL, or failing lane rows): dev fix + review,
+#     as always; then, when the lane fails the DoD, it re-runs on the fixed code
+#     before QA retries.
 iter_budget_check "qa-loop"
 if [[ "$SKIP_QA" == "false" ]]; then
   log "Step 7/11 -- QA loop (max $MAX_RETRIES attempts)..."
@@ -1119,8 +1137,10 @@ if [[ "$SKIP_QA" == "false" ]]; then
 
   while true; do
     QA_ATTEMPT=$((QA_ATTEMPT + 1))
+    qa_gate_rc=0
     if [[ "$QA_REOPENED" == "true" ]]; then
       QA_REOPENED=false
+      qa_gate_rc=3
       log "  [QA attempt $QA_ATTEMPT/$MAX_RETRIES] Using the overturned QA report on record (see its 'Browser lane gate' section)."
     else
       log "  [QA attempt $QA_ATTEMPT/$MAX_RETRIES] Running QA validator..."
@@ -1135,7 +1155,7 @@ if [[ "$SKIP_QA" == "false" ]]; then
       fi
       _guard_step_rc "$qa_rc" "Step 7 (qa)"
       [[ $qa_rc -ne 0 ]] && log "  Warning: qa-phase.sh exited with error (attempt $QA_ATTEMPT) -- checking verdict"
-      _qa_lane_gate_or_fail "qa_failed" || :   # 3 = rewritten to FAIL, read below
+      _qa_lane_gate_or_fail "qa_failed" || qa_gate_rc=$?   # 3 = rewritten to FAIL, read below
     fi
 
     if verdict_passes "$QA_REPORT"; then
@@ -1148,15 +1168,13 @@ if [[ "$SKIP_QA" == "false" ]]; then
       fail "QA failed after $MAX_RETRIES attempts. See: $QA_REPORT" "qa_failed"
     fi
 
-    qa_lane_st=""
-    _lane_required && qa_lane_st="$(_lane_dod_status)"
-    case "$qa_lane_st" in
-      SKIPPED|MISSING|UNPARSEABLE)
-        log "  QA: FAIL (attempt $QA_ATTEMPT) -- the required browser lane produced no usable evidence ($qa_lane_st): re-running it before QA retries (no dev fix: nothing in the code failed to verify)."
-        _run_browser_lane "Step 7 (browser lane re-run)"
-        continue
-        ;;
-    esac
+    LANE_DOD_STATUS=""
+    _lane_required && _read_lane_dod_status "qa_failed"
+    if [[ $qa_gate_rc -eq 3 ]] && _lane_evidence_missing; then
+      log "  QA: FAIL (attempt $QA_ATTEMPT) -- only the browser-lane gate failed it, and the lane produced no usable evidence ($LANE_DOD_STATUS): re-running the lane before QA retries (no dev fix: nothing the agent checked failed)."
+      _run_browser_lane "Step 7 (browser lane re-run)"
+      continue
+    fi
 
     log "  QA: FAIL (attempt $QA_ATTEMPT) -- fixing then re-reviewing..."
     log "    $(explain_phase qa_fail)"
@@ -1172,8 +1190,8 @@ if [[ "$SKIP_QA" == "false" ]]; then
     [[ $qr_rc -eq 75 ]] && { QA_ATTEMPT=$((QA_ATTEMPT - 1)); continue; }
     _guard_step_rc "$qr_rc" "Step 7 fix-mode (review)"
     [[ $qr_rc -ne 0 ]] && log "  Warning: review-phase.sh exited with error -- continuing"
-    if [[ "$qa_lane_st" == "FAIL" ]]; then
-      log "  The required browser lane fails the DoD -- re-running it on the fixed code before QA retries."
+    if [[ -n "$LANE_DOD_STATUS" && "$LANE_DOD_STATUS" != "PASS" && "$LANE_DOD_STATUS" != "FINDINGS" ]]; then
+      log "  The required browser lane fails the DoD ($LANE_DOD_STATUS) -- re-running it on the fixed code before QA retries."
       _run_browser_lane "Step 7 fix-mode (browser lane)"
     fi
   done

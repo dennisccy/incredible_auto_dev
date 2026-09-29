@@ -45,11 +45,11 @@ headline and the rows involved. The lane file itself is never touched.
 
 Every apply re-assesses the lane: a gate section already on record never exempts a report
 (an early "already gated" short-circuit let a PASS_WITH_NOTES survive a lane that turned
-red on a closure_failed resume, which re-runs the lane but not QA). The gate's own
-trailing section is replaced — never stacked — by one reflecting the current lane, and it
-keeps the verdicts the agent originally wrote. It carries no timestamp, so a re-apply over
-an unchanged lane is a no-op. An agent that quotes the heading gains nothing: only a
-trailing section in the gate's exact shape counts as the gate's.
+red on a closure_failed resume, which re-runs the lane but not QA). Every section the
+gate wrote is replaced — never stacked, even with agent prose added below it — by one
+reflecting the current lane, placed last and keeping the verdicts the agent originally
+wrote. It carries no timestamp, so a re-apply over an unchanged lane is a no-op. An agent
+that quotes the heading gains nothing: only a block in the gate's exact shape counts.
 
 Skipped JOURNEY rows are deliberately left to the lane headline. Which journeys owe fresh
 evidence is the lane finalizer's contract (merge_ui_test_results.py, REL-14): a skipped
@@ -205,18 +205,32 @@ def _display(path: str) -> str:
 
 
 def _split_gate_section(qa_text: str) -> "tuple[str, list[str] | None]":
-    """(report without the gate's own trailing section, the agent verdicts that section
-    recorded). The gate always appends its section LAST, in a fixed shape (heading, blank
-    line, the Rule bullet, then only bullets); anything else — including an agent quoting
-    the heading — is report prose and is kept."""
-    i = qa_text.rfind(_SECTION_START)
-    if i < 0:
-        return qa_text, None
-    tail = qa_text[i + 2:].splitlines()[1:]
-    if not all(l == "" or l.startswith(("- ", "  - ")) for l in tail):
-        return qa_text, None
-    m = _AGENT_VERDICT_RECORD_RE.search(qa_text, i)
-    return qa_text[:i], ([v.strip() for v in m.group(1).split(",")] if m else None)
+    """(report with every section the gate wrote removed, the agent verdicts the first one
+    recorded). A gate section is a block in the gate's fixed shape — heading, blank line,
+    the Rule bullet, then bullets and blank lines — ending after its last bullet, wherever
+    it sits: prose an agent added below an old section does not hide it. Anything else,
+    including an agent quoting the heading, is report prose and is kept."""
+    parts: list[str] = []
+    recorded: "list[str] | None" = None
+    pos = 0
+    while (i := qa_text.find(_SECTION_START, pos)) >= 0:
+        end = k = qa_text.index("\n", i + 2) + 1          # past the heading line
+        while k < len(qa_text):
+            nl = qa_text.find("\n", k)
+            nl = len(qa_text) if nl < 0 else nl
+            line = qa_text[k:nl]
+            if line and not line.startswith(("- ", "  - ")):
+                break
+            if line:
+                end = nl                                   # the block ends after its last bullet
+            k = nl + 1
+        if recorded is None:
+            m = _AGENT_VERDICT_RECORD_RE.search(qa_text, i, end)
+            recorded = [v.strip() for v in m.group(1).split(",")] if m else None
+        parts.append(qa_text[pos:i])
+        pos = end
+    parts.append(qa_text[pos:])
+    return "".join(parts), recorded
 
 
 def gate_text(qa_text: str, lane_text: "str | None", lane_path: str,
@@ -509,6 +523,13 @@ def _self_test() -> int:
 
         rc, out = run(gated, lane_pass)
         check(rc == 0 and out == gated, "AA: gated PASS_WITH_NOTES + lane now PASS -> report left as recorded")
+
+        appended = gated.rstrip("\n") + "\n\nRe-run note from the agent: checked again.\n"
+        rc, out = run(appended, lane_journey_fail)
+        check(rc == OVERRIDDEN_EXIT and out.count(SECTION_HEADING) == 1 and "Re-run note from the agent" in out
+              and out.index("Re-run note from the agent") < out.index(SECTION_HEADING)
+              and f"- **QA agent verdict:** PASS, PASS_WITH_NOTES — overridden" in out,
+              "AD: prose appended below a stale section -> the section is still replaced, not stacked")
 
         quoting = qa_pass + f"\nThe previous run said:\n\n{SECTION_HEADING}\n\n(quoted by the agent)\n"
         rc, out = run(quoting, lane_journey_fail)

@@ -25,6 +25,9 @@
 #   C.  QA agent PASS + lane SKIPPED (Chrome infra), stays SKIPPED -> the lane is
 #       re-run WITHOUT a dev fix (nothing in the code failed to verify); qa_failed.
 #   C2. Same, but the re-run lane reads PASS -> completes with no dev fix.
+#   C3. QA agent FAIL (its own checks) + a SKIPPED lane that stays SKIPPED -> the
+#       agent's FAIL still gets a dev fix every attempt (the lane-only route is
+#       for a QA failure the lane alone caused), and the lane re-runs after it.
 #   D.  backend-only phase (Frontend Present: no, no lane file) + QA PASS ->
 #       completes; gate is a no-op.
 #   E.  QA agent FAIL + lane FAIL -> the fix loop owns the agent FAIL (dev runs)
@@ -42,8 +45,15 @@
 #       run again.
 #   M.  Resume from qa_failed with a SKIPPED lane -> the lane re-runs BEFORE QA
 #       (not the demo), so a recovered browser lets the phase pass.
+#   M2. Resume from qa_failed with a FAILING lane on the same code -> no lane
+#       re-run before QA (it would repeat the same rows); the loop fixes, then
+#       re-runs the lane.
 #   N.  The gate crashes after the Step 9 hardening QA re-run -> fails closed
 #       (audit_qa_failed), never lets the agent's PASS stand unchecked.
+#   P.  The lane-status read crashes on a failing attempt -> fails closed
+#       (qa_failed); no fix route is chosen on an unread lane.
+#   Q.  The lane re-run keeps hitting the usage quota -> the phase stops
+#       resumably with exit 75 instead of burning QA attempts to qa_failed.
 #
 # No API calls; a few seconds per case.
 set -euo pipefail
@@ -145,6 +155,7 @@ make_sandbox() {
 #!/usr/bin/env bash
 R="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 echo "browser-qa-phase.sh" >> "${CANARY_FILE:-/dev/null}"
+[[ -f "$R/.lane-rerun-rc" ]] && exit "$(cat "$R/.lane-rerun-rc")"
 [[ -f "$R/.lane-rerun.md" ]] && cp "$R/.lane-rerun.md" "$R/reports/phase-$1-ui-test-results.md"
 exit 0
 STUB
@@ -177,7 +188,7 @@ run_phase() {
       CANARY_FILE="$CANARY" \
       CHAIN_BACKEND_PORT="$TEST_BE_PORT" CHAIN_FRONTEND_PORT="$TEST_FE_PORT" \
       CHAIN_TMP_ROOT="$WORK/tmproot" CHAIN_TMP_JANITOR=false CHAIN_TMP_DISK_GUARD=false \
-      CHAIN_DISABLE_TRACE=true \
+      CHAIN_DISABLE_TRACE=true CHAIN_CLAUDE_FALLBACK_SLEEP_SECONDS=0 \
       bash scripts/automation/run-phase.sh "$PHASE" ) > "$WORK/run-$tag.log" 2>&1 || rc=$?
   return $rc
 }
@@ -248,6 +259,14 @@ rc=0; run_phase c2 || rc=$?
 [[ $rc -eq 0 && "$(count dev-phase.sh)" == "0" && "$(count browser-qa-phase.sh)" == "1" && "$(count phase-audit.sh)" == "1" ]] \
   && assert "C2: a recovered lane lets the phase pass with no dev fix" "pass" \
   || { assert "C2: a recovered lane lets the phase pass with no dev fix (rc=$rc $(counts))" "fail"; sed -n '1,80p' "$WORK/run-c2.log"; }
+
+# ══ Case C3: an agent-owned FAIL beside a SKIPPED lane still gets its fix ════
+make_sandbox c3 FAIL SKIPPED yes
+rc=0; run_phase c3 || rc=$?
+[[ $rc -ne 0 ]] && step_is qa_failed && assert "C3: phase fails qa_failed" "pass" || assert "C3: phase fails qa_failed (rc=$rc)" "fail"
+[[ "$(count dev-phase.sh)" == "2" && "$(count browser-qa-phase.sh)" == "2" ]] \
+  && assert "C3: the agent's own FAIL got a dev fix each attempt, then a lane re-run" "pass" \
+  || assert "C3: the agent's own FAIL got a dev fix each attempt, then a lane re-run ($(counts))" "fail"
 
 # ══ Case D: backend-only phase — lane not required, gate is a no-op ══════════
 make_sandbox d PASS none no
@@ -359,6 +378,44 @@ rc=0; run_phase n || rc=$?
   || { assert "N: a gate crash after the hardening QA re-run fails closed (rc=$rc)" "fail"; sed -n '1,90p' "$WORK/run-n.log"; }
 [[ "$(count phase-audit.sh)" == "1" ]] && assert "N: no second audit on an unchecked QA verdict" "pass" \
   || assert "N: no second audit on an unchecked QA verdict (audit=$(count phase-audit.sh))" "fail"
+
+# ══ Case M2: qa_failed resume, failing lane on unchanged code ═══════════════
+make_sandbox m2 PASS FAIL yes PASS qa_failed
+mkdir -p "$SBX/reports/qa"
+printf '# QA\n\n**Verdict:** FAIL\n\nlane FAIL\n' > "$SBX/reports/qa/${PHASE}-qa.md"
+rc=0; run_phase m2 || rc=$?
+[[ $rc -eq 0 ]] && qa_passes && assert "M2: resumed phase fixes and passes" "pass" \
+  || { assert "M2: resumed phase fixes and passes (rc=$rc)" "fail"; sed -n '1,80p' "$WORK/run-m2.log"; }
+[[ "$(grep -m1 -E '^(browser-qa|qa)-phase\.sh$' "$CANARY" || true)" == "qa-phase.sh" \
+   && "$(count qa-phase.sh)" == "2" && "$(count dev-phase.sh)" == "1" && "$(count browser-qa-phase.sh)" == "1" ]] \
+  && assert "M2: QA first (no repeat lane run on unchanged code), then fix + lane re-run" "pass" \
+  || assert "M2: QA first, then fix + lane re-run ($(counts); first=$(grep -m1 -E '^(browser-qa|qa)-phase\.sh$' "$CANARY" || true))" "fail"
+
+# ══ Case P: lane-status cannot be read on a failing attempt ══════════════════
+make_sandbox p FAIL FAIL yes
+mv "$SBX/scripts/automation/lib/qa_lane_gate.py" "$SBX/scripts/automation/lib/qa_lane_gate_real.py"
+cat > "$SBX/scripts/automation/lib/qa_lane_gate.py" <<'PY2'
+#!/usr/bin/env python3
+# Test double: the real gate, except `lane-status` crashes.
+import os, runpy, sys
+here = os.path.dirname(os.path.abspath(__file__))
+if sys.argv[1:2] == ["lane-status"]:
+    raise SystemExit("simulated lane-status crash")
+runpy.run_path(os.path.join(here, "qa_lane_gate_real.py"), run_name="__main__")
+PY2
+rc=0; run_phase p || rc=$?
+[[ $rc -ne 0 ]] && step_is qa_failed && grep -q 'could not be evaluated' "$WORK/run-p.log" \
+   && [[ "$(count dev-phase.sh)" == "0" && "$(count browser-qa-phase.sh)" == "0" ]] \
+  && assert "P: an unreadable lane status fails closed; no fix route chosen" "pass" \
+  || { assert "P: an unreadable lane status fails closed (rc=$rc $(counts))" "fail"; sed -n '1,80p' "$WORK/run-p.log"; }
+
+# ══ Case Q: the lane re-run keeps hitting the usage quota ════════════════════
+make_sandbox q PASS SKIPPED yes
+echo 75 > "$SBX/.lane-rerun-rc"
+rc=0; run_phase q || rc=$?
+[[ $rc -eq 75 && "$(count qa-phase.sh)" == "1" ]] \
+  && assert "Q: quota during the lane re-run stops resumably (exit 75), no QA attempts burned" "pass" \
+  || { assert "Q: quota during the lane re-run stops resumably (rc=$rc $(counts))" "fail"; sed -n '1,80p' "$WORK/run-q.log"; }
 
 echo ""
 echo "=== Results: $PASS passed, $FAIL failed ==="
