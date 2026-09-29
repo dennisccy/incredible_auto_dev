@@ -41,8 +41,21 @@ blocking result each one is neutralised — the first becomes `**Verdict:** FAIL
 agent already wrote a FAIL verdict line) and the rest become
 `**Agent verdict (overridden by the browser-lane gate):** <value>`. Either way a
 `## Browser lane gate (deterministic)` section is appended naming the lane file, its
-headline and the rows involved. The output has no timestamp and the section is written
-once, so a re-apply is a no-op. The lane file itself is never touched.
+headline and the rows involved. The lane file itself is never touched.
+
+Every apply re-assesses the lane: a gate section already on record never exempts a report
+(an early "already gated" short-circuit let a PASS_WITH_NOTES survive a lane that turned
+red on a closure_failed resume, which re-runs the lane but not QA). The gate's own
+trailing section is replaced — never stacked — by one reflecting the current lane, and it
+keeps the verdicts the agent originally wrote. It carries no timestamp, so a re-apply over
+an unchanged lane is a no-op. An agent that quotes the heading gains nothing: only a
+trailing section in the gate's exact shape counts as the gate's.
+
+Skipped JOURNEY rows are deliberately left to the lane headline. Which journeys owe fresh
+evidence is the lane finalizer's contract (merge_ui_test_results.py, REL-14): a skipped
+target journey turns the headline SKIPPED (blocking here), while replay-lane SKIPs
+(unscripted, DEFERRED-BUDGET, voided) never block. Blocking every skipped journey row
+would turn those legitimate replay rows into QA failures.
 
 Usage:
   qa_lane_gate.py apply <qa-report.md> <ui-test-results.md> --lane-required yes|no
@@ -51,6 +64,9 @@ Usage:
                PASS_WITH_NOTES for non-blocking findings);
       exit 3 = the QA verdict was overridden to FAIL (file rewritten);
       exit 2 = usage error.
+  qa_lane_gate.py lane-status <ui-test-results.md> [--test-plan <ui-test-plan.md>]
+      prints the lane's DoD status: PASS | FINDINGS | FAIL | SKIPPED | MISSING |
+      UNPARSEABLE (run-phase.sh routes the Step 7 fix path on it).
   qa_lane_gate.py self-test
 """
 from __future__ import annotations
@@ -69,6 +85,10 @@ from merge_ui_test_results import file_top_verdict, parse_rows, row_journeys  # 
 OVERRIDDEN_EXIT = 3
 SECTION_HEADING = "## Browser lane gate (deterministic)"
 AGENT_VERDICT_LABEL = "**Agent verdict (overridden by the browser-lane gate):**"
+_RULE_BULLET = "- **Rule:** a QA verdict cannot pass while"
+# How the gate's own section begins (it is always appended last, after a blank line).
+_SECTION_START = f"\n\n{SECTION_HEADING}\n\n{_RULE_BULLET}"
+_AGENT_VERDICT_RECORD_RE = re.compile(r"^- \*\*QA agent verdict:\*\* (.+?) — (?:stands|overridden)", re.M)
 
 _PASSING = sorted((v.value for v in verdicts.PASSING_VERDICTS), key=len, reverse=True)
 # Same shape verdicts.check_verdict_file() accepts, so every line it would read as a
@@ -184,39 +204,57 @@ def _display(path: str) -> str:
     return path if rel.startswith("..") else rel
 
 
+def _split_gate_section(qa_text: str) -> "tuple[str, list[str] | None]":
+    """(report without the gate's own trailing section, the agent verdicts that section
+    recorded). The gate always appends its section LAST, in a fixed shape (heading, blank
+    line, the Rule bullet, then only bullets); anything else — including an agent quoting
+    the heading — is report prose and is kept."""
+    i = qa_text.rfind(_SECTION_START)
+    if i < 0:
+        return qa_text, None
+    tail = qa_text[i + 2:].splitlines()[1:]
+    if not all(l == "" or l.startswith(("- ", "  - ")) for l in tail):
+        return qa_text, None
+    m = _AGENT_VERDICT_RECORD_RE.search(qa_text, i)
+    return qa_text[:i], ([v.strip() for v in m.group(1).split(",")] if m else None)
+
+
 def gate_text(qa_text: str, lane_text: "str | None", lane_path: str,
               plan_text: "str | None" = None, plan_path: str = "") -> "tuple[str, str]":
-    """Return (new_qa_text, lane status). new_qa_text == qa_text when nothing changes."""
-    lines = qa_text.splitlines(keepends=True)
-    if not any(_PASS_LINE_RE.match(l.rstrip("\r\n")) for l in lines):
+    """Return (new_qa_text, lane status). new_qa_text == qa_text when nothing changes.
+
+    The lane is re-assessed on EVERY call: a gate section already on record never exempts
+    the report. It is replaced by one reflecting the current lane, so the lane turning red
+    after an earlier PASS_WITH_NOTES (a closure_failed resume re-runs the lane but not QA)
+    still overrides the verdict, and an unchanged lane leaves the report byte-identical."""
+    if not any(_PASS_LINE_RE.match(l.rstrip("\r\n")) for l in qa_text.splitlines()):
         return qa_text, ""
-    if SECTION_HEADING in qa_text:
-        return qa_text, "ALREADY-GATED"
     status, blocking, findings = assess_lane(lane_text, plan_priorities(plan_text))
     if status == "PASS":
+        # An earlier findings record, if any, stays as written: the verdict passes either way.
         return qa_text, status
 
-    agent_verdicts: list[str] = []
+    base, recorded = _split_gate_section(qa_text)
+    lines = base.splitlines(keepends=True)
+    passing = [i for i, l in enumerate(lines) if _PASS_LINE_RE.match(l.rstrip("\r\n"))]
+    # The agent's own words: a PASS the gate already turned into PASS_WITH_NOTES is still
+    # the agent's PASS, so a re-gate reports (and relabels) what the agent actually wrote.
+    agent_verdicts = [_PASS_LINE_RE.match(lines[i].rstrip("\r\n")).group(1) for i in passing]
+    if recorded and len(recorded) == len(agent_verdicts):
+        agent_verdicts = recorded
     if status == "FINDINGS":
-        for i, line in enumerate(lines):
-            m = _PASS_LINE_RE.match(line.rstrip("\r\n"))
-            if m:
-                agent_verdicts.append(m.group(1))
-                if m.group(1) == "PASS":
-                    lines[i] = "**Verdict:** PASS_WITH_NOTES\n"
+        for i, original in zip(passing, agent_verdicts):
+            if original == "PASS":
+                lines[i] = "**Verdict:** PASS_WITH_NOTES\n"
     else:
         has_fail_line = any(_FAIL_LINE_RE.match(l.rstrip("\r\n")) for l in lines)
-        for i, line in enumerate(lines):
-            m = _PASS_LINE_RE.match(line.rstrip("\r\n"))
-            if not m:
-                continue
-            agent_verdicts.append(m.group(1))
+        for i, original in zip(passing, agent_verdicts):
             if not has_fail_line:
-                lines[i] = (f"**Verdict:** FAIL\n{AGENT_VERDICT_LABEL} {m.group(1)} — see "
+                lines[i] = (f"**Verdict:** FAIL\n{AGENT_VERDICT_LABEL} {original} — see "
                             f"\"{SECTION_HEADING[3:]}\" below.\n")
                 has_fail_line = True
             else:
-                lines[i] = f"{AGENT_VERDICT_LABEL} {m.group(1)}\n"
+                lines[i] = f"{AGENT_VERDICT_LABEL} {original}\n"
 
     described = {"MISSING": "no results file", "UNPARSEABLE": "no parseable, self-consistent headline",
                  "SKIPPED": "`Browser QA Verdict: SKIPPED`"}
@@ -228,7 +266,7 @@ def gate_text(qa_text: str, lane_text: "str | None", lane_path: str,
     plan_desc = f"`{_display(plan_path)}`" if plan_text else "none available (every non-journey failure blocks)"
     section = [
         "", "", SECTION_HEADING, "",
-        "- **Rule:** a QA verdict cannot pass while this phase's required browser lane fails its DoD: "
+        f"{_RULE_BULLET} this phase's required browser lane fails its DoD: "
         "a missing/SKIPPED lane, a failing or qualified-PASS journey row, or a failing (or skipped) check "
         "the pre-run test plan marks P1 or does not list (`scripts/automation/lib/qa_lane_gate.py`, "
         "anti-patterns 36 and 38). "
@@ -250,9 +288,9 @@ def gate_text(qa_text: str, lane_text: "str | None", lane_path: str,
             section.append("- **Non-blocking findings (pre-run plan P2/P3):**")
             section.extend(f"  - {r}" for r in findings)
         section.append(
-            "- The browser result is not converted into a pass. Fix what the lane reports, re-run the "
-            "browser lane (`scripts/automation/browser-qa-phase.sh <phase>`), then QA; re-running QA "
-            "alone cannot change this verdict.")
+            "- The browser result is not converted into a pass. Only the lane can change this verdict: "
+            "fix what it reports, re-run it (`scripts/automation/browser-qa-phase.sh <phase>`; "
+            "run-phase.sh's QA fix loop does this itself), then QA. Re-running QA alone cannot change it.")
     body = "".join(lines).rstrip("\n")
     return body + "\n".join(section) + "\n", status
 
@@ -278,7 +316,7 @@ def cmd_apply(qa_path: str, lane_path: str, lane_required: str, plan_path: str =
     plan_text = _read(plan_path) if plan_path else None
     new_text, status = gate_text(qa_text, _read(lane_path), lane_path, plan_text, plan_path)
     if new_text == qa_text:
-        why = {"": "QA verdict is not passing", "ALREADY-GATED": "already gated"}.get(status, f"browser lane {status}")
+        why = "QA verdict is not passing" if not status else f"browser lane {status}"
         print(f"qa_lane_gate: consistent ({why}) — QA report unchanged")
         return 0
     Path(qa_path).write_text(new_text, encoding="utf-8")
@@ -291,6 +329,13 @@ def cmd_apply(qa_path: str, lane_path: str, lane_required: str, plan_path: str =
         return 1
     print(f"qa_lane_gate: QA verdict overridden to FAIL — required browser lane fails the DoD ({status}) ({_display(lane_path)})")
     return OVERRIDDEN_EXIT
+
+
+def lane_status(lane_path: str, plan_path: str = "") -> str:
+    """The lane's DoD status alone (assess_lane), for callers that route on it:
+    run-phase.sh re-runs a lane that produced no usable evidence without a dev fix."""
+    plan_text = _read(plan_path) if plan_path else None
+    return assess_lane(_read(lane_path), plan_priorities(plan_text))[0]
 
 
 def _self_test() -> int:
@@ -440,6 +485,55 @@ def _self_test() -> int:
         check(all(verdict_qualifier(c) for c in ("PASS (with caveat)", "**PASS** — step 3 partial", "PASS: see note")),
               "W: worded annotations are qualifiers")
 
+        # ── Re-gating (review finding #1): a gate section on record never exempts the
+        # report — the lane is re-assessed on every apply, so a lane that turned red
+        # after an earlier PASS_WITH_NOTES (closure_failed resume re-runs the lane but
+        # not QA; Step 9 hardening may leave the old report) is still caught.
+        rc, gated = run(qa_pass, lane_p2_fail)
+        rc, out = run(gated, lane_journey_fail)
+        check(rc == OVERRIDDEN_EXIT and not passes(), "X: gated PASS_WITH_NOTES + lane now fails a journey -> FAIL")
+        check(out.count(SECTION_HEADING) == 1 and "UT-J-06: FAIL (journey J-06)" in out
+              and "UT-06: FAIL (pre-run plan priority P2)" not in out.split(SECTION_HEADING)[0],
+              "X: the stale section is replaced, not stacked")
+        check(f"- **QA agent verdict:** PASS, PASS_WITH_NOTES — overridden" in out,
+              "X: the agent's ORIGINAL verdicts stay on record across a re-gate")
+        rc2, out2 = run(out, lane_journey_fail)
+        check(rc2 == 0 and out2 == out, "X: re-apply of the re-gated report is a no-op")
+
+        lane_p2_p3_fail = lane("FAIL", row("UT-J-01", "PASS"), row("UT-06", "FAIL", "P2"), row("UT-07", "FAIL", "P3"))
+        rc, out = run(gated, lane_p2_p3_fail)
+        check(rc == 0 and passes() and out.count(SECTION_HEADING) == 1 and "UT-07: FAIL (pre-run plan priority P3)" in out,
+              "Y: findings changed -> the section is refreshed in place and QA still passes")
+        check(f"- **QA agent verdict:** PASS, PASS_WITH_NOTES — stands" in out,
+              "Y: the refreshed section keeps the agent's original verdicts")
+
+        rc, out = run(gated, lane_pass)
+        check(rc == 0 and out == gated, "AA: gated PASS_WITH_NOTES + lane now PASS -> report left as recorded")
+
+        quoting = qa_pass + f"\nThe previous run said:\n\n{SECTION_HEADING}\n\n(quoted by the agent)\n"
+        rc, out = run(quoting, lane_journey_fail)
+        check(rc == OVERRIDDEN_EXIT and not passes() and "(quoted by the agent)" in out,
+              "Z: an agent quoting the gate heading is still gated; its prose is kept")
+
+        # ── Journey SKIP rows (review finding #4 — deliberately NOT blocking). Which
+        # journeys owe fresh evidence is the lane finalizer's contract (REL-14): a
+        # skipped TARGET journey turns the headline SKIPPED (case C), while replay-lane
+        # SKIPs (unscripted, DEFERRED-BUDGET, voided) never block. Pinned here so a
+        # future "block every skipped journey" change has to face that contract.
+        lane_nontarget_journey_skip = lane("PASS", row("UT-J-01", "PASS"), row("UT-J-02", "SKIP (unscripted replay)"))
+        rc, out = run(qa_pass, lane_nontarget_journey_skip)
+        check(rc == 0 and out == qa_pass, "AB: a skipped journey row under a PASS headline does not block (finalizer's job)")
+
+        # ── lane-status (run-phase.sh routes the Step 7 fix path on it).
+        for text, want in ((lane_pass, "PASS"), (lane_p2_fail, "FINDINGS"), (lane_journey_fail, "FAIL"),
+                           (lane_skipped, "SKIPPED"), (None, "MISSING"), ("# r\n\nno headline\n", "UNPARSEABLE")):
+            if lp.exists():
+                lp.unlink()
+            if text is not None:
+                lp.write_text(text, encoding="utf-8")
+            pp.write_text(plan, encoding="utf-8")
+            check(lane_status(str(lp), str(pp)) == want, f"AC: lane-status -> {want}")
+
         check(plan_priorities(plan) == {"UT-01": "P1", "UT-06": "P2", "UT-07": "P3"}, "S: plan priorities parsed")
         check(plan_priorities("| UT-05 | x | y | P1 | s |\n### UT-05 — x\n**Priority:** P2\n") == {"UT-05": "P1"},
               "S: conflicting plan priorities -> the stricter wins")
@@ -460,6 +554,9 @@ def main(argv: "list[str]") -> int:
                 return main([])
             plan = argv[6]
         return cmd_apply(argv[1], argv[2], argv[4], plan)
+    if argv[:1] == ["lane-status"] and (len(argv) == 2 or (len(argv) == 4 and argv[2] == "--test-plan")):
+        print(lane_status(argv[1], argv[3] if len(argv) == 4 else ""))
+        return 0
     print(__doc__.split("Usage:")[1].strip(), file=sys.stderr)
     return 2
 

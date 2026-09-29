@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # test-qa-lane-gate.sh — anti-pattern 36 regression test: run-phase.sh never
-# lets a QA PASS stand beside a required browser lane that is not PASS.
+# lets a QA PASS stand beside a required browser lane that is not PASS, and a
+# QA failure caused by that lane is retried in a way that can actually succeed.
 #
 # The bug (goal-taketwo iter 12): the browser lane read `Browser QA Verdict:
 # FAIL`, the QA agent wrote `**Verdict:** PASS` / "All validations passed", and
@@ -8,26 +9,41 @@
 #
 # Same phase-mode sandbox harness as test-audit-rerun-cap.sh: engine scripts
 # copied, step scripts stubbed (canary via $CANARY_FILE), run-phase.sh's own
-# logic runs for real. Each case resumes from checkpoint `browser_qa_complete`
-# (Steps 1-6 skipped, Step 7 QA loop live) with a pre-seeded browser-lane
-# results file and a Frontend Present: yes plan unless noted.
+# logic runs for real. Each case resumes from a checkpoint (default
+# `browser_qa_complete`: Steps 1-6 skipped, Step 7 QA loop live) with a
+# pre-seeded browser-lane results file and a Frontend Present: yes plan unless
+# noted. The browser-lane stub (browser-qa-phase.sh) writes the case's "re-run"
+# lane, so a re-run can keep the lane red or show it fixed. MAX_RETRIES is 3.
 #
-#   A. QA agent PASS + lane FAIL  -> phase fails qa_failed; QA report rewritten
-#      to FAIL naming the failing rows; no dev fix loop, no audit, no closure,
-#      no "ALL CHECKS PASSED"; the browser rows are not converted to PASS.
-#   B. QA agent PASS + lane PASS  -> completes; QA report byte-identical.
-#   C. QA agent PASS + lane SKIPPED (Chrome infra) -> fails like A.
-#   D. backend-only phase (Frontend Present: no, no lane file) + QA PASS ->
-#      completes; gate is a no-op.
-#   E. QA agent FAIL + lane FAIL  -> the ordinary Step 7 fix loop still owns an
-#      agent FAIL (dev fix-mode runs), unchanged semantics.
-#   F. QA agent PASS + the only failing row is a check the PRE-RUN test plan
-#      marks P2 (goal-taketwo iter 13's UT-06) -> completes; QA recorded as
-#      PASS_WITH_NOTES citing the row; audit runs.
-#   G. QA agent PASS + a failing row the pre-run plan marks P1 -> fails like A.
-#   H. QA agent PASS + lane headline PASS whose only journey row reads
-#      `PASS (with disclosed … caveat, not a product defect)` (goal-taketwo iter 19,
-#      anti-pattern 38) -> fails like A: a qualified journey PASS is not a pass.
+#   A.  QA agent PASS + lane FAIL, the lane stays red -> every QA attempt is
+#       gated to FAIL; each fix attempt runs dev + review and then RE-RUNS the
+#       browser lane (a QA retry against a stale lane could never pass); after 3
+#       QA attempts the phase fails qa_failed; no audit, closure or "ALL CHECKS
+#       PASSED"; the lane rows are never converted to PASS.
+#   A2. Same, but the fix works: the re-run lane reads PASS -> completes.
+#   B.  QA agent PASS + lane PASS  -> completes; QA report byte-identical.
+#   C.  QA agent PASS + lane SKIPPED (Chrome infra), stays SKIPPED -> the lane is
+#       re-run WITHOUT a dev fix (nothing in the code failed to verify); qa_failed.
+#   C2. Same, but the re-run lane reads PASS -> completes with no dev fix.
+#   D.  backend-only phase (Frontend Present: no, no lane file) + QA PASS ->
+#       completes; gate is a no-op.
+#   E.  QA agent FAIL + lane FAIL -> the fix loop owns the agent FAIL (dev runs)
+#       and re-runs the failing lane before each retry.
+#   F.  QA agent PASS + the only failing row is a check the PRE-RUN test plan
+#       marks P2 (goal-taketwo iter 13's UT-06) -> completes; QA recorded as
+#       PASS_WITH_NOTES citing the row; audit runs.
+#   G.  QA agent PASS + a failing row the pre-run plan marks P1 -> gated like A.
+#   H.  QA agent PASS + lane headline PASS whose only journey row reads
+#       `PASS (with disclosed … caveat, not a product defect)` (goal-taketwo iter 19,
+#       anti-pattern 38) -> gated like A: a qualified journey PASS is not a pass.
+#   K.  A QA PASS already on record (checkpoint audit_passed) beside a lane that
+#       now fails -> the QA loop re-opens at the fix step (no QA re-run first),
+#       and the steps that trusted the overturned verdict (UX regression, audit)
+#       run again.
+#   M.  Resume from qa_failed with a SKIPPED lane -> the lane re-runs BEFORE QA
+#       (not the demo), so a recovered browser lets the phase pass.
+#   N.  The gate crashes after the Step 9 hardening QA re-run -> fails closed
+#       (audit_qa_failed), never lets the agent's PASS stand unchecked.
 #
 # No API calls; a few seconds per case.
 set -euo pipefail
@@ -67,9 +83,45 @@ write_stub() {
   } > "$out"
 }
 
-# make_sandbox <tag> <qa-verdict> <lane-headline|none|P2FAIL|P1FAIL|QUALIFIED> <frontend yes|no>
+# write_lane <dest> <FAIL|PASS|SKIPPED|P2FAIL|P1FAIL|QUALIFIED>
+write_lane() {
+  local dest="$1" lane="$2"
+  if [[ "$lane" == "P2FAIL" || "$lane" == "P1FAIL" ]]; then
+    {
+      printf '# Phase %s — UI Test Results\n\n**Browser QA Verdict:** FAIL\n\n## Results Table\n' "$PHASE"
+      printf '| Test ID | Name | Type | Priority | Expected | Actual | Verdict | Evidence |\n|---|---|---|---|---|---|---|---|\n'
+      printf '| UT-J-01 | upload | journey | P1 | ok | ok | PASS | a.png |\n'
+      if [[ "$lane" == "P2FAIL" ]]; then
+        printf '| UT-01 | smoke | smoke | P1 | ok | ok | PASS | s.png |\n'
+        printf '| UT-06 | lifecycle | regression | P2 | excluded | still listed | FAIL | f.png |\n'
+      else
+        printf '| UT-01 | smoke | smoke | P1 | ok | error | FAIL | s.png |\n'
+      fi
+    } > "$dest"
+  elif [[ "$lane" == "QUALIFIED" ]]; then
+    {
+      printf '# Phase %s — UI Test Results\n\n**Browser QA Verdict:** PASS\n\n## Results Table\n' "$PHASE"
+      printf '| Test ID | Name | Type | Priority | Expected | Actual | Verdict | Evidence |\n|---|---|---|---|---|---|---|---|\n'
+      printf '| UT-01 | smoke | smoke | P1 | ok | ok | PASS | s.png |\n'
+      printf '| **UT-J-01** | upload | journey | P1 | none Reused from cache | Reused from cache (setup warmed it) | PASS (with disclosed test-contamination caveat, not a product defect) | a.png |\n'
+    } > "$dest"
+  else
+    {
+      printf '# Phase %s — UI Test Results\n\n**Browser QA Verdict:** %s\n\n## Results Table\n' "$PHASE" "$lane"
+      printf '| Test ID | Name | Type | Priority | Expected | Actual | Verdict | Evidence |\n|---|---|---|---|---|---|---|---|\n'
+      printf '| UT-J-01 | upload | browser | P1 | ok | ok | PASS | a.png |\n'
+      [[ "$lane" == "FAIL" ]] && printf '| UT-J-06 | correction | browser | P1 | ok | replay miss | FAIL | b.png |\n'
+      [[ "$lane" == "SKIPPED" ]] && printf '| UT-J-06 | correction | browser | P1 | ok | Chrome did not become ready | SKIP | - |\n'
+      true
+    } > "$dest"
+  fi
+}
+
+# make_sandbox <tag> <qa-verdict> <lane|none> <frontend yes|no> [re-run lane] [checkpoint]
+#   re-run lane: what browser-qa-phase.sh writes when the engine re-runs the lane
+#   (default: the same as <lane>, i.e. the lane stays as it is).
 make_sandbox() {
-  local tag="$1" qa_verdict="$2" lane="$3" frontend="$4"
+  local tag="$1" qa_verdict="$2" lane="$3" frontend="$4" rerun="${5:-$3}" checkpoint="${6:-browser_qa_complete}"
   SBX="$WORK/proj-$tag"
   CANARY="$WORK/canary-$tag.log"
   : > "$CANARY"
@@ -86,44 +138,28 @@ make_sandbox() {
   write_stub ux-regression-phase.sh "UX-REGRESSION-PASS"   "reports/phase-${PHASE}-ux-regression.md"
   write_stub phase-audit.sh         "PASS"                 "docs/handoffs/${PHASE}-audit.md"
   write_stub phase-closure-check.sh "CLOSURE-PASS"         "reports/phase-${PHASE}-closure-verdict.md"
+  write_stub demo-phase.sh          ""
+  # The browser lane: writes the case's re-run lane (never the engine's business
+  # to convert it — the rows are whatever the lane produced).
+  cat > "$SBX/scripts/automation/browser-qa-phase.sh" <<'STUB'
+#!/usr/bin/env bash
+R="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+echo "browser-qa-phase.sh" >> "${CANARY_FILE:-/dev/null}"
+[[ -f "$R/.lane-rerun.md" ]] && cp "$R/.lane-rerun.md" "$R/reports/phase-$1-ui-test-results.md"
+exit 0
+STUB
 
   # The pre-run UI test plan (the gate's only priority source).
   printf '# UI test plan\n\n| ID | Name | Type | Priority | Surface |\n|---|---|---|---|---|\n| UT-01 | smoke | smoke | P1 | / |\n| UT-06 | lifecycle | regression | P2 | / |\n' \
     > "$SBX/reports/phase-${PHASE}-ui-test-plan.md"
-  if [[ "$lane" == "P2FAIL" || "$lane" == "P1FAIL" ]]; then
-    {
-      printf '# Phase %s — UI Test Results\n\n**Browser QA Verdict:** FAIL\n\n## Results Table\n' "$PHASE"
-      printf '| Test ID | Name | Type | Priority | Expected | Actual | Verdict | Evidence |\n|---|---|---|---|---|---|---|---|\n'
-      printf '| UT-J-01 | upload | journey | P1 | ok | ok | PASS | a.png |\n'
-      if [[ "$lane" == "P2FAIL" ]]; then
-        printf '| UT-01 | smoke | smoke | P1 | ok | ok | PASS | s.png |\n'
-        printf '| UT-06 | lifecycle | regression | P2 | excluded | still listed | FAIL | f.png |\n'
-      else
-        printf '| UT-01 | smoke | smoke | P1 | ok | error | FAIL | s.png |\n'
-      fi
-    } > "$SBX/reports/phase-${PHASE}-ui-test-results.md"
-  elif [[ "$lane" == "QUALIFIED" ]]; then
-    {
-      printf '# Phase %s — UI Test Results\n\n**Browser QA Verdict:** PASS\n\n## Results Table\n' "$PHASE"
-      printf '| Test ID | Name | Type | Priority | Expected | Actual | Verdict | Evidence |\n|---|---|---|---|---|---|---|---|\n'
-      printf '| UT-01 | smoke | smoke | P1 | ok | ok | PASS | s.png |\n'
-      printf '| **UT-J-01** | upload | journey | P1 | none Reused from cache | Reused from cache (setup warmed it) | PASS (with disclosed test-contamination caveat, not a product defect) | a.png |\n'
-    } > "$SBX/reports/phase-${PHASE}-ui-test-results.md"
+  if [[ "$lane" != "none" ]]; then
+    write_lane "$SBX/reports/phase-${PHASE}-ui-test-results.md" "$lane"
     cp "$SBX/reports/phase-${PHASE}-ui-test-results.md" "$WORK/lane-$tag.orig"
-  elif [[ "$lane" != "none" ]]; then
-    {
-      printf '# Phase %s — UI Test Results\n\n**Browser QA Verdict:** %s\n\n## Results Table\n' "$PHASE" "$lane"
-      printf '| Test ID | Name | Type | Priority | Expected | Actual | Verdict | Evidence |\n|---|---|---|---|---|---|---|---|\n'
-      printf '| UT-J-01 | upload | browser | P1 | ok | ok | PASS | a.png |\n'
-      [[ "$lane" == "FAIL" ]] && printf '| UT-J-06 | correction | browser | P1 | ok | replay miss | FAIL | b.png |\n'
-      [[ "$lane" == "SKIPPED" ]] && printf '| UT-J-06 | correction | browser | P1 | ok | Chrome did not become ready | SKIP | - |\n'
-      true
-    } > "$SBX/reports/phase-${PHASE}-ui-test-results.md"
-    cp "$SBX/reports/phase-${PHASE}-ui-test-results.md" "$WORK/lane-$tag.orig"
+    write_lane "$SBX/.lane-rerun.md" "$rerun"
   fi
 
   printf '# %s Execution Plan\n\nFrontend Present: %s\n' "$PHASE" "$frontend" > "$SBX/runs/$PHASE/plan.md"
-  printf '{"phase":"%s","status":"in_progress","current_step":"browser_qa_complete"}\n' "$PHASE" \
+  printf '{"phase":"%s","status":"in_progress","current_step":"%s"}\n' "$PHASE" "$checkpoint" \
     > "$SBX/runs/$PHASE/status.json"
 }
 
@@ -147,10 +183,12 @@ run_phase() {
 }
 
 count() { local c; c="$(grep -c "^$1\$" "$CANARY" 2>/dev/null || true)"; echo "${c:-0}"; }
+counts() { echo "qa=$(count qa-phase.sh) dev=$(count dev-phase.sh) lane=$(count browser-qa-phase.sh) audit=$(count phase-audit.sh)"; }
 qa_passes() { python3 "$SBX/scripts/automation/lib/verdicts.py" check-verdict "$SBX/reports/qa/${PHASE}-qa.md"; }
 step_is() { grep -q "\"current_step\": \"$1\"" "$SBX/runs/$PHASE/status.json"; }
+lane_is() { cmp -s "$SBX/reports/phase-${PHASE}-ui-test-results.md" "$1"; }
 
-# ══ Case A: QA PASS + lane FAIL — the iter-12 false green ═══════════════════
+# ══ Case A: QA PASS + lane FAIL that stays red — the iter-12 false green ═════
 make_sandbox a PASS FAIL yes
 rc=0; run_phase a || rc=$?
 [[ $rc -ne 0 ]] && assert "A: phase fails (rc=$rc)" "pass" \
@@ -161,17 +199,26 @@ qa_passes && assert "A: QA report no longer reads as passing" "fail" || assert "
 grep -q '^\*\*Verdict:\*\* FAIL$' "$SBX/reports/qa/${PHASE}-qa.md" && grep -q 'UT-J-06: FAIL' "$SBX/reports/qa/${PHASE}-qa.md" \
   && assert "A: QA report says FAIL and names the failing lane row" "pass" \
   || assert "A: QA report says FAIL and names the failing lane row" "fail"
-cmp -s "$SBX/reports/phase-${PHASE}-ui-test-results.md" "$WORK/lane-a.orig" \
-  && assert "A: browser-lane results untouched (FAIL never converted)" "pass" \
-  || assert "A: browser-lane results untouched (FAIL never converted)" "fail"
-[[ "$(count qa-phase.sh)" == "1" && "$(count dev-phase.sh)" == "0" ]] \
-  && assert "A: QA ran once and no futile dev fix loop ran" "pass" \
-  || assert "A: QA ran once and no futile dev fix loop ran (qa=$(count qa-phase.sh) dev=$(count dev-phase.sh))" "fail"
+lane_is "$WORK/lane-a.orig" \
+  && assert "A: browser-lane results never converted (still the lane's own FAIL)" "pass" \
+  || assert "A: browser-lane results never converted (still the lane's own FAIL)" "fail"
+[[ "$(count qa-phase.sh)" == "3" && "$(count dev-phase.sh)" == "2" && "$(count browser-qa-phase.sh)" == "2" ]] \
+  && assert "A: each fix attempt re-ran the browser lane before QA retried (3 QA, 2 dev, 2 lane)" "pass" \
+  || assert "A: each fix attempt re-ran the browser lane before QA retried ($(counts))" "fail"
 [[ "$(count phase-audit.sh)" == "0" && "$(count phase-closure-check.sh)" == "0" ]] \
   && assert "A: audit and closure never ran on the gated FAIL" "pass" \
   || assert "A: audit and closure never ran (audit=$(count phase-audit.sh) closure=$(count phase-closure-check.sh))" "fail"
 grep -q 'ALL CHECKS PASSED' "$WORK/run-a.log" \
   && assert "A: no ALL CHECKS PASSED banner" "fail" || assert "A: no ALL CHECKS PASSED banner" "pass"
+
+# ══ Case A2: the fix works — the re-run lane passes ═══════════════════════════
+make_sandbox a2 PASS FAIL yes PASS
+rc=0; run_phase a2 || rc=$?
+[[ $rc -eq 0 ]] && qa_passes && assert "A2: phase completes once the re-run lane passes" "pass" \
+  || { assert "A2: phase completes once the re-run lane passes (rc=$rc)" "fail"; sed -n '1,80p' "$WORK/run-a2.log"; }
+[[ "$(count qa-phase.sh)" == "2" && "$(count dev-phase.sh)" == "1" && "$(count browser-qa-phase.sh)" == "1" && "$(count phase-audit.sh)" == "1" ]] \
+  && assert "A2: one fix, one lane re-run, QA retried once, audit ran" "pass" \
+  || assert "A2: one fix, one lane re-run, QA retried once, audit ran ($(counts))" "fail"
 
 # ══ Case B: QA PASS + lane PASS — consistent, unchanged ══════════════════════
 make_sandbox b PASS PASS yes
@@ -181,15 +228,26 @@ rc=0; run_phase b || rc=$?
 qa_passes && ! grep -q 'Browser lane gate' "$SBX/reports/qa/${PHASE}-qa.md" \
   && assert "B: QA report still passing and not annotated" "pass" \
   || assert "B: QA report still passing and not annotated" "fail"
-[[ "$(count phase-audit.sh)" == "1" ]] && assert "B: audit ran" "pass" || assert "B: audit ran (got $(count phase-audit.sh))" "fail"
+[[ "$(count phase-audit.sh)" == "1" && "$(count browser-qa-phase.sh)" == "0" ]] \
+  && assert "B: audit ran; the passing lane was not re-run" "pass" || assert "B: audit ran; lane not re-run ($(counts))" "fail"
 
-# ══ Case C: QA PASS + lane SKIPPED (browser infra) — unverified is not PASS ══
+# ══ Case C: QA PASS + lane SKIPPED (browser infra) that stays SKIPPED ════════
 make_sandbox c PASS SKIPPED yes
 rc=0; run_phase c || rc=$?
 [[ $rc -ne 0 ]] && step_is qa_failed && ! qa_passes \
   && assert "C: SKIPPED required lane fails QA (qa_failed)" "pass" \
   || assert "C: SKIPPED required lane fails QA (rc=$rc)" "fail"
+[[ "$(count dev-phase.sh)" == "0" && "$(count browser-qa-phase.sh)" == "2" && "$(count qa-phase.sh)" == "3" ]] \
+  && assert "C: an evidence-less lane is re-run with NO dev fix (3 QA, 0 dev, 2 lane)" "pass" \
+  || assert "C: an evidence-less lane is re-run with NO dev fix ($(counts))" "fail"
 [[ "$(count phase-audit.sh)" == "0" ]] && assert "C: audit never ran" "pass" || assert "C: audit never ran" "fail"
+
+# ══ Case C2: the browser recovers on the re-run ══════════════════════════════
+make_sandbox c2 PASS SKIPPED yes PASS
+rc=0; run_phase c2 || rc=$?
+[[ $rc -eq 0 && "$(count dev-phase.sh)" == "0" && "$(count browser-qa-phase.sh)" == "1" && "$(count phase-audit.sh)" == "1" ]] \
+  && assert "C2: a recovered lane lets the phase pass with no dev fix" "pass" \
+  || { assert "C2: a recovered lane lets the phase pass with no dev fix (rc=$rc $(counts))" "fail"; sed -n '1,80p' "$WORK/run-c2.log"; }
 
 # ══ Case D: backend-only phase — lane not required, gate is a no-op ══════════
 make_sandbox d PASS none no
@@ -198,14 +256,14 @@ rc=0; run_phase d || rc=$?
   && assert "D: backend-only phase completes with its QA PASS intact" "pass" \
   || { assert "D: backend-only phase completes with its QA PASS intact (rc=$rc)" "fail"; sed -n '1,60p' "$WORK/run-d.log"; }
 
-# ══ Case E: QA agent FAIL — the ordinary fix loop still owns it ══════════════
+# ══ Case E: QA agent FAIL beside a failing lane ══════════════════════════════
 make_sandbox e FAIL FAIL yes
 rc=0; run_phase e || rc=$?
 [[ $rc -ne 0 ]] && step_is qa_failed && assert "E: agent FAIL still fails qa_failed" "pass" \
   || assert "E: agent FAIL still fails qa_failed (rc=$rc)" "fail"
-[[ "$(count dev-phase.sh)" -ge 1 ]] \
-  && assert "E: dev fix-mode ran for an agent-owned QA FAIL (unchanged semantics)" "pass" \
-  || assert "E: dev fix-mode ran for an agent-owned QA FAIL (dev=$(count dev-phase.sh))" "fail"
+[[ "$(count dev-phase.sh)" == "2" && "$(count browser-qa-phase.sh)" == "2" ]] \
+  && assert "E: dev fix-mode ran for the agent FAIL, and the failing lane re-ran after each fix" "pass" \
+  || assert "E: dev fix-mode ran, and the failing lane re-ran after each fix ($(counts))" "fail"
 grep -q 'Browser lane gate' "$SBX/reports/qa/${PHASE}-qa.md" \
   && assert "E: agent FAIL report not annotated by the gate" "fail" || assert "E: agent FAIL report not annotated by the gate" "pass"
 
@@ -220,7 +278,8 @@ qa_passes && grep -q '^\*\*Verdict:\*\* PASS_WITH_NOTES$' "$SBX/reports/qa/${PHA
 grep -q 'UT-06: FAIL (pre-run plan priority P2)' "$SBX/reports/qa/${PHASE}-qa.md" \
   && assert "F: the P2 finding is cited in the QA report" "pass" \
   || assert "F: the P2 finding is cited in the QA report" "fail"
-[[ "$(count phase-audit.sh)" == "1" ]] && assert "F: audit ran" "pass" || assert "F: audit ran (got $(count phase-audit.sh))" "fail"
+[[ "$(count phase-audit.sh)" == "1" && "$(count browser-qa-phase.sh)" == "0" ]] \
+  && assert "F: audit ran; a findings-only lane is not re-run" "pass" || assert "F: audit ran; lane not re-run ($(counts))" "fail"
 
 # ══ Case G: a pre-run-P1 check fails — DoD failure, blocks ═══════════════════
 make_sandbox g PASS P1FAIL yes
@@ -238,9 +297,68 @@ rc=0; run_phase h || rc=$?
   && grep -q 'UT-J-01: qualified PASS' "$SBX/reports/qa/${PHASE}-qa.md" \
   && assert "H: a qualified journey PASS fails QA (qa_failed), row cited" "pass" \
   || { assert "H: a qualified journey PASS fails QA (rc=$rc)" "fail"; sed -n '1,60p' "$WORK/run-h.log"; }
-cmp -s "$SBX/reports/phase-${PHASE}-ui-test-results.md" "$WORK/lane-h.orig" \
+lane_is "$WORK/lane-h.orig" \
   && assert "H: browser-lane results untouched" "pass" || assert "H: browser-lane results untouched" "fail"
 [[ "$(count phase-audit.sh)" == "0" ]] && assert "H: audit never ran" "pass" || assert "H: audit never ran" "fail"
+
+# ══ Case K: a recorded QA PASS overturned by the lane re-opens the QA loop ═══
+make_sandbox k PASS FAIL yes PASS audit_passed
+mkdir -p "$SBX/reports/qa"
+printf '# QA\n\n**Verdict:** PASS\n\nAll validations passed.\n' > "$SBX/reports/qa/${PHASE}-qa.md"
+rc=0; run_phase k || rc=$?
+[[ $rc -eq 0 ]] && qa_passes && assert "K: overturned QA re-opens the loop and the fixed phase completes" "pass" \
+  || { assert "K: overturned QA re-opens the loop and the fixed phase completes (rc=$rc)" "fail"; sed -n '1,80p' "$WORK/run-k.log"; }
+[[ "$(count dev-phase.sh)" == "1" && "$(count browser-qa-phase.sh)" == "1" && "$(count qa-phase.sh)" == "1" ]] \
+  && assert "K: fix first — no QA re-run before the fix (1 dev, 1 lane, 1 QA)" "pass" \
+  || assert "K: fix first — no QA re-run before the fix ($(counts))" "fail"
+[[ "$(count ux-regression-phase.sh)" == "1" && "$(count phase-audit.sh)" == "1" ]] \
+  && assert "K: UX regression and audit re-ran (they trusted the overturned verdict)" "pass" \
+  || assert "K: UX regression and audit re-ran (ux=$(count ux-regression-phase.sh) $(counts))" "fail"
+
+# ══ Case M: resume from qa_failed re-runs a SKIPPED lane before QA ═══════════
+make_sandbox m PASS SKIPPED yes PASS qa_failed
+mkdir -p "$SBX/reports/qa"
+printf '# QA\n\n**Verdict:** FAIL\n\nlane SKIPPED\n' > "$SBX/reports/qa/${PHASE}-qa.md"
+rc=0; run_phase m || rc=$?
+[[ $rc -eq 0 ]] && qa_passes && assert "M: resumed phase passes once the lane recovers" "pass" \
+  || { assert "M: resumed phase passes once the lane recovers (rc=$rc)" "fail"; sed -n '1,80p' "$WORK/run-m.log"; }
+[[ "$(grep -m1 -E '^(browser-qa|qa)-phase\.sh$' "$CANARY" || true)" == "browser-qa-phase.sh" \
+   && "$(count browser-qa-phase.sh)" == "1" && "$(count qa-phase.sh)" == "1" && "$(count dev-phase.sh)" == "0" ]] \
+  && assert "M: the lane re-ran BEFORE QA; one QA attempt, no dev fix" "pass" \
+  || assert "M: the lane re-ran BEFORE QA ($(counts); first=$(grep -m1 -E '^(browser-qa|qa)-phase\.sh$' "$CANARY" || true))" "fail"
+[[ "$(count demo-phase.sh)" == "0" ]] && assert "M: the showcase demo is not re-run for a lane re-run" "pass" \
+  || assert "M: the showcase demo is not re-run for a lane re-run (demo=$(count demo-phase.sh))" "fail"
+
+# ══ Case N: the gate crashes after the Step 9 hardening QA re-run ════════════
+make_sandbox n PASS PASS yes
+mv "$SBX/scripts/automation/lib/qa_lane_gate.py" "$SBX/scripts/automation/lib/qa_lane_gate_real.py"
+cat > "$SBX/scripts/automation/lib/qa_lane_gate.py" <<'PY'
+#!/usr/bin/env python3
+# Test double: the real gate, except its 2nd `apply` crashes (the Step 9 hardening call).
+import os, runpy, sys
+here = os.path.dirname(os.path.abspath(__file__))
+if sys.argv[1:2] == ["apply"]:
+    cnt = os.path.join(here, ".gate-apply-calls")
+    n = (int(open(cnt).read()) if os.path.exists(cnt) else 0) + 1
+    open(cnt, "w").write(str(n))
+    if n == 2:
+        raise SystemExit("simulated qa_lane_gate crash")
+runpy.run_path(os.path.join(here, "qa_lane_gate_real.py"), run_name="__main__")
+PY
+cat > "$SBX/scripts/automation/phase-audit.sh" <<'STUB'
+#!/usr/bin/env bash
+R="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+echo "phase-audit.sh" >> "${CANARY_FILE:-/dev/null}"
+v=PASS; [[ "$(grep -c '^phase-audit.sh$' "${CANARY_FILE:-/dev/null}" || true)" == "1" ]] && v=FAIL
+mkdir -p "$R/docs/handoffs"; printf '# stub audit\n\n**Verdict:** %s\n' "$v" > "$R/docs/handoffs/$1-audit.md"
+exit 0
+STUB
+rc=0; run_phase n || rc=$?
+[[ $rc -ne 0 ]] && step_is audit_qa_failed \
+  && assert "N: a gate crash after the hardening QA re-run fails closed (audit_qa_failed)" "pass" \
+  || { assert "N: a gate crash after the hardening QA re-run fails closed (rc=$rc)" "fail"; sed -n '1,90p' "$WORK/run-n.log"; }
+[[ "$(count phase-audit.sh)" == "1" ]] && assert "N: no second audit on an unchecked QA verdict" "pass" \
+  || assert "N: no second audit on an unchecked QA verdict (audit=$(count phase-audit.sh))" "fail"
 
 echo ""
 echo "=== Results: $PASS passed, $FAIL failed ==="
