@@ -130,6 +130,7 @@ class PhaseStep(str, Enum):
     UI_IMPACT_COMPLETE = "ui_impact_complete"
     UI_TEST_DESIGNED = "ui_test_designed"
     BROWSER_QA_COMPLETE = "browser_qa_complete"
+    BROWSER_LANE_PENDING = "browser_lane_pending"  # a lane re-run stopped on quota (run-phase.sh _run_browser_lane)
     POST_DEV_PARALLEL_COMPLETE = "post_dev_parallel_complete"  # post-fanout checkpoint (run-phase.sh)
     UX_REGRESSION_COMPLETE = "ux_regression_complete"
     CLOSURE_PASSED = "closure_passed"

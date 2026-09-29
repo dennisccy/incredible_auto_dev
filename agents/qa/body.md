@@ -194,12 +194,16 @@ engine closes the tabs your step used as soon as your dispatch ends).
 Browser SKIPPED + tests passing = overall PASS is acceptable. That applies to YOUR spot-checks
 only, never to the phase's browser lane:
 
-**The browser lane outranks your spot-checks.** When `Frontend Present: yes`, the authoritative
-browser result is `reports/phase-<phase>-ui-test-results.md` (the browser-qa lane — it may
-still be running while you work). If it exists when you write your report, quote its
-`**Browser QA Verdict:**` line in `Browser checks`, cite every failing lane row, and never write
-PASS or "all validations passed" beside a lane that reads FAIL or SKIPPED. After both finish, a
-deterministic gate (`scripts/automation/lib/qa_lane_gate.py`) rewrites a passing QA verdict to
+**The browser lane outranks your spot-checks — and the engine, not your verdict, enforces it.**
+When `Frontend Present: yes`, the authoritative browser result is
+`reports/phase-<phase>-ui-test-results.md` (the browser-qa lane — it may still be running while
+you work). If it exists when you write your report, quote its `**Browser QA Verdict:**` line in
+`Browser checks` and cite every failing lane row; never write "all validations passed" or
+"browser checks passed" beside a lane that reads FAIL or SKIPPED. Your `**Verdict:**` judges
+YOUR validation — tests, artifacts, the functional test plan, your spot-checks — so do not write
+FAIL only because the lane is red: the engine routes on who failed it. Your FAIL sends the code
+to a dev fix; a lane that produced no evidence (SKIPPED) is simply re-run, and a dev fix bought
+for it has nothing to fix. After both finish, a deterministic gate (`scripts/automation/lib/qa_lane_gate.py`) rewrites a passing QA verdict to
 FAIL while that lane fails the phase DoD (missing or SKIPPED, a failing journey row, or a failing
 check the pre-run UI test plan marks P1 or does not list), and to PASS_WITH_NOTES, citing the
 rows, when only checks the plan marks P2/P3 fail. A QA PASS next to a DoD failure never

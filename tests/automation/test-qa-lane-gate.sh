@@ -45,15 +45,16 @@
 #       run again.
 #   M.  Resume from qa_failed with a SKIPPED lane -> the lane re-runs BEFORE QA
 #       (not the demo), so a recovered browser lets the phase pass.
-#   M2. Resume from qa_failed with a FAILING lane on the same code -> no lane
-#       re-run before QA (it would repeat the same rows); the loop fixes, then
-#       re-runs the lane.
+#   M2. Resume from qa_failed with a FAILING lane on the same code -> neither a
+#       lane re-run nor a QA run first (both would repeat what is on record): the
+#       loop starts at its fix step, then re-runs the lane, then QA.
 #   N.  The gate crashes after the Step 9 hardening QA re-run -> fails closed
 #       (audit_qa_failed), never lets the agent's PASS stand unchecked.
 #   P.  The lane-status read crashes on a failing attempt -> fails closed
 #       (qa_failed); no fix route is chosen on an unread lane.
 #   Q.  The lane re-run keeps hitting the usage quota -> the phase stops
-#       resumably with exit 75 instead of burning QA attempts to qa_failed.
+#       resumably with exit 75 at checkpoint browser_lane_pending (not the
+#       artifact-guessing quota_blocked), and the resume re-runs the lane first.
 #
 # No API calls; a few seconds per case.
 set -euo pipefail
@@ -386,10 +387,10 @@ printf '# QA\n\n**Verdict:** FAIL\n\nlane FAIL\n' > "$SBX/reports/qa/${PHASE}-qa
 rc=0; run_phase m2 || rc=$?
 [[ $rc -eq 0 ]] && qa_passes && assert "M2: resumed phase fixes and passes" "pass" \
   || { assert "M2: resumed phase fixes and passes (rc=$rc)" "fail"; sed -n '1,80p' "$WORK/run-m2.log"; }
-[[ "$(grep -m1 -E '^(browser-qa|qa)-phase\.sh$' "$CANARY" || true)" == "qa-phase.sh" \
-   && "$(count qa-phase.sh)" == "2" && "$(count dev-phase.sh)" == "1" && "$(count browser-qa-phase.sh)" == "1" ]] \
-  && assert "M2: QA first (no repeat lane run on unchanged code), then fix + lane re-run" "pass" \
-  || assert "M2: QA first, then fix + lane re-run ($(counts); first=$(grep -m1 -E '^(browser-qa|qa)-phase\.sh$' "$CANARY" || true))" "fail"
+[[ "$(grep -m1 -E '^(dev|browser-qa|qa)-phase\.sh$' "$CANARY" || true)" == "dev-phase.sh" \
+   && "$(count qa-phase.sh)" == "1" && "$(count dev-phase.sh)" == "1" && "$(count browser-qa-phase.sh)" == "1" ]] \
+  && assert "M2: fix first (no repeat lane or QA run on unchanged code), then lane re-run, then QA" "pass" \
+  || assert "M2: fix first, then lane re-run, then QA ($(counts); first=$(grep -m1 -E '^(dev|browser-qa|qa)-phase\.sh$' "$CANARY" || true))" "fail"
 
 # ══ Case P: lane-status cannot be read on a failing attempt ══════════════════
 make_sandbox p FAIL FAIL yes
@@ -413,9 +414,15 @@ rc=0; run_phase p || rc=$?
 make_sandbox q PASS SKIPPED yes
 echo 75 > "$SBX/.lane-rerun-rc"
 rc=0; run_phase q || rc=$?
-[[ $rc -eq 75 && "$(count qa-phase.sh)" == "1" ]] \
-  && assert "Q: quota during the lane re-run stops resumably (exit 75), no QA attempts burned" "pass" \
+[[ $rc -eq 75 && "$(count qa-phase.sh)" == "1" ]] && step_is browser_lane_pending \
+  && assert "Q: quota during the lane re-run stops resumably (exit 75, checkpoint browser_lane_pending)" "pass" \
   || { assert "Q: quota during the lane re-run stops resumably (rc=$rc $(counts))" "fail"; sed -n '1,80p' "$WORK/run-q.log"; }
+rm -f "$SBX/.lane-rerun-rc"; write_lane "$SBX/.lane-rerun.md" PASS; : > "$CANARY"
+rc=0; run_phase q-resume || rc=$?
+[[ $rc -eq 0 && "$(grep -m1 -E '^(browser-qa|qa)-phase\.sh$' "$CANARY" || true)" == "browser-qa-phase.sh" \
+   && "$(count phase-audit.sh)" == "1" ]] && qa_passes \
+  && assert "Q: the resume re-runs the lane first, then QA passes and the audit runs" "pass" \
+  || { assert "Q: the resume re-runs the lane first ($(counts) rc=$rc)" "fail"; sed -n '1,80p' "$WORK/run-q-resume.log"; }
 
 echo ""
 echo "=== Results: $PASS passed, $FAIL failed ==="

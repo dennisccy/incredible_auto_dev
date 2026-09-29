@@ -527,6 +527,11 @@ if python3 scripts/automation/lib/verdicts.py validate-step post_dev_parallel_co
 else
   _fail "verdicts.py rejects post_dev_parallel_complete — run-phase.sh:648 update_status would abort the run"
 fi
+if python3 scripts/automation/lib/verdicts.py validate-step browser_lane_pending >/dev/null 2>&1; then
+  _pass "verdicts.py validate-step accepts browser_lane_pending (lane quota-stop checkpoint)"
+else
+  _fail "verdicts.py rejects browser_lane_pending — run-phase.sh _run_browser_lane's quota stop would abort instead of stopping resumably"
+fi
 
 # ── 4b. Phase-script rc==0 fail-loud guards (ui-impact / ui-test-design) ──────
 # After a successful (rc==0) agent run, ui-impact-phase.sh and ui-test-design-phase.sh

@@ -375,10 +375,10 @@ _qa_lane_gate_or_fail() {
 LANE_DOD_STATUS=""
 _read_lane_dod_status() {
   local _checkpoint="$1" _rc=0
-  LANE_DOD_STATUS="$(python3 "$SCRIPT_DIR/lib/qa_lane_gate.py" lane-status "$UI_TEST_RESULTS" --test-plan "$UI_TEST_PLAN" 2>&1)" || _rc=$?
+  LANE_DOD_STATUS="$(python3 "$SCRIPT_DIR/lib/qa_lane_gate.py" lane-status "$UI_TEST_RESULTS" --test-plan "$UI_TEST_PLAN")" || _rc=$?
   case "$_rc:$LANE_DOD_STATUS" in
     0:PASS|0:FINDINGS|0:FAIL|0:SKIPPED|0:MISSING|0:UNPARSEABLE) ;;
-    *) fail "Browser-lane status could not be evaluated (exit $_rc: ${LANE_DOD_STATUS:0:200}) — refusing to choose a retry route on an unread lane. See: $UI_TEST_RESULTS" "$_checkpoint" ;;
+    *) fail "Browser-lane status could not be evaluated (exit $_rc, output '${LANE_DOD_STATUS:0:200}'; its error is logged above) — refusing to choose a retry route on an unread lane. See: $UI_TEST_RESULTS" "$_checkpoint" ;;
   esac
 }
 
@@ -390,8 +390,9 @@ _lane_evidence_missing() {
 # Run the browser lane on the current code — Step 6, a qa_failed resume and the
 # Step 7 fix path share it. Stale results are cleared first so a crash before
 # the write cannot pass an old run off as this one's. Quota that outlasts the
-# step's own waits stops the phase resumably (exit 75): the lane is required
-# evidence, so going on without it would only spend QA attempts on a MISSING lane.
+# step's own waits stops the phase resumably (exit 75, checkpoint
+# browser_lane_pending): the lane is required evidence, so going on without it
+# would only spend QA attempts on a MISSING lane.
 _run_browser_lane() {
   local _label="$1" _q=0 _rc
   rm -f "$UI_TEST_RESULTS"
@@ -401,7 +402,11 @@ _run_browser_lane() {
     if [[ $_rc -eq 75 && $_q -lt 2 ]]; then _q=$((_q+1)); continue; fi
     _guard_step_rc "$_rc" "$_label"
     if [[ $_rc -eq 75 ]]; then
-      log "  $_label hit quota (exit 75) after its waits -- stopping resumably; the lane re-runs on resume."
+      # An explicit checkpoint, not the quota_blocked that _run_step left: that one
+      # makes a resume guess from artifacts, and stale ones (an audit that trusted a
+      # since-overturned QA verdict) would skip the lane and QA altogether.
+      update_status "$PHASE" "blocked" "browser_lane_pending"
+      log "  $_label hit quota (exit 75) after its waits -- stopping resumably (checkpoint browser_lane_pending: the lane re-runs first on resume)."
       exit 75
     fi
     [[ $_rc -ne 0 ]] && log "  Warning: browser-qa-phase.sh exited with error -- continuing"
@@ -682,6 +687,11 @@ case "$CURRENT_STEP" in
   qa_failed)
     SKIP_PLAN=true; SKIP_TEST_PLAN=true; SKIP_DEV_REVIEW=true
     SKIP_UI_IMPACT=true; SKIP_UI_TEST_DESIGN=true; SKIP_BROWSER_QA=true ;;
+  browser_lane_pending)
+    # A browser-lane run stopped on quota (_run_browser_lane): re-run the lane,
+    # then QA and everything after it. Nothing past the lane is trusted.
+    SKIP_PLAN=true; SKIP_TEST_PLAN=true; SKIP_DEV_REVIEW=true
+    SKIP_UI_IMPACT=true; SKIP_UI_TEST_DESIGN=true ;;
   post_dev_parallel_complete|browser_qa_complete)
     # post_dev_parallel_complete: the Step 4-7 parallel fanout finished (UI chain
     # 4-6 done); resume from QA (Step 7) onward — same skips as browser_qa_complete.
@@ -761,19 +771,26 @@ if detect_frontend_in_plan "$PLAN_FILE"; then
   FRONTEND_PRESENT="yes"
 fi
 
-# Resume from qa_failed: QA is checked against the browser lane, so a lane that
-# gave NO usable evidence (SKIPPED / MISSING / UNPARSEABLE) is re-run BEFORE QA —
-# a SKIPPED lane left by a transient Chrome failure would otherwise fail every
-# resume. A lane with failing rows is not: it already ran on this code, so the
-# Step 7 loop fixes first and re-runs it then. Only the lane re-runs here; the
-# showcase demo is not repeated.
+# Resume from qa_failed: QA is checked against the browser lane, so repeating
+# what is on record could not pass.
+#   - a lane that gave NO usable evidence (SKIPPED / MISSING / UNPARSEABLE) is
+#     re-run BEFORE QA — a SKIPPED lane left by a transient Chrome failure would
+#     otherwise fail every resume. Only the lane; the showcase demo is not repeated.
+#   - a lane with failing rows already ran on this code, as did the failing QA
+#     report on record: the Step 7 loop starts at its fix step (dev fix, then the
+#     lane re-runs, then QA) rather than re-running either first.
 LANE_RERUN_ONLY=false
+QA_REOPENED=false
+QA_REOPENED_GATE_RC=0   # 3 = the report on record was failed by the gate alone
 if [[ "$CURRENT_STEP" == "qa_failed" && "$SKIP_BROWSER_QA" == "true" ]] && _lane_required; then
   _read_lane_dod_status "qa_failed"
   if _lane_evidence_missing; then
     log "  Resume: the required browser lane gave no usable evidence ($LANE_DOD_STATUS) -- re-running it before QA."
     SKIP_BROWSER_QA=false
     LANE_RERUN_ONLY=true
+  elif [[ "$LANE_DOD_STATUS" == "FAIL" && -f "$QA_REPORT" ]] && ! verdict_passes "$QA_REPORT"; then
+    log "  Resume: the lane fails the DoD on this code and the QA report on record fails -- the QA loop starts at its fix step."
+    QA_REOPENED=true
   fi
 fi
 
@@ -1106,7 +1123,6 @@ kill_phase_servers
 # overturns it, the QA loop re-opens at its fix step (re-running QA first
 # against the same lane could not change anything), and every later step that
 # trusted the overturned verdict runs again.
-QA_REOPENED=false
 if [[ "$SKIP_QA" == "true" ]]; then
   pre_gate_rc=0
   _qa_lane_gate_or_fail "qa_failed" || pre_gate_rc=$?
@@ -1114,6 +1130,7 @@ if [[ "$SKIP_QA" == "true" ]]; then
     log "QA verdict on record overturned by the browser-lane gate -- re-opening the QA loop at its fix step."
     SKIP_QA=false
     QA_REOPENED=true
+    QA_REOPENED_GATE_RC=3
     SKIP_UX_REGRESSION=false; SKIP_AUDIT=false; SKIP_CLOSURE=false
   fi
 fi
@@ -1140,8 +1157,8 @@ if [[ "$SKIP_QA" == "false" ]]; then
     qa_gate_rc=0
     if [[ "$QA_REOPENED" == "true" ]]; then
       QA_REOPENED=false
-      qa_gate_rc=3
-      log "  [QA attempt $QA_ATTEMPT/$MAX_RETRIES] Using the overturned QA report on record (see its 'Browser lane gate' section)."
+      qa_gate_rc=$QA_REOPENED_GATE_RC
+      log "  [QA attempt $QA_ATTEMPT/$MAX_RETRIES] Using the failing QA report on record -- nothing has changed that a QA re-run could see."
     else
       log "  [QA attempt $QA_ATTEMPT/$MAX_RETRIES] Running QA validator..."
       # Clear stale verdict so a script crash before write cannot be masked

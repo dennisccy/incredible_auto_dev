@@ -204,29 +204,32 @@ def _display(path: str) -> str:
     return path if rel.startswith("..") else rel
 
 
+# The lines the gate's own section is made of — kept in step with gate_text's writer.
+_GATE_BULLETS = (_RULE_BULLET, "- **Authoritative browser lane:**", "- **Pre-run test plan (priority source):**",
+                 "- **QA agent verdict:**", "- **Blocking rows:**", "- **Non-blocking findings (pre-run plan P2/P3):**",
+                 "- The browser result is not converted into a pass.", "  - ")
+
+
 def _split_gate_section(qa_text: str) -> "tuple[str, list[str] | None]":
-    """(report with every section the gate wrote removed, the agent verdicts the first one
-    recorded). A gate section is a block in the gate's fixed shape — heading, blank line,
-    the Rule bullet, then bullets and blank lines — ending after its last bullet, wherever
-    it sits: prose an agent added below an old section does not hide it. Anything else,
-    including an agent quoting the heading, is report prose and is kept."""
+    """(report with every gate section removed, the agent verdicts the LAST one recorded).
+    A gate section is the heading, a blank line, then an unbroken run of the gate's own
+    lines (the gate never writes a blank line inside it); the first blank or other line
+    ends it. So an agent's own bullets or notes below an old section, or a quoted heading,
+    stay report prose. (A verbatim copy of a whole section is indistinguishable and is
+    treated as the gate's — it is regenerated from the current lane anyway.)"""
     parts: list[str] = []
     recorded: "list[str] | None" = None
     pos = 0
     while (i := qa_text.find(_SECTION_START, pos)) >= 0:
-        end = k = qa_text.index("\n", i + 2) + 1          # past the heading line
+        k = end = qa_text.index("\n", i + 2) + 2          # the Rule bullet's line
         while k < len(qa_text):
             nl = qa_text.find("\n", k)
             nl = len(qa_text) if nl < 0 else nl
-            line = qa_text[k:nl]
-            if line and not line.startswith(("- ", "  - ")):
+            if not qa_text[k:nl].startswith(_GATE_BULLETS):
                 break
-            if line:
-                end = nl                                   # the block ends after its last bullet
-            k = nl + 1
-        if recorded is None:
-            m = _AGENT_VERDICT_RECORD_RE.search(qa_text, i, end)
-            recorded = [v.strip() for v in m.group(1).split(",")] if m else None
+            end, k = nl, nl + 1
+        m = _AGENT_VERDICT_RECORD_RE.search(qa_text, i, end)
+        recorded = [v.strip() for v in m.group(1).split(",")] if m else None
         parts.append(qa_text[pos:i])
         pos = end
     parts.append(qa_text[pos:])
@@ -254,7 +257,11 @@ def gate_text(qa_text: str, lane_text: "str | None", lane_path: str,
     # The agent's own words: a PASS the gate already turned into PASS_WITH_NOTES is still
     # the agent's PASS, so a re-gate reports (and relabels) what the agent actually wrote.
     agent_verdicts = [_PASS_LINE_RE.match(lines[i].rstrip("\r\n")).group(1) for i in passing]
-    if recorded and len(recorded) == len(agent_verdicts):
+    # Trusted only when it is consistent with the lines on record: the gate's one rewrite of
+    # a passing line is PASS -> PASS_WITH_NOTES, so anything else is not its record.
+    if recorded and len(recorded) == len(agent_verdicts) and all(
+            r in _PASSING and (c == r or (r, c) == ("PASS", "PASS_WITH_NOTES"))
+            for r, c in zip(recorded, agent_verdicts)):
         agent_verdicts = recorded
     if status == "FINDINGS":
         for i, original in zip(passing, agent_verdicts):
@@ -309,11 +316,19 @@ def gate_text(qa_text: str, lane_text: "str | None", lane_path: str,
     return body + "\n".join(section) + "\n", status
 
 
-def _read(path: str) -> "str | None":
+def _read(path: str, lenient: bool = False) -> "str | None":
+    """File text, or None when absent. `lenient` (the lane and the plan): undecodable bytes
+    are replaced and an unreadable file counts as absent — the lane then reads MISSING and
+    blocks, and the engine re-runs it, instead of a crash wedging every resume. The QA
+    report itself is read strictly: a gate that cannot read it must not pass it."""
     try:
-        return Path(path).read_text(encoding="utf-8")
+        return Path(path).read_text(encoding="utf-8", errors="replace" if lenient else "strict")
     except (FileNotFoundError, IsADirectoryError):
         return None
+    except PermissionError:
+        if lenient:
+            return None
+        raise
 
 
 def cmd_apply(qa_path: str, lane_path: str, lane_required: str, plan_path: str = "") -> int:
@@ -327,8 +342,8 @@ def cmd_apply(qa_path: str, lane_path: str, lane_required: str, plan_path: str =
     if qa_text is None:
         print(f"qa_lane_gate: no QA report at {qa_path} — nothing to gate")
         return 0
-    plan_text = _read(plan_path) if plan_path else None
-    new_text, status = gate_text(qa_text, _read(lane_path), lane_path, plan_text, plan_path)
+    plan_text = _read(plan_path, lenient=True) if plan_path else None
+    new_text, status = gate_text(qa_text, _read(lane_path, lenient=True), lane_path, plan_text, plan_path)
     if new_text == qa_text:
         why = "QA verdict is not passing" if not status else f"browser lane {status}"
         print(f"qa_lane_gate: consistent ({why}) — QA report unchanged")
@@ -348,8 +363,8 @@ def cmd_apply(qa_path: str, lane_path: str, lane_required: str, plan_path: str =
 def lane_status(lane_path: str, plan_path: str = "") -> str:
     """The lane's DoD status alone (assess_lane), for callers that route on it:
     run-phase.sh re-runs a lane that produced no usable evidence without a dev fix."""
-    plan_text = _read(plan_path) if plan_path else None
-    return assess_lane(_read(lane_path), plan_priorities(plan_text))[0]
+    plan_text = _read(plan_path, lenient=True) if plan_path else None
+    return assess_lane(_read(lane_path, lenient=True), plan_priorities(plan_text))[0]
 
 
 def _self_test() -> int:
@@ -530,6 +545,22 @@ def _self_test() -> int:
               and out.index("Re-run note from the agent") < out.index(SECTION_HEADING)
               and f"- **QA agent verdict:** PASS, PASS_WITH_NOTES — overridden" in out,
               "AD: prose appended below a stale section -> the section is still replaced, not stacked")
+
+        bullets_after = gated.rstrip("\n") + "\n\n- Re-verified J-02 by hand; see evidence/j02.png\n"
+        rc, out = run(bullets_after, lane_journey_fail)
+        check(rc == OVERRIDDEN_EXIT and "- Re-verified J-02 by hand" in out and out.count(SECTION_HEADING) == 1,
+              "AE: agent bullets written after an old gate section are prose, never swallowed with it")
+
+        old_quote = gated.split(SECTION_HEADING)[1].replace("PASS, PASS_WITH_NOTES — stands", "FAIL, FAIL — stands")
+        quoted_then_real = ("# QA\n\nAn older run's gate said:\n\n" + SECTION_HEADING + old_quote.rstrip("\n")
+                            + "\n\nNow:\n\n**Verdict:** PASS\n\n**Verdict:** PASS_WITH_NOTES\n")
+        rc, first = run(quoted_then_real, lane_p2_fail)
+        rc, out = run(first, lane_journey_fail)
+        check(rc == OVERRIDDEN_EXIT and f"- **QA agent verdict:** PASS, PASS_WITH_NOTES — overridden" in out,
+              "AF: the agent verdicts on record come from the LAST gate section, never an earlier quoted one")
+
+        lp.write_bytes(b"**Browser QA Verdict:** PASS\n\n\xff\xfe stray bytes\n| UT-J-01 | a | b | P1 | c | d | PASS | e |\n")
+        check(lane_status(str(lp), str(pp)) == "PASS", "AG: undecodable bytes in the lane file never crash the gate")
 
         quoting = qa_pass + f"\nThe previous run said:\n\n{SECTION_HEADING}\n\n(quoted by the agent)\n"
         rc, out = run(quoting, lane_journey_fail)
