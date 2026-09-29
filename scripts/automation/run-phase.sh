@@ -387,36 +387,6 @@ _lane_evidence_missing() {
   [[ "$LANE_DOD_STATUS" == "SKIPPED" || "$LANE_DOD_STATUS" == "MISSING" || "$LANE_DOD_STATUS" == "UNPARSEABLE" ]]
 }
 
-# Run the browser lane on the current code — Step 6, a qa_failed resume and the
-# Step 7 fix path share it. Stale results are cleared first so a crash before
-# the write cannot pass an old run off as this one's. Quota that outlasts the
-# step's own waits stops the phase resumably (exit 75, checkpoint
-# browser_lane_pending): the lane is required evidence, so going on without it
-# would only spend QA attempts on a MISSING lane.
-_run_browser_lane() {
-  local _label="$1" _q=0 _rc
-  # Also the checkpoint _run_step records DURING a quota wait, so a kill in
-  # that (up to an hour long) sleep resumes here too.
-  local QUOTA_WAIT_CHECKPOINT="browser_lane_pending"
-  rm -f "$UI_TEST_RESULTS"
-  while true; do
-    _rc=0
-    _run_step "$SCRIPT_DIR/browser-qa-phase.sh" "$PHASE" || _rc=$?
-    if [[ $_rc -eq 75 && $_q -lt 2 ]]; then _q=$((_q+1)); continue; fi
-    _guard_step_rc "$_rc" "$_label"
-    if [[ $_rc -eq 75 ]]; then
-      # An explicit checkpoint, not the quota_blocked that _run_step left: that one
-      # makes a resume guess from artifacts, and stale ones (an audit that trusted a
-      # since-overturned QA verdict) would skip the lane and QA altogether.
-      update_status "$PHASE" "blocked" "browser_lane_pending"
-      log "  $_label hit quota (exit 75) after its waits -- stopping resumably (checkpoint browser_lane_pending: the lane re-runs first on resume)."
-      exit 75
-    fi
-    [[ $_rc -ne 0 ]] && log "  Warning: browser-qa-phase.sh exited with error -- continuing"
-    break
-  done
-  log "  Browser QA results: $UI_TEST_RESULTS"
-}
 
 fail() {
   local msg="$1"
@@ -552,6 +522,37 @@ _run_step() {
     return 75
   fi
   return $rc
+}
+
+# Run the browser lane on the current code — Step 6, a qa_failed resume and the
+# Step 7 fix path share it. Stale results are cleared first so a crash before
+# the write cannot pass an old run off as this one's. Quota that outlasts the
+# step's own waits stops the phase resumably (exit 75, checkpoint
+# browser_lane_pending): the lane is required evidence, so going on without it
+# would only spend QA attempts on a MISSING lane.
+_run_browser_lane() {
+  local _label="$1" bqa_q=0 bqa_rc
+  # Also the checkpoint _run_step records DURING a quota wait, so a kill in
+  # that (up to an hour long) sleep resumes here too.
+  local QUOTA_WAIT_CHECKPOINT="browser_lane_pending"
+  rm -f "$UI_TEST_RESULTS"
+  while true; do
+    bqa_rc=0
+    _run_step "$SCRIPT_DIR/browser-qa-phase.sh" "$PHASE" || bqa_rc=$?
+    if [[ $bqa_rc -eq 75 && $bqa_q -lt 2 ]]; then bqa_q=$((bqa_q+1)); continue; fi
+    _guard_step_rc "$bqa_rc" "$_label"
+    if [[ $bqa_rc -eq 75 ]]; then
+      # An explicit checkpoint, not the quota_blocked that _run_step left: that one
+      # makes a resume guess from artifacts, and stale ones (an audit that trusted a
+      # since-overturned QA verdict) would skip the lane and QA altogether.
+      update_status "$PHASE" "blocked" "browser_lane_pending"
+      log "  $_label hit quota (exit 75) after its waits -- stopping resumably (checkpoint browser_lane_pending: the lane re-runs first on resume)."
+      exit 75
+    fi
+    [[ $bqa_rc -ne 0 ]] && log "  Warning: browser-qa-phase.sh exited with error -- continuing"
+    break
+  done
+  log "  Browser QA results: $UI_TEST_RESULTS"
 }
 
 log "========================================"
