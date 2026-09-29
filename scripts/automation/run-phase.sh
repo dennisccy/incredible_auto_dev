@@ -395,6 +395,9 @@ _lane_evidence_missing() {
 # would only spend QA attempts on a MISSING lane.
 _run_browser_lane() {
   local _label="$1" _q=0 _rc
+  # Also the checkpoint _run_step records DURING a quota wait, so a kill in
+  # that (up to an hour long) sleep resumes here too.
+  local QUOTA_WAIT_CHECKPOINT="browser_lane_pending"
   rm -f "$UI_TEST_RESULTS"
   while true; do
     _rc=0
@@ -529,7 +532,10 @@ _run_step() {
   bash "$script" "$@" || rc=$?
   if [[ $rc -eq ${QUOTA_EXHAUSTED_EXIT_CODE:-75} ]]; then
     log "  Quota exhaustion detected (exit 75). Waiting for reset..."
-    update_status "$PHASE" "blocked" "quota_blocked"
+    # A caller that knows exactly where a resume must restart scopes
+    # QUOTA_WAIT_CHECKPOINT (bash locals are dynamically scoped); otherwise
+    # quota_blocked, whose resume infers the step from artifacts.
+    update_status "$PHASE" "blocked" "${QUOTA_WAIT_CHECKPOINT:-quota_blocked}"
     local remaining wake_epoch
     if remaining=$(_quota_check_sentinel 2>/dev/null); then
       wake_epoch=$(( $(date +%s) + remaining ))

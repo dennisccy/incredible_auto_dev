@@ -156,6 +156,8 @@ make_sandbox() {
 #!/usr/bin/env bash
 R="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 echo "browser-qa-phase.sh" >> "${CANARY_FILE:-/dev/null}"
+# The checkpoint on record while the lane runs (a quota wait between calls writes one).
+grep -o '"current_step": *"[^"]*"' "$R/runs/$1/status.json" >> "$R/.lane-steps" 2>/dev/null || true
 [[ -f "$R/.lane-rerun-rc" ]] && exit "$(cat "$R/.lane-rerun-rc")"
 [[ -f "$R/.lane-rerun.md" ]] && cp "$R/.lane-rerun.md" "$R/reports/phase-$1-ui-test-results.md"
 exit 0
@@ -417,6 +419,9 @@ rc=0; run_phase q || rc=$?
 [[ $rc -eq 75 && "$(count qa-phase.sh)" == "1" ]] && step_is browser_lane_pending \
   && assert "Q: quota during the lane re-run stops resumably (exit 75, checkpoint browser_lane_pending)" "pass" \
   || { assert "Q: quota during the lane re-run stops resumably (rc=$rc $(counts))" "fail"; sed -n '1,80p' "$WORK/run-q.log"; }
+sed -n 2p "$SBX/.lane-steps" | grep -q browser_lane_pending \
+  && assert "Q: a kill during the quota WAIT would also resume at browser_lane_pending" "pass" \
+  || assert "Q: a kill during the quota WAIT would also resume at browser_lane_pending (saw: $(sed -n 2p "$SBX/.lane-steps"))" "fail"
 rm -f "$SBX/.lane-rerun-rc"; write_lane "$SBX/.lane-rerun.md" PASS; : > "$CANARY"
 rc=0; run_phase q-resume || rc=$?
 [[ $rc -eq 0 && "$(grep -m1 -E '^(browser-qa|qa)-phase\.sh$' "$CANARY" || true)" == "browser-qa-phase.sh" \
