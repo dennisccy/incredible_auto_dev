@@ -584,14 +584,14 @@ def _write_fixture(root):
         for r in rows:
             fh.write(json.dumps(r) + "\n")
     dev = [
-        {"type": "assistant", "message": {"id": "d1", "model": "claude-sonnet-5", "usage": U(100, 50000),
+        {"type": "assistant", "message": {"id": "d1", "model": "claude-sonnet-5-5", "usage": U(100, 50000),
          "content": [{"type": "tool_use", "id": "u1", "name": "Read", "input": {"file_path": "/x/shot.png"}}]}},
         {"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "u1",
          "content": [{"type": "image", "source": {"data": "A" * 4000}}]}]}},
-        {"type": "assistant", "message": {"id": "d2", "model": "claude-sonnet-5", "usage": U(200, 60000),
+        {"type": "assistant", "message": {"id": "d2", "model": "claude-sonnet-5-5", "usage": U(200, 60000),
          "content": [{"type": "tool_use", "id": "u2", "name": "Bash", "input": {"command": "pytest -q"}}]}},
         {"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "u2", "content": "." * 300}]}},
-        {"type": "assistant", "message": {"id": "d3", "model": "claude-sonnet-5", "usage": U(300, 70000),
+        {"type": "assistant", "message": {"id": "d3", "model": "claude-sonnet-5-5", "usage": U(300, 70000),
          "content": [{"type": "text", "text": "done"}]}},
     ]
     # ── permission economics rows (Task 8): appended after the token-accounting rows

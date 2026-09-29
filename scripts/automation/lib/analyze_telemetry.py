@@ -612,7 +612,7 @@ _FIXTURE = [
         "event": "claude_usage",
         "session_id": "s-1",
         "agent": "reviewer",
-        "model": "claude-sonnet-5",
+        "model": "claude-sonnet-5-5",
         "duration_ms": 4000,
         "duration_api_ms": 3500,
         "num_turns": 1,
@@ -769,7 +769,7 @@ def _self_test() -> int:
             print(f"FAIL: agent split: {agents}", file=sys.stderr)
             return 1
         models = sorted(s.by_model.keys())
-        if models != ["claude-opus-4-8", "claude-sonnet-5"]:
+        if models != ["claude-opus-4-8", "claude-sonnet-5-5"]:
             print(f"FAIL: model split: {models}", file=sys.stderr)
             return 1
         if s.by_model["claude-opus-4-8"].input_tokens != 1500:

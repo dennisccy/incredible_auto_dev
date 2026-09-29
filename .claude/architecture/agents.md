@@ -13,7 +13,7 @@ tier notes below restate the agent.yaml facts only.
 
 ### orchestrator
 - **File:** `.claude/agents/orchestrator.md`
-- **Model:** standard (claude-sonnet-5)
+- **Model:** standard (claude-sonnet-5-5)
 - **Pipeline step:** 1 (Plan)
 - **Inputs:** CLAUDE.md, project-template.md, phase spec, docs/goal.md, prior handoffs
 - **Output:** `runs/<phase>/plan.md`
@@ -21,7 +21,7 @@ tier notes below restate the agent.yaml facts only.
 
 ### developer
 - **File:** `.claude/agents/developer.md`
-- **Model:** standard (claude-sonnet-5)
+- **Model:** standard (claude-sonnet-5-5)
 - **Pipeline step:** 3 (Dev + Review loop)
 - **Inputs:** plan.md, phase spec, project-template.md, existing code, review/QA reports (fix mode)
 - **Outputs:** implementation code, `docs/handoffs/<phase>-dev.md`, `reports/phase-{N}-implementation-summary.md`
@@ -29,7 +29,7 @@ tier notes below restate the agent.yaml facts only.
 
 ### reviewer
 - **File:** `.claude/agents/reviewer.md`
-- **Model:** standard (claude-sonnet-5)
+- **Model:** standard (claude-sonnet-5-5)
 - **Pipeline step:** 3 (Dev + Review loop)
 - **Inputs:** dev handoff, phase spec, changed files, git diff
 - **Output:** `reports/reviews/<phase>-review.md`
@@ -63,7 +63,7 @@ tier notes below restate the agent.yaml facts only.
 
 ### product-manager
 - **File:** `.claude/agents/product-manager.md`
-- **Model:** standard (claude-sonnet-5)
+- **Model:** standard (claude-sonnet-5-5)
 - **Pipeline step:** Optional (before Step 1)
 - **Inputs:** phase spec, existing codebase, project-template.md
 - **Output:** `docs/plans/<date>-<phase>-plan.md`
@@ -73,7 +73,7 @@ tier notes below restate the agent.yaml facts only.
 
 ### ui-impact-analyst
 - **File:** `.claude/agents/ui-impact-analyst.md`
-- **Model:** standard (claude-sonnet-5)
+- **Model:** standard (claude-sonnet-5-5)
 - **Pipeline step:** 4 (UI Impact Analysis)
 - **Inputs:** dev handoff, frontend handoff, plan, phase spec, changed files
 - **Skills used:** `diff-to-ui-impact`, `visible-change-summarizer`, `ui-workflow-inference`
@@ -82,7 +82,7 @@ tier notes below restate the agent.yaml facts only.
 
 ### ui-test-designer
 - **File:** `.claude/agents/ui-test-designer.md`
-- **Model:** standard (claude-sonnet-5)
+- **Model:** standard (claude-sonnet-5-5)
 - **Pipeline step:** 5 (UI Test Design)
 - **Inputs:** user-visible-changes, ui-surface-map, phase spec, functional test plan
 - **Skills used:** `manual-ui-test-plan-generator`, `what-to-click-writer`
@@ -91,7 +91,7 @@ tier notes below restate the agent.yaml facts only.
 
 ### browser-qa-agent
 - **File:** `.claude/agents/browser-qa-agent.md`
-- **Model:** standard (claude-sonnet-5)
+- **Model:** standard (claude-sonnet-5-5)
 - **Pipeline step:** 6 (Browser QA)
 - **Inputs:** ui-test-plan, ui-surface-map
 - **Skills used:** `browser-workflow-executor`
@@ -100,7 +100,7 @@ tier notes below restate the agent.yaml facts only.
 
 ### ux-regression-reviewer
 - **File:** `.claude/agents/ux-regression-reviewer.md`
-- **Model:** standard (claude-sonnet-5)
+- **Model:** standard (claude-sonnet-5-5)
 - **Pipeline step:** 8 (UX Regression Review)
 - **Inputs:** user-visible-changes, ui-surface-map, ui-test-results, prior phase handoffs
 - **Skills used:** `ui-regression-scout`
@@ -109,7 +109,7 @@ tier notes below restate the agent.yaml facts only.
 
 ### phase-closure-auditor
 - **File:** `.claude/agents/phase-closure-auditor.md`
-- **Model:** standard (claude-sonnet-5)
+- **Model:** standard (claude-sonnet-5-5)
 - **Pipeline step:** 10 (Phase Closure)
 - **Inputs:** all pipeline verdicts, all 6 UI visibility artifacts, phase spec, plan
 - **Skills used:** `phase-closure-gate`
@@ -122,7 +122,7 @@ These agents are invoked only by the goal-mode pipeline (`run-goal.sh` and `goal
 
 ### goal-decomposer
 - **File:** `.claude/agents/goal-decomposer.md`
-- **Model:** standard (claude-sonnet-5) — TOKEN-2 tier experiment 2026-07-15; effort stays max and the D4 judge-effort guard still covers it
+- **Model:** standard (claude-sonnet-5-5) — TOKEN-2 tier experiment 2026-07-15; effort stays max and the D4 judge-effort guard still covers it
 - **Pipeline step:** Goal-mode iteration step 1 (planning)
 - **Inputs:** CLAUDE.md, project-template.md, `docs/goal.md` (especially Must-have user journeys + Anti-goals), `runs/goal-session-<sid>/state/journey-history.json`, last 3 entries of `runs/goal-session-<sid>/state/evaluator-log.md`, prior iteration's `eval.md`, codebase state via Glob/Grep/Read
 - **Output:** `docs/phases/goal-<sid>-iter-<N>.md` — a phase-spec-shaped iter spec with Goal Mode Metadata (Mode: baseline|next, Depth: lean|full, Target journeys, Required-still-passing journeys, Anti-goal reminders)

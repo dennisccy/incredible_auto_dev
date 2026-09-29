@@ -116,6 +116,8 @@ CLAUDE_MODEL_TO_TIER = {
     "claude-opus-5": "strong",
     "claude-opus-4-8": "strong",
     "claude-opus-4-7": "strong",
+    "claude-sonnet-5-5": "standard",
+    "claude-sonnet-5": "standard",
     "claude-sonnet-4-6": "standard",
     "claude-haiku-4-5": "light",
 }
@@ -301,7 +303,7 @@ def write_model_tiers() -> None:
             "codex": "gpt-5.1-codex",
         },
         "standard": {
-            "claude": legacy_tiers.get("standard", "claude-sonnet-4-6"),
+            "claude": legacy_tiers.get("standard", "claude-sonnet-5-5"),
             "codex": "gpt-5-codex",
         },
         "light": {
